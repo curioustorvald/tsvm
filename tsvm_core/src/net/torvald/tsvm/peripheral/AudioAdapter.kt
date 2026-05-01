@@ -1274,6 +1274,82 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         }
     }
 
+    /**
+     * Advance the pitch/filter envelope by `tickSec`. Same loop / sustain semantics
+     * as advanceEnvelope. Result is stored in `voice.envPfValue` (0.0..1.0; 0.5 = unity).
+     */
+    private fun advancePfEnvelope(voice: Voice, inst: TaudInst, tickSec: Double) {
+        if (!voice.hasPfEnv) return
+        val maxIdx = 24
+        val pSus       = inst.pfEnvSustain
+        val pUseEnv    = (pSus ushr 5) and 1 != 0
+        if (!pUseEnv) return
+        val pEnabled   = (pSus ushr 14) and 1 != 0
+        val pIsSustain = (pSus ushr 13) and 1 != 0
+        val pSusOn     = pEnabled && (!pIsSustain || !voice.keyOff)
+        val pSusStart  = (pSus ushr 8) and 0x1F
+        val pSusEnd    = pSus and 0x1F
+
+        if (pSusOn && voice.envPfIndex == pSusEnd && pSusStart == pSusEnd) {
+            voice.envPfValue = inst.pfEnvelopes[voice.envPfIndex].value / 255.0
+        } else if (pSusOn && voice.envPfIndex == pSusEnd) {
+            voice.envPfTimeSec = 0.0
+            voice.envPfIndex = pSusStart
+            voice.envPfValue = inst.pfEnvelopes[voice.envPfIndex].value / 255.0
+        } else if (voice.envPfIndex >= maxIdx) {
+            voice.envPfValue = inst.pfEnvelopes[maxIdx].value / 255.0
+        } else {
+            val pOffset = inst.pfEnvelopes[voice.envPfIndex].offset.toDouble()
+            if (pOffset == 0.0) {
+                voice.envPfValue = inst.pfEnvelopes[voice.envPfIndex].value / 255.0
+            } else {
+                voice.envPfTimeSec += tickSec
+                if (voice.envPfTimeSec >= pOffset) {
+                    voice.envPfTimeSec -= pOffset
+                    val nextIdx = if (pSusOn && voice.envPfIndex == pSusEnd) pSusStart
+                                  else (voice.envPfIndex + 1).coerceAtMost(maxIdx)
+                    voice.envPfIndex = nextIdx
+                    voice.envPfValue = inst.pfEnvelopes[voice.envPfIndex].value / 255.0
+                } else {
+                    val cur = inst.pfEnvelopes[voice.envPfIndex].value / 255.0
+                    val nxt = inst.pfEnvelopes[(voice.envPfIndex + 1).coerceAtMost(maxIdx)].value / 255.0
+                    voice.envPfValue = cur + (nxt - cur) * (voice.envPfTimeSec / pOffset)
+                }
+            }
+        }
+    }
+
+    /**
+     * IT-style auto-vibrato: returns a 4096-TET pitch delta to add to the
+     * playback note for the current tick, and advances the LFO phase.
+     * Vibrato depth ramps in linearly over `vibratoSweep` ticks (Sweep semantics
+     * inverted from IT — IT's "Sweep" is actually the ramp-up time in ticks;
+     * 0 means full depth immediately).
+     */
+    private fun advanceAutoVibrato(voice: Voice, inst: TaudInst): Int {
+        val depth0 = (inst.fadeoutHighVibDepth ushr 4) and 0xF
+        if (depth0 == 0 || inst.vibratoSpeed == 0) return 0
+
+        val sweep = inst.vibratoSweep
+        val rampDepth = if (sweep == 0) depth0
+                        else ((depth0 * voice.autoVibTicksSinceTrigger / sweep)
+                              .coerceAtMost(depth0))
+        voice.autoVibTicksSinceTrigger++
+
+        // Wave selector lives in the high nibble of vibratoSweep is not standard;
+        // IT keeps a separate wave byte that we don't currently surface, so treat
+        // as sine. The same `lfoSample` table used for H/U effects works here
+        // (8-bit phase, signed -127..+127).
+        val sine = lfoSample(voice.autoVibPhase, 0)
+        // 4096-TET delta: vib depth is in IT units (≈ 1/256 semitone). One
+        // semitone = 4096/12 ≈ 341.33 4096-TET units; IT auto-vibrato depth 1
+        // is ~6.25 cents = 21 4096-TET units. (sine * rampDepth) is roughly
+        // -127*15 .. +127*15 = ±1905, divided by 64 → ±30 ≈ ±10 cents at depth 15.
+        val pitchDelta = (sine * rampDepth) shr 6
+        voice.autoVibPhase = (voice.autoVibPhase + inst.vibratoSpeed * 2) and 0xFF
+        return pitchDelta
+    }
+
     private fun fetchTrackerSample(voice: Voice, inst: TaudInst): Double {
         if (inst.index == 0) return 0.0
 
@@ -1334,6 +1410,39 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         voice.envPan = inst.panEnvelopes[0].value / 255.0
         // Pan envelope is active when the `b` (use envelope) flag is set in panEnvSustain.
         voice.hasPanEnv = (inst.panEnvSustain ushr 5) and 1 != 0
+        // Pitch/filter envelope state.
+        voice.hasPfEnv      = (inst.pfEnvSustain ushr 5) and 1 != 0
+        voice.envPfIsFilter = (inst.pfEnvSustain ushr 7) and 1 != 0
+        voice.envPfIndex    = 0
+        voice.envPfTimeSec  = 0.0
+        voice.envPfValue    = if (voice.hasPfEnv) inst.pfEnvelopes[0].value / 255.0 else 0.5
+        // Fadeout starts at unity; advances only after key-off.
+        voice.fadeoutVolume = 1.0
+        // Auto-vibrato sweep ramp restarts on every fresh trigger.
+        voice.autoVibPhase = 0
+        voice.autoVibTicksSinceTrigger = 0
+        // Random vol/pan swing biases — seeded once per trigger (range determined by inst.volumeSwing/panSwing).
+        voice.randomVolBias = if (inst.volumeSwing != 0)
+            (Math.random() * (2 * inst.volumeSwing + 1)).toInt() - inst.volumeSwing else 0
+        voice.randomPanBias = if (inst.panSwing != 0)
+            (Math.random() * (2 * inst.panSwing + 1)).toInt() - inst.panSwing else 0
+        // Default pan: applied unless the pattern row has already overridden channelPan.
+        // We treat the pan envelope "p" flag (panEnvSustain bit 7) as "use default pan".
+        if ((inst.panEnvSustain ushr 7) and 1 != 0) {
+            voice.channelPan = inst.defaultPan
+            voice.rowPan = (voice.channelPan ushr 2).coerceIn(0, 63)
+        }
+        // Pitch-pan separation: when PPS != 0, played notes far from PPC drift in pan.
+        // PPS is signed (-32..+32), full-scale at one octave (4096 4096-TET units) above PPC.
+        if (inst.pitchPanSeparation != 0) {
+            val noteDelta = (noteVal - inst.pitchPanCentre).toDouble() / 4096.0
+            val panShift = (noteDelta * inst.pitchPanSeparation * 4.0).toInt()  // ~×4 = 32→128 swing
+            voice.channelPan = (voice.channelPan + panShift).coerceIn(0, 255)
+            voice.rowPan = (voice.channelPan ushr 2).coerceIn(0, 63)
+        }
+        // Filter cutoff/resonance defaults — adjusted per-tick by the pf envelope when in filter mode.
+        voice.currentCutoff = if (inst.defaultCutoff > 0) inst.defaultCutoff else 0xFF
+        voice.currentResonance = inst.defaultResonance
         voice.noteVal = noteVal
         voice.basePitch = noteVal
         voice.playbackRate = computePlaybackRate(inst, noteVal)
@@ -1758,15 +1867,45 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                     voice.envIndex = 0; voice.envTimeSec = 0.0
                     voice.envPanIndex = 0; voice.envPanTimeSec = 0.0
                     voice.envPan = retrigInst.panEnvelopes[0].value / 255.0
+                    voice.envPfIndex = 0; voice.envPfTimeSec = 0.0
+                    voice.envPfValue = if (voice.hasPfEnv) retrigInst.pfEnvelopes[0].value / 255.0 else 0.5
+                    voice.fadeoutVolume = 1.0
+                    voice.autoVibPhase = 0
+                    voice.autoVibTicksSinceTrigger = 0
                     voice.rowVolume = applyRetrigVolMod(voice.rowVolume, voice.retrigVolMod)
                     voice.channelVolume = voice.rowVolume
                 }
             }
 
-            // Update playback rate from final pitchToMixer.
-            voice.playbackRate = computePlaybackRate(inst, pitchToMixer)
+            // Auto-vibrato (instrument-supplied sample LFO) — added on top of pitchToMixer.
+            val autoVibDelta = advanceAutoVibrato(voice, inst)
+
+            // Pitch envelope contribution: env value 0..1, 0.5 = unity. -32..+32
+            // semitone range maps to ±32 × 4096/12 ≈ ±10923 4096-TET units.
+            val pitchEnvDelta = if (voice.hasPfEnv && !voice.envPfIsFilter)
+                ((voice.envPfValue - 0.5) * 2.0 * 32.0 * 4096.0 / 12.0).toInt()
+            else 0
+
+            val finalPitch = (pitchToMixer + autoVibDelta + pitchEnvDelta).coerceIn(0, 0xFFFE)
+            voice.playbackRate = computePlaybackRate(inst, finalPitch)
+
+            // Filter envelope (filter mode): scale current cutoff by env value (0..1, 0.5 = unity).
+            if (voice.hasPfEnv && voice.envPfIsFilter) {
+                val baseCut = if (inst.defaultCutoff > 0) inst.defaultCutoff else 0xFF
+                voice.currentCutoff = (baseCut * (voice.envPfValue * 2.0)).toInt().coerceIn(0, 0xFF)
+            }
+
+            // Volume fadeout: after key-off, decrement by inst.volumeFadeout / 1024 per tick.
+            // The 10-bit fadeout value is split across volumeFadeoutLow + low nibble of fadeoutHighVibDepth.
+            if (voice.keyOff) {
+                val fadeStep = inst.volumeFadeoutLow or ((inst.fadeoutHighVibDepth and 0x0F) shl 8)
+                if (fadeStep > 0) {
+                    voice.fadeoutVolume = (voice.fadeoutVolume - fadeStep / 1024.0).coerceAtLeast(0.0)
+                }
+            }
 
             advanceEnvelope(voice, inst, tickSec)
+            advancePfEnvelope(voice, inst, tickSec)
         }
 
         // Tempo slide — applied once per tick at the playhead level (any channel that armed it).
@@ -1846,11 +1985,14 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 val voiceInst = instruments[voice.instrumentId]
                 val s = fetchTrackerSample(voice, voiceInst)
                 val instGv = voiceInst.instGlobalVolume / 255.0
-                val vol = voice.envVolume * voice.rowVolume / 63.0 * gvol * instGv * playhead.masterVolume / 255.0
+                // Volume swing bias (random per-trigger, ±randomVolBias of 0..255 units folded into the 0..63 row volume).
+                val swingScale = 1.0 + voice.randomVolBias / 255.0
+                val vol = voice.envVolume * voice.fadeoutVolume * voice.rowVolume / 63.0 *
+                          swingScale * gvol * instGv * playhead.masterVolume / 255.0
                 val pan = if (voice.hasPanEnv) {
                     val envPanRaw = (voice.envPan * 255.0).roundToInt().coerceIn(0, 255)
-                    (voice.channelPan + envPanRaw - 128).coerceIn(0, 255)
-                } else voice.channelPan
+                    (voice.channelPan + envPanRaw - 128 + voice.randomPanBias).coerceIn(0, 255)
+                } else (voice.channelPan + voice.randomPanBias).coerceIn(0, 255)
                 val lGain: Double
                 val rGain: Double
                 when (ts.panLaw) {
@@ -2032,6 +2174,28 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         var envPanTimeSec = 0.0
         var envPan = 0.5                   // 0.0=full-left, 1.0=full-right, 0.5=centre
         var hasPanEnv = false
+
+        // Pitch / filter envelope (instrument-supplied, byte 19-20 + bytes 121-170).
+        var hasPfEnv = false
+        var envPfIndex = 0
+        var envPfTimeSec = 0.0
+        var envPfValue = 0.5               // 0.0..1.0; 0.5 = unity (no pitch shift / unmodulated cutoff)
+        var envPfIsFilter = false          // mirror of inst.pfEnvSustain bit 7 latched at trigger
+
+        // Volume fadeout — engaged after key-off, decays to 0 at rate inst.volumeFadeoutLow.
+        var fadeoutVolume = 1.0
+
+        // Auto-vibrato (per-sample on the IT side, hoisted to the instrument here).
+        var autoVibPhase = 0               // 8-bit phase counter
+        var autoVibTicksSinceTrigger = 0   // for sweep ramp-up
+
+        // Filter / cutoff state (engine-side; biquad filter not yet applied to the output).
+        var currentCutoff = 0xFF           // 0..255 (0xFF = open / unfiltered)
+        var currentResonance = 0           // 0..255
+
+        // Per-trigger random offsets from RV / RP swing (added to base vol/pan).
+        var randomVolBias = 0              // signed
+        var randomPanBias = 0              // signed
 
         // Pitch state (4096-TET units, signed when slid).
         var noteVal = 0xFFFF               // The currently sounding base note (no per-row vibrato/arp added)
