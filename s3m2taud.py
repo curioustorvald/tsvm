@@ -342,7 +342,7 @@ def encode_effect(cmd: int, arg: int, ch: int = 0, row: int = 0,
             return (TOP_S, 0x8000 | pan8, None, None)
         if sub == 0xF:
             funk_table = [0, 5, 6, 7, 8, 0xA, 0xB, 0xD, 0x10, 0x13, 0x16, 0x1A, 0x20, 0x2B, 0x40, 0x80]
-            return (TOP_S, 0xF000 | funk_table[x]), None, None)
+            return (TOP_S, 0xF000 | funk_table[x], None, None)
         # S0/S6/S7/S9/SA: filter, NNA, sound-control, stereo — drop silently.
         return (TOP_NONE, 0, None, None)
 
