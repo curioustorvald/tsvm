@@ -458,7 +458,7 @@ class ITInstrument:
     __slots__ = ('name', 'dfp', 'gv', 'canonical_sample', 'canonical_volume',
                  'vol_envelope', 'pan_envelope', 'vol_env_sustain', 'pan_env_sustain',
                  'pf_envelope', 'pf_env_sustain', 'pf_is_filter',
-                 'ifc', 'ifr', 'fadeout', 'pps', 'ppc', 'rv', 'rp')
+                 'ifc', 'ifr', 'fadeout', 'pps', 'ppc', 'rv', 'rp', 'nna')
     # vol_envelope / pan_envelope / pf_envelope: list of 25 (value, minifloat_idx) tuples, or None
     # *_env_sustain: int (16-bit, 0b 0ut sssss pcb eeeee), 0 = no envelope
     # pf_is_filter: bool — pf envelope mode (False = pitch, True = filter)
@@ -466,6 +466,7 @@ class ITInstrument:
     # fadeout    : 0..1024 (IT FadeOut field, applied per tick after key-off)
     # pps / ppc  : pitch-pan separation (signed -32..+32) and centre note (0..119)
     # rv / rp    : random volume swing (0..100) / random pan swing (0..64)
+    # nna        : new note action (IT 0=cut, 1=continue, 2=note off, 3=note fade)
 
 def parse_instruments(data: bytes, h: ITHeader) -> list:
     insts = []
@@ -477,6 +478,8 @@ def parse_instruments(data: bytes, h: ITHeader) -> list:
 
         inst = ITInstrument()
         inst.name = data[ptr+0x20:ptr+0x3A].rstrip(b'\x00').decode('latin-1', errors='replace')
+        # NNA at IMPI+0x11 (new format). 0=cut, 1=continue, 2=note off, 3=note fade.
+        inst.nna  = data[ptr + 0x11] & 0x03
         inst.fadeout = struct.unpack_from('<H', data, ptr + 0x14)[0]   # 0..1024
         # PPS is signed -32..+32; PPC is the centre note (IT note number 0..119, C-5=60).
         inst.pps  = struct.unpack_from('b', data, ptr + 0x16)[0]
@@ -871,8 +874,7 @@ def encode_effect_it(cmd: int, arg: int, ch: int = 0, row: int = 0,
         if sub == 0x8:
             # IT S8x: 4-bit → nibble-repeat into 8-bit SEL_SET pan
             pan8 = (val << 4) | val
-            pan6 = min(0x3F, round(pan8 * 63 / 255))
-            return (TOP_NONE, 0, None, (SEL_SET, pan6))
+            return (TOP_S, 0x8000 | pan8, None, None)
         if sub == 0x6:
             vprint(f"    dropped S6{val:X} (tick delay) at ch{ch} row{row}")
             return (TOP_NONE, 0, None, None)
@@ -903,10 +905,7 @@ def encode_effect_it(cmd: int, arg: int, ch: int = 0, row: int = 0,
         return (TOP_NONE, 0, None, None)
 
     if cmd == EFF_X:
-        # IT X is full 8-bit pan (0=left, 255=right; 128=centre in OpenMPT but
-        # IT spec says 0-255 maps to full left-right)
-        pan6 = min(0x3F, round(arg * 63 / 255))
-        return (TOP_NONE, 0, None, (SEL_SET, pan6))
+        return (TOP_S, 0x8000 | (arg & 0xFF), None, None)
 
     if cmd == EFF_Y:
         hi = (arg >> 4) & 0xF
@@ -1104,8 +1103,9 @@ def build_sample_inst_bin_it(samples_or_proxy: list,
 
     instr_data_by_slot: optional dict mapping taud_slot → dict with keys:
         vol_env, vol_sus, pan_env, pan_sus, pf_env, pf_sus, pf_is_filter,
-        inst_gv, fadeout, vib_speed, vib_depth, vib_sweep, default_pan,
-        pps, ppc_taud, pan_swing, vol_swing, ifc, ifr.
+        inst_gv, fadeout, vib_speed, vib_depth, vib_sweep, vib_rate, vib_wave,
+        default_pan, pps, ppc_taud, pan_swing, vol_swing, ifc, ifr,
+        sample_detune, nna.
     All optional; missing keys default to neutral values.
 
     Returns (bin_bytes[SAMPLEINST_SIZE], offsets_dict).
@@ -1222,10 +1222,8 @@ def build_sample_inst_bin_it(samples_or_proxy: list,
 
         inst_bin[base + 171] = inst_gv & 0xFF
         inst_bin[base + 172] = fadeout & 0xFF                                # low 8 bits
-        # Byte 173: high nybble = vibrato depth, low nybble = fadeout high bits.
-        fade_hi = (fadeout >> 8) & 0x03
-        vib_depth = idata.get('vib_depth', 0) & 0x0F
-        inst_bin[base + 173] = ((vib_depth & 0xF) << 4) | fade_hi
+        # Byte 173: low nibble = fadeout high bits (0b 0000 ffff).
+        inst_bin[base + 173] = (fadeout >> 8) & 0x0F
         inst_bin[base + 174] = idata.get('vol_swing',   0) & 0xFF
         inst_bin[base + 175] = idata.get('vib_speed',   0) & 0xFF
         inst_bin[base + 176] = idata.get('vib_sweep',   0) & 0xFF
@@ -1238,6 +1236,20 @@ def build_sample_inst_bin_it(samples_or_proxy: list,
         inst_bin[base + 181] = idata.get('pan_swing', 0) & 0xFF
         inst_bin[base + 182] = idata.get('ifc',     255) & 0xFF
         inst_bin[base + 183] = idata.get('ifr',     255) & 0xFF
+        # Bytes 184-185: sample detune (4096-TET, signed stored as u16).
+        struct.pack_into('<H', inst_bin, base + 184,
+                         idata.get('sample_detune', 0) & 0xFFFF)
+        # Byte 186: instrument flag — 0b 000 www nn
+        #     nn = NNA (Taud encoding: 00=note off, 01=cut, 10=continue, 11=fade)
+        #     www = vibrato waveform (0=sine, 1=ramp-down, 2=square, 3=random, 4=ramp-up FT2)
+        nna = idata.get('nna', 0) & 0x03
+        vib_wave = idata.get('vib_wave', 0) & 0x07
+        inst_bin[base + 186] = (vib_wave << 2) | nna
+        # Byte 187: vibrato depth (0..255 full range).
+        inst_bin[base + 187] = idata.get('vib_depth', 0) & 0xFF
+        # Byte 188: vibrato rate (0..255 full range, IT samplewise Vir).
+        inst_bin[base + 188] = idata.get('vib_rate', 0) & 0xFF
+        # Bytes 189-191: reserved (already zeroed).
 
         vprint(f"  instrument[{taud_idx}] '{s.name}' ptr:{ptr} c5spd:{s.c5_speed}")
 
@@ -1549,23 +1561,48 @@ def assemble_taud(h: ITHeader, samples: list, instruments: list,
                 continue
             src_smp = samples[si]
             proxy[taud_slot] = src_smp
-            vol64 = min(inst.canonical_volume, 64)
-            inst_vols[taud_slot] = min(vol64, 0x3F)
-            # IT global volume range is 0..128; rescale to Taud's 0..255.
-            inst_gv_255 = min(255, round(inst.gv * 255 / 128))
+            # IT cell-trigger initial volume comes from the sample's default
+            # volume (Dv, 0..64), not the instrument's global volume.
+            smp_default_vol = min(getattr(src_smp, 'vol', 64), 64)
+            inst_vols[taud_slot] = min(smp_default_vol, 0x3F)
+
+            # IT instrument GV (0..128) and sample GV (0..64) collapse into
+            # Taud's single instrumentwise GV (0..255). Sample default volume
+            # is handled separately by inst_vols above.
+            smp_gv = min(getattr(src_smp, 'gv', 64), 64)
+            inst_gv_255 = min(255, round(inst.gv * smp_gv * 255 / (128 * 64)))
 
             # IT pitch-pan centre: note number 0..119 (C-5 = 60). The Taud
             # representation is the absolute 4096-TET note value used in patterns
             # (anchored to TAUD_C4 at IT note 60).
             ppc_taud = TAUD_C4 + (max(0, min(119, inst.ppc)) - 60) * 4096 // 12
 
-            # IT default pan: 0..64 (centre = 32). Taud uses 0..255.
+            # IT default pan: instrumentwise (IMPI+0x19) takes precedence when
+            # its "use" bit is set; otherwise samplewise (IMPS+0x2F) wins when
+            # its "use" bit is set; otherwise centre (0x80). Both fields encode
+            # 0..64 → rescale to Taud's 0..255 range.
+            smp_dfp_raw = getattr(src_smp, 'dfp', 0)
             if inst.dfp is not None:
                 default_pan = min(255, max(0, round(inst.dfp * 255 / 64)))
+            elif smp_dfp_raw & 0x80:
+                default_pan = min(255, max(0, round((smp_dfp_raw & 0x7F) * 255 / 64)))
             else:
                 default_pan = 0x80
 
             # Auto-vibrato lives on the canonical sample (not the IT instrument).
+            # IT samplewise auto-vibrato: Vis (speed 0..64), Vid (depth 0..32),
+            # Vir (rate 0..255 — IT-style ramp-in), Vit (waveform 0..3).
+            # Taud byte 175 (Vibrato Speed) follows FT2 0..255 scale: rescale Vis.
+            # Taud byte 187 (Vibrato Depth) is full 0..255: rescale Vid 0..32 → 0..255.
+            # Taud byte 188 (Vibrato Rate) is IT Vir verbatim.
+            # Taud byte 176 (Vibrato Sweep) is FT2-only — leave 0 for IT.
+            vib_speed_taud = min(255, round(src_smp.av_speed * 255 / 64))
+            vib_depth_taud = min(255, round(src_smp.av_depth * 255 / 32))
+            # IT NNA (0=cut, 1=continue, 2=note off, 3=note fade) →
+            # Taud NNA  (00=note off, 01=cut, 10=continue, 11=fade).
+            it_to_taud_nna = (0b01, 0b10, 0b00, 0b11)
+            nna_taud = it_to_taud_nna[inst.nna & 0x03]
+
             instr_data_by_slot[taud_slot] = {
                 'vol_env': inst.vol_envelope,
                 'vol_sus': inst.vol_env_sustain,
@@ -1575,9 +1612,11 @@ def assemble_taud(h: ITHeader, samples: list, instruments: list,
                 'pf_sus':  inst.pf_env_sustain,
                 'inst_gv': inst_gv_255,
                 'fadeout': inst.fadeout,
-                'vib_speed':  src_smp.av_speed,
-                'vib_depth':  src_smp.av_depth,
-                'vib_sweep':  src_smp.av_sweep,
+                'vib_speed':  vib_speed_taud,
+                'vib_depth':  vib_depth_taud,
+                'vib_sweep':  0,                       # FT2-only; IT uses vib_rate
+                'vib_rate':   src_smp.av_sweep & 0xFF, # IT Vir (samplewise sweep)
+                'vib_wave':   src_smp.av_wave & 0x07,  # IT vib type (0..3)
                 'default_pan': default_pan,
                 'pps':        inst.pps,
                 'ppc_taud':   ppc_taud & 0xFFFF,
@@ -1585,6 +1624,8 @@ def assemble_taud(h: ITHeader, samples: list, instruments: list,
                 'vol_swing':  min(255, round(inst.rv * 255 / 100)) if inst.rv else 0,
                 'ifc':        inst.ifc,
                 'ifr':        inst.ifr,
+                'sample_detune': 0,                    # IT samples have no finetune
+                'nna':        nna_taud,
             }
         sampleinst_raw, _ = build_sample_inst_bin_it(proxy, instr_data_by_slot)
     else:

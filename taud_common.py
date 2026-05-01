@@ -44,7 +44,7 @@ NUM_VOICES       = 20
 NOTE_NOP    = 0xFFFF
 NOTE_KEYOFF = 0x0000
 NOTE_CUT    = 0xFFFE
-TAUD_C4     = 0x5000   # reference C for instrument sampling rate (was TAUD_C3 = 0x4000)
+TAUD_C4     = 0x5000   # The audio engine's Middle C
 
 # Taud effect opcodes (base-36: 0..9 → 0x00..0x09, A..Z → 0x0A..0x23)
 TOP_NONE = 0x00

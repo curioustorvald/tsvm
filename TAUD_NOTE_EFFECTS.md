@@ -578,11 +578,11 @@ Peak at maximum settings: $7F × $FF >> 9 = $3F — the full panning range. Retr
 
 S is a multiplexing opcode; the **high nibble of the high byte** selects the sub-effect, and the remainder is the sub-argument.
 
-## S $1x00 — ST3/IT Glissando control
+## S $1x00 — PT/ST3/IT Glissando control
 
-**Plain.** `$1000` turns glissando off; `$1100` turns it on. When on, tone portamento (G) output is quantised to the nearest semitone ($0155 approximation) before being sent to the mixer. The internal G pitch counter still advances smoothly; only the audible pitch steps. **This command is implemented sorely for ST3/IT compatibility.** and therefore only works in 12-TET context.
+**Plain.** `$1000` turns glissando off; `$1100` turns it on. When on, tone portamento (G) output is quantised to the nearest semitone ($0155 approximation) before being sent to the mixer. The internal G pitch counter still advances smoothly; only the audible pitch steps. **This command is implemented sorely for ST3/IT compatibility** and therefore only works in 12-TET context.
 
-**Compatibility.** ST3 `S10`/`S11` maps directly. In Taud, "nearest semitone" uses the best integer approximation: round `pitch / $155` to the nearest integer, multiply by $155; equivalently, `snapped = (pitch + $AB) / $155 × $155`. Because $155 is an approximation of 4096/12, accumulated rounding across many octaves will drift by up to a few cents; this is documented behaviour and intentional given the microtonal grid.
+**Compatibility.** ST3/IT `S10`/`S11` and PT `E30`/`E31` maps directly. In Taud, "nearest semitone" uses the best integer approximation: round `pitch / $155` to the nearest integer, multiply by $155; equivalently, `snapped = (pitch + $AB) / $155 × $155`. Because $155 is an approximation of 4096/12, accumulated rounding across many octaves will drift by up to a few cents; this is documented behaviour and intentional given the microtonal grid.
 
 **Implementation.** Maintain a per-channel boolean `glissando_on`. When G updates `pitch`, if `glissando_on` is set, compute `display_pitch = round(pitch × 12 / 4096) × 4096 / 12` (using integer division with rounding) and send `display_pitch` to the mixer; otherwise send `pitch` directly.
 
@@ -634,7 +634,7 @@ ProTracker `E5x` maps to Taud `S $2x00` with the same index meaning.
 | $6 | Square | No |
 | $7 | Random | No |
 
-**Compatibility.** ST3 `S3x` maps directly.
+**Compatibility.** ST3 `S3x` and ProTracker `E4x` maps directly.
 
 **Implementation.** Store `vibrato_waveform = $x & $3` and `vibrato_retrigger = (($x & $4) == 0)` for the channel. The ramp-down shape is `$7F − ((pos & $3F) << 2)` across one logical cycle; the square shape is `sign(sine(pos)) × $7F`; random draws a fresh `rand() & $FF − $80` every tick. On a new note, if `vibrato_retrigger` is true, reset `lfo_pos = 0`.
 
@@ -644,7 +644,7 @@ ProTracker `E5x` maps to Taud `S $2x00` with the same index meaning.
 
 **Plain.** Selects the shape of the tremolo (R) oscillator; value encoding is identical to S $3x.
 
-**Compatibility.** ST3 `S4x` maps directly. ProTracker `E7x` maps to Taud `S $4x00`.
+**Compatibility.** ST3 `S4x` and ProTracker `E7x` maps directly.
 
 **Implementation.** As for S $3x, but applied to R's separate state (`tremolo_waveform`, `tremolo_retrigger`, and tremolo `lfo_pos`).
 

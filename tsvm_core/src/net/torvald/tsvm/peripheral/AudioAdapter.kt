@@ -1115,11 +1115,6 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         -0x5A, -0x51, -0x47, -0x3C, -0x31, -0x25, -0x19, -0x0C
     )
 
-    // Funk repeat advance table (S $Fx00). See TAUD_NOTE_EFFECTS.md §S$Fx.
-    private val FUNK_TABLE = intArrayOf(
-        0, 5, 6, 7, 8, 0xA, 0xB, 0xD, 0x10, 0x13, 0x16, 0x1A, 0x20, 0x2B, 0x40, 0x80
-    )
-
     // ST3-style fine-tune Hz reference offsets in 4096-TET units (S $2x00).
     private val FINETUNE_OFFSET = intArrayOf(
         -0x0154, -0x0132, -0x0111, -0x00E4, -0x00B8, -0x008B, -0x005D, -0x003B,
@@ -1169,7 +1164,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     }
 
     private fun computePlaybackRate(inst: TaudInst, noteVal: Int): Double =
-        inst.samplingRate.toDouble() / SAMPLING_RATE * 2.0.pow((noteVal - MIDDLE_C) / 4096.0)
+        inst.samplingRate.toDouble() / SAMPLING_RATE *
+        2.0.pow((noteVal - MIDDLE_C + inst.sampleDetuneSigned) / 4096.0)
 
     // Applies one tick of Amiga-mode pitch slide.  When the song is in Amiga tone mode, E/F coarse
     // slide arguments are stored as raw tracker period units (the original ProTracker/ST3 byte),
@@ -1396,25 +1392,34 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
      * 0 means full depth immediately).
      */
     private fun advanceAutoVibrato(voice: Voice, inst: TaudInst): Int {
-        val depth0 = (inst.fadeoutHighVibDepth ushr 4) and 0xF
+        // Depth from byte 187 (full 0..255). Speed from byte 175 (FT2 0..255 scale).
+        val depth0 = inst.vibratoDepth
         if (depth0 == 0 || inst.vibratoSpeed == 0) return 0
 
-        val sweep = inst.vibratoSweep
-        val rampDepth = if (sweep == 0) depth0
-                        else ((depth0 * voice.autoVibTicksSinceTrigger / sweep)
-                              .coerceAtMost(depth0))
+        // Two ramp-in semantics:
+        //   FT2 vibratoSweep (byte 176): "ticks to fully ramp" — depth = depth0 * t / sweep.
+        //   IT vibratoRate   (byte 188): "ramp acceleration" — accumulator += rate per tick,
+        //                                 capped at depth0 * 256, then divided by 256.
+        val ftSweep  = inst.vibratoSweep
+        val itRate   = inst.vibratoRate
+        val t        = voice.autoVibTicksSinceTrigger
+        val rampDepth = when {
+            ftSweep != 0 -> ((depth0 * t / ftSweep).coerceAtMost(depth0))
+            itRate  != 0 -> ((t * itRate) ushr 8).coerceAtMost(depth0)
+            else         -> depth0
+        }
         voice.autoVibTicksSinceTrigger++
 
-        // Wave selector lives in the high nibble of vibratoSweep is not standard;
-        // IT keeps a separate wave byte that we don't currently surface, so treat
-        // as sine. The same `lfoSample` table used for H/U effects works here
-        // (8-bit phase, signed -127..+127).
-        val sine = lfoSample(voice.autoVibPhase, 0)
-        // 4096-TET delta: vib depth is in IT units (≈ 1/256 semitone). One
-        // semitone = 4096/12 ≈ 341.33 4096-TET units; IT auto-vibrato depth 1
-        // is ~6.25 cents = 21 4096-TET units. (sine * rampDepth) is roughly
-        // -127*15 .. +127*15 = ±1905, divided by 64 → ±30 ≈ ±10 cents at depth 15.
-        val pitchDelta = (sine * rampDepth) shr 6
+        // Vibrato waveform selector lives in instrumentFlag bits 2-4.
+        // 0=sine, 1=ramp-down, 2=square, 3=random, 4=ramp-up (FT2 only).
+        // lfoSample handles 0..3; treat 4 (ramp-up) as negated ramp-down.
+        val wave = inst.vibratoWaveform
+        val rawSample = if (wave == 4) -lfoSample(voice.autoVibPhase, 1)
+                        else            lfoSample(voice.autoVibPhase, wave and 3)
+        // 4096-TET delta. depth0 is now 0..255 (was 0..15 in old layout); the
+        // shift compensates so depth ≈255 yields a similar musical excursion
+        // (~±9 cents) to the old depth ≈15.
+        val pitchDelta = (rawSample * rampDepth) shr 10
         voice.autoVibPhase = (voice.autoVibPhase + inst.vibratoSpeed * 2) and 0xFF
         return pitchDelta
     }
@@ -1821,7 +1826,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                     ts.patternDelayRemaining = x
                 }
             }
-            0xF -> { voice.funkSpeed = x; if (x == 0) voice.funkAccumulator = 0 }
+            0xF -> { voice.funkSpeed = arg and 0xFF; if (x == 0) voice.funkAccumulator = 0 }
         }
     }
 
@@ -1983,9 +1988,9 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             refreshVoiceFilter(voice)
 
             // Volume fadeout: after key-off, decrement by inst.volumeFadeout / 1024 per tick.
-            // The 10-bit fadeout value is split across volumeFadeoutLow + low nibble of fadeoutHighVibDepth.
+            // The 10-bit fadeout value is split across volumeFadeoutLow + low nibble of fadeoutHigh.
             if (voice.keyOff) {
-                val fadeStep = inst.volumeFadeoutLow or ((inst.fadeoutHighVibDepth and 0x0F) shl 8)
+                val fadeStep = inst.volumeFadeoutLow or ((inst.fadeoutHigh and 0x0F) shl 8)
                 if (fadeStep > 0) {
                     voice.fadeoutVolume = (voice.fadeoutVolume - fadeStep / 1024.0).coerceAtLeast(0.0)
                 }
@@ -2003,12 +2008,12 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             }
         }
 
-        // Funk repeat (S$Fx) — advance bit-mask per tick on instruments with active funkSpeed.
+        // Funk repeat (S$Fxxxx) — advance bit-mask per tick on instruments with active funkSpeed.
         for (voice in ts.voices) {
             if (voice.funkSpeed == 0 || !voice.active) continue
             val inst = instruments[voice.instrumentId]
             if (inst.sampleLoopEnd <= inst.sampleLoopStart) continue
-            voice.funkAccumulator += FUNK_TABLE[voice.funkSpeed and 0xF]
+            voice.funkAccumulator += voice.funkSpeed
             while (voice.funkAccumulator >= 0x80) {
                 voice.funkAccumulator -= 0x80
                 val loopLen = (inst.sampleLoopEnd - inst.sampleLoopStart).coerceAtLeast(1)
@@ -2615,17 +2620,23 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
      *   121..170 Bit16×25 pitch/filter envelope points
      *   171    u8 instrument global volume
      *   172    u8 volume fadeout low bits
-     *   173    u8 fadeout high (low nibble) + vibrato depth (high nibble)
+     *   173    u8 fadeout high bits (low nibble; 0b 0000 ffff)
      *   174    u8 volume swing
-     *   175    u8 vibrato speed
-     *   176    u8 vibrato sweep
+     *   175    u8 vibrato speed (FT2 instrumentwise; IT Vis rescaled to 0..255)
+     *   176    u8 vibrato sweep (FT2-only ramp ticks; 0 for IT)
      *   177    u8 default pan
      *   178..179 u16 pitch-pan centre (4096-TET)
      *   180    s8 pitch-pan separation
      *   181    u8 pan swing
      *   182    u8 default cutoff
      *   183    u8 default resonance
-     *   184..191 byte[8] reserved
+     *   184..185 u16 sample detune (4096-TET, signed stored as u16)
+     *   186    u8 instrument flag (0b 000 www nn — NNA bits 0-1, vib waveform bits 2-4)
+     *                   NNA: 00=note off, 01=note cut, 10=continue, 11=note fade
+     *                   waveform: 0=sine, 1=ramp-down, 2=square, 3=random, 4=ramp-up (FT2)
+     *   187    u8 vibrato depth (0..255 full range)
+     *   188    u8 vibrato rate  (0..255 full range — IT samplewise Vir)
+     *   189..191 byte[3] reserved
      */
     data class TaudInst(
         var index: Int,
@@ -2645,27 +2656,41 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         var panEnvelopes: Array<TaudInstEnvPoint>,   // 25 points
         var pfEnvelopes: Array<TaudInstEnvPoint>,    // 25 points (pitch/filter)
         var volumeFadeoutLow: Int,          // byte 172
-        var fadeoutHighVibDepth: Int,       // byte 173
+        var fadeoutHigh: Int,               // byte 173 (low nibble — 0b 0000 ffff)
         var volumeSwing: Int,               // byte 174
         var vibratoSpeed: Int,              // byte 175
-        var vibratoSweep: Int,              // byte 176
+        var vibratoSweep: Int,              // byte 176 (FT2 ramp ticks)
         var defaultPan: Int,                // byte 177
         var pitchPanCentre: Int,            // bytes 178-179
         var pitchPanSeparation: Int,        // byte 180 (signed)
         var panSwing: Int,                  // byte 181
         var defaultCutoff: Int,             // byte 182
-        var defaultResonance: Int           // byte 183
+        var defaultResonance: Int,          // byte 183
+        var sampleDetune: Int,              // bytes 184-185 (signed 4096-TET stored as u16)
+        var instrumentFlag: Int,            // byte 186 (NNA + vibrato waveform)
+        var vibratoDepth: Int,              // byte 187 (0..255 full range)
+        var vibratoRate: Int                // byte 188 (IT samplewise Vir)
     ) {
         constructor(index: Int) : this(
             index, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF,
             Array(25) { TaudInstEnvPoint(0x3F, ThreeFiveMiniUfloat(0)) },
             Array(25) { TaudInstEnvPoint(0x80, ThreeFiveMiniUfloat(0)) },
             Array(25) { TaudInstEnvPoint(0x80, ThreeFiveMiniUfloat(0)) },
-            0, 0, 0, 0, 0, 0x80, 0x5000, 0, 0, 0xFF, 0
+            0, 0, 0, 0, 0, 0x80, 0x5000, 0, 0, 0xFF, 0,
+            0, 0, 0, 0
         )
 
-        // Reserved padding at offsets 184..191 (8 bytes per instrument).
-        private val reserved = ByteArray(8)
+        /** New note action — instrumentFlag bits 0-1.
+         *  0=note off, 1=note cut, 2=continue, 3=note fade. */
+        val newNoteAction: Int get() = instrumentFlag and 0x03
+        /** Auto-vibrato waveform — instrumentFlag bits 2-4.
+         *  0=sine, 1=ramp-down, 2=square, 3=random, 4=ramp-up (FT2). */
+        val vibratoWaveform: Int get() = (instrumentFlag ushr 2) and 0x07
+        /** Sample detune as a signed 4096-TET delta. */
+        val sampleDetuneSigned: Int get() = sampleDetune.toShort().toInt()
+
+        // Reserved padding at offsets 189..191 (3 bytes per instrument).
+        private val reserved = ByteArray(3)
 
         // Funk repeat (S$Fx00) bit-mask — non-destructive XOR overlay across the loop region.
         // Lazily allocated; a 1-bit flips the byte, a 0-bit leaves it intact.
@@ -2731,7 +2756,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
             171 -> instGlobalVolume.toByte()
             172 -> volumeFadeoutLow.toByte()
-            173 -> fadeoutHighVibDepth.toByte()
+            173 -> fadeoutHigh.toByte()
             174 -> volumeSwing.toByte()
             175 -> vibratoSpeed.toByte()
             176 -> vibratoSweep.toByte()
@@ -2742,7 +2767,12 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             181 -> panSwing.toByte()
             182 -> defaultCutoff.toByte()
             183 -> defaultResonance.toByte()
-            in 184..191 -> reserved[offset - 184]
+            184 -> sampleDetune.toByte()
+            185 -> sampleDetune.ushr(8).toByte()
+            186 -> instrumentFlag.toByte()
+            187 -> vibratoDepth.toByte()
+            188 -> vibratoRate.toByte()
+            in 189..191 -> reserved[offset - 189]
             else -> throw InternalError("Bad offset $offset")
         }
 
@@ -2781,7 +2811,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
             171 -> { instGlobalVolume = byte and 0xFF }
             172 -> { volumeFadeoutLow = byte and 0xFF }
-            173 -> { fadeoutHighVibDepth = byte and 0xFF }
+            173 -> { fadeoutHigh = byte and 0x0F }   // low nibble only (0b 0000 ffff)
             174 -> { volumeSwing = byte and 0xFF }
             175 -> { vibratoSpeed = byte and 0xFF }
             176 -> { vibratoSweep = byte and 0xFF }
@@ -2792,7 +2822,12 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             181 -> { panSwing = byte and 0xFF }
             182 -> { defaultCutoff = byte and 0xFF }
             183 -> { defaultResonance = byte and 0xFF }
-            in 184..191 -> { reserved[offset - 184] = byte.toByte() }
+            184 -> { sampleDetune = (sampleDetune and 0xff00) or byte }
+            185 -> { sampleDetune = (sampleDetune and 0x00ff) or (byte shl 8) }
+            186 -> { instrumentFlag = byte and 0xFF }
+            187 -> { vibratoDepth = byte and 0xFF }
+            188 -> { vibratoRate = byte and 0xFF }
+            in 189..191 -> { reserved[offset - 189] = byte.toByte() }
             else -> throw InternalError("Bad offset $offset")
         }
     }
