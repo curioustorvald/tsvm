@@ -2026,7 +2026,7 @@ Instrument bin: Registry for 256 instruments, formatted as:
 
             b: use envelope
             c: envelope carry
-            p: use default pan
+            p: use default pan (see offset 176 "Default pan value" below)
 
             t: the loop must sustain (key-off escapes the loop)
             u: set to enable the sustain/loop
@@ -2066,7 +2066,7 @@ Instrument bin: Registry for 256 instruments, formatted as:
         * The spec follows FastTracker2, and conversion must be performed when importing from FastTracker2
     Uint8  Vibrato sweep
         * FastTracker2 instrument config
-    Uint8  Default pan value (0..255 full range)
+    Uint8  Default pan value (0..255 full range, see offset 17 for the enable flag)
         * ImpulseTracker has samplewise default volume and samplewise global volume, and they must be taken into account because Taud has no samplewise config
     Uint16 Pitch-pan centre (4096-TET note value)
     Sint8  Pitch-pan separation (-128..127 full range)
@@ -2083,16 +2083,16 @@ Instrument bin: Registry for 256 instruments, formatted as:
         * FastTracker2 has range of 0..16; multiply by (255/16) then round to int
     Uint8  Vibrato Rate (0..255 full range)
         * ImpulseTracker sample config. The spec follows ImpulseTracker precisely
-
-    Byte[3] Reserved
+    Byte[4] Reserved
 
 
 TODO:
-    * implement Instrument Flag, Vibrato Depth, Vibrato Rate, other samplewise/instrumentwise changes to it2taud
-    * implement sample loop sustain
+    * implement Instrument Flag, Vibrato Depth, Vibrato Rate, other samplewise/instrumentwise changes to it2taud and audio engine
     * implement new note action on the audio engine (IT uses "background channels", maybe we can do the same but make "background channels" mixer-private)
+    * on playback, panning changes randomly on Taud made by s3m2taud.py and mod2taud.py
     * implement S6x and S7x command
-    * implement Vxx (set global volume) and Wxx command (global volume slide)
+    * implement Wxx command (global volume slide)
+    * implement sample loop sustain
     * Amiga mode freq shift now "underdelivers" (pitch bend not "strong" enough)
     * cue and pattern compression of the Taud format (taud_common.py, taud.mjs)
     * figure out how IT (8 bits) and FT2 (12 bits) handles volume fadeout numbers, and come up with a compatible Taud spec, then implement

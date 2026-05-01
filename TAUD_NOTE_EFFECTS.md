@@ -111,7 +111,7 @@ Opcodes are single base-36 digits (0-9, then A-Z); arguments are 16-bit hexadeci
 
 ---
 
-## D — Volume slide (multiple forms)
+## D $xy00 — Volume slide (multiple forms)
 
 D's 16-bit argument encodes four mutually exclusive modes using the top nibble and the following byte. All forms operate on the channel's current volume and clip to $00..$3F after each step.
 
@@ -515,6 +515,26 @@ A tempo slide's memory slot is separate from the set-tempo path and is private t
 
 ---
 
+## W $xy00 — Global volume slide
+
+**Plain.** Similar to `D $xy00`, but applies to the global volume.
+
+**Compatibility.** IT `Wxy` maps directly.
+
+**Implementation.** See effect D, apply to the global volume instead.
+
+---
+
+## X $xx00 — Fine Set Panning
+
+**Plain.** **Unimplemented**. On IT, sets the panning position of the current channel, $00 being full-left and $FF being full-right.
+
+**Compatibility.** Convert to `S $80xx`.
+
+**Implementation.** Not applicable.
+
+---
+
 ## Y $xxyy — Panbrello (panning vibrato) with speed $xx and depth $yy
 
 **Plain.** Modulates panning with an LFO, symmetrically with H's pitch modulation. `$xx` is LFO speed, `$yy` depth; the waveform is selected by S $5x.
@@ -536,16 +556,6 @@ on every tick (including tick 0):
 ```
 
 Peak at maximum settings: $7F × $FF >> 9 = $3F — the full panning range. Retrigger behaviour tracks the S $5x waveform nibble bit 2: cleared means retrigger on new note, set means preserve LFO position.
-
----
-
-## X $xx00 — Fine Set Panning
-
-**Plain.** **Unimplemented**. On IT, sets the panning position of the current channel, $00 being full-left and $FF being full-right.
-
-**Compatibility.** Convert directly into panning effect `0.$xx`, rounded down to nearest 6-bit value.
-
-**Implementation.** Not applicable.
 
 ---
 
@@ -690,7 +700,7 @@ ProTracker `E5x` maps to Taud `S $2x00` with the same index meaning.
 
 **Plain.** Sets the channel pan to `$xx`, with $00 being full left and $FF being full right. $80 is centre.
 
-**Compatibility.** ST3 `S8x` uses a 4-bit value.  
+**Compatibility.** IT `Xxx` maps directly. ST3 `S8x` uses a 4-bit value.  
 1. convert by nibble-repeat: ST3 `S83` → Taud `S $8033`. Panning column command `0.$xx` has the same semantics and is the preferred form when a pan column is available in the pattern. ProTracker `8xx` (fine pan) and `E8x` (coarse pan) both map into Taud's 8-bit pan — the ProTracker 8-bit form maps directly; the 4-bit form nibble-repeats.
 2. convert to PanEff: ST3 `S8x` → PanEff `0.yy`, where `yy = round(4.2 * x)`
 
@@ -762,19 +772,19 @@ Q retrigger counters do **not** reset between SEx repetitions.
 
 ---
 
-## S $Fx00 — Funk repeat with speed $x (non-destructive)
+## S $Fxxx — Funk repeat with speed $xxx (non-destructive)
 
 **Plain.** Produces a hiss-like progressive inversion of the sample loop, toggling individual bytes over time for a gritty textural effect. Setting `$x = 0` turns the effect off; higher `$x` advances the inversion faster.
 
-**Compatibility.** ProTracker `EFx` is destructive — it XORs bytes directly in the sample data, permanently corrupting the sample. **Taud's implementation is non-destructive**: the XOR is applied at playback time through a per-instrument bit-mask, leaving source samples pristine. ST3 does not implement SFx at all and will parse Taud's S $Fx00 as a no-op; converters targeting ST3 should drop the effect. ProTracker `EFx` imports directly as Taud `S $Fx00`.
+**Compatibility.** ProTracker `EFx` is destructive — it XORs bytes directly in the sample data, permanently corrupting the sample. **Taud's implementation is non-destructive**: the XOR is applied at playback time through a per-instrument bit-mask, leaving source samples pristine. ST3 does not implement SFx at all and will parse Taud's S $Fx00 as a no-op; converters targeting ST3 should drop the effect. ProTracker `EFx` imports as Taud `S $Fyyy`, where `yyy = funk_table[x]`.
 
 **Implementation.** Each instrument carries a `funk_mask` bit array, one bit per byte of the loop region, all zero at song start. A per-channel counter `funk_accumulator` and a per-channel `funk_write_pos` track progress.
 
 ```
 funk_table[16] = { 0, 5, 6, 7, 8, $A, $B, $D, $10, $13, $16, $1A, $20, $2B, $40, $80 }
 
-on every tick (when S $Fx00 is active with x != 0):
-    funk_accumulator += funk_table[x]
+on every tick (when S $Fxxxx is active with x != 0):
+    funk_accumulator += funk_length
     while funk_accumulator >= $80:
         funk_accumulator -= $80
         bit = funk_mask[funk_write_pos]

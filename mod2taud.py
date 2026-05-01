@@ -343,7 +343,8 @@ def encode_effect(cmd: int, arg: int, ch: int = 0, row: int = 0) -> tuple:
         if sub == 0xE:
             return (TOP_S, 0xE000 | (x << 8), None, None)
         if sub == 0xF:
-            return (TOP_S, 0xF000 | (x << 8), None, None)
+            funk_table = [0, 5, 6, 7, 8, 0xA, 0xB, 0xD, 0x10, 0x13, 0x16, 0x1A, 0x20, 0x2B, 0x40, 0x80]
+            return (TOP_S, 0xF000 | funk_table[x]), None, None)
         return (TOP_NONE, 0, None, None)
 
     if cmd == 0xF:
@@ -520,7 +521,10 @@ def build_sample_inst_bin(samples: list) -> tuple:
         struct.pack_into('<H', inst_bin, base + 19, 0)
         inst_bin[base + 21] = env_vol
         inst_bin[base + 22] = 0
-        inst_bin[base + 171] = 0xFF
+        inst_bin[base + 171] = 0xFF # instrument global volume
+        inst_bin[base + 176] = 0xFF # default pan = off
+        inst_bin[base + 181] = 0xFF # filter cutoff = off
+        inst_bin[base + 182] = 0xFF # filter resonance = off
 
         vprint(f"  instrument[{taud_idx}] '{s.name}' ptr={ptr} c2spd={s.c2spd} "
                f"vol={s.volume} loop=({ls},{le},{'on' if loop_mode else 'off'})")

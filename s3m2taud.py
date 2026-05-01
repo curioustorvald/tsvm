@@ -330,14 +330,19 @@ def encode_effect(cmd: int, arg: int, ch: int = 0, row: int = 0,
     if cmd == EFF_S:
         sub = (arg >> 4) & 0xF
         val = arg & 0xF
-        if sub in (0x1, 0x2, 0x3, 0x4, 0xB, 0xC, 0xD, 0xE, 0xF):
+        if sub in (0x1, 0x2, 0x3, 0x4, 0xB, 0xC, 0xD, 0xE):
+            vprint(f"    dropped S{sub:01X} at ch{ch} row{row}")
             return (TOP_S, (sub << 12) | (val << 8), None, None)
         if sub == 0x5:
             # Panbrello LFO waveform — maps directly to Taud S$5x00.
             return (TOP_S, 0x5000 | (val << 8), None, None)
         if sub == 0x8:
-            # S8x → PanEff 0.yy where yy = round(x * 4.2), mapping nibble 0-15 to pan 0-63.
-            return (TOP_NONE, 0, None, (SEL_SET, round(val * 4.2)))
+            # S8x: 4-bit → nibble-repeat into 8-bit SEL_SET pan
+            pan8 = (val << 4) | val
+            return (TOP_S, 0x8000 | pan8, None, None)
+        if sub == 0xF:
+            funk_table = [0, 5, 6, 7, 8, 0xA, 0xB, 0xD, 0x10, 0x13, 0x16, 0x1A, 0x20, 0x2B, 0x40, 0x80]
+            return (TOP_S, 0xF000 | funk_table[x]), None, None)
         # S0/S6/S7/S9/SA: filter, NNA, sound-control, stereo — drop silently.
         return (TOP_NONE, 0, None, None)
 
@@ -355,7 +360,7 @@ def encode_effect(cmd: int, arg: int, ch: int = 0, row: int = 0,
         return (TOP_NONE, 0, None, None)
 
     if cmd == EFF_X:
-        return (TOP_NONE, 0, None, (SEL_SET, min(arg >> 2, 0x3F)))
+        return (TOP_S, 0x8000 | (arg & 0xFF), None, None)
 
     if cmd == EFF_Y:
         hi = (arg >> 4) & 0xF
@@ -508,7 +513,10 @@ def build_sample_inst_bin(instruments: list) -> tuple:
         # Volume env point 0: hold at env_vol indefinitely (offset minifloat = 0 → hold).
         inst_bin[base + 21] = env_vol
         inst_bin[base + 22] = 0
-        inst_bin[base + 171] = 0xFF                              # instrument global volume
+        inst_bin[base + 171] = 0xFF # instrument global volume
+        inst_bin[base + 176] = 0xFF # default pan = off
+        inst_bin[base + 181] = 0xFF # filter cutoff = off
+        inst_bin[base + 182] = 0xFF # filter resonance = off
 
         vprint(f"  instrument[{base // 192}] '{inst.name}' ptr: '{ptr}', sampling rate: '{inst.c2spd}'")
         if inst.c2spd > 65535:
