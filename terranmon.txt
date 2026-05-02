@@ -2095,7 +2095,8 @@ TODO:
     [x] `S B000` and `S B100` not working as intended -- on first playback it jumps to the next cue same row, on subsequent playbacks the commands are completely ignored
     [x] implement S6x command
     [x] implement Wxx command (global volume slide)
-    [ ] implement sample loop sustain
+    [x] implement sample loop sustain
+        "Caveat: on a foreground voice, key-off (row.note == 0x0000) currently sets voice.active = false at AudioAdapter.kt:1713, which silences the channel immediately. Sustain-loop escape therefore only takes effect on background voices spawned by NNA "Note Off" — which matches the IT idiom of layering a new note over a sustained one. Let me know if you also want the foreground key-off to keep the voice playing through fadeout."
     [ ] cue and pattern compression of the Taud format (taud_common.py, taud.mjs)
     [ ] figure out how IT (8 bits) and FT2 (12 bits) handles volume fadeout numbers, and come up with a compatible Taud spec, then implement
     [ ] implement bitcrusher (eff sym '8')

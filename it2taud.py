@@ -84,6 +84,7 @@ IT_SMP_COMPRESSED = 0x08
 IT_SMP_LOOP       = 0x10
 IT_SMP_SUS_LOOP   = 0x20
 IT_SMP_PINGPONG   = 0x40
+IT_SMP_PINGPONG_SUS = 0x80
 
 # Vol-column byte ranges (inclusive lower, inclusive upper)
 VC_VOL_LO,    VC_VOL_HI    =   0,  64
@@ -438,6 +439,8 @@ def parse_samples(data: bytes, h: ITHeader, decompress: bool) -> list:
                         s.length = len(s.sample_data)
                         s.loop_beg = min(s.loop_beg, s.length)
                         s.loop_end = min(s.loop_end, s.length)
+                        s.sus_beg = min(s.sus_beg, s.length)
+                        s.sus_end = min(s.sus_end, s.length)
                     except Exception as e:
                         vprint(f"  warning: '{s.name}' decompression failed ({e}), silent")
             else:
@@ -452,6 +455,8 @@ def parse_samples(data: bytes, h: ITHeader, decompress: bool) -> list:
                     s.length    = len(s.sample_data)
                     s.loop_beg  = min(s.loop_beg, s.length)
                     s.loop_end  = min(s.loop_end,  s.length)
+                    s.sus_beg   = min(s.sus_beg,  s.length)
+                    s.sus_end   = min(s.sus_end,  s.length)
         samples.append(s)
     return samples
 
@@ -1128,6 +1133,8 @@ def build_sample_inst_bin_it(samples_or_proxy: list,
             s.length       = len(new_data)
             s.loop_beg     = max(0, int(s.loop_beg * ratio))
             s.loop_end     = max(0, min(int(s.loop_end * ratio), s.length))
+            s.sus_beg      = max(0, int(s.sus_beg  * ratio))
+            s.sus_end      = max(0, min(int(s.sus_end  * ratio), s.length))
             s.c5_speed     = max(1, int(s.c5_speed * ratio))
 
     sample_bin = bytearray(SAMPLEBIN_SIZE)
@@ -1142,7 +1149,9 @@ def build_sample_inst_bin_it(samples_or_proxy: list,
         offsets[idx] = pos
         if n < len(s.sample_data):
             vprint(f"  warning: '{s.name}' truncated {len(s.sample_data)} → {n}")
-            s.length = n; s.loop_end = min(s.loop_end, n)
+            s.length = n
+            s.loop_end = min(s.loop_end, n)
+            s.sus_end  = min(s.sus_end,  n)
         pos += n
 
     # 192-byte instrument layout (terranmon.txt:1997-2070).
@@ -1168,15 +1177,33 @@ def build_sample_inst_bin_it(samples_or_proxy: list,
         ptr      = offsets.get(i, 0) & 0xFFFFFFFF
         s_len    = min(s.length, 65535)
         c2spd    = min(s.c5_speed, 65535)
-        ls       = min(s.loop_beg, 65535)
-        le       = min(s.loop_end, 65535)
-        if s.has_loop and (s.flags & IT_SMP_PINGPONG):
-            loop_mode = 2   # backandforth
+        # Sustain loop wins over the regular loop because Taud carries one loop
+        # region. After key-off the engine drops the loop entirely (terranmon.txt:2007).
+        if s.flags & IT_SMP_SUS_LOOP:
+            ls = min(s.sus_beg, 65535)
+            le = min(s.sus_end, 65535)
+            sustain_bit = 0x4
+            pingpong_active = bool(s.flags & IT_SMP_PINGPONG_SUS)
+            has_active_loop = True
         elif s.has_loop:
+            ls = min(s.loop_beg, 65535)
+            le = min(s.loop_end, 65535)
+            sustain_bit = 0x0
+            pingpong_active = bool(s.flags & IT_SMP_PINGPONG)
+            has_active_loop = True
+        else:
+            ls = min(s.loop_beg, 65535)
+            le = min(s.loop_end, 65535)
+            sustain_bit = 0x0
+            pingpong_active = False
+            has_active_loop = False
+        if has_active_loop and pingpong_active:
+            loop_mode = 2   # backandforth
+        elif has_active_loop:
             loop_mode = 1   # forward loop
         else:
             loop_mode = 0   # no loop
-        flags_byte = loop_mode & 0x3
+        flags_byte = (loop_mode & 0x3) | sustain_bit
 
         base = taud_idx * 192
         struct.pack_into('<I', inst_bin, base + 0,  ptr)

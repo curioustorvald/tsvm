@@ -1454,7 +1454,11 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
         if (voice.forward) {
             voice.samplePos += voice.playbackRate
-            when (inst.loopMode) {
+            // When the sustain bit is set, key-off escapes the loop: the sample plays past
+            // loopEnd until it ends naturally (loopMode 0 semantics).
+            val effectiveLoopMode =
+                if (inst.sampleLoopSustain && voice.keyOff) 0 else (inst.loopMode and 3)
+            when (effectiveLoopMode) {
                 0 -> if (voice.samplePos >= sampleLen) voice.active = false
                 1 -> if (voice.samplePos >= loopEnd) voice.samplePos -= (loopEnd - loopStart).coerceAtLeast(1.0)
                 2 -> if (voice.samplePos >= loopEnd) { voice.samplePos = loopEnd; voice.forward = false }
@@ -1836,7 +1840,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 val arg = resolveArg(rawArg, voice.mem.o).also { if (rawArg != 0) voice.mem.o = it }
                 val inst = instruments[voice.instrumentId]
                 var off = arg
-                if (inst.loopMode != 0 && inst.sampleLoopEnd > inst.sampleLoopStart && off > inst.sampleLoopEnd) {
+                if ((inst.loopMode and 3) != 0 && inst.sampleLoopEnd > inst.sampleLoopStart && off > inst.sampleLoopEnd) {
                     val loopLen = (inst.sampleLoopEnd - inst.sampleLoopStart).coerceAtLeast(1)
                     off = inst.sampleLoopStart + ((off - inst.sampleLoopStart) % loopLen)
                 }
@@ -2924,7 +2928,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         var samplePlayStart: Int,
         var sampleLoopStart: Int,
         var sampleLoopEnd: Int,
-        var loopMode: Int,                  // byte 14, low 2 bits
+        var loopMode: Int,                  // byte 14, low 3 bits (bits 0-1: loop kind, bit 2: sustain)
         var volEnvSustain: Int,             // bytes 15-16 (16-bit, see flag layout)
         var panEnvSustain: Int,             // bytes 17-18
         var pfEnvSustain: Int,              // bytes 19-20 (pitch/filter)
@@ -2957,6 +2961,9 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             0, 0, 0, 0
         )
 
+        /** Sample-flag byte 14 bit 2 — when set, the sample loop is a sustain loop:
+         *  it loops while the note is held and is escaped on key-off. */
+        val sampleLoopSustain: Boolean get() = (loopMode and 0x04) != 0
         /** New note action — instrumentFlag bits 0-1.
          *  0=note off, 1=note cut, 2=continue, 3=note fade. */
         val newNoteAction: Int get() = instrumentFlag and 0x03
@@ -3019,7 +3026,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             12 -> sampleLoopEnd.toByte()
             13 -> sampleLoopEnd.ushr(8).toByte()
 
-            14 -> (loopMode and 3).toByte()
+            14 -> (loopMode and 7).toByte()
             15 -> volEnvSustain.toByte()
             16 -> volEnvSustain.ushr(8).toByte()
             17 -> panEnvSustain.toByte()
@@ -3074,7 +3081,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             12 -> { sampleLoopEnd = (sampleLoopEnd and 0xff00) or byte }
             13 -> { sampleLoopEnd = (sampleLoopEnd and 0x00ff) or (byte shl 8) }
 
-            14 -> { loopMode = byte and 3 }
+            14 -> { loopMode = byte and 7 }
             15 -> { volEnvSustain = (volEnvSustain and 0xff00) or byte }
             16 -> { volEnvSustain = (volEnvSustain and 0x00ff) or (byte shl 8) }
             17 -> { panEnvSustain = (panEnvSustain and 0xff00) or byte }
