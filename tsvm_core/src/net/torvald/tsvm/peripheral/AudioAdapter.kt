@@ -1938,9 +1938,13 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                     if (voice.loopCount == 0) {
                         voice.loopCount = x
                         ts.pendingRowJump = voice.loopStartRow
+                        ts.pendingRowJumpLocal = true
                     } else if (!ts.patternDelayActive) {
                         voice.loopCount--
-                        if (voice.loopCount > 0) ts.pendingRowJump = voice.loopStartRow
+                        if (voice.loopCount > 0) {
+                            ts.pendingRowJump = voice.loopStartRow
+                            ts.pendingRowJumpLocal = true
+                        }
                     }
                 }
             }
@@ -2211,6 +2215,14 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         playhead.position = ts.cuePos
     }
 
+    // Per TAUD_NOTE_EFFECTS.md §S$Bx00: on pattern change reset loop_start_row and loop_count.
+    private fun resetPatternLoopState(ts: TrackerState) {
+        for (voice in ts.voices) {
+            voice.loopStartRow = 0
+            voice.loopCount = 0
+        }
+    }
+
     internal fun generateTrackerAudio(playhead: Playhead): ByteArray? {
         val ts = playhead.trackerState ?: return null
 
@@ -2325,25 +2337,34 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
         val pendingB = ts.pendingOrderJump
         val pendingC = ts.pendingRowJump
+        val pendingLocal = ts.pendingRowJumpLocal
         ts.pendingOrderJump = -1
         ts.pendingRowJump = -1
+        ts.pendingRowJumpLocal = false
 
         when {
             pendingB >= 0 -> {
                 ts.cuePos = pendingB.coerceAtMost(1023)
                 ts.rowIndex = if (pendingC >= 0) pendingC else 0
                 playhead.position = ts.cuePos
+                resetPatternLoopState(ts)
+            }
+            pendingC >= 0 && pendingLocal -> {
+                // S$Bx pattern loop — stay in the current cue, just rewind the row.
+                ts.rowIndex = pendingC.coerceIn(0, 63)
             }
             pendingC >= 0 -> {
-                // Pattern break — advance order by one (or honour cue's own instruction), then jump to row.
+                // C$xx pattern break — advance order by one (or honour cue's own instruction), then jump to row.
                 advanceTrackerCue(ts, playhead)
                 ts.rowIndex = pendingC.coerceIn(0, 63)
+                resetPatternLoopState(ts)
             }
             else -> {
                 ts.rowIndex++
                 if (ts.rowIndex >= 64) {
                     ts.rowIndex = 0
                     advanceTrackerCue(ts, playhead)
+                    resetPatternLoopState(ts)
                 }
             }
         }
@@ -2610,6 +2631,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         // Pending row-end events (set during a row by B/C; consumed at row end).
         var pendingOrderJump = -1          // -1 = none; otherwise the order index to jump to
         var pendingRowJump = -1            // -1 = none; otherwise the row index for the next pattern
+        // Distinguishes S$Bx pattern-loop (stays in current cue) from C$xx pattern-break (advances cue).
+        var pendingRowJumpLocal = false
 
         // Pattern-delay state (S$Ex) — number of additional row-repetitions remaining.
         var patternDelayRemaining = 0
@@ -2738,6 +2761,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 ts.cuePos = 0; ts.rowIndex = 0; ts.tickInRow = 0
                 ts.samplesIntoTick = 0.0; ts.firstRow = true
                 ts.pendingOrderJump = -1; ts.pendingRowJump = -1
+                ts.pendingRowJumpLocal = false
                 ts.patternDelayRemaining = 0; ts.patternDelayActive = false
                 ts.sexWinningChannel = -1
                 ts.panLaw = initialGlobalFlags and 1
