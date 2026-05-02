@@ -1571,6 +1571,63 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     }
 
     /**
+     * IT-style Duplicate Check (DCT/DCA). Runs *before* NNA on every fresh foreground
+     * trigger: existing voices on this channel — the foreground itself plus any of its
+     * own background ghosts — that match the new note under DCT have DCA applied.
+     * Reference: schismtracker effects.c:1664-1764 (csf_check_nna).
+     *
+     * DCT (per existing voice's instrument):
+     *   1 = note        — same noteVal AND same instrumentId
+     *   2 = sample      — same canonical sample (matched by samplePtr+sampleLength)
+     *   3 = instrument  — same instrumentId
+     * DCA: 0 = note cut, 1 = note off (release sustain), 2 = note fade.
+     *
+     * Note: the foreground voice will be replaced by triggerNote() right after this,
+     * so applying DCA to it is mostly relevant for ghosts spawned *from* it via NNA
+     * — the ghost is cloned from the (already-DCA-modified) foreground state.
+     */
+    private fun applyDuplicateCheck(ts: TrackerState, channel: Int, newInstId: Int, newNote: Int) {
+        if (newInstId == 0) return
+        val newInst = instruments[newInstId]
+
+        fun isDuplicate(v: Voice): Boolean {
+            val existInst = instruments[v.instrumentId]
+            return when (existInst.duplicateCheckType) {
+                1 -> v.noteVal == newNote && v.instrumentId == newInstId
+                2 -> v.instrumentId == newInstId &&
+                     existInst.samplePtr == newInst.samplePtr &&
+                     existInst.sampleLength == newInst.sampleLength
+                3 -> v.instrumentId == newInstId
+                else -> false
+            }
+        }
+
+        fun applyAction(v: Voice) {
+            val existInst = instruments[v.instrumentId]
+            when (existInst.duplicateCheckAction) {
+                0 -> { v.fadeoutVolume = 0.0; v.active = false }
+                1 -> v.keyOff = true
+                2 -> v.noteFading = true
+            }
+        }
+
+        val fg = ts.voices[channel]
+        if (fg.active && instruments[fg.instrumentId].duplicateCheckType != 0 && isDuplicate(fg)) {
+            applyAction(fg)
+        }
+
+        val it = ts.backgroundVoices.iterator()
+        while (it.hasNext()) {
+            val bg = it.next()
+            if (bg.sourceChannel != channel || !bg.active) continue
+            if (instruments[bg.instrumentId].duplicateCheckType == 0) continue
+            if (!isDuplicate(bg)) continue
+            applyAction(bg)
+            if (!bg.active) it.remove()
+        }
+    }
+
+    /**
      * On a fresh foreground trigger, optionally migrate the existing voice into the
      * mixer-private background pool per the New Note Action setting (instrument default
      * unless overridden by S $73..$76). Note Cut: no ghost, foreground retriggers in place.
@@ -1751,6 +1808,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                         voice.delayedInst = row.instrment
                         voice.delayedVol = if (row.volume >= 0) row.volume else -1
                     } else {
+                        applyDuplicateCheck(ts, vi, row.instrment, row.note)
                         maybeSpawnBackgroundForNNA(ts, voice, vi)
                         triggerNote(voice, row.note, row.instrment, -1)
                     }
@@ -2027,6 +2085,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             // Note delay — fire deferred trigger when the requested tick arrives.
             // NNA fires now (not at row parse) so that delayed retriggers ghost correctly.
             if (voice.noteDelayTick == ts.tickInRow) {
+                applyDuplicateCheck(ts, vi, voice.delayedInst, voice.delayedNote)
                 maybeSpawnBackgroundForNNA(ts, voice, vi)
                 triggerNote(voice, voice.delayedNote, voice.delayedInst, voice.delayedVol)
                 voice.noteDelayTick = -1
@@ -2161,12 +2220,17 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             val finalPitch = (pitchToMixer + autoVibDelta + pitchEnvDelta).coerceIn(0, 0xFFFE)
             voice.playbackRate = computePlaybackRate(inst, finalPitch)
 
-            // Filter envelope (filter mode): scale current cutoff by env value (0..1, 0.5 = unity).
+            // Filter envelope (filter mode): scale baseCut by envValue (0..1, 0.5 = unity).
+            // Schism filters.c:80-86 computes `cutoff_used = chan->cutoff * (flt_modifier+256)/256`
+            // where flt_modifier = (env_value_0..64 - 32) * 8. Mapping TSVM's [0..1] env to Schism's
+            // [-256..+256] modifier and accounting for our pre-doubled defaultCutoff (it2taud.py
+            // stores IFC*2 in 0..254) gives `currentCutoff = baseCut * envPfValue` — at unity (0.5)
+            // the filter sits at IFC, at max (1.0) it opens to 2*IFC, at min (0.0) it closes.
             // If the instrument has no initial cutoff (255 = off), the envelope drives the filter
             // from the maximum active value (254) so the filter can become audible during the note.
             if (voice.hasPfEnv && voice.pfEnvOn && voice.envPfIsFilter) {
                 val baseCut = if (inst.defaultCutoff < 255) inst.defaultCutoff else 254
-                voice.currentCutoff = (baseCut * (voice.envPfValue * 2.0)).toInt().coerceIn(0, 254)
+                voice.currentCutoff = (baseCut * voice.envPfValue).toInt().coerceIn(0, 254)
             }
 
             // Refresh biquad filter coefficients once per tick (only recomputes when changed).
@@ -2250,7 +2314,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             // Filter-mode pf envelope: same scaling rule as foreground.
             if (bg.hasPfEnv && bg.pfEnvOn && bg.envPfIsFilter) {
                 val baseCut = if (inst.defaultCutoff < 255) inst.defaultCutoff else 254
-                bg.currentCutoff = (baseCut * (bg.envPfValue * 2.0)).toInt().coerceIn(0, 254)
+                bg.currentCutoff = (baseCut * bg.envPfValue).toInt().coerceIn(0, 254)
             }
             refreshVoiceFilter(bg)
             // Reap fully-faded ghosts so the pool stays drained.
@@ -2969,7 +3033,10 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
      *                   waveform: 0=sine, 1=ramp-down, 2=square, 3=random, 4=ramp-up (FT2)
      *   187    u8 vibrato depth (0..255 full range)
      *   188    u8 vibrato rate  (0..255 full range — IT samplewise Vir)
-     *   189..191 byte[3] reserved
+     *   189    u8 duplicate-check / action (IT-only — 0b 0000 aadd)
+     *                   dd  = DCT (Duplicate Check Type) 0=off, 1=note, 2=sample, 3=instrument
+     *                   aa  = DCA (Duplicate Check Action) 0=note cut, 1=note off, 2=note fade
+     *   190..191 byte[2] reserved
      */
     data class TaudInst(
         var index: Int,
@@ -3002,7 +3069,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         var sampleDetune: Int,              // bytes 184-185 (signed 4096-TET stored as u16)
         var instrumentFlag: Int,            // byte 186 (NNA + vibrato waveform)
         var vibratoDepth: Int,              // byte 187 (0..255 full range)
-        var vibratoRate: Int                // byte 188 (IT samplewise Vir)
+        var vibratoRate: Int,               // byte 188 (IT samplewise Vir)
+        var dupCheckFlag: Int               // byte 189 (DCT bits 0-1, DCA bits 2-3)
     ) {
         constructor(index: Int) : this(
             index, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF,
@@ -3010,7 +3078,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             Array(25) { TaudInstEnvPoint(0x80, ThreeFiveMiniUfloat(0)) },
             Array(25) { TaudInstEnvPoint(0x80, ThreeFiveMiniUfloat(0)) },
             0, 0, 0, 0, 0, 0x80, 0x5000, 0, 0, 0xFF, 0,
-            0, 0, 0, 0
+            0, 0, 0, 0, 0
         )
 
         /** Sample-flag byte 14 bit 2 — when set, the sample loop is a sustain loop:
@@ -3024,9 +3092,13 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         val vibratoWaveform: Int get() = (instrumentFlag ushr 2) and 0x07
         /** Sample detune as a signed 4096-TET delta. */
         val sampleDetuneSigned: Int get() = sampleDetune.toShort().toInt()
+        /** Duplicate Check Type — 0=off, 1=note, 2=sample, 3=instrument (IT semantics). */
+        val duplicateCheckType: Int get() = dupCheckFlag and 0x03
+        /** Duplicate Check Action — 0=note cut, 1=note off, 2=note fade. */
+        val duplicateCheckAction: Int get() = (dupCheckFlag ushr 2) and 0x03
 
-        // Reserved padding at offsets 189..191 (3 bytes per instrument).
-        private val reserved = ByteArray(3)
+        // Reserved padding at offsets 190..191 (2 bytes per instrument).
+        private val reserved = ByteArray(2)
 
         // Funk repeat (S$Fx00) bit-mask — non-destructive XOR overlay across the loop region.
         // Lazily allocated; a 1-bit flips the byte, a 0-bit leaves it intact.
@@ -3108,7 +3180,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             186 -> instrumentFlag.toByte()
             187 -> vibratoDepth.toByte()
             188 -> vibratoRate.toByte()
-            in 189..191 -> reserved[offset - 189]
+            189 -> dupCheckFlag.toByte()
+            in 190..191 -> reserved[offset - 190]
             else -> throw InternalError("Bad offset $offset")
         }
 
@@ -3163,7 +3236,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             186 -> { instrumentFlag = byte and 0xFF }
             187 -> { vibratoDepth = byte and 0xFF }
             188 -> { vibratoRate = byte and 0xFF }
-            in 189..191 -> { reserved[offset - 189] = byte.toByte() }
+            189 -> { dupCheckFlag = byte and 0x0F }   // DCT (bits 0-1) + DCA (bits 2-3)
+            in 190..191 -> { reserved[offset - 190] = byte.toByte() }
             else -> throw InternalError("Bad offset $offset")
         }
     }
