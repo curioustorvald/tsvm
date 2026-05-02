@@ -758,7 +758,9 @@ def assemble_taud(mod: dict) -> bytes:
     # ProTracker is Amiga-period-based by definition, so we set the f bit so
     # the engine applies coarse pitch slides in period space (recovers PT's
     # characteristic non-linear pitch character).
-    flags_byte = 0x02
+    # bit 2 (m) set: FT2 fadeout-zero policy — PT has no fadeout, so the stored
+    # zero on every instrument means "cut on key-off" (unified with S3M imports).
+    flags_byte = 0x02 | 0x04
     song_table = encode_song_entry(
         song_offset=song_offset,
         num_voices=n_channels,

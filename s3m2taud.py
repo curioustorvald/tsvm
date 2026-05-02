@@ -831,7 +831,9 @@ def assemble_taud(h: S3MHeader, instruments: list, patterns: list) -> bytes:
 
     # Song table row (32 bytes; see encode_song_entry).
     # flags byte: bit 1 (f) = Amiga pitch-slide mode (mirrors the S3M linear_slides flag inverted)
-    flags_byte = 0x00 if h.linear_slides else 0x02
+    # bit 2 (m) set: FT2 fadeout-zero policy — S3M has no per-instrument fadeout field, so a
+    # stored zero means "cut on key-off" (matching ST3's lineage from the FT2 family).
+    flags_byte = (0x00 if h.linear_slides else 0x02) | 0x04
     song_table = encode_song_entry(
         song_offset=song_offset,
         num_voices=C,

@@ -472,7 +472,7 @@ class ITInstrument:
     # *_env_sustain: int (16-bit, 0b 0ut sssss pcb eeeee), 0 = no envelope
     # pf_is_filter: bool — pf envelope mode (False = pitch, True = filter)
     # ifc / ifr  : initial filter cutoff / resonance (0..127, 0 if not set)
-    # fadeout    : 0..1024 (IT FadeOut field, applied per tick after key-off)
+    # fadeout    : 0..1024 (IT FadeOut field; doubled to 0..2048 when written to Taud's 12-bit field)
     # pps / ppc  : pitch-pan separation (signed -32..+32) and centre note (0..119)
     # rv / rp    : random volume swing (0..100) / random pan swing (0..64)
     # nna        : new note action (IT 0=cut, 1=continue, 2=note off, 3=note fade)
@@ -1222,7 +1222,9 @@ def build_sample_inst_bin_it(samples_or_proxy: list,
         pan_sus = idata.get('pan_sus', 0)
         pf_sus  = idata.get('pf_sus',  0)
         inst_gv = idata.get('inst_gv', 0xFF)
-        fadeout = idata.get('fadeout', 0) & 0x3FF   # 10-bit (low 8 + high 2)
+        # IT fadeout (0..1024) is in half-units of Taud's per-tick scale; double to align with
+        # FT2 / native Taud (12-bit, engine subtracts fadeout/65536 per tick). Clamp defensively.
+        fadeout = min(0xFFF, (idata.get('fadeout', 0) & 0xFFFF) * 2)
 
         struct.pack_into('<H', inst_bin, base + 15, vol_sus & 0xFFFF)
         struct.pack_into('<H', inst_bin, base + 17, pan_sus & 0xFFFF)
@@ -1741,6 +1743,7 @@ def assemble_taud(h: ITHeader, samples: list, instruments: list,
     vprint(f"  cue sheet:   {len(sheet)} → {len(cue_comp)} bytes (gzip)")
 
     # flags byte: bit 1 (f) = Amiga pitch-slide mode (IT linear_slides flag inverted)
+    # bit 2 (m) cleared: IT fadeout-zero policy — stored fadeout=0 means "no fadeout".
     flags_byte = 0x00 if h.linear_slides else 0x02
     # IT global/mix volumes are 0..128; rescale to Taud's 0..255 (clamped).
     global_vol_taud = min(0xFF, round(h.global_vol * 255 / 128))

@@ -1754,9 +1754,11 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 // 1 $xx00 — Global behaviour flags byte in the high byte (see TAUD_NOTE_EFFECTS.md §1).
                 // bit 0 (p): 0=linear pan, 1=equal-power pan
                 // bit 1 (f): 0=linear pitch slides, 1=Amiga-mode pitch slides
+                // bit 2 (m): fadeout-zero policy. 0=IT (stored 0 ⇒ no fadeout), 1=FT2 (stored 0 ⇒ cut on key-off)
                 val flags = rawArg ushr 8
                 ts.panLaw = flags and 1
                 ts.amigaMode = (flags and 2) != 0
+                ts.fadeoutCutOnZero = (flags and 4) != 0
             }
             EffectOp.OP_A -> {
                 val tr = (rawArg ushr 8) and 0xFF
@@ -2141,12 +2143,16 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             // Refresh biquad filter coefficients once per tick (only recomputes when changed).
             refreshVoiceFilter(voice)
 
-            // Volume fadeout: after key-off OR Note-Fade NNA, decrement by inst.volumeFadeout / 1024 per tick.
-            // The 10-bit fadeout value is split across volumeFadeoutLow + low nibble of fadeoutHigh.
+            // Volume fadeout: after key-off OR Note-Fade NNA, decrement by inst.volumeFadeout / 65536 per tick.
+            // The 12-bit fadeout value is split across volumeFadeoutLow + low nibble of fadeoutHigh.
+            // Stored 0: with fadeoutCutOnZero (FT2 mode) the voice is cut on key-off; otherwise no fadeout (IT mode).
             if (voice.keyOff || voice.noteFading) {
                 val fadeStep = inst.volumeFadeoutLow or ((inst.fadeoutHigh and 0x0F) shl 8)
                 if (fadeStep > 0) {
-                    voice.fadeoutVolume = (voice.fadeoutVolume - fadeStep / 1024.0).coerceAtLeast(0.0)
+                    voice.fadeoutVolume = (voice.fadeoutVolume - fadeStep / 65536.0).coerceAtLeast(0.0)
+                    if (voice.fadeoutVolume <= 0.0) voice.active = false
+                } else if (ts.fadeoutCutOnZero) {
+                    voice.active = false
                 }
             }
 
@@ -2198,7 +2204,11 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             if (bg.keyOff || bg.noteFading) {
                 val fadeStep = inst.volumeFadeoutLow or ((inst.fadeoutHigh and 0x0F) shl 8)
                 if (fadeStep > 0) {
-                    bg.fadeoutVolume = (bg.fadeoutVolume - fadeStep / 1024.0).coerceAtLeast(0.0)
+                    bg.fadeoutVolume = (bg.fadeoutVolume - fadeStep / 65536.0).coerceAtLeast(0.0)
+                } else if (ts.fadeoutCutOnZero) {
+                    bg.active = false
+                    bgIt.remove()
+                    continue
                 }
             }
             // Auto-vibrato keeps running on backgrounds — it's an instrument-intrinsic LFO.
@@ -2662,6 +2672,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         // Global mixer config (effect 1).
         var panLaw = 0      // 0 = linear balance (default), 1 = equal-power
         var amigaMode = false  // false = linear pitch slides, true = Amiga period-space slides
+        var fadeoutCutOnZero = false  // false = IT (stored 0 ⇒ no fadeout); true = FT2 (stored 0 ⇒ cut on key-off)
 
         // Pending row-end events (set during a row by B/C; consumed at row end).
         var pendingOrderJump = -1          // -1 = none; otherwise the order index to jump to
@@ -2772,7 +2783,11 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 } }
                 7 -> if (isPcmMode) { pcmUpload = true } else {
                     initialGlobalFlags = byte
-                    trackerState?.let { ts -> ts.panLaw = byte and 1; ts.amigaMode = (byte and 2) != 0 }
+                    trackerState?.let { ts ->
+                        ts.panLaw = byte and 1
+                        ts.amigaMode = (byte and 2) != 0
+                        ts.fadeoutCutOnZero = (byte and 4) != 0
+                    }
                 }
                 8 -> { bpm = byte + 24 }
                 9 -> { tickRate = byte }
@@ -2807,6 +2822,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 ts.finePatternDelayExtra = 0
                 ts.panLaw = initialGlobalFlags and 1
                 ts.amigaMode = (initialGlobalFlags and 2) != 0
+                ts.fadeoutCutOnZero = (initialGlobalFlags and 4) != 0
                 ts.voices.forEach {
                     it.active = false
                     it.channelVolume = 0x3F
