@@ -577,7 +577,7 @@ Peak at maximum settings: $7F × $FF >> 9 = $3F — the full panning range. Retr
 
 ## 9 $x0zz — Overdrive
 
-**Plain.** Amplify the volume
+**Plain.** Amplify the volume.
 
 - x: clipping mode. 0: clamp, 1: fold, 2: wrap
 - z: amplification. $00: 1x amplification (no extra volume), $01: 17/16 amplification, $02: 18/16 amplification, $10: 2x amplification (+ 6 dBFS), $F0: 16x amplification, $FF: 16.9375x amplification

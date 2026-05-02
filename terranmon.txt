@@ -1995,18 +1995,18 @@ Memory Space
 Sample bin: just raw sample data thrown in there. You need to keep track of starting point for each sample
 
 Instrument bin: Registry for 256 instruments, formatted as:
-    Uint32 Sample Pointer
-    Uint16 Sample length
-    Uint16 Sampling rate at C4 (note number 0x5000)
-    Uint16 Play Start (usually 0 but not always)
-    Uint16 Loop Start (can be smaller than Play Start)
-    Uint16 Loop End
-    Bit8   Sample Flags
+0   Uint32 Sample Pointer
+4   Uint16 Sample length
+6   Uint16 Sampling rate at C4 (note number 0x5000)
+8   Uint16 Play Start (usually 0 but not always)
+10  Uint16 Loop Start (can be smaller than Play Start)
+12  Uint16 Loop End
+14  Bit8   Sample Flags
         0b 0000 0spp
            pp: loop mode. 0-no loop, 1-loop, 2-backandforth, 3-oneshot (ignores note length unless overridden by other notes)
            s: loop is sustain (key-off escapes the loop)
             - IT: look for sample's SusLoop flag
-    Bit16   Volume envelope sustain/loops and flags
+15  Bit16  Volume envelope sustain/loops and flags
         * Sustain is implemented by enabling 't' flag. FastTracker has no 'Sus Loop' but only 'Sus Point'; use same value for start and end index
         0b 0ut sssss 0cb eeeee
             s: sustain/loop start index
@@ -2017,7 +2017,7 @@ Instrument bin: Registry for 256 instruments, formatted as:
 
             t: the loop must sustain (key-off escapes the loop)
             u: set to enable the sustain/loop
-    Bit16   Panning envelope sustain/loops and flags
+17  Bit16   Panning envelope sustain/loops and flags
         * Sustain is implemented by enabling 't' flag
         0b 0ut sssss pcb eeeee
             s: sustain/loop start index
@@ -2025,11 +2025,11 @@ Instrument bin: Registry for 256 instruments, formatted as:
 
             b: use envelope
             c: envelope carry
-            p: use default pan (see offset 176 "Default pan value" below)
+            p: use default pan (see offset 177 "Default pan value" below)
 
             t: the loop must sustain (key-off escapes the loop)
             u: set to enable the sustain/loop
-    Bit16   Pitch/Filter envelope sustain/loops and flags
+19  Bit16   Pitch/Filter envelope sustain/loops and flags
         * Sustain is implemented by enabling 't' flag
         0b 0ut sssss mcb eeeee
             s: sustain/loop start index
@@ -2041,21 +2041,21 @@ Instrument bin: Registry for 256 instruments, formatted as:
 
             t: the loop must sustain (key-off escapes the loop)
             u: set to enable the sustain/loop
-    Bit16x25 Volume envelopes
+21  Bit16x25 Volume envelopes
        Byte 1: Volume (00..3F)
        Byte 2: Time until the next point, in seconds (3.5 Unsigned Minifloat). 0 = hold at this point indefinitely.
-    Bit16x25 Panning envelopes
+71  Bit16x25 Panning envelopes
       Byte 1: Pan (00..FF)
       Byte 2: Time until the next point, in seconds (3.5 Unsigned Minifloat). 0 = hold at this point indefinitely.
-    Bit16x25 Pitch/Filter envelopes
+121 Bit16x25 Pitch/Filter envelopes
       Byte 1: Value (00..FF)
       Byte 2: Time until the next point, in seconds (3.5 Unsigned Minifloat). 0 = hold at this point indefinitely.
-    Uint8  Instrument Global Volume (0..255)
+171 Uint8  Instrument Global Volume (0..255)
         * ImpulseTracker has range of 0..128; multiply by (255/128) then round to int
             - ImpulseTracker also has samplewise default volume (0..64) and samplewise global volume (0..64), and they must be taken into account because Taud has no samplewise config, following the ImpulseTracker spec
         * FastTracker2 has range of 0..64; multiply by (255/64) then round to int
-    Uint8  Volume Fadeout low bits
-    Bit8   Fadeout and vibrato
+172 Uint8  Volume Fadeout low bits
+173 Bit8   Fadeout and vibrato
         0b 0000 ffff
             f: Volume Fadeout high bits
         * Combined 12-bit fadeout value is the engine's per-tick decrement, in 1/65536 units
@@ -2066,31 +2066,32 @@ Instrument bin: Registry for 256 instruments, formatted as:
             - IT: stored fadeout (0..1024) MUST be doubled on import (taud = it × 2);
               Taud's per-tick scale matches FT2 natively, so IT values are scaled to match.
             - FT2: stored fadeout (0..0xFFF) is passed through unchanged.
-    Uint8  Volume swing (0..255 full range)
-    Uint8  Vibrato speed
+174 Uint8  Volume swing (0..255 full range)
+175 Uint8  Vibrato speed
         * ImpulseTracker has samplewise vibrato speed (0..64), and they must be taken into account because Taud has no samplewise config
         * FastTracker2 has instrumentwise config (0..255)
         * The spec follows FastTracker2, and conversion must be performed when importing from FastTracker2
-    Uint8  Vibrato sweep
+176 Uint8  Vibrato sweep
         * FastTracker2 instrument config
-    Uint8  Default pan value (0..255 full range, see offset 17 for the enable flag)
+177 Uint8  Default pan value (0..255 full range, see offset 17 for the enable flag)
         * ImpulseTracker has samplewise default pan and instrumentwise default pan, and they must be taken into account because Taud has no samplewise config
-    Uint16 Pitch-pan centre (4096-TET note value)
-    Sint8  Pitch-pan separation (-128..127 full range)
-    Uint8  Pan swing (0..255 full range)
-    Uint8  Default cutoff (0..254 full range, 255 to off (-1 on IT). Effect range equals to that of ImpulseTracker -- 127 in IT is equal to 254 in Taud)
-    Uint8  Default resonance (0..254 full range, 255 to off (-1 on IT). Effect range equals to that of ImpulseTracker -- 127 in IT is equal to 254 in Taud)
-    Uint16 Sample detune (in 4096-TET unit) (FT2 finetune scale need to be rescaled accordingly)
-    Bit8   Instrument Flag
+178 Uint16 Pitch-pan centre (4096-TET note value)
+180 Sint8  Pitch-pan separation (-128..127 full range)
+181 Uint8  Pan swing (0..255 full range)
+182 Uint8  Default cutoff (0..254 full range, 255 to off (-1 on IT). Effect range equals to that of ImpulseTracker -- 127 in IT is equal to 254 in Taud)
+183 Uint8  Default resonance (0..254 full range, 255 to off (-1 on IT). Effect range equals to that of ImpulseTracker -- 127 in IT is equal to 254 in Taud)
+184 Uint16 Sample detune (in 4096-TET unit) (FT2 finetune scale need to be rescaled accordingly)
+186 Bit8   Instrument Flag
         0b 000 www nn
             n: New note action. 00: note off, 01: note cut, 10: continue, 11: note fade (arranged differently to IT)
             ww: Vibrato waveform (IT: sample config, FT2: instrument config). 00: sine, 01: ramp-down saw, 10: square, 11: random, 100: ramp-up saw (FT2 only)
-    Uint8  Vibrato Depth (0..255 full range)
+187 Uint8  Vibrato Depth (0..255 full range)
         * ImpulseTracker has range of 0..32 ON THE SAMPLE SETTINGS; multiply by (255/32) then round to int
         * FastTracker2 has range of 0..16; multiply by (255/16) then round to int
-    Uint8  Vibrato Rate (0..255 full range)
+188 Uint8  Vibrato Rate (0..255 full range)
         * ImpulseTracker sample config. The spec follows ImpulseTracker precisely
-    Byte[4] Reserved
+189 Byte[3] Reserved
+
 
 
 TODO:
@@ -2107,7 +2108,7 @@ TODO:
     [x] cue and pattern compression of the Taud format (taud_common.py, taud.mjs)
     [x] figure out how IT (0..256) and FT2 (0..FFF + cut) handles volume fadeout numbers, and come up with a compatible Taud spec, then implement
     [x] Pitchbend on Amiga frequency mode sometimes works right, sometimes works wrong. (effect underdelivers) Affects every song with Amiga picth mode, AND ON THE fresh taut.js session only
-    [ ] implement bitcrusher (eff sym '8')
+    [ ] implement bitcrusher and overdrive  (eff sym '8' and '9')
 
 
 Play Data: play data are series of tracker-like instructions, visualised as:

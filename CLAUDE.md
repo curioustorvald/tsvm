@@ -33,6 +33,10 @@ Current topics:
   resonance damping curve, and the **IIR-only 2-pole topology** (NOT a
   biquad — no feedforward x[n−1] / x[n−2] terms) that `AudioAdapter.kt` uses
   for Taud playback.
+- `reference_materials/ft2-clone` — Modernised clone for the original FastTracker 2
+- `reference_materials/impulse-tracker` — The original source code for ImpulseTracker
+- `reference_materials/MilkyTracker` — FastTracker 2 compatible tracker
+- `reference_materials/schismtracker` — Open-source re-implementation of ImpulseTracker
 
 When fetching new references, copy the relevant upstream files verbatim into
 a topic folder, write a `README.md` summarising the relevant maths /
@@ -88,12 +92,12 @@ Use the build scripts in `buildapp/`:
 
 ### Prerequisites
 
-1. Download JDK 17 runtimes to `~/Documents/openjdk/*` with specific naming:
-   - `jdk-17.0.1-x86` (Linux AMD64)
-   - `jdk-17.0.1-arm` (Linux Aarch64) 
-   - `jdk-17.0.1-windows` (Windows AMD64)
-   - `jdk-17.0.1.jdk-arm` (macOS Apple Silicon)
-   - `jdk-17.0.1.jdk-x86` (macOS Intel)
+1. Download JDK 21 runtimes to `~/Documents/openjdk/*` with specific naming:
+   - `jdk-21.0.1-x86` (Linux AMD64)
+   - `jdk-21.0.1-arm` (Linux Aarch64) 
+   - `jdk-21.0.1-windows` (Windows AMD64)
+   - `jdk-21.0.1.jdk-arm` (macOS Apple Silicon)
+   - `jdk-21.0.1.jdk-x86` (macOS Intel)
 
 2. Run `jlink` commands to create custom Java runtimes in `out/runtime-*` directories
 
