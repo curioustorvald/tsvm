@@ -2106,6 +2106,7 @@ TODO:
         "Caveat: on a foreground voice, key-off (row.note == 0x0000) currently sets voice.active = false at AudioAdapter.kt:1713, which silences the channel immediately. Sustain-loop escape therefore only takes effect on background voices spawned by NNA "Note Off" — which matches the IT idiom of layering a new note over a sustained one. Let me know if you also want the foreground key-off to keep the voice playing through fadeout."
     [x] cue and pattern compression of the Taud format (taud_common.py, taud.mjs)
     [x] figure out how IT (0..256) and FT2 (0..FFF + cut) handles volume fadeout numbers, and come up with a compatible Taud spec, then implement
+    [x] Pitchbend on Amiga frequency mode sometimes works right, sometimes works wrong. (effect underdelivers) Affects every song with Amiga picth mode, AND ON THE fresh taut.js session only
     [ ] implement bitcrusher (eff sym '8')
 
 

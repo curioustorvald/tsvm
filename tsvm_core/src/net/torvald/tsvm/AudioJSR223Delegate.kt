@@ -132,7 +132,14 @@ class AudioJSR223Delegate(private val vm: VM) {
     }
 
     fun setTrackerMixerFlags(playhead: Int, flags: Int) {
-        getFirstSnd()?.playheads?.get(playhead)?.initialGlobalFlags = flags
+        getFirstSnd()?.playheads?.get(playhead)?.let { ph ->
+            ph.initialGlobalFlags = flags
+            ph.trackerState?.let { ts ->
+                ts.panLaw = flags and 1
+                ts.amigaMode = (flags and 2) != 0
+                ts.fadeoutCutOnZero = (flags and 4) != 0
+            }
+        }
     }
 
     fun getTrackerMixerFlags(playhead: Int): Int? {

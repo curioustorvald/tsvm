@@ -1933,6 +1933,8 @@ function drawProjectContents(wo) {
         Cues: `${song.lastActiveCue}/1024 ($${song.lastActiveCue.hex03()})`,
         Notation: pitchTablePresets[PITCH_PRESET_IDX].name,
         Flags: `${flagstrbuf} ($${mixerflag.hex02()})`,
+        GlobalVol: initialGlobalVolume,
+        MixingVol: initialMixingVolume
     }
 
     Object.entries(projMeta).forEach(([key, value], index) => {

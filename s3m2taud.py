@@ -846,7 +846,7 @@ def assemble_taud(h: S3MHeader, instruments: list, patterns: list) -> bytes:
         pat_bin_comp_size=len(pat_comp),
         cue_sheet_comp_size=len(cue_comp),
         global_vol=0xFF,
-        mixing_vol=0xFF,
+        mixing_vol=0x7F,
     )
     assert len(song_table) == TAUD_SONG_ENTRY
 

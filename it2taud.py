@@ -1209,7 +1209,7 @@ def build_sample_inst_bin_it(samples_or_proxy: list,
         struct.pack_into('<I', inst_bin, base + 0,  ptr)
         struct.pack_into('<H', inst_bin, base + 4,  s_len)
         struct.pack_into('<H', inst_bin, base + 6,  c2spd)
-        struct.pack_into('<H', inst_bin, base + 8,  0)        # play start
+        struct.pack_into('<H', inst_bin, base + 8,  0) # play start. IT samples always start playing from zero
         struct.pack_into('<H', inst_bin, base + 10, ls)
         struct.pack_into('<H', inst_bin, base + 12, le)
         inst_bin[base + 14] = flags_byte
