@@ -53,7 +53,7 @@ from taud_common import (
     EFF_U, EFF_V, EFF_W, EFF_X, EFF_Y, EFF_Z,
     J_SEMI_TABLE,
     d_arg_to_col, resample_linear, encode_cue, deduplicate_patterns,
-    normalise_sample,
+    normalise_sample, encode_song_entry,
 )
 
 
@@ -1734,18 +1734,29 @@ def assemble_taud(h: ITHeader, samples: list, instruments: list,
     )
     assert len(header) == TAUD_HEADER_SIZE
 
+    # Compress pattern bin and cue sheet (per Taud spec)
+    pat_comp = gzip.compress(bytes(pat_bin), compresslevel=9, mtime=0)
+    cue_comp = gzip.compress(bytes(sheet),   compresslevel=9, mtime=0)
+    vprint(f"  pattern bin: {len(pat_bin)} → {len(pat_comp)} bytes (gzip)")
+    vprint(f"  cue sheet:   {len(sheet)} → {len(cue_comp)} bytes (gzip)")
+
     # flags byte: bit 1 (f) = Amiga pitch-slide mode (IT linear_slides flag inverted)
     flags_byte = 0x00 if h.linear_slides else 0x02
-    song_table = struct.pack('<IBHBBHfB',
-        song_offset, C, num_taud_pats,
-        bpm_stored, speed,
-        0xA000,   # C9
-        8363.0,
-        flags_byte,
+    song_table = encode_song_entry(
+        song_offset=song_offset,
+        num_voices=C,
+        num_patterns=num_taud_pats,
+        bpm_stored=bpm_stored,
+        tick_rate=speed,
+        base_note=0xA000,   # C9
+        base_freq=8363.0,
+        flags_byte=flags_byte,
+        pat_bin_comp_size=len(pat_comp),
+        cue_sheet_comp_size=len(cue_comp),
     )
     assert len(song_table) == TAUD_SONG_ENTRY
 
-    return header + compressed + song_table + bytes(pat_bin) + bytes(sheet)
+    return header + compressed + song_table + pat_comp + cue_comp
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────

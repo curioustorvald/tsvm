@@ -8,8 +8,8 @@
 
 const TAUD_MAGIC        = [0x1F,0x54,0x53,0x56,0x4D,0x61,0x75,0x64]  // \x1F TSVMaud
 const TAUD_VERSION      = 1
-const TAUD_HEADER_SIZE  = 32     // magic(8) + version(1) + numSongs(1) + compSize(4) + rsvd(2) + sig(16)
-const TAUD_SONG_ENTRY   = 16     // bytes per song-table row (offset(4)+voices(1)+pats(2)+bpm(1)+tick(1)+pad(7))
+const TAUD_HEADER_SIZE  = 32     // magic(8) + version(1) + numSongs(1) + compSize(4) + projOff(4) + sig(14)
+const TAUD_SONG_ENTRY   = 32     // see encodeSongEntry / decodeSongEntry below
 const SAMPLEINST_SIZE   = 786432 // 737280 sample + 49152 instrument (256 × 192)
 const PATTERN_SIZE      = 512    // bytes per pattern (64 rows × 8 bytes)
 const NUM_PATTERNS_MAX  = 256
@@ -109,27 +109,39 @@ function uploadTaudFile(inFile, songIndex, playhead) {
     let bpmStored  = sys.peek(filePtr + entryOff + 7) & 0xFF
     let tickRate   = sys.peek(filePtr + entryOff + 8) & 0xFF
     let mixerflags = sys.peek(filePtr + entryOff + 15) & 0xFF
+    let songGlobalVolume = sys.peek(filePtr + entryOff + 16) & 0xFF // TODO use it
+    let songMixingVolume = sys.peek(filePtr + entryOff + 17) & 0xFF // TODO use it
+    let patBinCompSize   = _peekU32LE(filePtr, entryOff + 18)
+    let cueSheetCompSize = _peekU32LE(filePtr, entryOff + 22)
 
     let bpm        = bpmStored + 24
     let patsToLoad = numPatsLo | (numPatsHi << 8)
 
-    // -- 6. Upload patterns ---------------------------------------------------
-    let songBase  = filePtr + songOffset
-    let patBytes  = new Array(PATTERN_SIZE)
+    // -- 6. Decompress + upload patterns --------------------------------------
+    let patBinSize  = patsToLoad * PATTERN_SIZE
+    let patBinPtr   = sys.malloc(patBinSize)
+    gzip.decompFromTo(filePtr + songOffset, patBinCompSize, patBinPtr)
+
+    let patBytes = new Array(PATTERN_SIZE)
     for (let p = 0; p < patsToLoad; p++) {
         for (let k = 0; k < PATTERN_SIZE; k++)
-            patBytes[k] = sys.peek(songBase + p * PATTERN_SIZE + k) & 0xFF
+            patBytes[k] = sys.peek(patBinPtr + p * PATTERN_SIZE + k) & 0xFF
         audio.uploadPattern(p, patBytes)
     }
+    sys.free(patBinPtr)
 
-    // -- 7. Upload cue sheet --------------------------------------------------
-    let cueBase  = songBase + patsToLoad * PATTERN_SIZE
+    // -- 7. Decompress + upload cue sheet -------------------------------------
+    let cueSheetSize = NUM_CUES * CUE_SIZE
+    let cueSheetPtr  = sys.malloc(cueSheetSize)
+    gzip.decompFromTo(filePtr + songOffset + patBinCompSize, cueSheetCompSize, cueSheetPtr)
+
     let cueBytes = new Array(CUE_SIZE)
     for (let c = 0; c < NUM_CUES; c++) {
         for (let k = 0; k < CUE_SIZE; k++)
-            cueBytes[k] = sys.peek(cueBase + c * CUE_SIZE + k) & 0xFF
+            cueBytes[k] = sys.peek(cueSheetPtr + c * CUE_SIZE + k) & 0xFF
         audio.uploadCue(c, cueBytes)
     }
+    sys.free(cueSheetPtr)
 
     // -- 8. Configure playhead ------------------------------------------------
     audio.setTrackerMode(playhead)
@@ -189,13 +201,38 @@ function captureTrackerDataToFile(outFile) {
     let tickRate = audio.getTickRate(0) || 6
     let bpmStored = (bpm - 24) & 0xFF
 
-    // -- 4. Compute song offset (absolute from file start) --------------------
+    // -- 4. Compress pattern bin ----------------------------------------------
+    let patBinSize = patsToSave * PATTERN_SIZE
+    let patBuf     = sys.malloc(patBinSize)
+    sys.memcpy(memBase - 131072, patBuf, patBinSize)
+
+    let patCompBuf = sys.malloc(patBinSize + 4096)
+    let patCompSize = gzip.compFromTo(patBuf, patBinSize, patCompBuf)
+    sys.free(patBuf)
+
+    // -- 5. Compress cue sheet ------------------------------------------------
+    // Cue entry c, byte k is at MMIO address 32768 + c*32 + k,
+    // accessed as sys.peek(baseAddr − (32768 + c*32 + k)).
+    let cueSheetSize = NUM_CUES * CUE_SIZE
+    let cueBuf = sys.malloc(cueSheetSize)
+    for (let c = 0; c < NUM_CUES; c++) {
+        let cueOff = 32768 + c * CUE_SIZE
+        for (let k = 0; k < CUE_SIZE; k++)
+            sys.poke(cueBuf + c * CUE_SIZE + k,
+                sys.peek(baseAddr - (cueOff + k)) & 0xFF)
+    }
+
+    let cueCompBuf  = sys.malloc(cueSheetSize + 4096)
+    let cueCompSize = gzip.compFromTo(cueBuf, cueSheetSize, cueCompBuf)
+    sys.free(cueBuf)
+
+    // -- 6. Compute song offset (absolute from file start) --------------------
     // Layout: header(32) + compressed(compressedSize) + songTable(1 × TAUD_SONG_ENTRY)
     let songOffset = TAUD_HEADER_SIZE + compressedSize + 1 * TAUD_SONG_ENTRY
 
-    // -- 5. Build header byte array (32 bytes) --------------------------------
-    let sigBytes = new Array(16)
-    for (let i = 0; i < 16; i++)
+    // -- 7. Build header byte array (32 bytes) --------------------------------
+    let sigBytes = new Array(14)
+    for (let i = 0; i < 14; i++)
         sigBytes[i] = i < CAPTURE_SIGNATURE.length ? CAPTURE_SIGNATURE.charCodeAt(i) : 0
 
     let header = [
@@ -203,16 +240,16 @@ function captureTrackerDataToFile(outFile) {
         0x1F, 0x54, 0x53, 0x56, 0x4D, 0x61, 0x75, 0x64,
         // version, numSongs
         TAUD_VERSION, 1,
-        // compressedSize uint32 LE (4)
+        // compressedSize uint32 LE (4) -- sample+inst bin
         (compressedSize        ) & 0xFF,
         (compressedSize >>>  8) & 0xFF,
         (compressedSize >>> 16) & 0xFF,
         (compressedSize >>> 24) & 0xFF,
-        // reserved (4)
+        // project data offset (4) -- not emitted
         0x00, 0x00, 0x00, 0x00,
-    ].concat(sigBytes)  // 8 + 2 + 4 + 2 + 16 = 32 bytes
+    ].concat(sigBytes)  // 8 + 2 + 4 + 4 + 14 = 32 bytes
 
-    // -- 6. Build song-table row (16 bytes) -----------------------------------
+    // -- 8. Build song-table row (32 bytes) -----------------------------------
     let songTable = [
         (songOffset        ) & 0xFF,
         (songOffset >>>  8) & 0xFF,
@@ -222,40 +259,45 @@ function captureTrackerDataToFile(outFile) {
         numPats & 0xFF, (numPats >>> 8) & 0xFF, // numPatterns Uint16 LE
         bpmStored,                             // BPM with −24 bias
         tickRate,                              // initial tick-rate
-        0x00,0xA0,              // basenote (0xA000 -- C9)
-        0x00,0xAC,0x02,0x46, // basefreq (8363 Hz)
-        sys.peek(baseAddr - 7), // mixer flags
+        0x00,0xA0,                             // basenote (0xA000 -- C9)
+        0x00,0xAC,0x02,0x46,                   // basefreq (8363 Hz)
+        sys.peek(baseAddr - 7),                // mixer flags
+        0x80,                                  // global volume (default)
+        0x80,                                  // mixing volume (default)
+        // pattern bin compressed size (4)
+        (patCompSize        ) & 0xFF,
+        (patCompSize >>>  8) & 0xFF,
+        (patCompSize >>> 16) & 0xFF,
+        (patCompSize >>> 24) & 0xFF,
+        // cue sheet compressed size (4)
+        (cueCompSize        ) & 0xFF,
+        (cueCompSize >>>  8) & 0xFF,
+        (cueCompSize >>> 16) & 0xFF,
+        (cueCompSize >>> 24) & 0xFF,
+        // reserved (6)
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     ]
 
-    // -- 7. Write header (creates / truncates file) ---------------------------
+    // -- 9. Write header (creates / truncates file) ---------------------------
     const fileHandle = files.open(outFile)
     fileHandle.bwrite(header)
 
-    // -- 8. Append compressed sample+inst bin ---------------------------------
-    fileHandle.pwrite(compBuf, compressedSize, 32)
+    // -- 10. Append compressed sample+inst bin --------------------------------
+    fileHandle.pwrite(compBuf, compressedSize, TAUD_HEADER_SIZE)
     sys.free(compBuf)
 
-    // -- 9. Write song table --------------------------------------------------
+    // -- 11. Write song table -------------------------------------------------
     fileHandle.bwrite(songTable)
 
-    // -- 10. Append pattern bin -----------------------------------------------
-    let patBuf = sys.malloc(patsToSave * PATTERN_SIZE)
-    sys.memcpy(memBase - 131072, patBuf, patsToSave * PATTERN_SIZE)
-    fileHandle.pwrite(patBuf, patsToSave * PATTERN_SIZE, 32 + compressedSize + songTable.length)
-    sys.free(patBuf)
+    // -- 12. Append compressed pattern bin ------------------------------------
+    fileHandle.pwrite(patCompBuf, patCompSize,
+        TAUD_HEADER_SIZE + compressedSize + songTable.length)
+    sys.free(patCompBuf)
 
-    // -- 11. Append cue sheet (all 1024 entries from MMIO space) --------------
-    // Cue entry c, byte k is at MMIO address 32768 + c*32 + k,
-    // accessed as sys.peek(baseAddr − (32768 + c*32 + k)).
-    let cueBuf = sys.malloc(NUM_CUES * CUE_SIZE)
-    for (let c = 0; c < NUM_CUES; c++) {
-        let cueOff = 32768 + c * CUE_SIZE
-        for (let k = 0; k < CUE_SIZE; k++)
-            sys.poke(cueBuf + c * CUE_SIZE + k,
-                sys.peek(baseAddr - (cueOff + k)) & 0xFF)
-    }
-    fileHandle.pwrite(cueBuf, NUM_CUES * CUE_SIZE, 32 + compressedSize + songTable.length + patsToSave * PATTERN_SIZE)
-    sys.free(cueBuf)
+    // -- 13. Append compressed cue sheet --------------------------------------
+    fileHandle.pwrite(cueCompBuf, cueCompSize,
+        TAUD_HEADER_SIZE + compressedSize + songTable.length + patCompSize)
+    sys.free(cueCompBuf)
 
 
     fileHandle.flush(); fileHandle.close()

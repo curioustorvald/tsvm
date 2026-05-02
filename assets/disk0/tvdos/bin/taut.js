@@ -435,14 +435,12 @@ function drawCellAtStyled(y, x, cell, back, style) {
 
 const TAUD_MAGIC       = [0x1F,0x54,0x53,0x56,0x4D,0x61,0x75,0x64]
 const TAUD_HEADER_SIZE = 32
-const TAUD_SONG_ENTRY  = 16
+const TAUD_SONG_ENTRY  = 32
 const PATTERN_SIZE     = 512
 const ROWS_PER_PAT     = 64
 const NUM_CUES         = 1024
 const CUE_SIZE         = 32
 const NUM_VOICES       = 20
-const NUM_INSTRUMENTS  = 256
-const INSTRUMENT_SIZE  = 64
 const CUE_EMPTY        = 0xFFF
 
 function _peekU32LE(ptr, off) {
@@ -485,52 +483,55 @@ function loadTaud(filePath, songIndex) {
                       ((sys.peek(ptr + entryOff + 6) & 0xFF) << 8)
     const bpmStored = sys.peek(ptr + entryOff + 7) & 0xFF
     const tickRate  = sys.peek(ptr + entryOff + 8) & 0xFF
+    const patBinCompSize   = _peekU32LE(ptr, entryOff + 18)
+    const cueSheetCompSize = _peekU32LE(ptr, entryOff + 22)
+
+    // Decompress pattern bin
+    const patBinSize = numPats * PATTERN_SIZE
+    const patBinPtr  = sys.malloc(patBinSize)
+    gzip.decompFromTo(ptr + songOff, patBinCompSize, patBinPtr)
 
     const patterns = new Array(numPats)
     for (let p = 0; p < numPats; p++) {
         const ptn = new Uint8Array(PATTERN_SIZE)
         for (let k = 0; k < PATTERN_SIZE; k++) {
-            ptn[k] = sys.peek(ptr + songOff + p * PATTERN_SIZE + k) & 0xFF
+            ptn[k] = sys.peek(patBinPtr + p * PATTERN_SIZE + k) & 0xFF
         }
         patterns[p] = ptn
     }
+    sys.free(patBinPtr)
 
-    const cueBase = songOff + numPats * PATTERN_SIZE
+    // Decompress cue sheet
+    const cueSheetSize = NUM_CUES * CUE_SIZE
+    const cueSheetPtr  = sys.malloc(cueSheetSize)
+    gzip.decompFromTo(ptr + songOff + patBinCompSize, cueSheetCompSize, cueSheetPtr)
+
     const cues = new Array(NUM_CUES)
     let lastActiveCue = -1
     for (let c = 0; c < NUM_CUES; c++) {
         const ptns = new Array(NUM_VOICES)
         for (let i = 0; i < 10; i++) {
-            const lo = sys.peek(ptr + cueBase + c * CUE_SIZE + i)      & 0xFF
-            const mi = sys.peek(ptr + cueBase + c * CUE_SIZE + 10 + i) & 0xFF
-            const hi = sys.peek(ptr + cueBase + c * CUE_SIZE + 20 + i) & 0xFF
+            const lo = sys.peek(cueSheetPtr + c * CUE_SIZE + i)      & 0xFF
+            const mi = sys.peek(cueSheetPtr + c * CUE_SIZE + 10 + i) & 0xFF
+            const hi = sys.peek(cueSheetPtr + c * CUE_SIZE + 20 + i) & 0xFF
             ptns[i*2]   = ((hi >> 4) << 8) | ((mi >> 4) << 4) | (lo >> 4)
             ptns[i*2+1] = ((hi & 0xF) << 8) | ((mi & 0xF) << 4) | (lo & 0xF)
         }
-        const instr = sys.peek(ptr + cueBase + c * CUE_SIZE + 30) & 0xFF
+        const instr = sys.peek(cueSheetPtr + c * CUE_SIZE + 30) & 0xFF
         cues[c] = { ptns, instr }
 
         for (let v = 0; v < NUM_VOICES; v++) {
             if (ptns[v] !== CUE_EMPTY) { lastActiveCue = c; break }
         }
     }
-
-    const instrBase = cueBase + NUM_CUES * CUE_SIZE
-    const instruments = new Array(NUM_INSTRUMENTS)
-    for (let n = 0; n < NUM_INSTRUMENTS; n++) {
-        const instr = new Uint8Array(INSTRUMENT_SIZE)
-        for (let k = 0; k < INSTRUMENT_SIZE; k++) {
-            instr[k] = sys.peek(ptr + instrBase + n * INSTRUMENT_SIZE + k) & 0xFF
-        }
-        instruments[n] = instr
-    }
+    sys.free(cueSheetPtr)
 
     sys.free(ptr)
 
     return {
         filePath, version, numSongs, numVoices, numPats,
         bpm: (bpmStored + 24) & 0xFF, tickRate,
-        patterns, cues, lastActiveCue, instruments
+        patterns, cues, lastActiveCue
     }
 }
 

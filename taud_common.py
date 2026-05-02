@@ -28,8 +28,8 @@ def vprint(*a, **kw) -> None:
 
 TAUD_MAGIC       = bytes([0x1F,0x54,0x53,0x56,0x4D,0x61,0x75,0x64])
 TAUD_VERSION     = 1
-TAUD_HEADER_SIZE = 32       # magic(8)+ver(1)+numSongs(1)+compSize(4)+rsvd(4)+sig(14)
-TAUD_SONG_ENTRY  = 16       # offset(4)+voices(1)+pats(2)+bpm(1)+tick(1)+basenote(2)+basefreq(4)+flags(1)
+TAUD_HEADER_SIZE = 32       # magic(8)+ver(1)+numSongs(1)+compSize(4)+projOff(4)+sig(14)
+TAUD_SONG_ENTRY  = 32       # full spec entry (see encode_song_entry)
 SAMPLEBIN_SIZE   = 737280
 INSTBIN_SIZE     = 49152    # 256 instruments × 192 bytes
 SAMPLEINST_SIZE  = SAMPLEBIN_SIZE + INSTBIN_SIZE
@@ -164,6 +164,39 @@ def deduplicate_patterns(pat_bin: bytes, num_pats: int) -> tuple:
             remap[i] = ci
             canonical.append(pat)
     return b''.join(canonical), remap, len(canonical)
+
+
+def encode_song_entry(song_offset: int, num_voices: int, num_patterns: int,
+                      bpm_stored: int, tick_rate: int,
+                      base_note: int, base_freq: float, flags_byte: int,
+                      pat_bin_comp_size: int, cue_sheet_comp_size: int,
+                      global_vol: int = 0x80, mixing_vol: int = 0x80) -> bytes:
+    """Pack a 32-byte Taud song table entry.
+
+    Layout:
+        u32 song_offset, u8 num_voices, u16 num_patterns,
+        u8 bpm_stored, u8 tick_rate,
+        u16 base_note, f32 base_freq,
+        u8 flags, u8 global_vol, u8 mixing_vol,
+        u32 pat_bin_comp_size, u32 cue_sheet_comp_size,
+        byte[6] reserved.
+    """
+    entry = struct.pack('<IBHBBHfBBBII',
+        song_offset,
+        num_voices & 0xFF,
+        num_patterns & 0xFFFF,
+        bpm_stored & 0xFF,
+        tick_rate & 0xFF,
+        base_note & 0xFFFF,
+        float(base_freq),
+        flags_byte & 0xFF,
+        global_vol & 0xFF,
+        mixing_vol & 0xFF,
+        pat_bin_comp_size & 0xFFFFFFFF,
+        cue_sheet_comp_size & 0xFFFFFFFF,
+    ) + b'\x00' * 6
+    assert len(entry) == TAUD_SONG_ENTRY
+    return entry
 
 
 def normalise_sample(raw: bytes, signed: bool, is_16bit: bool,

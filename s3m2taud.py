@@ -44,7 +44,7 @@ from taud_common import (
     EFF_U, EFF_V, EFF_W, EFF_X, EFF_Y, EFF_Z,
     J_SEMI_TABLE,
     d_arg_to_col, resample_linear, encode_cue, deduplicate_patterns,
-    normalise_sample,
+    normalise_sample, encode_song_entry,
 )
 
 
@@ -818,28 +818,35 @@ def assemble_taud(h: S3MHeader, instruments: list, patterns: list) -> bytes:
     pat_bin, pat_remap, num_taud_pats = deduplicate_patterns(bytes(pat_bin), orig_count)
     vprint(f"  patterns: {orig_count} → {num_taud_pats} unique ({orig_count - num_taud_pats} deduplicated)")
 
-    # Song table row (16 bytes): offset(4)+voices(1)+pats(2)+bpm(1)+tick(1)+basenote(2)+basefreq(4)+flags(1)
-    # Built after dedup so num_taud_pats reflects the unique count.
-    # flags byte: bit 1 (f) = Amiga pitch-slide mode (mirrors the S3M linear_slides flag inverted)
-    flags_byte = 0x00 if h.linear_slides else 0x02
-    song_table = struct.pack('<IBHBBHfB',
-        song_offset,
-        C,
-        num_taud_pats,
-        bpm_stored,
-        speed,
-        0xA000, # C9
-        8363.0, # Hz
-        flags_byte,
-    )
-    assert len(song_table) == TAUD_SONG_ENTRY
-
     # Cue sheet (using remapped pattern indices)
     vprint("  building cue sheet…")
     cue_sheet = build_cue_sheet(h.order_list, P, C, pat_remap)
     assert len(cue_sheet) == NUM_CUES * CUE_SIZE
 
-    return header + compressed + song_table + bytes(pat_bin) + cue_sheet
+    # Compress pattern bin and cue sheet (per Taud spec)
+    pat_comp = gzip.compress(bytes(pat_bin), compresslevel=9, mtime=0)
+    cue_comp = gzip.compress(bytes(cue_sheet), compresslevel=9, mtime=0)
+    vprint(f"  pattern bin: {len(pat_bin)} → {len(pat_comp)} bytes (gzip)")
+    vprint(f"  cue sheet:   {len(cue_sheet)} → {len(cue_comp)} bytes (gzip)")
+
+    # Song table row (32 bytes; see encode_song_entry).
+    # flags byte: bit 1 (f) = Amiga pitch-slide mode (mirrors the S3M linear_slides flag inverted)
+    flags_byte = 0x00 if h.linear_slides else 0x02
+    song_table = encode_song_entry(
+        song_offset=song_offset,
+        num_voices=C,
+        num_patterns=num_taud_pats,
+        bpm_stored=bpm_stored,
+        tick_rate=speed,
+        base_note=0xA000,   # C9
+        base_freq=8363.0,
+        flags_byte=flags_byte,
+        pat_bin_comp_size=len(pat_comp),
+        cue_sheet_comp_size=len(cue_comp),
+    )
+    assert len(song_table) == TAUD_SONG_ENTRY
+
+    return header + compressed + song_table + pat_comp + cue_comp
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────

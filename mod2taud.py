@@ -40,6 +40,7 @@ from taud_common import (
     SEL_SET, SEL_UP, SEL_DOWN, SEL_FINE,
     J_SEMI_TABLE,
     d_arg_to_col, resample_linear, encode_cue, deduplicate_patterns,
+    encode_song_entry,
 )
 
 
@@ -745,27 +746,34 @@ def assemble_taud(mod: dict) -> bytes:
     vprint(f"  patterns: {orig_count} → {num_taud_pats} unique "
            f"({orig_count - num_taud_pats} deduplicated)")
 
-    # ProTracker is Amiga-period-based by definition, so we set the f bit so
-    # the engine applies coarse pitch slides in period space (recovers PT's
-    # characteristic non-linear pitch character).
-    flags_byte = 0x02
-    song_table = struct.pack('<IBHBBHfB',
-        song_offset,
-        n_channels,
-        num_taud_pats,
-        bpm_stored,
-        speed,
-        0xA000,
-        8363.0,
-        flags_byte,
-    )
-    assert len(song_table) == TAUD_SONG_ENTRY
-
     vprint("  building cue sheet…")
     cue_sheet = build_cue_sheet(order_list, n_patterns, n_channels, pat_remap)
     assert len(cue_sheet) == NUM_CUES * CUE_SIZE
 
-    return header + compressed + song_table + bytes(pat_bin) + cue_sheet
+    pat_comp = gzip.compress(bytes(pat_bin), compresslevel=9, mtime=0)
+    cue_comp = gzip.compress(bytes(cue_sheet), compresslevel=9, mtime=0)
+    vprint(f"  pattern bin: {len(pat_bin)} → {len(pat_comp)} bytes (gzip)")
+    vprint(f"  cue sheet:   {len(cue_sheet)} → {len(cue_comp)} bytes (gzip)")
+
+    # ProTracker is Amiga-period-based by definition, so we set the f bit so
+    # the engine applies coarse pitch slides in period space (recovers PT's
+    # characteristic non-linear pitch character).
+    flags_byte = 0x02
+    song_table = encode_song_entry(
+        song_offset=song_offset,
+        num_voices=n_channels,
+        num_patterns=num_taud_pats,
+        bpm_stored=bpm_stored,
+        tick_rate=speed,
+        base_note=0xA000,
+        base_freq=8363.0,
+        flags_byte=flags_byte,
+        pat_bin_comp_size=len(pat_comp),
+        cue_sheet_comp_size=len(cue_comp),
+    )
+    assert len(song_table) == TAUD_SONG_ENTRY
+
+    return header + compressed + song_table + pat_comp + cue_comp
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────

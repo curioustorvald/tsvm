@@ -2097,10 +2097,9 @@ TODO:
     [x] implement Wxx command (global volume slide)
     [x] implement sample loop sustain
         "Caveat: on a foreground voice, key-off (row.note == 0x0000) currently sets voice.active = false at AudioAdapter.kt:1713, which silences the channel immediately. Sustain-loop escape therefore only takes effect on background voices spawned by NNA "Note Off" — which matches the IT idiom of layering a new note over a sustained one. Let me know if you also want the foreground key-off to keep the voice playing through fadeout."
-    [ ] cue and pattern compression of the Taud format (taud_common.py, taud.mjs)
+    [x] cue and pattern compression of the Taud format (taud_common.py, taud.mjs)
     [ ] figure out how IT (8 bits) and FT2 (12 bits) handles volume fadeout numbers, and come up with a compatible Taud spec, then implement
     [ ] implement bitcrusher (eff sym '8')
-    [ ] Figure out why pitch slides are not working right on 2nd_pm.s3m only
 
 
 Play Data: play data are series of tracker-like instructions, visualised as:
@@ -2319,7 +2318,9 @@ Endianness: Little
         * ImpulseTracker has range of 0..128; multiply by (255/128) then round to int
     Uint8   Song mixing volume
         * ImpulseTracker has range of 0..128; multiply by (255/128) then round to int
-    Byte[14] Reserved
+    Uint32  Compressed size of PATTERN BIN for this song
+    Uint32  Compressed size of CUE SHEET for this song
+    Byte[6] Reserved
 
     Taud device can queue up to 2 "playdata" in its buffer, which can be interpreted as a song.
 
