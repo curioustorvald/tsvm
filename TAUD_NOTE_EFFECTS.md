@@ -563,10 +563,26 @@ Peak at maximum settings: $7F × $FF >> 9 = $3F — the full panning range. Retr
 
 **Plain.** Applies Bitcrusher to the current voice.
 
-- x: clipping mode. 0: clamp, 1: fold, 2: modulus
+- x: clipping mode. 0: clamp, 1: fold, 2: wrap
 - y: bit depth (1..15). 8..15 has no effect on TSVM audio adapter (already operates on 8 bits)
 - z: sample skip (0..255). 0: no skip, 1: use every 2nd samples, 2: use every 3rd samples, ..., 255: use every 256th samples
 - `8 0000` will disable the bitcrusher
+- `8 x000` will modify the clipping mode shared effect symbol '9'
+
+**Compatibility.** Unique to Taud. No compatible equivalent exists.
+
+**Implementation.** TODO
+
+---
+
+## 9 $x0zz — Overdrive
+
+**Plain.** Amplify the volume
+
+- x: clipping mode. 0: clamp, 1: fold, 2: wrap
+- z: amplification. $00: 1x amplification (no extra volume), $01: 17/16 amplification, $02: 18/16 amplification, $10: 2x amplification (+ 6 dBFS), $F0: 16x amplification, $FF: 16.9375x amplification
+- `9 0000` will reset the overdrive
+- `9 x000` will modify the clipping mode shared with effect symbol '9'
 
 **Compatibility.** Unique to Taud. No compatible equivalent exists.
 

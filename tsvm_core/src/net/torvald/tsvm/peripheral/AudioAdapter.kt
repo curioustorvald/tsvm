@@ -1170,15 +1170,36 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         inst.samplingRate.toDouble() / SAMPLING_RATE *
         2.0.pow((noteVal - MIDDLE_C + inst.sampleDetuneSigned) / 4096.0)
 
+    // Convert a 4096-TET noteVal to its Amiga-period equivalent (Double, no rounding).
+    private fun noteValToAmigaPeriod(noteVal: Int): Double =
+        AMIGA_BASE_PERIOD * 2.0.pow(-(noteVal - MIDDLE_C).toDouble() / 4096.0)
+
+    // Convert an Amiga period (Double) to the nearest 4096-TET noteVal.
+    private fun amigaPeriodToNoteVal(period: Double): Int =
+        (MIDDLE_C + 4096.0 * log2(AMIGA_BASE_PERIOD / period)).roundToInt()
+
     // Applies one tick of Amiga-mode pitch slide.  When the song is in Amiga tone mode, E/F coarse
     // slide arguments are stored as raw tracker period units (the original ProTracker/ST3 byte),
     // *not* scaled to 4096-TET — see TAUD_NOTE_EFFECTS.md §1 and §E/F.  Sign convention matches
     // linear mode: negative = pitch down (E effect), positive = pitch up (F effect), so a positive
     // slideArg subtracts from the period (pitch rises).
-    private fun amigaSlide(noteVal: Int, slideArg: Int): Int {
-        val period = AMIGA_BASE_PERIOD * 2.0.pow(-(noteVal - MIDDLE_C).toDouble() / 4096.0)
+    //
+    // Period state is persisted on the Voice (voice.amigaPeriod) so accumulated period changes
+    // don't lose sub-noteVal precision via repeated noteVal-int rounding.  voice.amigaPeriod < 0
+    // means the cache is stale and must be reseeded from the current noteVal.
+    private fun amigaSlideTick(voice: Voice, slideArg: Int): Int {
+        if (voice.amigaPeriod < 0.0) voice.amigaPeriod = noteValToAmigaPeriod(voice.noteVal)
+        voice.amigaPeriod = (voice.amigaPeriod - slideArg).coerceAtLeast(1.0)
+        return amigaPeriodToNoteVal(voice.amigaPeriod)
+    }
+
+    // One-shot Amiga slide that does NOT mutate persistent period state — used for
+    // fine slides (EFx / FFx) which are applied once per row at tick 0.  The next
+    // multi-tick slide will reseed amigaPeriod from the resulting noteVal.
+    private fun amigaSlideOnce(noteVal: Int, slideArg: Int): Int {
+        val period = noteValToAmigaPeriod(noteVal)
         val newPeriod = (period - slideArg).coerceAtLeast(1.0)
-        return (MIDDLE_C + 4096.0 * log2(AMIGA_BASE_PERIOD / newPeriod)).roundToInt()
+        return amigaPeriodToNoteVal(newPeriod)
     }
 
     private fun advanceEnvelope(voice: Voice, inst: TaudInst, tickSec: Double) {
@@ -1530,6 +1551,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         voice.filterResonanceCached = -1
         voice.noteVal = noteVal
         voice.basePitch = noteVal
+        voice.amigaPeriod = -1.0   // fresh trigger: period state must reseed from the new noteVal
         voice.playbackRate = computePlaybackRate(inst, noteVal)
         if (volOverride >= 0) {
             voice.channelVolume = volOverride.coerceIn(0, 0x3F)
@@ -1616,6 +1638,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         v.randomPanBias = src.randomPanBias
         v.noteVal = src.noteVal
         v.basePitch = src.basePitch
+        v.amigaPeriod = src.amigaPeriod
         v.volEnvOn = src.volEnvOn
         v.panEnvOn = src.panEnvOn
         v.pfEnvOn = src.pfEnvOn
@@ -1789,13 +1812,15 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 if ((arg and 0xF000) == 0xF000) {
                     val mag = arg and 0x0FFF
                     voice.noteVal = if (ts.amigaMode)
-                        amigaSlide(voice.noteVal, -mag).coerceIn(0, 0xFFFE)
+                        amigaSlideOnce(voice.noteVal, -mag).coerceIn(0, 0xFFFE)
                     else
                         (voice.noteVal - mag).coerceIn(0, 0xFFFE)
                     voice.basePitch = voice.noteVal
+                    voice.amigaPeriod = -1.0   // reseed on next per-tick slide
                     voice.playbackRate = computePlaybackRate(instruments[voice.instrumentId], voice.noteVal)
                 } else {
                     voice.slideMode = 1; voice.slideArg = -arg
+                    voice.amigaPeriod = -1.0   // reseed at the start of a fresh multi-tick slide
                 }
             }
             EffectOp.OP_F -> {
@@ -1803,13 +1828,15 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 if ((arg and 0xF000) == 0xF000) {
                     val mag = arg and 0x0FFF
                     voice.noteVal = if (ts.amigaMode)
-                        amigaSlide(voice.noteVal, mag).coerceIn(0, 0xFFFE)
+                        amigaSlideOnce(voice.noteVal, mag).coerceIn(0, 0xFFFE)
                     else
                         (voice.noteVal + mag).coerceIn(0, 0xFFFE)
                     voice.basePitch = voice.noteVal
+                    voice.amigaPeriod = -1.0
                     voice.playbackRate = computePlaybackRate(instruments[voice.instrumentId], voice.noteVal)
                 } else {
                     voice.slideMode = 2; voice.slideArg = arg
+                    voice.amigaPeriod = -1.0
                 }
             }
             EffectOp.OP_G -> {
@@ -1924,6 +1951,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             0x2 -> {
                 voice.noteVal = (voice.noteVal + FINETUNE_OFFSET[x]).coerceIn(0, 0xFFFE)
                 voice.basePitch = voice.noteVal
+                voice.amigaPeriod = -1.0
                 voice.playbackRate = computePlaybackRate(instruments[voice.instrumentId], voice.noteVal)
             }
             0x3 -> { voice.vibratoWave = x and 3; voice.vibratoRetrig = (x and 4) == 0 }
@@ -2009,7 +2037,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             // Pitch slides (E/F coarse on tick > 0).
             if (ts.tickInRow > 0 && (voice.slideMode == 1 || voice.slideMode == 2)) {
                 voice.noteVal = if (ts.amigaMode)
-                    amigaSlide(voice.noteVal, voice.slideArg).coerceIn(0, 0xFFFE)
+                    amigaSlideTick(voice, voice.slideArg).coerceIn(0, 0xFFFE)
                 else
                     (voice.noteVal + voice.slideArg).coerceIn(0, 0xFFFE)
                 voice.basePitch = voice.noteVal
@@ -2025,6 +2053,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                     voice.noteVal = target; voice.tonePortaTarget = -1
                 }
                 voice.basePitch = voice.noteVal
+                voice.amigaPeriod = -1.0   // tone porta works in linear noteVal space; reseed period
             }
 
             // Volume slides (D coarse on tick > 0).
@@ -2578,6 +2607,10 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         // Pitch state (4096-TET units, signed when slid).
         var noteVal = 0xFFFF               // The currently sounding base note (no per-row vibrato/arp added)
         var basePitch = 0x4000             // Saved pre-effect pitch for vibrato/arp/glissando overlay
+        // Amiga-mode period state, persisted across ticks so multi-tick E/F slides don't lose
+        // sub-noteVal precision through repeated round-trip rounding (see amigaSlideTick).
+        // -1.0 means "needs reseed from current noteVal".
+        var amigaPeriod: Double = -1.0
 
         // Per-row effect state (set in applyTrackerRow, consumed by applyTrackerTick).
         var rowEffect = 0
