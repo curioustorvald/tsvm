@@ -1742,6 +1742,9 @@ def assemble_taud(h: ITHeader, samples: list, instruments: list,
 
     # flags byte: bit 1 (f) = Amiga pitch-slide mode (IT linear_slides flag inverted)
     flags_byte = 0x00 if h.linear_slides else 0x02
+    # IT global/mix volumes are 0..128; rescale to Taud's 0..255 (clamped).
+    global_vol_taud = min(0xFF, round(h.global_vol * 255 / 128))
+    mixing_vol_taud = min(0xFF, round(h.mix_vol    * 255 / 128))
     song_table = encode_song_entry(
         song_offset=song_offset,
         num_voices=C,
@@ -1753,6 +1756,8 @@ def assemble_taud(h: ITHeader, samples: list, instruments: list,
         flags_byte=flags_byte,
         pat_bin_comp_size=len(pat_comp),
         cue_sheet_comp_size=len(cue_comp),
+        global_vol=global_vol_taud,
+        mixing_vol=mixing_vol_taud,
     )
     assert len(song_table) == TAUD_SONG_ENTRY
 

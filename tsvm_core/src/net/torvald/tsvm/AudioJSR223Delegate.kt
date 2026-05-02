@@ -139,6 +139,12 @@ class AudioJSR223Delegate(private val vm: VM) {
         return getFirstSnd()?.playheads?.get(playhead)?.initialGlobalFlags
     }
 
+    fun setSongGlobalVolume(playhead: Int, volume: Int) { getPlayhead(playhead)?.globalVolume = volume and 255 }
+    fun getSongGlobalVolume(playhead: Int) = getPlayhead(playhead)?.globalVolume
+
+    fun setSongMixingVolume(playhead: Int, volume: Int) { getPlayhead(playhead)?.mixingVolume = volume and 255 }
+    fun getSongMixingVolume(playhead: Int) = getPlayhead(playhead)?.mixingVolume
+
     fun putPcmDataByPtr(playhead: Int, ptr: Int, length: Int, destOffset: Int) {
         getFirstSnd()?.let {
             val vkMult = if (ptr >= 0) 1 else -1

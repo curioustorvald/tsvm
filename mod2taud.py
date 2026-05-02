@@ -770,6 +770,8 @@ def assemble_taud(mod: dict) -> bytes:
         flags_byte=flags_byte,
         pat_bin_comp_size=len(pat_comp),
         cue_sheet_comp_size=len(cue_comp),
+        global_vol=0xFF,
+        mixing_vol=0xFF,
     )
     assert len(song_table) == TAUD_SONG_ENTRY
 

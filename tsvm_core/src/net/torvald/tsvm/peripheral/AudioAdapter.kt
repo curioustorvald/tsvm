@@ -2279,6 +2279,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             var mixL = 0.0
             var mixR = 0.0
             val gvol = playhead.globalVolume / 255.0
+            val mvol = playhead.mixingVolume / 255.0
             for (voice in ts.voices) {
                 if (!voice.active || voice.muted) continue
                 val voiceInst = instruments[voice.instrumentId]
@@ -2289,7 +2290,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 // Volume envelope is bypassed (treated as unity) when S $77 has disabled it.
                 val effEnvVol = if (voice.volEnvOn) voice.envVolume else 1.0
                 val vol = effEnvVol * voice.fadeoutVolume * voice.rowVolume / 63.0 *
-                          swingScale * gvol * instGv * playhead.masterVolume / 255.0
+                          swingScale * gvol * mvol * instGv * playhead.masterVolume / 255.0
                 val pan = if (voice.hasPanEnv && voice.panEnvOn) {
                     val envPanRaw = (voice.envPan * 255.0).roundToInt().coerceIn(0, 255)
                     (voice.channelPan + envPanRaw - 128 + voice.randomPanBias).coerceIn(0, 255)
@@ -2319,7 +2320,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 val swingScale = 1.0 + bg.randomVolBias / 255.0
                 val effEnvVol = if (bg.volEnvOn) bg.envVolume else 1.0
                 val vol = effEnvVol * bg.fadeoutVolume * bg.rowVolume / 63.0 *
-                          swingScale * gvol * instGv * playhead.masterVolume / 255.0
+                          swingScale * gvol * mvol * instGv * playhead.masterVolume / 255.0
                 val pan = if (bg.hasPanEnv && bg.panEnvOn) {
                     val envPanRaw = (bg.envPan * 255.0).roundToInt().coerceIn(0, 255)
                     (bg.channelPan + envPanRaw - 128 + bg.randomPanBias).coerceIn(0, 255)
@@ -2703,6 +2704,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         var patBank1: Int = 0,
         var patBank2: Int = 0,
         var globalVolume: Int = 0x80,      // 8-bit, default $80 (spec §5). Mutated by V $xx00.
+        var mixingVolume: Int = 0x80,      // 8-bit, default $80 (spec §5). Final-mix scaler, set once per song.
 
         var pcmQueue: Queue<ByteArray> = Queue<ByteArray>(),
         var pcmQueueSizeIndex: Int = 0,
@@ -2794,6 +2796,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             bpm = 125
             tickRate = 6
             globalVolume = 0x80
+            mixingVolume = 0x80
             trackerState?.let { ts ->
                 ts.cuePos = 0; ts.rowIndex = 0; ts.tickInRow = 0
                 ts.samplesIntoTick = 0.0; ts.firstRow = true

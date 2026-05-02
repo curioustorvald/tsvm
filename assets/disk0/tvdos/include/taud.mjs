@@ -109,8 +109,8 @@ function uploadTaudFile(inFile, songIndex, playhead) {
     let bpmStored  = sys.peek(filePtr + entryOff + 7) & 0xFF
     let tickRate   = sys.peek(filePtr + entryOff + 8) & 0xFF
     let mixerflags = sys.peek(filePtr + entryOff + 15) & 0xFF
-    let songGlobalVolume = sys.peek(filePtr + entryOff + 16) & 0xFF // TODO use it
-    let songMixingVolume = sys.peek(filePtr + entryOff + 17) & 0xFF // TODO use it
+    let songGlobalVolume = sys.peek(filePtr + entryOff + 16) & 0xFF
+    let songMixingVolume = sys.peek(filePtr + entryOff + 17) & 0xFF
     let patBinCompSize   = _peekU32LE(filePtr, entryOff + 18)
     let cueSheetCompSize = _peekU32LE(filePtr, entryOff + 22)
 
@@ -148,6 +148,8 @@ function uploadTaudFile(inFile, songIndex, playhead) {
     audio.setBPM(playhead, bpm)
     audio.setTickRate(playhead, tickRate > 0 ? tickRate : 6)
     audio.setTrackerMixerFlags(playhead, mixerflags)
+    audio.setSongGlobalVolume(playhead, songGlobalVolume)
+    audio.setSongMixingVolume(playhead, songMixingVolume)
 
 
     fileHandle.close()
@@ -196,10 +198,14 @@ function captureTrackerDataToFile(outFile) {
     let numPats    = numPatsActual  // Uint16, 1-65535
     let patsToSave = numPatsActual
 
-    // -- 3. BPM / tick-rate from playhead 0 -----------------------------------
+    // -- 3. BPM / tick-rate / volumes from playhead 0 -------------------------
     let bpm      = audio.getBPM(0)      || 125
     let tickRate = audio.getTickRate(0) || 6
     let bpmStored = (bpm - 24) & 0xFF
+    let songGlobalVolume = audio.getSongGlobalVolume(0)
+    let songMixingVolume = audio.getSongMixingVolume(0)
+    if (songGlobalVolume === undefined || songGlobalVolume === null) songGlobalVolume = 0x80
+    if (songMixingVolume === undefined || songMixingVolume === null) songMixingVolume = 0x80
 
     // -- 4. Compress pattern bin ----------------------------------------------
     let patBinSize = patsToSave * PATTERN_SIZE
@@ -262,8 +268,8 @@ function captureTrackerDataToFile(outFile) {
         0x00,0xA0,                             // basenote (0xA000 -- C9)
         0x00,0xAC,0x02,0x46,                   // basefreq (8363 Hz)
         sys.peek(baseAddr - 7),                // mixer flags
-        0x80,                                  // global volume (default)
-        0x80,                                  // mixing volume (default)
+        songGlobalVolume & 0xFF,               // global volume
+        songMixingVolume & 0xFF,               // mixing volume
         // pattern bin compressed size (4)
         (patCompSize        ) & 0xFF,
         (patCompSize >>>  8) & 0xFF,
