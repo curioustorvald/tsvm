@@ -17,8 +17,9 @@ Effect support:
     table" and "ScreamTracker 3 conversion notes". ST3 shared-memory recalls
     (D/E/F/I/J/K/L/Q/R/S with $00 arg) are eagerly resolved per channel.
     Cxx is BCD-decoded. K/L are split into H $0000 / G $0000 + volume-column
-    slide. M/N/X/P fold into volume / pan columns. W (global vol slide) is
-    dropped with a -v warning. X converts to pan column. Y (panbrello) converts
+    slide. M/N/X/P fold into volume / pan columns. W (global vol slide)
+    converts to Taud W (arg in high byte, same encoding as D). X converts to
+    pan column. Y (panbrello) converts
     to Taud Y. S5 selects the panbrello LFO waveform. S8x converts to a pan
     column SET of round(x * 4.2), mapping nibble 0-15 directly to pan 0-63.
 """
@@ -36,7 +37,7 @@ from taud_common import (
     PATTERN_ROWS, PATTERN_BYTES, NUM_PATTERNS_MAX, NUM_CUES, CUE_SIZE, NUM_VOICES,
     NOTE_NOP, NOTE_KEYOFF, NOTE_CUT, TAUD_C4,
     TOP_NONE, TOP_A, TOP_B, TOP_C, TOP_D, TOP_E, TOP_F, TOP_G, TOP_H, TOP_I,
-    TOP_J, TOP_K, TOP_L, TOP_O, TOP_Q, TOP_R, TOP_S, TOP_T, TOP_U, TOP_V, TOP_Y,
+    TOP_J, TOP_K, TOP_L, TOP_O, TOP_Q, TOP_R, TOP_S, TOP_T, TOP_U, TOP_V, TOP_W, TOP_Y,
     SEL_SET, SEL_UP, SEL_DOWN, SEL_FINE,
     EFF_A, EFF_B, EFF_C, EFF_D, EFF_E, EFF_F, EFF_G, EFF_H, EFF_I, EFF_J,
     EFF_K, EFF_L, EFF_M, EFF_N, EFF_O, EFF_P, EFF_Q, EFF_R, EFF_S, EFF_T,
@@ -356,8 +357,8 @@ def encode_effect(cmd: int, arg: int, ch: int = 0, row: int = 0,
         return (TOP_V, (min(arg * 4, 0xFF) & 0xFF) << 8, None, None)
 
     if cmd == EFF_W:
-        vprint(f"    dropped W{arg:02X} (global vol slide) at ch{ch} row{row}")
-        return (TOP_NONE, 0, None, None)
+        # W$xy: same nibble-pair layout as D, passed in the high byte.
+        return (TOP_W, (arg & 0xFF) << 8, None, None)
 
     if cmd == EFF_X:
         return (TOP_S, 0x8000 | (arg & 0xFF), None, None)

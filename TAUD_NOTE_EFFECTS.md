@@ -666,7 +666,17 @@ ProTracker `E5x` maps to Taud `S $2x00` with the same index meaning.
 
 **Compatibility.** IT `S6x` maps directly.
 
-**Implementation.** TODO
+**Implementation.** Maintain a per-row accumulator `fine_delay_extra` on the tracker state, initialised to 0 at the start of every row parse (including pattern-delay repetitions caused by S $Ex). Each S $6x command encountered during the row scan adds `$x` to `fine_delay_extra`. The row then runs for `speed + fine_delay_extra` ticks instead of the usual `speed` ticks before advancing to the next row.
+
+```
+on row parse (S $6x):
+    fine_delay_extra += x       # sum across all channels
+
+row ends when:
+    tick_in_row >= ticks_per_row + fine_delay_extra
+```
+
+S $6x and S $Ex are orthogonal: when S $Ex is active the current row repeats `$x` additional times, and each repetition is itself extended by `fine_delay_extra` (re-accumulated from the same row's S $6x commands). There is no memory for S $6x; `$x == 0` is a no-op.
 
 ---
 

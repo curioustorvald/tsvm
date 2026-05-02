@@ -1679,6 +1679,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         val cue = cueSheet[ts.cuePos]
         // Reset row-scope state before scanning channels.
         if (!ts.patternDelayActive) ts.sexWinningChannel = -1
+        ts.finePatternDelayExtra = 0
 
         for (vi in 0..19) {
             val patNum = cue.patterns[vi]
@@ -1699,6 +1700,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             voice.panbrelloActive = false
             voice.retrigActive = false
             voice.tempoSlideDir = 0
+            voice.wSlideDir = 0
             voice.volColSlideUp = 0; voice.volColSlideDown = 0
             voice.panColSlideRight = 0; voice.panColSlideLeft = 0
             voice.rowEffect = row.effect
@@ -1885,6 +1887,19 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 val hi = (rawArg ushr 8) and 0xFF
                 playhead.globalVolume = hi
             }
+            EffectOp.OP_W -> {
+                val arg = resolveArg(rawArg, voice.mem.w).also { if (rawArg != 0) voice.mem.w = it }
+                val hi = (arg ushr 8) and 0xFF
+                val lo = hi and 0x0F
+                val hin = (hi ushr 4) and 0x0F
+                when {
+                    hi == 0xFF -> playhead.globalVolume = (playhead.globalVolume + 0xF).coerceAtMost(0xFF)  // WFF quirk: fine up by F
+                    hin == 0xF && lo != 0 -> playhead.globalVolume = (playhead.globalVolume - lo).coerceAtLeast(0)   // fine down on tick 0
+                    lo == 0xF && hin != 0 -> playhead.globalVolume = (playhead.globalVolume + hin).coerceAtMost(0xFF) // fine up on tick 0
+                    hin == 0 && lo != 0 -> { voice.wSlideDir = -1; voice.wSlideAmount = lo }   // coarse down per non-first tick
+                    lo == 0 && hin != 0 -> { voice.wSlideDir = +1; voice.wSlideAmount = hin }  // coarse up per non-first tick
+                }
+            }
             EffectOp.OP_Y -> {
                 val sp = (rawArg ushr 8) and 0xFF
                 val dp = rawArg and 0xFF
@@ -1908,6 +1923,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             0x3 -> { voice.vibratoWave = x and 3; voice.vibratoRetrig = (x and 4) == 0 }
             0x4 -> { voice.tremoloWave = x and 3; voice.tremoloRetrig = (x and 4) == 0 }
             0x5 -> { voice.panbrelloWave = x and 3; voice.panbrelloRetrig = (x and 4) == 0 }
+            0x6 -> ts.finePatternDelayExtra += x   // fine pattern delay: accumulate across channels
             0x7 -> when (x) {
                 // Past-note actions on the channel's background ghosts.
                 0x0 -> applyPastNoteAction(ts, vi, 0)   // Past Note Cut
@@ -2142,6 +2158,15 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             }
         }
 
+        // Global volume slide (W coarse) — applied once per non-first tick per armed channel.
+        if (ts.tickInRow > 0) {
+            for (voice in ts.voices) {
+                if (voice.wSlideDir != 0) {
+                    playhead.globalVolume = (playhead.globalVolume + voice.wSlideDir * voice.wSlideAmount).coerceIn(0, 0xFF)
+                }
+            }
+        }
+
         // Funk repeat (S$Fxxxx) — advance bit-mask per tick on instruments with active funkSpeed.
         for (voice in ts.voices) {
             if (voice.funkSpeed == 0 || !voice.active) continue
@@ -2241,7 +2266,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 ts.samplesIntoTick -= spt
                 applyTrackerTick(ts, playhead)
                 ts.tickInRow++
-                if (ts.tickInRow >= playhead.tickRate) {
+                if (ts.tickInRow >= playhead.tickRate + ts.finePatternDelayExtra) {
                     ts.tickInRow = 0
                     advanceRow(ts, playhead)
                 }
@@ -2458,6 +2483,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         var o: Int = 0
         var q: Int = 0
         var tslide: Int = 0
+        var w: Int = 0
     }
 
     class Voice {
@@ -2606,6 +2632,10 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         var tempoSlideDir = 0              // 0 = none, -1 = down, +1 = up
         var tempoSlideAmount = 0
 
+        // Global volume slide (W $xy00) — per-channel, applied to playhead.globalVolume on tick > 0.
+        var wSlideDir = 0                  // 0 = none, -1 = down, +1 = up
+        var wSlideAmount = 0
+
         // Volume / pan column slides (selectors 1/2/3 from TAUD_NOTE_EFFECTS.md §"Volume column effects").
         var volColSlideUp = 0
         var volColSlideDown = 0
@@ -2640,6 +2670,9 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
         // Channel index of the SEx that won this row (lowest channel wins ties).
         var sexWinningChannel = -1
+
+        // Fine pattern delay (S$6x) — extra ticks added to the current row; accumulated across all channels.
+        var finePatternDelayExtra = 0
 
         // Pre-allocated mix buffers for dither path (reused each audio chunk).
         val mixLeft  = FloatArray(TRACKER_CHUNK)
@@ -2764,6 +2797,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 ts.pendingRowJumpLocal = false
                 ts.patternDelayRemaining = 0; ts.patternDelayActive = false
                 ts.sexWinningChannel = -1
+                ts.finePatternDelayExtra = 0
                 ts.panLaw = initialGlobalFlags and 1
                 ts.amigaMode = (initialGlobalFlags and 2) != 0
                 ts.voices.forEach {

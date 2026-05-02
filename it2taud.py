@@ -25,7 +25,8 @@ Effect support:
     A-Z dispatch per TAUD_NOTE_EFFECTS.md. IT-specific: Cxx is binary
     (not BCD like ST3). V scales by ×2 (IT 0-128 → Taud 0-255). X is
     the full 8-bit IT pan. Y panbrello nibble-repeats. Z (MIDI macro)
-    dropped. S6x tick-delay dropped. SAx high-offset dropped. S7x NNA /
+    dropped. S6x fine-pattern-delay forwarded directly to Taud S$6x. SAx
+    high-offset dropped. S7x NNA /
     past-note / envelope toggles forwarded directly (IT sub-codes match
     Taud one-to-one). Vol-column pitch-slide / tone-porta / vibrato sub-
     commands forwarded to main effect slot when empty; dropped otherwise.
@@ -45,7 +46,7 @@ from taud_common import (
     PATTERN_ROWS, PATTERN_BYTES, NUM_PATTERNS_MAX, NUM_CUES, CUE_SIZE, NUM_VOICES,
     NOTE_NOP, NOTE_KEYOFF, NOTE_CUT, TAUD_C4,
     TOP_NONE, TOP_A, TOP_B, TOP_C, TOP_D, TOP_E, TOP_F, TOP_G, TOP_H, TOP_I,
-    TOP_J, TOP_K, TOP_L, TOP_O, TOP_Q, TOP_R, TOP_S, TOP_T, TOP_U, TOP_V, TOP_Y,
+    TOP_J, TOP_K, TOP_L, TOP_O, TOP_Q, TOP_R, TOP_S, TOP_T, TOP_U, TOP_V, TOP_W, TOP_Y,
     SEL_SET, SEL_UP, SEL_DOWN, SEL_FINE,
     EFF_A, EFF_B, EFF_C, EFF_D, EFF_E, EFF_F, EFF_G, EFF_H, EFF_I, EFF_J,
     EFF_K, EFF_L, EFF_M, EFF_N, EFF_O, EFF_P, EFF_Q, EFF_R, EFF_S, EFF_T,
@@ -104,7 +105,9 @@ VC_TPORTA_TABLE = (0, 1, 4, 8, 16, 32, 64, 96, 128, 255)
 IT_MEM_EFFECTS = frozenset({
     EFF_D, EFF_E, EFF_F, EFF_G, EFF_H, EFF_I, EFF_J,
     EFF_K, EFF_L, EFF_N, EFF_O, EFF_P, EFF_Q, EFF_R,
-    EFF_S, EFF_T, EFF_U, EFF_V, EFF_W, EFF_X, EFF_Y,
+    EFF_S, EFF_T, EFF_U, EFF_X, EFF_Y,
+    # EFF_V excluded: V00 means literal 0 in IT, not recall.
+    # EFF_W excluded: Taud engine handles W recall natively (same private-slot semantics).
 })
 
 
@@ -784,7 +787,7 @@ def encode_effect_it(cmd: int, arg: int, ch: int = 0, row: int = 0,
       - Cxx: binary row number, not BCD
       - V: IT global vol 0-128 scaled ×2
       - X: IT full 8-bit pan → 6-bit
-      - S6x, S7x, SAx, SFx handled (mostly dropped)
+      - S6x: fine pattern delay forwarded; S7x forwarded; SAx/SFx dropped
 
     amiga_mode mirrors the inverse of the IT ``linear_slides`` flag.  When
     set, E/F coarse pitch-slide arguments are emitted as raw IT period units
@@ -877,8 +880,8 @@ def encode_effect_it(cmd: int, arg: int, ch: int = 0, row: int = 0,
             pan8 = (val << 4) | val
             return (TOP_S, 0x8000 | pan8, None, None)
         if sub == 0x6:
-            vprint(f"    dropped S6{val:X} (tick delay) at ch{ch} row{row}")
-            return (TOP_NONE, 0, None, None)
+            # IT S6x = fine pattern delay (extends row by x ticks) — maps directly.
+            return (TOP_S, 0x6000 | (val << 8), None, None)
         if sub == 0x7:
             # NNA / past-note / envelope on-off — IT S7x maps directly to Taud S $7x00
             # (same sub-code table). No payload to translate.
@@ -904,8 +907,8 @@ def encode_effect_it(cmd: int, arg: int, ch: int = 0, row: int = 0,
         return (TOP_V, (taud_v & 0xFF) << 8, None, None)
 
     if cmd == EFF_W:
-        vprint(f"    dropped W{arg:02X} (global vol slide) at ch{ch} row{row}")
-        return (TOP_NONE, 0, None, None)
+        # W$xy: same nibble-pair layout as D, passed in the high byte.
+        return (TOP_W, (arg & 0xFF) << 8, None, None)
 
     if cmd == EFF_X:
         return (TOP_S, 0x8000 | (arg & 0xFF), None, None)
@@ -926,8 +929,7 @@ def encode_effect_it(cmd: int, arg: int, ch: int = 0, row: int = 0,
 
 def resolve_it_recalls(patterns_rows: list, order_list: list,
                        num_channels: int, link_gef: bool,
-                       old_effects: bool = False,
-                       initial_global_vol: int = 128) -> None:
+                       old_effects: bool = False) -> None:
     """Walk in order, resolve zero-arg recalls per-effect-per-channel.
 
     IT effect memory groups:
@@ -940,14 +942,13 @@ def resolve_it_recalls(patterns_rows: list, order_list: list,
     they do NOT recall and are suppressed to TOP_NONE. All other effects
     still recall normally even in old_effects mode.
 
-    V memory is primed with initial_global_vol so a song-leading V $0000
-    resolves to the header's global volume, not literal zero.
+    V and W are excluded from IT_MEM_EFFECTS and are not resolved here:
+    V00 in IT means literal 0 (not recall); W recall is handled natively
+    by the Taud engine's private W memory slot.
     """
     # last_mem[ch][eff_key] = last_non_zero_arg
     # eff_key: integer 1-26 for most effects; we merge cohorts by normalising.
     last_mem = [{} for _ in range(num_channels)]
-    for ch in range(num_channels):
-        last_mem[ch][EFF_V] = initial_global_vol
 
     # Effects that stop rather than recall when arg=0 in old_effects mode (ST3 compat).
     # E/F: pitch slide stop. J: arpeggio stop (J00 = return to normal pitch in ST3).
@@ -1487,8 +1488,7 @@ def assemble_taud(h: ITHeader, samples: list, instruments: list,
     # ── Resolve IT recalls ───────────────────────────────────────────────────
     vprint("  resolving IT recalls…")
     resolve_it_recalls(patterns_rows, h.order_list, 64, h.link_gef,
-                       old_effects=h.old_effects,
-                       initial_global_vol=h.global_vol)
+                       old_effects=h.old_effects)
 
     init_speed, _ = find_initial_bpm_speed(patterns_rows, h.order_list,
                                            h.initial_speed, h.initial_tempo)

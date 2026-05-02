@@ -67,6 +67,7 @@ TOP_S    = 0x1C
 TOP_T    = 0x1D
 TOP_U    = 0x1E
 TOP_V    = 0x1F
+TOP_W    = 0x20
 TOP_Y    = 0x22
 
 # Volume / pan column selectors (2-bit field at top of vol/pan byte)
