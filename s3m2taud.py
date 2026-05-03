@@ -514,7 +514,10 @@ def build_sample_inst_bin(instruments: list) -> tuple:
         # Volume env point 0: hold at env_vol indefinitely (offset minifloat = 0 → hold).
         inst_bin[base + 21] = env_vol
         inst_bin[base + 22] = 0
-        inst_bin[base + 171] = 0xFF # instrument global volume
+        # Instrument Global Volume carries the S3M instrument's default volume (0..64 → 0..255).
+        # The pattern builder no longer emits SEL_SET=Sv on note triggers; the engine
+        # multiplies by IGV instead, so the per-instrument level lives here.
+        inst_bin[base + 171] = min(0xFF, round(min(inst.volume, 64) * 255 / 64))
         inst_bin[base + 177] = 0x80 # default pan = centre (unused; pan env "p" flag not set)
         inst_bin[base + 182] = 0xFF # filter cutoff = off
         inst_bin[base + 183] = 0xFF # filter resonance = off
@@ -544,11 +547,10 @@ def build_pattern(s3m_grid: list, ch_idx: int, default_pan: int,
                   amiga_mode: bool = False) -> bytes:
     """Build a 512-byte Taud pattern for one S3M channel.
 
-    Volume column: explicit S3M cell vol → SEL_SET; when a note triggers
-    with no explicit vol, emit SEL_SET using the instrument's default volume
-    (looked up from inst_vols, a 1-based inst index → 0..63 volume dict).
-    M/N/K/L overrides apply only when the cell has no explicit vol and no
-    note trigger. Otherwise SEL_FINE/0 (no-op).
+    Volume column: explicit S3M cell vol -> SEL_SET; M/N/K/L vol slides folded
+    by encode_effect -> vol_override; otherwise SEL_FINE/0 (no-op). Per-
+    instrument default volume lives in IGV (byte 171) and is applied by the
+    engine on every fresh trigger, so the converter no longer emits SEL_SET=Sv.
     Pan column: row 0 emits SEL_SET = default_pan to position the channel;
     other rows default to SEL_FINE/0 unless an X/P/etc effect overrides.
     """
@@ -557,54 +559,26 @@ def build_pattern(s3m_grid: list, ch_idx: int, default_pan: int,
     out = bytearray(PATTERN_BYTES)
     rows = s3m_grid[ch_idx] if ch_idx < len(s3m_grid) else [S3MRow()] * PATTERN_ROWS
     last_inst = 0             # 1-based; tracks which instrument is loaded on this channel
-    last_note = S3M_NOTE_EMPTY  # last raw S3M note byte that was a real pitch
-    last_vol  = None            # last SEL_SET volume value (0-63), for retrigger recall
     for r, row in enumerate(rows[:PATTERN_ROWS]):
         note = encode_note(row.note)
-        inst = row.inst   # S3M 1-based → Taud 1-based
+        inst = row.inst   # S3M 1-based -> Taud 1-based
 
         if row.inst > 0:
             last_inst = row.inst
 
-        # ── Instrument-only retrigger ──
-        # Instrument-only row: recall the last volume without touching the note.
-        retrigger = (row.inst > 0
-                     and row.note == S3M_NOTE_EMPTY
-                     and last_note not in (S3M_NOTE_EMPTY, S3M_NOTE_OFF))
-
         op, arg, vol_override, pan_override = encode_effect(
             row.effect, row.effect_arg, ch_idx, r, amiga_mode=amiga_mode)
 
-        # ── Volume column ──
-        note_triggers = (row.note not in (S3M_NOTE_EMPTY, S3M_NOTE_OFF))
+        # -- Volume column --
         if row.vol >= 0:
             vol_sel, vol_value = SEL_SET, min(row.vol, 0x3F)
             if vol_override is not None and vol_override[0] != SEL_SET:
                 vprint(f"    ch{ch_idx} row{r}: dropped vol slide "
                        f"(cell already carries explicit volume)")
-        elif note_triggers and row.inst > 0:
-            # Note trigger with a fresh instrument: use that instrument's
-            # default volume.
-            vol_sel = SEL_SET
-            vol_value = inst_vols.get(last_inst, 0x3F)
-        elif note_triggers and last_vol is not None:
-            # Note trigger without instrument: keep the channel's current
-            # volume rather than resetting to the instrument default.
-            vol_sel, vol_value = SEL_SET, last_vol
-        elif retrigger and last_vol is not None:
-            # Instrument-only row: re-emit the last known volume so the sample
-            # restarts at the correct level without an explicit note trigger.
-            vol_sel, vol_value = SEL_SET, last_vol
         elif vol_override is not None:
             vol_sel, vol_value = vol_override
         else:
             vol_sel, vol_value = SEL_FINE, 0   # no-op fine slide
-
-        # Track note and volume for future retrigger lookups.
-        if row.note not in (S3M_NOTE_EMPTY, S3M_NOTE_OFF):
-            last_note = row.note
-        if vol_sel == SEL_SET:
-            last_vol = vol_value
 
         # ── Pan column ──
         if pan_override is not None:

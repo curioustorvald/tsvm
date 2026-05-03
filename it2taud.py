@@ -1232,10 +1232,20 @@ def build_sample_inst_bin_it(samples_or_proxy: list,
         vol_sus = idata.get('vol_sus', USE_ENV_BIT)
         pan_sus = idata.get('pan_sus', 0)
         pf_sus  = idata.get('pf_sus',  0)
-        inst_gv = idata.get('inst_gv', 0xFF)
-        # IT fadeout (0..1024) is in half-units of Taud's per-tick scale; double to align with
-        # FT2 / native Taud (12-bit, engine subtracts fadeout/65536 per tick). Clamp defensively.
-        fadeout = min(0xFFF, (idata.get('fadeout', 0) & 0xFFFF) * 2)
+        # Sample-mode default IGV: fold sample default vol (Sv) and sample GV
+        # into Taud's IGV. Instrument-mode supplies inst_gv pre-folded.
+        if 'inst_gv' in idata:
+            inst_gv = idata['inst_gv']
+        else:
+            smp_vol_default = min(getattr(s, 'vol', 64), 64)
+            smp_gv_default  = min(getattr(s, 'gv', 64), 64)
+            inst_gv = min(255, round(smp_vol_default * smp_gv_default * 255 / (64 * 64)))
+        # IT fadeout (file-stored 0..2048; ITTECH practical max ≈ 1024) maps verbatim to
+        # the Taud 12-bit fadeStep. The player picks divisor 1024 in IT mode (vs 65536
+        # in FT2 mode) so that one fadeStep unit per tick matches Schism's
+        # `chan->fadeout_volume -= (stored<<5)<<1` semantics (sndmix.c:331-339,
+        # effects.c:1261). Clamp defensively to 4095.
+        fadeout = min(0xFFF, idata.get('fadeout', 0) & 0xFFFF)
 
         struct.pack_into('<H', inst_bin, base + 15, vol_sus & 0xFFFF)
         struct.pack_into('<H', inst_bin, base + 17, pan_sus & 0xFFFF)
@@ -1322,7 +1332,6 @@ def build_pattern_it(chunk_grid: list, ch_idx: int, default_pan: int,
     rows = chunk_grid[ch_idx] if ch_idx < len(chunk_grid) else [ITRow()] * PATTERN_ROWS
     last_inst = 0
     last_note_it = -1
-    last_vol  = None
 
     for r, cell in enumerate(rows[:PATTERN_ROWS]):
         # ── Resolve vol-col into overrides ──────────────────────────────────
@@ -1356,30 +1365,21 @@ def build_pattern_it(chunk_grid: list, ch_idx: int, default_pan: int,
         note_triggers = (0 <= (cell.note if cell.note >= 0 else -1) <= 119)
 
         # ── Volume column ────────────────────────────────────────────────────
-        # Priority: explicit cell vol (from vol-col 0-64) > note-trigger default
-        # > retrigger recall > vol-col slide > main-effect vol override > nop
+        # Priority: explicit cell vol (vol-col 0-64) > vol-col slide > main-
+        # effect vol override > nop. The per-instrument default volume is
+        # baked into IGV (byte 171), so the engine resolves note-trigger
+        # default volume itself; the converter no longer emits SEL_SET=Sv.
         if cell.volcol >= 0 and cell.volcol <= VC_VOL_HI:
             vol_sel, vol_value = SEL_SET, min(cell.volcol, 0x3F)
-        elif note_triggers and cell.inst > 0:
-            vol_sel = SEL_SET
-            vol_value = inst_vols.get(last_inst, 0x3F)
-        elif note_triggers and last_vol is not None:
-            vol_sel, vol_value = SEL_SET, last_vol
-        elif (cell.inst > 0 and cell.note < 0
-              and last_note_it >= 0 and last_vol is not None):
-            # Instrument-only retrigger: restate last volume
-            vol_sel, vol_value = SEL_SET, last_vol
-        elif vol_override is not None:
-            vol_sel, vol_value = vol_override
         elif vs != SEL_FINE or vv != 0:
             vol_sel, vol_value = vs, vv
+        elif vol_override is not None:
+            vol_sel, vol_value = vol_override
         else:
             vol_sel, vol_value = SEL_FINE, 0
 
         if cell.note is not None and 0 <= (cell.note if cell.note >= 0 else -1) <= 119:
             last_note_it = cell.note
-        if vol_sel == SEL_SET:
-            last_vol = vol_value
 
         # ── Pan column ───────────────────────────────────────────────────────
         if cell.pan_set is not None:
@@ -1611,15 +1611,18 @@ def assemble_taud(h: ITHeader, samples: list, instruments: list,
             src_smp = samples[si]
             proxy[taud_slot] = src_smp
             # IT cell-trigger initial volume comes from the sample's default
-            # volume (Dv, 0..64), not the instrument's global volume.
+            # volume (Sv, 0..64). It is folded into the Taud instrument's IGV
+            # (byte 171) along with IT inst.gv (0..128) and sample gv (0..64),
+            # so the engine applies all three as a single multiplier on every
+            # fresh trigger. inst_vols is retained only for legacy callers.
             smp_default_vol = min(getattr(src_smp, 'vol', 64), 64)
             inst_vols[taud_slot] = min(smp_default_vol, 0x3F)
 
-            # IT instrument GV (0..128) and sample GV (0..64) collapse into
-            # Taud's single instrumentwise GV (0..255). Sample default volume
-            # is handled separately by inst_vols above.
+            # IT inst.gv (0..128) * sample.gv (0..64) * sample.vol (0..64)
+            # collapse into Taud's single instrumentwise IGV (0..255).
             smp_gv = min(getattr(src_smp, 'gv', 64), 64)
-            inst_gv_255 = min(255, round(inst.gv * smp_gv * 255 / (128 * 64)))
+            inst_gv_255 = min(255, round(inst.gv * smp_gv * smp_default_vol * 255
+                                         / (128 * 64 * 64)))
 
             # IT pitch-pan centre: note number 0..119 (C-5 = 60). The Taud
             # representation is the absolute 4096-TET note value used in patterns

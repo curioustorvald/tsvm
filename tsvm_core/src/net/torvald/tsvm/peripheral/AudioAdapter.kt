@@ -1553,9 +1553,10 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         voice.basePitch = noteVal
         voice.amigaPeriod = -1.0   // fresh trigger: period state must reseed from the new noteVal
         voice.playbackRate = computePlaybackRate(inst, noteVal)
-        if (volOverride >= 0) {
-            voice.channelVolume = volOverride.coerceIn(0, 0x3F)
-        }
+        // Fresh trigger resets channel volume to full ($3F). Per-instrument scaling lives in
+        // instGlobalVolume (byte 171), which the mixer applies as a multiplier. Converters
+        // therefore no longer need to emit SEL_SET=Sv on note-trigger rows.
+        voice.channelVolume = if (volOverride >= 0) volOverride.coerceIn(0, 0x3F) else 0x3F
         voice.rowVolume = voice.channelVolume
         voice.noteWasCut = false
         voice.noteFading = false
@@ -1793,7 +1794,11 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             // ── Note ──
             val toneG = (row.effect == EffectOp.OP_G)
             when (row.note) {
-                0xFFFF -> {}                                    // no-op
+                // No note but an instrument byte is present: latch the instrument so
+                // the *next* note-only trigger picks up the right sample. Trackers
+                // call this an "instrument-only retrigger"; in MOD/S3M/IT the sample
+                // keeps playing, but the channel's instrument reference advances.
+                0xFFFF -> { if (row.instrment != 0) voice.instrumentId = row.instrment }
                 0x0000 -> { voice.keyOff = true; voice.active = false }  // key-off; breaks sustain loop
                 0xFFFE -> voice.active = false                  // note cut
                 else -> {
@@ -1806,7 +1811,10 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                         voice.noteDelayTick = (row.effectArg ushr 8) and 0xF
                         voice.delayedNote = row.note
                         voice.delayedInst = row.instrment
-                        voice.delayedVol = if (row.volume >= 0) row.volume else -1
+                        // Only treat the vol cell as an override when it carries SEL_SET;
+                        // SEL_FINE/0 (no-op) and slide selectors must not collapse into
+                        // a SET=0 on the deferred trigger.
+                        voice.delayedVol = if (row.volumeEff == 0) row.volume else -1
                     } else {
                         applyDuplicateCheck(ts, vi, row.instrment, row.note)
                         maybeSpawnBackgroundForNNA(ts, voice, vi)
@@ -2211,10 +2219,12 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             // Auto-vibrato (instrument-supplied sample LFO) — added on top of pitchToMixer.
             val autoVibDelta = advanceAutoVibrato(voice, inst)
 
-            // Pitch envelope contribution: env value 0..1, 0.5 = unity. -32..+32
-            // semitone range maps to ±32 × 4096/12 ≈ ±10923 4096-TET units.
+            // Pitch envelope contribution: env value 0..1, 0.5 = unity.
+            // IT pitch envelope max is ±16 semitones (Schism sndmix.c:455-462 indexes
+            // linear_slide_up_table[abs(envpitch)] where envpitch ∈ [-256,+256] and
+            // table[255] = 65536·2^(255/192) ≈ 2.504, i.e. 15.94 semitones).
             val pitchEnvDelta = if (voice.hasPfEnv && voice.pfEnvOn && !voice.envPfIsFilter)
-                ((voice.envPfValue - 0.5) * 2.0 * 32.0 * 4096.0 / 12.0).toInt()
+                ((voice.envPfValue - 0.5) * 2.0 * 16.0 * 4096.0 / 12.0).toInt()
             else 0
 
             val finalPitch = (pitchToMixer + autoVibDelta + pitchEnvDelta).coerceIn(0, 0xFFFE)
@@ -2236,13 +2246,18 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             // Refresh biquad filter coefficients once per tick (only recomputes when changed).
             refreshVoiceFilter(voice)
 
-            // Volume fadeout: after key-off OR Note-Fade NNA, decrement by inst.volumeFadeout / 65536 per tick.
-            // The 12-bit fadeout value is split across volumeFadeoutLow + low nibble of fadeoutHigh.
-            // Stored 0: with fadeoutCutOnZero (FT2 mode) the voice is cut on key-off; otherwise no fadeout (IT mode).
+            // Volume fadeout: after key-off OR Note-Fade NNA, decrement per tick.
+            // The 12-bit fadeStep is split across volumeFadeoutLow + low nibble of fadeoutHigh.
+            // Divisor selects per-tracker semantics:
+            //   FT2 mode (fadeoutCutOnZero=true):  fadeStep / 65536 per tick — matches FT2 .XM (16-bit accumulator, decrement = stored).
+            //   IT  mode (fadeoutCutOnZero=false): fadeStep / 1024  per tick — matches Schism (sndmix.c:331-339 + effects.c:1261:
+            //                                                                  accumulator 65536, decrement = (stored<<5)<<1 = stored·64).
+            // Stored 0: FT2 mode cuts on key-off; IT mode leaves voice playing (no fade).
             if (voice.keyOff || voice.noteFading) {
                 val fadeStep = inst.volumeFadeoutLow or ((inst.fadeoutHigh and 0x0F) shl 8)
                 if (fadeStep > 0) {
-                    voice.fadeoutVolume = (voice.fadeoutVolume - fadeStep / 65536.0).coerceAtLeast(0.0)
+                    val divisor = if (ts.fadeoutCutOnZero) 65536.0 else 1024.0
+                    voice.fadeoutVolume = (voice.fadeoutVolume - fadeStep / divisor).coerceAtLeast(0.0)
                     if (voice.fadeoutVolume <= 0.0) voice.active = false
                 } else if (ts.fadeoutCutOnZero) {
                     voice.active = false
@@ -2297,7 +2312,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             if (bg.keyOff || bg.noteFading) {
                 val fadeStep = inst.volumeFadeoutLow or ((inst.fadeoutHigh and 0x0F) shl 8)
                 if (fadeStep > 0) {
-                    bg.fadeoutVolume = (bg.fadeoutVolume - fadeStep / 65536.0).coerceAtLeast(0.0)
+                    val divisor = if (ts.fadeoutCutOnZero) 65536.0 else 1024.0
+                    bg.fadeoutVolume = (bg.fadeoutVolume - fadeStep / divisor).coerceAtLeast(0.0)
                 } else if (ts.fadeoutCutOnZero) {
                     bg.active = false
                     bgIt.remove()
@@ -2307,7 +2323,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             // Auto-vibrato keeps running on backgrounds — it's an instrument-intrinsic LFO.
             val autoVibDelta = advanceAutoVibrato(bg, inst)
             val pitchEnvDelta = if (bg.hasPfEnv && bg.pfEnvOn && !bg.envPfIsFilter)
-                ((bg.envPfValue - 0.5) * 2.0 * 32.0 * 4096.0 / 12.0).toInt()
+                ((bg.envPfValue - 0.5) * 2.0 * 16.0 * 4096.0 / 12.0).toInt()
             else 0
             val finalPitch = (bg.noteVal + autoVibDelta + pitchEnvDelta).coerceIn(0, 0xFFFE)
             bg.playbackRate = computePlaybackRate(inst, finalPitch)

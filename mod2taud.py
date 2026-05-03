@@ -522,7 +522,10 @@ def build_sample_inst_bin(samples: list) -> tuple:
         struct.pack_into('<H', inst_bin, base + 19, 0)
         inst_bin[base + 21] = env_vol
         inst_bin[base + 22] = 0
-        inst_bin[base + 171] = 0xFF # instrument global volume
+        # Instrument Global Volume carries the MOD sample's default volume (0..64 → 0..255).
+        # The pattern builder no longer emits SEL_SET=Sv on note triggers; the engine
+        # multiplies by IGV instead, so the per-instrument level lives here.
+        inst_bin[base + 171] = min(0xFF, round(min(s.volume, 64) * 255 / 64))
         inst_bin[base + 177] = 0x80 # default pan = centre (unused; pan env "p" flag not set)
         inst_bin[base + 182] = 0xFF # filter cutoff = off
         inst_bin[base + 183] = 0xFF # filter resonance = off
@@ -546,25 +549,21 @@ def build_pattern(grid: list, ch_idx: int, default_pan: int,
                   inst_vols: dict) -> bytes:
     """Build a 512-byte Taud pattern for one MOD channel.
 
-    Volume column rules (mirrors s3m2taud):
-      explicit Cxx vol > note-trigger inst default > instrument-only retrigger
-      recall > vol_override from effect > no-op.
+    Volume column: explicit Cxx → SEL_SET; effect-folded vol slide → vol_override;
+    otherwise SEL_FINE/0 (no-op). Per-instrument default volume lives in IGV
+    (byte 171) and is applied by the engine on every fresh trigger — the
+    converter no longer has to emit SEL_SET=Sv to scale notes.
     """
     out = bytearray(PATTERN_BYTES)
     rows = grid[ch_idx] if ch_idx < len(grid) else [ModRow()] * MOD_PATTERN_ROWS
     last_inst = 0
     last_period = 0
-    last_vol  = None
     for r, row in enumerate(rows[:MOD_PATTERN_ROWS]):
         note_taud = period_to_taud_note(row.period)
         note_triggers = (row.period > 0)
 
         if row.inst > 0:
             last_inst = row.inst
-
-        retrigger = (row.inst > 0
-                     and row.period == 0
-                     and last_period > 0)
 
         op, arg, vol_override, pan_override = encode_effect(
             row.effect, row.effect_arg, ch_idx, r)
@@ -575,13 +574,6 @@ def build_pattern(grid: list, ch_idx: int, default_pan: int,
             if vol_override is not None and vol_override[0] != SEL_SET:
                 vprint(f"    ch{ch_idx} row{r}: dropped vol slide "
                        f"(cell already carries explicit Cxx volume)")
-        elif note_triggers and row.inst > 0:
-            vol_sel = SEL_SET
-            vol_value = inst_vols.get(last_inst, 0x3F)
-        elif note_triggers and last_vol is not None:
-            vol_sel, vol_value = SEL_SET, last_vol
-        elif retrigger and last_vol is not None:
-            vol_sel, vol_value = SEL_SET, last_vol
         elif vol_override is not None:
             vol_sel, vol_value = vol_override
         else:
@@ -589,8 +581,6 @@ def build_pattern(grid: list, ch_idx: int, default_pan: int,
 
         if note_triggers:
             last_period = row.period
-        if vol_sel == SEL_SET:
-            last_vol = vol_value
 
         # ── Pan column ──
         if pan_override is not None:
