@@ -422,6 +422,8 @@ let filenavOninput = (window, event) => {
     let keycodes = [event[3],event[4],event[5],event[6],event[7],event[8],event[9],event[10]]
     let keycode = keycodes[0]
 
+    let scrollPeek = (LIST_HEIGHT / 3)|0
+
     if (keyJustHit && keysym == "q") {
         exit = true
     }
@@ -430,19 +432,19 @@ let filenavOninput = (window, event) => {
         redraw() // this would double-redraw (hence no panel switching) or something if redraw() is not merely a request to do so
     }
     else if (keysym == "<UP>") {
-        [cursor[windowMode], scroll[windowMode]] = win.scrollVert(-1, dirFileList[windowMode].length, LIST_HEIGHT, cursor[windowMode], scroll[windowMode], 1)
+        [cursor[windowMode], scroll[windowMode]] = win.scrollVert(-1, dirFileList[windowMode].length, LIST_HEIGHT, cursor[windowMode], scroll[windowMode], scrollPeek)
         drawFilePanel()
     }
     else if (keysym == "<DOWN>") {
-        [cursor[windowMode], scroll[windowMode]] = win.scrollVert(+1, dirFileList[windowMode].length, LIST_HEIGHT, cursor[windowMode], scroll[windowMode], 1)
+        [cursor[windowMode], scroll[windowMode]] = win.scrollVert(+1, dirFileList[windowMode].length, LIST_HEIGHT, cursor[windowMode], scroll[windowMode], scrollPeek)
         drawFilePanel()
     }
     else if (keysym == "<PAGE_UP>") {
-        [cursor[windowMode], scroll[windowMode]] = win.scrollVert(-LIST_HEIGHT, dirFileList[windowMode].length, LIST_HEIGHT, cursor[windowMode], scroll[windowMode], 1)
+        [cursor[windowMode], scroll[windowMode]] = win.scrollVert(-LIST_HEIGHT, dirFileList[windowMode].length, LIST_HEIGHT, cursor[windowMode], scroll[windowMode], scrollPeek)
         drawFilePanel()
     }
     else if (keysym == "<PAGE_DOWN>") {
-        [cursor[windowMode], scroll[windowMode]] = win.scrollVert(+LIST_HEIGHT, dirFileList[windowMode].length, LIST_HEIGHT, cursor[windowMode], scroll[windowMode], 1)
+        [cursor[windowMode], scroll[windowMode]] = win.scrollVert(+LIST_HEIGHT, dirFileList[windowMode].length, LIST_HEIGHT, cursor[windowMode], scroll[windowMode], scrollPeek)
         drawFilePanel()
     }
     else if (keyJustHit && keycode == 66) { // enter

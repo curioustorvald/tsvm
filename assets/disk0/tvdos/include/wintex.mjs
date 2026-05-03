@@ -96,8 +96,6 @@ class WindowObject {
  * @return [new cursor pos, new scroll pos]
  */
 function scrollVert(dy, listSize, listHeight, currentCursorPos, currentScrollPos, scrollPeek) {
-    let peek = 1
-
     // clamp dy
     if (currentCursorPos + dy > listSize - 1)
         dy = (listSize - 1) - currentCursorPos
@@ -108,13 +106,13 @@ function scrollVert(dy, listSize, listHeight, currentCursorPos, currentScrollPos
     
     // update vertical scroll stats
     if (dy != 0) {
-        let visible = listHeight - 1 - peek
+        let visible = listHeight - 1 - scrollPeek
 
         if (nextRow - currentScrollPos > visible) {
             currentScrollPos = nextRow - visible
         }
-        else if (nextRow - currentScrollPos < 0 + peek) {
-            currentScrollPos = nextRow - peek // nextRow is less than zero
+        else if (nextRow - currentScrollPos < 0 + scrollPeek) {
+            currentScrollPos = nextRow - scrollPeek // nextRow is less than zero
         }
 
         // NOTE: future-proofing here -- scroll clamping is moved outside of go-up/go-down
@@ -145,8 +143,6 @@ function scrollVert(dy, listSize, listHeight, currentCursorPos, currentScrollPos
  * @return [new cursor pos, new scroll pos]
  */
 function scrollHorz(dx, stringSize, stringViewSize, currentCursorPos, currentScrollPos, scrollPeek) {
-    let peek = 1
-
     // clamp dx
     if (currentCursorPos + dx > stringSize - 1)
         dx = (stringSize - 1) - currentCursorPos
@@ -157,13 +153,13 @@ function scrollHorz(dx, stringSize, stringViewSize, currentCursorPos, currentScr
 
     // update vertical scroll stats
     if (dx != 0) {
-        let visible = stringViewSize - 1 - peek
+        let visible = stringViewSize - 1 - scrollPeek
 
         if (nextCol - currentScrollPos > visible) {
             currentScrollPos = nextCol - visible
         }
-        else if (nextCol - currentScrollPos < 0 + peek) {
-            currentScrollPos = nextCol - peek // nextCol is less than zero
+        else if (nextCol - currentScrollPos < 0 + scrollPeek) {
+            currentScrollPos = nextCol - scrollPeek // nextCol is less than zero
         }
 
         // NOTE: future-proofing here -- scroll clamping is moved outside of go-up/go-down
