@@ -576,7 +576,7 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
             "assetsdir":"./assets",
             "ramsize":8388608,
             "cardslots":8,
-            "roms":["./assets/bios/tsvmbios.bin"],
+            "roms":["./assets/bios/tsvmbios.js"],
             "com1":{"cls":"net.torvald.tsvm.peripheral.TestDiskDrive", "args":[0, "./assets/disk0/"]},
             "com2":{"cls":"net.torvald.tsvm.peripheral.HttpModem", "args":[1024, -1]},
             "com3":{"cls":"net.torvald.tsvm.peripheral.TestDiskDrive", "args":[0, "./assets/diskMediabin/"]},
