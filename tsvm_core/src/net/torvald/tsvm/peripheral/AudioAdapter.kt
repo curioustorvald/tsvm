@@ -1093,6 +1093,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     //
     // Effect opcodes follow base-36 digit values (see TAUD_NOTE_EFFECTS.md):
     //   0x00       : no effect
+    //   0x08, 0x09 : Taud-only voice FX (8 = bitcrusher, 9 = overdrive; see §8/§9).
     //   0x0A..0x23 : letters A..Z (A=0x0A speed, B=0x0B order jump,
     //                C=0x0C pattern break, D=0x0D vol slide, E=0x0E pitch
     //                down, F=0x0F pitch up, G=0x10 tone porta,
@@ -1141,6 +1142,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     private object EffectOp {
         const val OP_NONE = 0x00
         const val OP_1 = 0x01
+        const val OP_8 = 0x08
+        const val OP_9 = 0x09
         const val OP_A = 0x0A
         const val OP_B = 0x0B
         const val OP_C = 0x0C
@@ -1406,6 +1409,71 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         voice.filterY2 = voice.filterY1
         voice.filterY1 = y0
         return y0
+    }
+
+    /**
+     * Apply Taud's voice-level overdrive (effect 9) and bitcrusher (effect 8) to a
+     * post-filter sample in [-1, 1].  Call once per output sample, per active voice.
+     *
+     * Order is overdrive → shared clipper → bitcrusher (sample-rate reduce → bit depth quantise).
+     * If neither effect is engaged the input is returned unchanged.  See TAUD_NOTE_EFFECTS.md §8/§9.
+     */
+    private fun applyTaudVoiceFx(voice: Voice, sample: Double): Double {
+        var s = sample
+        val overdriveOn = voice.overdriveAmp > 0
+        // 8..15 collapses to a no-op on TSVM's 8-bit mixdown, but we still allow the bit field to
+        // ride alongside an active sample-skip — only depth in 1..7 actually quantises.
+        val depthQuantises = voice.bitcrusherDepth in 1..7
+        val skipActive = voice.bitcrusherSkip > 0
+        val crushActive = depthQuantises || skipActive
+
+        if (overdriveOn) {
+            s *= (16 + voice.overdriveAmp) / 16.0
+            s = clipSample(s, voice.clipMode)
+        }
+
+        if (crushActive) {
+            if (voice.bitcrusherCounter == 0) {
+                if (depthQuantises) {
+                    val levels = (1 shl voice.bitcrusherDepth) - 1
+                    val clipped = clipSample(s, voice.clipMode).coerceIn(-1.0, 1.0)
+                    val q = kotlin.math.floor((clipped + 1.0) * 0.5 * levels + 0.5)
+                        .coerceIn(0.0, levels.toDouble())
+                    s = (q / levels) * 2.0 - 1.0
+                }
+                voice.bitcrusherHeld = s
+            } else {
+                s = voice.bitcrusherHeld
+            }
+            if (skipActive) {
+                voice.bitcrusherCounter = (voice.bitcrusherCounter + 1) % (voice.bitcrusherSkip + 1)
+            } else {
+                voice.bitcrusherCounter = 0
+            }
+        }
+        return s
+    }
+
+    /**
+     * Shared clipper for effects 8 and 9.  Modes: 0 clamp, 1 fold (triangle), 2 wrap (sawtooth).
+     * Inputs outside [-1, 1] are folded/wrapped back into range; well-behaved samples pass through.
+     */
+    private fun clipSample(x: Double, mode: Int): Double = when (mode and 3) {
+        1 -> {
+            // Ping-pong fold around ±1.  Loops handle arbitrary overdrive ratios up to 16.94×
+            // without runaway: each iteration shrinks |v| by 2, so worst-case ~5 passes.
+            var v = x
+            while (v > 1.0)  v = 2.0 - v
+            while (v < -1.0) v = -2.0 - v
+            v
+        }
+        2 -> {
+            // Period-2 wrap, mapped so that x = ±1 land on themselves (no DC step at boundary).
+            var v = ((x + 1.0) % 2.0)
+            if (v < 0.0) v += 2.0
+            v - 1.0
+        }
+        else -> x.coerceIn(-1.0, 1.0)  // mode 0 (and any reserved value) — clamp
     }
 
     /**
@@ -1701,6 +1769,13 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         v.panEnvOn = src.panEnvOn
         v.pfEnvOn = src.pfEnvOn
         v.noteFading = src.noteFading
+        // Voice-FX state (effects 8/9): preserve so the NNA-ghosted tail keeps the same timbre.
+        v.clipMode = src.clipMode
+        v.bitcrusherDepth = src.bitcrusherDepth
+        v.bitcrusherSkip = src.bitcrusherSkip
+        v.bitcrusherCounter = src.bitcrusherCounter
+        v.bitcrusherHeld = src.bitcrusherHeld
+        v.overdriveAmp = src.overdriveAmp
         v.sourceChannel = channel
         return v
     }
@@ -1848,6 +1923,46 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 ts.panLaw = flags and 1
                 ts.amigaMode = (flags and 2) != 0
                 ts.fadeoutCutOnZero = (flags and 4) != 0
+            }
+            EffectOp.OP_8 -> {
+                // 8 $xyzz — Bitcrusher.  See TAUD_NOTE_EFFECTS.md §8.
+                //   x  = clipping mode (shared with effect 9): 0 clamp, 1 fold, 2 wrap.
+                //   y  = bit depth 1..15 (0 disables quantiser; 8..15 no-op on TSVM 8-bit output).
+                //   zz = sample-skip count 0..255.
+                // 8 $0000 disables the bitcrusher entirely.
+                // 8 $x000 only updates the shared clipping mode (does not disturb depth/skip).
+                val x = (rawArg ushr 12) and 0xF
+                val y = (rawArg ushr 8) and 0xF
+                val z = rawArg and 0xFF
+                voice.clipMode = x and 3
+                if (rawArg == 0) {
+                    voice.bitcrusherDepth = 0
+                    voice.bitcrusherSkip = 0
+                    voice.bitcrusherCounter = 0
+                } else if (y == 0 && z == 0) {
+                    // x000 — clip mode only, leave bitcrusher state alone.
+                } else {
+                    voice.bitcrusherDepth = y
+                    voice.bitcrusherSkip = z
+                    voice.bitcrusherCounter = 0
+                }
+            }
+            EffectOp.OP_9 -> {
+                // 9 $x0zz — Overdrive.  See TAUD_NOTE_EFFECTS.md §9.
+                //   x  = clipping mode (shared with effect 8): 0 clamp, 1 fold, 2 wrap.
+                //   zz = amplification index 0..255; gain = (16 + zz) / 16  ⇒  $00=1×, $10=2×, $FF≈16.94×.
+                // 9 $0000 disables the overdrive entirely.
+                // 9 $x000 only updates the shared clipping mode.
+                val x = (rawArg ushr 12) and 0xF
+                val z = rawArg and 0xFF
+                voice.clipMode = x and 3
+                if (rawArg == 0) {
+                    voice.overdriveAmp = 0
+                } else if (z == 0) {
+                    // x000 — clip mode only.
+                } else {
+                    voice.overdriveAmp = z
+                }
             }
             EffectOp.OP_A -> {
                 val tr = (rawArg ushr 8) and 0xFF
@@ -2402,7 +2517,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             for (voice in ts.voices) {
                 if (!voice.active || voice.muted) continue
                 val voiceInst = instruments[voice.instrumentId]
-                val s = applyVoiceFilter(voice, fetchTrackerSample(voice, voiceInst))
+                val s = applyTaudVoiceFx(voice, applyVoiceFilter(voice, fetchTrackerSample(voice, voiceInst)))
                 val instGv = voiceInst.instGlobalVolume / 255.0
                 // Volume swing bias (random per-trigger, ±randomVolBias of 0..255 units folded into the 0..63 row volume).
                 val swingScale = 1.0 + voice.randomVolBias / 255.0
@@ -2434,7 +2549,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             for (bg in ts.backgroundVoices) {
                 if (!bg.active || bg.muted) continue
                 val bgInst = instruments[bg.instrumentId]
-                val s = applyVoiceFilter(bg, fetchTrackerSample(bg, bgInst))
+                val s = applyTaudVoiceFx(bg, applyVoiceFilter(bg, fetchTrackerSample(bg, bgInst)))
                 val instGv = bgInst.instGlobalVolume / 255.0
                 val swingScale = 1.0 + bg.randomVolBias / 255.0
                 val effEnvVol = if (bg.volEnvOn) bg.envVolume else 1.0
@@ -2769,6 +2884,18 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         var volColSlideDown = 0
         var panColSlideRight = 0
         var panColSlideLeft = 0
+
+        // Bitcrusher (effect 8) and Overdrive (effect 9) — Taud-only voice FX.
+        // clipMode is shared between both effects: 0=clamp, 1=fold, 2=wrap. See TAUD_NOTE_EFFECTS.md §8/§9.
+        var clipMode = 0
+        // Bitcrusher: depth in 1..15 (0 = quantiser disabled; 8..15 are no-op for TSVM 8-bit output).
+        var bitcrusherDepth = 0
+        // Bitcrusher: sample-skip count. 0 = no skip, N = hold post-FX output for N additional samples.
+        var bitcrusherSkip = 0
+        var bitcrusherCounter = 0          // sample-rate-reduction counter, mod (skip + 1)
+        var bitcrusherHeld = 0.0           // last emitted post-quantisation value, held when skipping
+        // Overdrive: 0 = disabled. Otherwise gain = (16 + amp) / 16, range 17/16..271/16 (≈16.94×).
+        var overdriveAmp = 0
 
         // Effect-recall memory for this voice.
         val mem = MemorySlots()

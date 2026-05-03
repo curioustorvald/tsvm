@@ -561,32 +561,106 @@ Peak at maximum settings: $7F × $FF >> 9 = $3F — the full panning range. Retr
 
 ## 8 $xyzz — Bitcrusher
 
-**Plain.** Applies Bitcrusher to the current voice.
+**Plain.** Applies a bitcrusher to the current voice. The crusher has two independent stages — a sample-rate reducer (`zz`, sample-and-hold) and a bit-depth quantiser (`y`) — and shares its clipping mode (`x`) with effect 9 (Overdrive). The two stages are orthogonal: enabling either is sufficient to engage the effect, and either can be active alone.
 
-- x: clipping mode. 0: clamp, 1: fold, 2: wrap
-- y: bit depth (1..15). 8..15 has no effect on TSVM audio adapter (already operates on 8 bits)
-- z: sample skip (0..255). 0: no skip, 1: use every 2nd samples, 2: use every 3rd samples, ..., 255: use every 256th samples
-- `8 0000` will disable the bitcrusher
-- `8 x000` will modify the clipping mode shared effect symbol '9'
+- **x — clipping mode** (shared with effect 9): `0` clamp (hard limit at ±1.0), `1` fold (ping-pong around ±1.0; values outside the range mirror back symmetrically), `2` wrap (saw-tooth wrap mod 2; ±1 are fixed points so no DC step at the boundary). Values 3..F are reserved and treated as clamp.
+- **y — bit depth**, range $1..$F. `0` disables the quantiser stage. `1` reduces the voice to a 1-bit (sign-only) signal. `8..F` are accepted but produce no audible quantisation, since TSVM's mix bus is already 8-bit; they are reserved for future hardware revisions.
+- **zz — sample skip**, range $00..$FF. `0` disables skip; non-zero N holds the post-quantiser output for N additional output samples (i.e. emit one fresh sample every N+1). The held value is the bitcrusher's *output*, so the sample-and-hold is downstream of the quantiser and the shared clipper.
+- `8 $0000` disables both stages and resets the shared clipping mode to clamp.
+- `8 $x000` updates only the shared clipping mode and leaves the active depth/skip undisturbed — useful for switching between clamp/fold/wrap mid-pattern without retyping the whole argument. The same form on effect 9 has identical semantics.
 
-**Compatibility.** Unique to Taud. No compatible equivalent exists.
+**Compatibility.** Unique to Taud — no ST3/IT/PT equivalent. The effect has no memory: every cell that names effect 8 must spell out its full argument (apart from the `$x000` shorthand described above). `8 $1100` ⇒ 1-bit, no skip, fold-clipped — a useful sanity check pattern.
 
-**Implementation.** TODO
+**Implementation.** Per-voice state: `bitcrusherDepth` (0..15; 0 = quantiser off), `bitcrusherSkip` (0..255), `bitcrusherCounter` (mod skip+1), `bitcrusherHeld` (last emitted sample), and `clipMode` (0..2, shared with effect 9). On row parse:
+
+```
+on row parse (8 $xyzz):
+    voice.clipMode = x & 3
+    if arg == $0000:
+        voice.bitcrusherDepth = 0
+        voice.bitcrusherSkip = 0
+        voice.bitcrusherCounter = 0
+    else if y == 0 and zz == 0:
+        # x000 — clip-mode-only update; preserve depth/skip/counter
+        pass
+    else:
+        voice.bitcrusherDepth = y
+        voice.bitcrusherSkip   = zz
+        voice.bitcrusherCounter = 0
+```
+
+On every output sample, after `applyVoiceFilter` and *after* the overdrive stage of effect 9:
+
+```
+on output sample (per voice):
+    if voice.bitcrusherCounter == 0:
+        s' = sample          # post-overdrive input
+        if 1 ≤ voice.bitcrusherDepth ≤ 7:
+            s' = clip(s', voice.clipMode)         # ensure in-range before quantising
+            levels = (1 << voice.bitcrusherDepth) - 1
+            q = round((s' + 1) × 0.5 × levels)    # nearest integer; clamp to [0, levels]
+            s' = (q / levels) × 2 - 1
+        voice.bitcrusherHeld = s'
+        out = s'
+    else:
+        out = voice.bitcrusherHeld
+    if voice.bitcrusherSkip > 0:
+        voice.bitcrusherCounter = (voice.bitcrusherCounter + 1) mod (voice.bitcrusherSkip + 1)
+```
+
+The clipper is shared between effects 8 and 9 and is implemented as a single helper:
+
+```
+clip(x, mode):
+    if mode == 1:                        # fold (triangle)
+        while x > +1: x = 2 - x
+        while x < -1: x = -2 - x
+        return x
+    if mode == 2:                        # wrap (saw, period 2)
+        v = ((x + 1) mod 2 + 2) mod 2
+        return v - 1
+    return clamp(x, -1, +1)              # mode 0 (and reserved values)
+```
+
+The voice-FX state is preserved verbatim by the NNA-ghost copier, so the post-NNA tail of a note keeps the same timbre as the foreground voice that spawned it.
 
 ---
 
 ## 9 $x0zz — Overdrive
 
-**Plain.** Amplify the volume.
+**Plain.** Amplifies the voice's post-filter signal and routes it through the shared clipper. With `x = 0` (clamp) the effect is a hard-knee soft-clipping distortion; with `x = 1` (fold) it becomes a wave-folder; with `x = 2` (wrap) it produces aggressive aliased fuzz with sawtooth-style discontinuities at the rails. Volume is *not* re-normalised after clipping — `9 $00FF` clamp-clipped plays at roughly the same loudness as the dry voice once everything saturates. The middle nibble is reserved and must be zero.
 
-- x: clipping mode. 0: clamp, 1: fold, 2: wrap
-- z: amplification. $00: 1x amplification (no extra volume), $01: 17/16 amplification, $02: 18/16 amplification, $10: 2x amplification (+ 6 dBFS), $F0: 16x amplification, $FF: 16.9375x amplification
-- `9 0000` will reset the overdrive
-- `9 x000` will modify the clipping mode shared with effect symbol '9'
+- **x — clipping mode** (shared with effect 8): `0` clamp, `1` fold, `2` wrap (see effect 8 for the precise transfer functions). Values 3..F are reserved and treated as clamp.
+- **zz — amplification index**, range $00..$FF. The applied gain is `(16 + zz) / 16`, so `$00` is 1.0× (effect inactive), `$10` is 2.0× (+6 dBFS), `$F0` is 16.0× (+24 dBFS), and `$FF` is 16.9375× (≈ +24.55 dBFS).
+- `9 $0000` resets the overdrive (gain returns to unity, the stage stops processing) **and** resets the shared clipping mode to clamp.
+- `9 $x000` updates only the shared clipping mode and leaves the active amplification undisturbed — symmetric with `8 $x000`.
 
-**Compatibility.** Unique to Taud. No compatible equivalent exists.
+**Compatibility.** Unique to Taud — no ST3/IT/PT equivalent. The effect has no memory.
 
-**Implementation.** TODO
+**Implementation.** Per-voice state: `overdriveAmp` (0..255; 0 = effect off) and `clipMode` (shared with effect 8). On row parse:
+
+```
+on row parse (9 $x0zz):
+    voice.clipMode = x & 3
+    if arg == $0000:
+        voice.overdriveAmp = 0
+    else if zz == 0:
+        # x000 — clip-mode-only update; preserve amp
+        pass
+    else:
+        voice.overdriveAmp = zz
+```
+
+On every output sample, after `applyVoiceFilter` and *before* the bitcrusher stage of effect 8:
+
+```
+on output sample (per voice):
+    if voice.overdriveAmp > 0:
+        sample = sample × (16 + voice.overdriveAmp) / 16
+        sample = clip(sample, voice.clipMode)
+```
+
+When both effects 8 and 9 are active on the same voice the chain is **filter → overdrive (×gain → clip) → bitcrusher (bit-depth quantise → sample-skip hold)**. Because the clipper is shared, changing `clipMode` from either effect propagates to the other on the next sample — there is one mode per voice, not one per stage.
 
 ---
 
