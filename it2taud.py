@@ -52,7 +52,7 @@ from taud_common import (
     EFF_K, EFF_L, EFF_M, EFF_N, EFF_O, EFF_P, EFF_Q, EFF_R, EFF_S, EFF_T,
     EFF_U, EFF_V, EFF_W, EFF_X, EFF_Y, EFF_Z,
     J_SEMI_TABLE,
-    d_arg_to_col, resample_linear, encode_cue, deduplicate_patterns,
+    d_arg_to_col, resample_linear, rescale_offset_effects, encode_cue, deduplicate_patterns,
     normalise_sample, encode_song_entry,
 )
 
@@ -1314,7 +1314,7 @@ def build_sample_inst_bin_it(samples_or_proxy: list,
 
         vprint(f"  instrument[{taud_idx}] '{s.name}' ptr:{ptr} c5spd:{s.c5_speed}")
 
-    return bytes(sample_bin) + bytes(inst_bin), offsets
+    return bytes(sample_bin) + bytes(inst_bin), offsets, ratio
 
 
 # ── Pattern builder ───────────────────────────────────────────────────────────
@@ -1682,7 +1682,7 @@ def assemble_taud(h: ITHeader, samples: list, instruments: list,
                 'dct':        inst.dct,
                 'dca':        inst.dca,
             }
-        sampleinst_raw, _ = build_sample_inst_bin_it(proxy, instr_data_by_slot)
+        sampleinst_raw, _, sample_ratio = build_sample_inst_bin_it(proxy, instr_data_by_slot)
     else:
         # Samples referenced directly; proxy is samples list (0-based, slot 0 unused)
         proxy = [None] + list(samples)
@@ -1691,7 +1691,7 @@ def assemble_taud(h: ITHeader, samples: list, instruments: list,
             for i, s in enumerate(samples)
             if s is not None
         }
-        sampleinst_raw, _ = build_sample_inst_bin_it(proxy)
+        sampleinst_raw, _, sample_ratio = build_sample_inst_bin_it(proxy)
 
     assert len(sampleinst_raw) == SAMPLEINST_SIZE
 
@@ -1723,8 +1723,11 @@ def assemble_taud(h: ITHeader, samples: list, instruments: list,
             pat_bin += build_pattern_it(cg, ch, default_pans[vi], inst_vols,
                                           amiga_mode=not h.linear_slides)
 
+    # Rescale TOP_O sample-offset args if samples were globally downsampled.
+    pat_bin = rescale_offset_effects(bytes(pat_bin), sample_ratio)
+
     orig_count   = len(taud_cue_list) * C
-    pat_bin, pat_remap, num_taud_pats = deduplicate_patterns(bytes(pat_bin), orig_count)
+    pat_bin, pat_remap, num_taud_pats = deduplicate_patterns(pat_bin, orig_count)
     vprint(f"  patterns: {orig_count} → {num_taud_pats} unique "
            f"({orig_count - num_taud_pats} deduplicated)")
 

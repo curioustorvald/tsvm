@@ -116,17 +116,17 @@ P:"UNIMPLEMENTED", // IT: panning slide. Use PanEff instead
 Q:"Retrigger    ",
 R:"Tremolo      ",
 S:"Special      ",
-S0:"UNIMPLEMENTED", // PT: Set audio filter.
+S0:"UNIMPLEMENTED", // PT: Set audio filter
 S1:"Gliss. ctrl  ",
 S2:"Sample tune  ",
 S3:"Vibrato LFO  ",
 S4:"Tremolo LFO  ",
 S5:"Panbrello LFO",
-S6:"UNIMPLEMENTED", // IT: Fine pattern delay.
-S7:"UNIMPLEMENTED", // IT: misc. functions
-S8:"Channel pan  ", // Taud: 8-bit channel panning.
-S9:"UNIMPLEMENTED", // IT: Sound control.
-SA:"UNIMPLEMENTED", // SC3: Stereo control. IT: Sample offset high twobyte.
+S6:"Fine delay   ",
+S7:"Note action  ",
+S8:"Channel pan  ", // Taud: 8-bit channel panning
+S9:"UNIMPLEMENTED", // IT: Sound control
+SA:"UNIMPLEMENTED", // SC3: Stereo control. IT: Sample offset high twobyte (not applicable because Taud has 64k limit)
 SB:"Pattern loop ",
 SC:"Note cut     ",
 SD:"Note delay   ",
@@ -135,10 +135,10 @@ SF:"Funk it      ",
 T:"Tempo        ",
 U:"Fine vibrato ",
 V:"Global volume",
-W:"UNIMPLEMENTED", // IT: Global volume slide.
-X:"UNIMPLEMENTED", // IT: 8-bit channel panning. Use PanEff or S80xx instead
+W:"G.Vol Slide  ",
+X:"UNIMPLEMENTED", // IT: 8-bit channel panning. Use S80xx instead
 Y:"Panbrello    ",
-Z:"UNIMPLEMENTED", // IT: MIDI macro.
+Z:"UNIMPLEMENTED", // IT: MIDI macro
 }
 const panFxNames = {
 0:"Set to",

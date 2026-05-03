@@ -131,6 +131,27 @@ def resample_linear(data: bytes, ratio: float) -> bytes:
     return bytes(out)
 
 
+def rescale_offset_effects(pat_bin: bytes, ratio: float) -> bytes:
+    """Scale TOP_O sample-offset args in raw pattern bytes by `ratio`.
+
+    Each row is 8 bytes; byte 5 is the effect opcode, bytes 6-7 are the
+    little-endian 16-bit arg (= byte offset into the sample). When the
+    sample bin overflows and every sample is downsampled globally, the
+    offset commands must shrink the same amount or O-jumps land past
+    the new end of sample.
+    """
+    if ratio == 1.0 or not pat_bin:
+        return pat_bin
+    out = bytearray(pat_bin)
+    for i in range(0, len(out) - 7, 8):
+        if out[i + 5] == TOP_O:
+            arg = out[i + 6] | (out[i + 7] << 8)
+            arg = max(0, min(0xFFFF, int(arg * ratio + 0.5)))
+            out[i + 6] = arg & 0xFF
+            out[i + 7] = (arg >> 8) & 0xFF
+    return bytes(out)
+
+
 def encode_cue(patterns12: list, instruction: int) -> bytearray:
     """Encode a 32-byte cue entry for up to 20 voices with 12-bit pattern numbers."""
     pats = list(patterns12) + [0xFFF] * NUM_VOICES

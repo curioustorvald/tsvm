@@ -39,7 +39,7 @@ from taud_common import (
     TOP_J, TOP_K, TOP_L, TOP_O, TOP_Q, TOP_R, TOP_S, TOP_T, TOP_U, TOP_V, TOP_Y,
     SEL_SET, SEL_UP, SEL_DOWN, SEL_FINE,
     J_SEMI_TABLE,
-    d_arg_to_col, resample_linear, encode_cue, deduplicate_patterns,
+    d_arg_to_col, resample_linear, rescale_offset_effects, encode_cue, deduplicate_patterns,
     encode_song_entry,
 )
 
@@ -546,7 +546,7 @@ def build_sample_inst_bin(samples: list) -> tuple:
         vprint(f"  instrument[{taud_idx}] '{s.name}' ptr={ptr} c2spd={s.c2spd} "
                f"vol={s.volume} loop=({ls},{le},{'on' if loop_mode else 'off'})")
 
-    return bytes(sample_bin) + bytes(inst_bin), offsets
+    return bytes(sample_bin) + bytes(inst_bin), offsets, ratio
 
 
 # ── Pattern build ────────────────────────────────────────────────────────────
@@ -704,7 +704,7 @@ def assemble_taud(mod: dict) -> bytes:
     relocate_late_note_delays(patterns, order_list, n_channels, init_speed)
 
     vprint("  building sample/instrument bin…")
-    sampleinst_raw, _offsets = build_sample_inst_bin(samples)
+    sampleinst_raw, _offsets, sample_ratio = build_sample_inst_bin(samples)
     assert len(sampleinst_raw) == SAMPLEINST_SIZE
 
     compressed = gzip.compress(sampleinst_raw, compresslevel=9, mtime=0)
@@ -742,9 +742,12 @@ def assemble_taud(mod: dict) -> bytes:
             pat_bin += build_pattern(grid, ch, default_pan, inst_vols)
     assert len(pat_bin) == n_patterns * n_channels * PATTERN_BYTES
 
+    # Rescale TOP_O sample-offset args if samples were globally downsampled.
+    pat_bin = rescale_offset_effects(bytes(pat_bin), sample_ratio)
+
     vprint("  deduplicating patterns…")
     orig_count = n_patterns * n_channels
-    pat_bin, pat_remap, num_taud_pats = deduplicate_patterns(bytes(pat_bin), orig_count)
+    pat_bin, pat_remap, num_taud_pats = deduplicate_patterns(pat_bin, orig_count)
     vprint(f"  patterns: {orig_count} → {num_taud_pats} unique "
            f"({orig_count - num_taud_pats} deduplicated)")
 

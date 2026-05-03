@@ -43,7 +43,7 @@ from taud_common import (
     EFF_K, EFF_L, EFF_M, EFF_N, EFF_O, EFF_P, EFF_Q, EFF_R, EFF_S, EFF_T,
     EFF_U, EFF_V, EFF_W, EFF_X, EFF_Y, EFF_Z,
     J_SEMI_TABLE,
-    d_arg_to_col, resample_linear, encode_cue, deduplicate_patterns,
+    d_arg_to_col, resample_linear, rescale_offset_effects, encode_cue, deduplicate_patterns,
     normalise_sample, encode_song_entry,
 )
 
@@ -528,7 +528,7 @@ def build_sample_inst_bin(instruments: list) -> tuple:
         if inst.c2spd > 65535:
             vprint(f"  warning: sampling rate of '{inst.name}' exceeds 65535 (got '{inst.c2spd}')")
 
-    return bytes(sample_bin) + bytes(inst_bin), offsets
+    return bytes(sample_bin) + bytes(inst_bin), offsets, ratio
 
 
 def _default_channel_pan(ch_setting: int) -> int:
@@ -740,7 +740,7 @@ def assemble_taud(h: S3MHeader, instruments: list, patterns: list) -> bytes:
 
     # Build sample+instrument bin
     vprint("  building sample/instrument bin…")
-    sampleinst_raw, _offsets = build_sample_inst_bin(instruments)
+    sampleinst_raw, _offsets, sample_ratio = build_sample_inst_bin(instruments)
     assert len(sampleinst_raw) == SAMPLEINST_SIZE
 
     # Compress
@@ -787,10 +787,13 @@ def assemble_taud(h: S3MHeader, instruments: list, patterns: list) -> bytes:
                                       inst_vols, amiga_mode=not h.linear_slides)
     assert len(pat_bin) == num_taud_pats * PATTERN_BYTES
 
+    # Rescale TOP_O sample-offset args if samples were globally downsampled.
+    pat_bin = rescale_offset_effects(bytes(pat_bin), sample_ratio)
+
     # Deduplicate identical patterns
     vprint("  deduplicating patterns…")
     orig_count = num_taud_pats
-    pat_bin, pat_remap, num_taud_pats = deduplicate_patterns(bytes(pat_bin), orig_count)
+    pat_bin, pat_remap, num_taud_pats = deduplicate_patterns(pat_bin, orig_count)
     vprint(f"  patterns: {orig_count} → {num_taud_pats} unique ({orig_count - num_taud_pats} deduplicated)")
 
     # Cue sheet (using remapped pattern indices)
