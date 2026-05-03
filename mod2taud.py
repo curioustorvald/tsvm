@@ -287,7 +287,17 @@ def encode_effect(cmd: int, arg: int, ch: int = 0, row: int = 0) -> tuple:
         return (TOP_O, (arg & 0xFF) << 8, None, None)
 
     if cmd == 0xA:
-        return (TOP_NONE, 0, d_arg_to_col(arg), None)
+        # Route Axy via Taud's effect-column D so it can coexist with a Cxx
+        # SET on the same row. (Vol-column slide selectors share the cell with
+        # the SET selector — when both Cxx and Axy land on a trigger row the
+        # vol-col slot can only encode one, and the slide gets dropped, losing
+        # 5 ticks of slide per row.) Resolution-time A00 is already collapsed
+        # to a concrete arg in resolve_pt_recalls; a remaining 0 means truly
+        # no-op (memory was empty), so emit nothing rather than D 00 (which
+        # would recall TSVM's D memory).
+        if arg == 0:
+            return (TOP_NONE, 0, None, None)
+        return (TOP_D, (arg & 0xFF) << 8, None, None)
 
     if cmd == 0xB:
         return (TOP_B, arg & 0xFF, None, None)
