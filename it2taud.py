@@ -1254,8 +1254,9 @@ def build_sample_inst_bin_it(samples_or_proxy: list,
         if vol_env:
             _write_env(inst_bin, base + 21,  vol_env)
         else:
-            # Single-point: hold at sample default volume.
-            inst_bin[base + 21] = min(getattr(s, 'vol', 63), 63)
+            # Single-point envelope held at full-scale; the per-sample level is
+            # carried by IGV (byte 171), so the envelope must be a unit multiplier.
+            inst_bin[base + 21] = 63
             inst_bin[base + 22] = 0
             # Force engine to use this single point.
             struct.pack_into('<H', inst_bin, base + 15, USE_ENV_BIT)

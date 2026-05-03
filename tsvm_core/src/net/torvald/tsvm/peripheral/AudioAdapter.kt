@@ -1469,8 +1469,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             if (i0 in ls until inst.sampleLoopEnd && inst.funkBit(i0 - ls)) b0 = b0 xor 0x80
             if (i1 in ls until inst.sampleLoopEnd && inst.funkBit(i1 - ls)) b1 = b1 xor 0x80
         }
-        val s0 = (b0 - 128) / 128.0
-        val s1 = (b1 - 128) / 128.0
+        val s0 = (b0 - 127.5) / 127.5
+        val s1 = (b1 - 127.5) / 127.5
         val sample = s0 + (s1 - s0) * frac
 
         if (voice.forward) {
@@ -2371,6 +2371,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         }
     }
 
+    private fun Double.sqrt() = Math.sqrt(this)
+
     internal fun generateTrackerAudio(playhead: Playhead): ByteArray? {
         val ts = playhead.trackerState ?: return null
 
@@ -2408,7 +2410,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 val swingScale = 1.0 + voice.randomVolBias / 255.0
                 // Volume envelope is bypassed (treated as unity) when S $77 has disabled it.
                 val effEnvVol = if (voice.volEnvOn) voice.envVolume else 1.0
-                val vol = effEnvVol * voice.fadeoutVolume * voice.rowVolume / 63.0 *
+                val vol = effEnvVol.sqrt() * voice.fadeoutVolume * (voice.rowVolume / 63.0).sqrt() *
                           swingScale * gvol * mvol * instGv * playhead.masterVolume / 255.0
                 val pan = if (voice.hasPanEnv && voice.panEnvOn) {
                     val envPanRaw = (voice.envPan * 255.0).roundToInt().coerceIn(0, 255)
@@ -2438,7 +2440,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 val instGv = bgInst.instGlobalVolume / 255.0
                 val swingScale = 1.0 + bg.randomVolBias / 255.0
                 val effEnvVol = if (bg.volEnvOn) bg.envVolume else 1.0
-                val vol = effEnvVol * bg.fadeoutVolume * bg.rowVolume / 63.0 *
+                val vol = effEnvVol.sqrt() * bg.fadeoutVolume * (bg.rowVolume / 63.0).sqrt() *
                           swingScale * gvol * mvol * instGv * playhead.masterVolume / 255.0
                 val pan = if (bg.hasPanEnv && bg.panEnvOn) {
                     val envPanRaw = (bg.envPan * 255.0).roundToInt().coerceIn(0, 255)

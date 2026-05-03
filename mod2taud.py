@@ -506,7 +506,9 @@ def build_sample_inst_bin(samples: list) -> tuple:
         le       = min(s.loop_end,   65535)
         loop_mode = 1 if (s.flags & 1) else 0
         flags_byte = loop_mode & 0x3
-        env_vol   = min(s.volume, 63)
+        # Envelope first point is full-scale; per-sample level is carried by
+        # IGV (byte 171) so the envelope must contribute a unit multiplier.
+        env_vol   = 63
         vol_env_flags = 0x0020   # use-envelope bit
 
         base = taud_idx * 192
@@ -763,7 +765,7 @@ def assemble_taud(mod: dict) -> bytes:
         pat_bin_comp_size=len(pat_comp),
         cue_sheet_comp_size=len(cue_comp),
         global_vol=0xFF,
-        mixing_vol=0x7F,
+        mixing_vol=180,
     )
     assert len(song_table) == TAUD_SONG_ENTRY
 

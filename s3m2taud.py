@@ -495,8 +495,9 @@ def build_sample_inst_bin(instruments: list) -> tuple:
         loop_mode = 1 if (inst.flags & 1) else 0
         flags_byte = loop_mode & 0x3   # 0b 0000 00pp
 
-        # Volume envelope: hold at instrument volume (clamped to 0x3F).
-        env_vol = min(inst.volume, 63)
+        # Volume envelope first point is full-scale; per-sample level is carried
+        # by IGV (byte 171) so the envelope contributes a unit multiplier.
+        env_vol = 63
         # Vol env-flags: enable use-envelope bit (b=1) so engine reads the single point.
         vol_env_flags = 0x0020   # b=bit 5
 
@@ -820,7 +821,7 @@ def assemble_taud(h: S3MHeader, instruments: list, patterns: list) -> bytes:
         pat_bin_comp_size=len(pat_comp),
         cue_sheet_comp_size=len(cue_comp),
         global_vol=0xFF,
-        mixing_vol=0x7F,
+        mixing_vol=180,
     )
     assert len(song_table) == TAUD_SONG_ENTRY
 

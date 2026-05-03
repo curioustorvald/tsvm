@@ -856,8 +856,8 @@ function drawControlHint() {
     ['sep'],
         ['Sp','Edit'],
     ['sep'],
+        ['n','Solo'],
         ['m','Mute'],
-        ['s','Solo'],
     ['sep'],
         ['Tab','Panel']
 //    ['sep'],
@@ -1397,7 +1397,7 @@ function timelineInput(wo, event) {
             drawVoiceHeaders(); drawSeparators(separatorStyle); drawAlwaysOnElems(); drawVoiceDetail()
         }
         else if (keyJustHit && !shiftDown && event.includes(keys.M)) { toggleMute(cursorVox) }
-        else if (keyJustHit && !shiftDown && event.includes(keys.S)) { toggleSolo(cursorVox) }
+        else if (keyJustHit && !shiftDown && event.includes(keys.N)) { toggleSolo(cursorVox) }
         return
     }
 
@@ -1434,7 +1434,7 @@ function timelineInput(wo, event) {
     }
 
     if (keyJustHit && !shiftDown && event.includes(keys.M)) { toggleMute(cursorVox); return }
-    if (keyJustHit && !shiftDown && event.includes(keys.S)) { toggleSolo(cursorVox); return }
+    if (keyJustHit && !shiftDown && event.includes(keys.N)) { toggleSolo(cursorVox); return }
 
     if      (keysym === "<UP>")        { cursorRow -= moveDelta;      rowMove = true }
     else if (keysym === "<DOWN>")      { cursorRow += moveDelta;      rowMove = true }

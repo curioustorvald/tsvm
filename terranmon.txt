@@ -2111,7 +2111,7 @@ TODO:
     [x] Fix 4THSYM.it filters
     [x] 4THSYM.it: pitchbend is wrong, some notes keep playing (loudly!) even if new notes are emitted
     [x] `*2taud.py`: some notes are emitted with wrong volume-set command. Tested with GSLINGER.mod: on order 0x15 channel 1, mod2taud.py emits volume 8 -- also many of the effects are dropped. Suggested solution: currently all converters write default volume to the voleff when original modules (.mod/.s3m/.it) specify nothing; we should also write nothing and let the engine resolve the value just like other trackers do (also we now have "Instrument Global Volume" on instrument definition unlike the other time). This bug may affecting other formats, not just mod2taud.py, as well
-    [ ] nearly_there_.mod: `C#5 SD300 / ... / C-5 SD200 / A#4 / G#4 (at tickspeed 4)`: every `C-5 SD200` (there are four occurances) gets skipped
+    [x] nearly_there_.mod: `C#5 SD300 / ... / C-5 SD200 / A#4 / G#4 (at tickspeed 4)`: every `C-5 SD200` (there are four occurances) gets skipped
     [ ] scale Oxxxx when samples get resampled
     [ ] implement bitcrusher and overdrive  (eff sym '8' and '9')
 
