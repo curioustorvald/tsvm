@@ -1981,11 +1981,11 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 val lo = hi and 0x0F
                 val hin = (hi ushr 4) and 0x0F
                 when {
-                    hi == 0xFF -> { voice.rowVolume = (voice.rowVolume + 0xF).coerceAtMost(0x3F); voice.channelVolume = voice.rowVolume }   // DFF quirk: fine up by F
-                    hin == 0xF && lo != 0 -> { voice.rowVolume = (voice.rowVolume - lo).coerceAtLeast(0); voice.channelVolume = voice.rowVolume }
-                    lo == 0xF && hin != 0 -> { voice.rowVolume = (voice.rowVolume + hin).coerceAtMost(0x3F); voice.channelVolume = voice.rowVolume }
-                    hin == 0 && lo != 0 -> { voice.slideMode = 5; voice.slideArg = -lo }     // slide down per non-first tick
-                    lo == 0 && hin != 0 -> { voice.slideMode = 5; voice.slideArg = hin }     // slide up per non-first tick
+                    hi == 0xFF || hi == 0xF0 -> { voice.rowVolume = (voice.rowVolume + 0xF).coerceAtMost(0x3F); voice.channelVolume = voice.rowVolume }   // $FF00 / $F000 quirk: fine up by F (TAUD_NOTE_EFFECTS.md §D)
+                    hin == 0xF && lo != 0 -> { voice.rowVolume = (voice.rowVolume - lo).coerceAtLeast(0); voice.channelVolume = voice.rowVolume }        // $Fy00 fine down by y
+                    lo == 0xF && hin != 0 -> { voice.rowVolume = (voice.rowVolume + hin).coerceAtMost(0x3F); voice.channelVolume = voice.rowVolume }    // $xF00 fine up by x
+                    hin == 0 && lo != 0 -> { voice.slideMode = 5; voice.slideArg = -lo }     // $0y00 coarse down per non-first tick
+                    lo == 0 && hin != 0 -> { voice.slideMode = 5; voice.slideArg = hin }     // $x000 coarse up per non-first tick
                 }
             }
             EffectOp.OP_E -> {

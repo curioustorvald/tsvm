@@ -1052,54 +1052,111 @@ function drawVoiceDetail(isVerticalLayout = false, ptn = null, activeRow = -1, c
         if (voleff == 0xC0) { voleffop1 = 999; voleffarg1 = '' }
         if (paneff == 0xC0) { paneffop1 = 999; paneffarg1 = '' }
 
-        const lines = []
-        lines.push({ label: 'Note ', value: `${noteToStr(note)} ($${note.hex04()})`,         fg: colNote   })
-        lines.push({ label: 'Inst ', value: inst === 0 ? '---' : ('$'+inst.hex02()),    fg: colInst   })
-        lines.push({ label: 'Vx   ', value: `${volFxNames[voleffop1]} ${voleffarg1}`, fg: colVol    })
-        lines.push({ label: 'Px   ', value: `${panFxNames[paneffop1]} ${paneffarg1}`, fg: colPan    })
-        lines.push({ label: 'Fx    ', value: fxName.trimEnd(),                    fg: colEffOp  })
-        lines.push({ label: 'FxOp ', value: fx,                                  fg: colEffOp  })
-        lines.push({ label: 'FxArg', value: `$${effarg.hex04()}`,                fg: colEffArg })
+        // Two-column, two-section layout.  Upper section: this row's cell fields,
+        // split L (Note/Inst/Vx/Px) / R (Fx/FxOp/FxArg).  Lower section: cumulative
+        // engine state, packed in column-major order across both columns.
+        const colW = Math.floor(detailW / 2)
+        const col1X = dx
+        const col2X = dx + colW
+        const labelW = 6
+        const valW1  = colW - labelW - 2
+        const valW2  = (detailW - colW) - labelW - 2
 
-        if (cumState !== null) {
-            lines.push({ label: '------', value: '',                                                                  fg: colSep    })
-            lines.push({ label: 'L.Note', value: noteToStr(cumState.lastNote),                                        fg: colNote   })
-            lines.push({ label: 'L.Inst', value: cumState.lastInst === 0 ? '---' : ('$'+cumState.lastInst.hex02()),          fg: colInst   })
-            lines.push({ label: 'Vol   ', value: `$${cumState.volAbs.hex02()}`,                                       fg: colVol    })
-            lines.push({ label: 'Pan   ', value: `$${cumState.panAbs.hex02()}`,                                       fg: colPan    })
+        const drawLine = (y, x, line, valWidth) => {
+            con.move(y, x)
+            con.color_pair(colStatus, 255)
+            print((line.label + '      ').substring(0, labelW) + ' ')
+            con.color_pair(line.fg, 255)
+            const v = (line.value + ' '.repeat(valWidth + 1))
+            print(v.substring(0, valWidth + 1))
+        }
+        const blankLine = (y, x, width) => {
+            con.move(y, x)
+            con.color_pair(colBackPtn, 255)
+            print(' '.repeat(width))
+        }
+
+        const upperLeft = [
+            { label: 'Note ', value: `${noteToStr(note)} ($${note.hex04()})`, fg: colNote },
+            { label: 'Inst ', value: inst === 0 ? '---' : ('$'+inst.hex02()), fg: colInst },
+            { label: 'Vx   ', value: `${volFxNames[voleffop1]} ${voleffarg1}`, fg: colVol },
+            { label: 'Px   ', value: `${panFxNames[paneffop1]} ${paneffarg1}`, fg: colPan },
+        ]
+        const upperRight = [
+            { label: 'Fx   ', value: fxName.trimEnd(),         fg: colEffOp  },
+            { label: 'FxOp ', value: fx,                       fg: colEffOp  },
+            { label: 'FxArg', value: `$${effarg.hex04()}`,     fg: colEffArg },
+        ]
+        const upperHeight = Math.max(upperLeft.length, upperRight.length)
+
+        for (let i = 0; i < upperHeight; i++) {
+            const y = PTNVIEW_OFFSET_Y + i
+            if (i < upperLeft.length)  drawLine(y, col1X, upperLeft[i],  valW1)
+            else                        blankLine(y, col1X, colW)
+            if (i < upperRight.length) drawLine(y, col2X, upperRight[i], valW2)
+            else                        blankLine(y, col2X, detailW - colW)
+        }
+
+        // Section divider
+        const sepY = PTNVIEW_OFFSET_Y + upperHeight
+        con.move(sepY, dx)
+        con.color_pair(colSep, 255)
+        print('\u00C4'.repeat(detailW))
+
+        // Lower section: cumulative state.
+        const lowerY0 = sepY + 1
+        const lowerH  = PTNVIEW_HEIGHT - upperHeight - 1
+        let cumLines = []
+        if (cumState !== null && lowerH > 0) {
             const _apo  = Math.abs(cumState.pitchOff)
             const _psgn = cumState.pitchOff > 0 ? '+' : cumState.pitchOff < 0 ? '-' : '='
             const _absN = (cumState.lastNote !== 0xFFFF && cumState.pitchOff !== 0)
                 ? noteToStr(Math.max(0, Math.min(0xFFFE, cumState.lastNote + cumState.pitchOff))) + ' '
                 : ''
-            lines.push({ label: 'Pitch ', value: `${_absN}(${_psgn}$${_apo.hex04()})`,                               fg: colNote   })
-            lines.push({ label: `E${MIDDOT}F   `, value: `$${cumState.memEF.hex04()}`,                                        fg: colEffArg })
-            lines.push({ label: 'G     ', value: `$${cumState.memG.hex04()}`,                                         fg: colEffArg })
-            lines.push({ label: `H${MIDDOT}U   `, value: `$${cumState.memHU.speed.hex02()}/$${cumState.memHU.depth.hex02()}`, fg: colEffArg })
-            lines.push({ label: 'R     ', value: `$${cumState.memR.speed.hex02()}/$${cumState.memR.depth.hex02()}`,   fg: colEffArg })
-            lines.push({ label: 'Y     ', value: `$${cumState.memY.speed.hex02()}/$${cumState.memY.depth.hex02()}`,   fg: colEffArg })
-            lines.push({ label: 'D     ', value: `$${cumState.memD.hex04()}`,                                         fg: colEffArg })
-            lines.push({ label: 'I     ', value: `$${cumState.memI.hex04()}`,                                         fg: colEffArg })
-            lines.push({ label: 'J     ', value: `$${cumState.memJ.hex04()}`,                                         fg: colEffArg })
-            lines.push({ label: 'O     ', value: `$${cumState.memO.hex04()}`,                                         fg: colEffArg })
-            lines.push({ label: 'Q     ', value: `$${cumState.memQ.hex04()}`,                                         fg: colEffArg })
-            lines.push({ label: 'Tslid ', value: `$${cumState.memTSlide.hex02()}`,                                    fg: colEffArg })
+            const _clipNm = ['clamp','fold','wrap','wrap'][cumState.clipMode]
+            const _bcStr  = (cumState.bitcrushDepth === 0 && cumState.bitcrushSkip === 0)
+                ? 'off'
+                : `d${cumState.bitcrushDepth.toString(16).toUpperCase()}/s$${cumState.bitcrushSkip.hex02()}`
+            const _odStr  = (cumState.overdriveAmp === 0) ? 'off' : `$${cumState.overdriveAmp.hex02()}`
+
+            cumLines = [
+                { label: 'L.Note', value: noteToStr(cumState.lastNote),                                          fg: colNote   },
+                { label: 'L.Inst', value: cumState.lastInst === 0 ? '---' : ('$'+cumState.lastInst.hex02()),     fg: colInst   },
+                { label: 'Vol   ', value: `$${cumState.volAbs.hex02()}`,                                         fg: colVol    },
+                { label: 'Pan   ', value: `$${cumState.panAbs.hex02()}`,                                         fg: colPan    },
+                { label: 'Pitch ', value: `${_absN}(${_psgn}$${_apo.hex04()})`,                                  fg: colNote   },
+                { label: 'BPM   ', value: `${cumState.bpm}`,                                                     fg: colStatus },
+                { label: 'Spd   ', value: `${cumState.speed}`,                                                   fg: colStatus },
+                { label: 'GVol  ', value: `$${cumState.globalVol.hex02()}`,                                      fg: colStatus },
+                { label: `E${MIDDOT}F   `, value: `$${cumState.memEF.hex04()}`,                                  fg: colEffArg },
+                { label: 'G     ', value: `$${cumState.memG.hex04()}`,                                           fg: colEffArg },
+                { label: `H${MIDDOT}U   `, value: `$${cumState.memHU.speed.hex02()}/$${cumState.memHU.depth.hex02()}`, fg: colEffArg },
+                { label: 'R     ', value: `$${cumState.memR.speed.hex02()}/$${cumState.memR.depth.hex02()}`,     fg: colEffArg },
+                { label: 'Y     ', value: `$${cumState.memY.speed.hex02()}/$${cumState.memY.depth.hex02()}`,     fg: colEffArg },
+                { label: 'D     ', value: `$${cumState.memD.hex04()}`,                                           fg: colEffArg },
+                { label: 'I     ', value: `$${cumState.memI.hex04()}`,                                           fg: colEffArg },
+                { label: 'J     ', value: `$${cumState.memJ.hex04()}`,                                           fg: colEffArg },
+                { label: 'O     ', value: `$${cumState.memO.hex04()}`,                                           fg: colEffArg },
+                { label: 'Q     ', value: `$${cumState.memQ.hex04()}`,                                           fg: colEffArg },
+                { label: 'Tslid ', value: `$${cumState.memTSlide.hex02()}`,                                      fg: colEffArg },
+                { label: 'W     ', value: `$${cumState.memW.hex04()}`,                                           fg: colEffArg },
+                { label: 'BCrsh ', value: _bcStr,                                                                fg: colEffArg },
+                { label: 'OvDrv ', value: _odStr,                                                                fg: colEffArg },
+                { label: 'Clip  ', value: _clipNm,                                                               fg: colEffArg },
+            ]
         }
 
-        const showCount = Math.min(lines.length, PTNVIEW_HEIGHT)
-        for (let i = 0; i < showCount; i++) {
-            const y    = PTNVIEW_OFFSET_Y + i
-            const line = lines[i]
-            con.move(y, dx)
-            con.color_pair(colStatus, 255)
-            print((line.label + '      ').substring(0, 6) + ' ')
-            con.color_pair(line.fg, 255)
-            print((line.value + ' '.repeat(detailW)).substring(0, detailW - 8))
-        }
-        for (let i = showCount; i < PTNVIEW_HEIGHT; i++) {
-            con.move(PTNVIEW_OFFSET_Y + i, dx)
-            con.color_pair(colBackPtn, 255)
-            print(' '.repeat(detailW))
+        // Column-major fill: cap per-column height to lowerH, drop overflow.
+        const perCol  = Math.min(lowerH, Math.ceil(cumLines.length / 2))
+        const totShow = Math.min(cumLines.length, perCol * 2)
+        for (let i = 0; i < perCol; i++) {
+            const yL = lowerY0 + i
+            const idxL = i
+            const idxR = perCol + i
+            if (idxL < totShow) drawLine(yL, col1X, cumLines[idxL], valW1)
+            else                blankLine(yL, col1X, colW)
+            if (idxR < totShow) drawLine(yL, col2X, cumLines[idxR], valW2)
+            else                blankLine(yL, col2X, detailW - colW)
         }
     }
 }
@@ -1574,24 +1631,50 @@ function getActiveRowForDetail() {
     return (playbackMode !== PLAYMODE_NONE) ? pbRow : patternGridRow
 }
 
-// Walk pattern rows 0..uptoRow and accumulate effect-memory cohort state
+// Walk pattern rows 0..uptoRow and accumulate engine-visible cohort state.
+// Mirrors AudioAdapter.kt applyTrackerRow / applyEffectRow / applySEffect for the
+// state surfaced in the voice-detail panel.  Out of scope: B/C control flow,
+// SEx pattern delay, SBx pattern loop, NNA / past-note actions, envelope toggles.
 function simulateRowState(ptnDat, uptoRow) {
-    const OP_A = 10
+    const OP_1 = 1,  OP_8 = 8,  OP_9 = 9,  OP_A = 10
     const OP_D = 13, OP_E = 14, OP_F = 15, OP_G = 16
     const OP_H = 17, OP_I = 18, OP_J = 19, OP_O = 24
-    const OP_Q = 26, OP_R = 27, OP_T = 29, OP_U = 30, OP_Y = 34
+    const OP_Q = 26, OP_R = 27, OP_S = 28, OP_T = 29
+    const OP_U = 30, OP_V = 31, OP_W = 32, OP_Y = 34
+
+    // ST3-style finetune offsets, mirrors AudioAdapter.kt FINETUNE_OFFSET
+    const FINETUNE_OFFSET = [
+        -0x0154, -0x0132, -0x0111, -0x00E4, -0x00B8, -0x008B, -0x005D, -0x003B,
+         0x0000,  0x0023,  0x0046,  0x0074,  0x0098,  0x00C8,  0x00F9,  0x0110
+    ]
 
     let lastNote = 0xFFFF, lastInst = 0
-    let volAbs = 0x3F, panAbs = 0x20
+    let volAbs   = 0x3F                  // 6-bit channel volume
+    let panAbs   = 0x80                  // 8-bit channel pan (engine width); centre = $80
     let pitchOff = 0, portaTarget = -1
-    let speed = audio.getTickRate(PLAYHEAD) // not always going to be correct but it should be mostly
+    let bpm   = audio.getBPM(PLAYHEAD)   // best-effort starting tempo
+    let speed = audio.getTickRate(PLAYHEAD)
+    let globalVol = 0xFF
+    let panLaw = 0, amigaMode = false, fadeoutCutOnZero = false
+
     let memEF = 0, memG = 0
     let memHU = { speed: 0, depth: 0 }
     let memR  = { speed: 0, depth: 0 }
     let memY  = { speed: 0, depth: 0 }
-    let memD = 0, memI = 0, memJ = 0, memO = 0, memQ = 0, memTSlide = 0
+    let memD = 0, memI = 0, memJ = 0, memO = 0, memQ = 0, memTSlide = 0, memW = 0
+
+    // Bitcrusher / overdrive (clipMode shared between OP_8 and OP_9)
+    let bitcrushDepth = 0, bitcrushSkip = 0
+    let overdriveAmp  = 0
+    let clipMode      = 0
+
+    // S-effect state
+    let glissandoOn = false
+    let vibratoWave = 0, tremoloWave = 0, panbrelloWave = 0
 
     const clampV = v => Math.max(0, Math.min(0x3F, v | 0))
+    const clampP = v => Math.max(0, Math.min(0xFF, v | 0))
+    const clampG = v => Math.max(0, Math.min(0xFF, v | 0))
 
     const limit = Math.min(uptoRow, ROWS_PER_PAT - 1)
     for (let row = 0; row <= limit; row++) {
@@ -1603,53 +1686,88 @@ function simulateRowState(ptnDat, uptoRow) {
         const effop  = ptnDat[off+5]
         const effarg = ptnDat[off+6] | (ptnDat[off+7] << 8)
 
-        // Notes on a portamento row (G) become the slide target; they don't retrigger
+        // Note column
         const isGRow = (effop === OP_G)
+        const isNoteDelay = (effop === OP_S) && (((effarg >>> 12) & 0xF) === 0xD)
         if (note !== 0xFFFF && note !== 0xFFFE) {
-            if (!isGRow) {
+            if (note === 0x0000) {
+                // key-off; sample stays referenced
+            } else if (isGRow) {
+                portaTarget = note
+            } else if (isNoteDelay) {
+                // Delayed trigger: latched but doesn't fire on this row's first tick.
+                // For "state at end of row" treat as if it triggered.
                 lastNote = note
                 pitchOff = 0
                 portaTarget = -1
             } else {
-                portaTarget = note
+                lastNote = note
+                pitchOff = 0
+                portaTarget = -1
             }
         }
         if (inst !== 0) lastInst = inst
 
-        // Volume column: set OR slide (0xC0 = 3.00 nop is the empty sentinel, not 0x00)
-        const volop    = (voleff >>> 6) & 3
-        const volefarg = voleff & 63
+        // Pre-scan effect column for S$80xx (8-bit pan SET wins over volcol/pancol SET).
+        const rowHasS80 = (effop === OP_S) && (((effarg >>> 12) & 0xF) === 0x8)
+
+        // Volume column.  voleff = (sel<<6) | value6.  $C0 = sel 3 / value 0 = empty nop.
+        const volSel = (voleff >>> 6) & 3
+        const volVal = voleff & 63
         if (voleff !== 0xC0) {
-            if (volop === 0) {
-                volAbs = volefarg
-            } else if (volop === 1) {
-                volAbs = clampV(volAbs + (volefarg & 15) * (speed - 1))
-            } else if (volop === 2) {
-                volAbs = clampV(volAbs - (volefarg & 15) * (speed - 1))
-            } else if (volop === 3 && volefarg !== 0) {
-                if (volefarg >= 32) volAbs = clampV(volAbs + (volefarg & 15))  // fine slide up
-                else                volAbs = clampV(volAbs - (volefarg & 15))  // fine slide down
+            if (volSel === 0) {
+                volAbs = volVal
+            } else if (volSel === 1) {
+                volAbs = clampV(volAbs + volVal * (speed - 1))     // engine: per non-first tick
+            } else if (volSel === 2) {
+                volAbs = clampV(volAbs - volVal * (speed - 1))
+            } else if (volSel === 3 && volVal !== 0) {
+                const mag = volVal & 0x1F
+                if ((volVal & 0x20) !== 0) volAbs = clampV(volAbs + mag)   // fine up
+                else                       volAbs = clampV(volAbs - mag)   // fine down
             }
         }
 
-        // Pan column: set OR slide (0xC0 = 3.00 nop is the empty sentinel, not 0x00)
-        const panop    = (paneff >>> 6) & 3
-        const panefarg = paneff & 63
+        // Pan column.  Same encoding as volume.  Engine pan is 8-bit; SET expands 6→8 by replicating bits.
+        const panSel = (paneff >>> 6) & 3
+        const panVal = paneff & 63
         if (paneff !== 0xC0) {
-            if (panop === 0) {
-                panAbs = panefarg
-            } else if (panop === 1) {
-                panAbs = clampV(panAbs + (panefarg & 15) * (speed - 1))
-            } else if (panop === 2) {
-                panAbs = clampV(panAbs - (panefarg & 15) * (speed - 1))
-            } else if (panop === 3 && panefarg !== 0) {
-                if (panefarg >= 32) panAbs = clampV(panAbs + (panefarg & 15))
-                else                panAbs = clampV(panAbs - (panefarg & 15))
+            if (panSel === 0) {
+                if (!rowHasS80) panAbs = ((panVal << 2) | (panVal >>> 4)) & 0xFF
+            } else if (panSel === 1) {
+                panAbs = clampP(panAbs + panVal * (speed - 1))
+            } else if (panSel === 2) {
+                panAbs = clampP(panAbs - panVal * (speed - 1))
+            } else if (panSel === 3 && panVal !== 0) {
+                const mag = panVal & 0x1F
+                if ((panVal & 0x20) !== 0) panAbs = clampP(panAbs + mag)
+                else                       panAbs = clampP(panAbs - mag)
             }
         }
 
         if (effop !== 0 || effarg !== 0) {
-            if (effop === OP_A) {
+            if (effop === OP_1) {
+                const flags = (effarg >>> 8) & 0xFF
+                panLaw           = flags & 1
+                amigaMode        = (flags & 2) !== 0
+                fadeoutCutOnZero = (flags & 4) !== 0
+            }
+            else if (effop === OP_8) {
+                const x = (effarg >>> 12) & 0xF
+                const y = (effarg >>>  8) & 0xF
+                const z =  effarg         & 0xFF
+                clipMode = x & 3
+                if (effarg === 0) { bitcrushDepth = 0; bitcrushSkip = 0 }
+                else if (y !== 0 || z !== 0) { bitcrushDepth = y; bitcrushSkip = z }
+            }
+            else if (effop === OP_9) {
+                const x = (effarg >>> 12) & 0xF
+                const z =  effarg         & 0xFF
+                clipMode = x & 3
+                if (effarg === 0) overdriveAmp = 0
+                else if (z !== 0) overdriveAmp = z
+            }
+            else if (effop === OP_A) {
                 if ((effarg >>> 8) !== 0) speed = (effarg >>> 8)
             }
             else if (effop === OP_D) {
@@ -1658,16 +1776,16 @@ function simulateRowState(ptnDat, uptoRow) {
                     const hb    = (raw >>> 8) & 0xFF
                     const hiNib = (hb >>> 4) & 0xF
                     const loNib = hb & 0xF
-                    if (hiNib === 0xF) {
-                        // $Fy00 fine slide down, but $F000/$FF00 → fine slide up by $F
-                        if (hb === 0xFF || loNib === 0) volAbs = clampV(volAbs + 0xF)
-                        else                             volAbs = clampV(volAbs - loNib)
-                    } else if (loNib === 0xF) {
-                        volAbs = clampV(volAbs + hiNib)      // $xF00 fine slide up
+                    if (hb === 0xFF || hb === 0xF0) {
+                        volAbs = clampV(volAbs + 0xF)               // $FF00 / $F000 quirk
+                    } else if (hiNib === 0xF && loNib !== 0) {
+                        volAbs = clampV(volAbs - loNib)              // $Fy00 fine down
+                    } else if (loNib === 0xF && hiNib !== 0) {
+                        volAbs = clampV(volAbs + hiNib)              // $xF00 fine up
                     } else if (hiNib === 0 && loNib !== 0) {
-                        volAbs = clampV(volAbs - loNib * (speed - 1))  // $0y00 coarse down
+                        volAbs = clampV(volAbs - loNib * (speed - 1))   // $0y00 coarse down
                     } else if (hiNib !== 0 && loNib === 0) {
-                        volAbs = clampV(volAbs + hiNib * (speed - 1))  // $x000 coarse up
+                        volAbs = clampV(volAbs + hiNib * (speed - 1))   // $x000 coarse up
                     }
                 }
             }
@@ -1698,27 +1816,83 @@ function simulateRowState(ptnDat, uptoRow) {
             }
             else if (effop === OP_H || effop === OP_U) {
                 const spd = (effarg >>> 8) & 0xFF; const dep = effarg & 0xFF
-                if (spd !== 0) memHU.speed = spd; if (dep !== 0) memHU.depth = dep
+                if (spd !== 0) memHU.speed = spd
+                if (dep !== 0) memHU.depth = dep
             }
             else if (effop === OP_R) {
                 const spd = (effarg >>> 8) & 0xFF; const dep = effarg & 0xFF
-                if (spd !== 0) memR.speed = spd; if (dep !== 0) memR.depth = dep
+                if (spd !== 0) memR.speed = spd
+                if (dep !== 0) memR.depth = dep
             }
             else if (effop === OP_Y) {
                 const spd = (effarg >>> 8) & 0xFF; const dep = effarg & 0xFF
-                if (spd !== 0) memY.speed = spd; if (dep !== 0) memY.depth = dep
+                if (spd !== 0) memY.speed = spd
+                if (dep !== 0) memY.depth = dep
             }
             else if (effop === OP_I) { if (effarg !== 0) memI = effarg }
             else if (effop === OP_J) { if (effarg !== 0) memJ = effarg }
             else if (effop === OP_O) { if (effarg !== 0) memO = effarg }
             else if (effop === OP_Q) { if (effarg !== 0) memQ = effarg }
-            else if (effop === OP_T) { if ((effarg >>> 8) === 0 && effarg !== 0) memTSlide = effarg }
+            else if (effop === OP_S) {
+                const sub = (effarg >>> 12) & 0xF
+                const x   = (effarg >>>  8) & 0xF
+                if (sub === 0x1) {
+                    glissandoOn = (x !== 0)
+                } else if (sub === 0x2) {
+                    pitchOff += FINETUNE_OFFSET[x]
+                } else if (sub === 0x3) {
+                    vibratoWave = x & 3
+                } else if (sub === 0x4) {
+                    tremoloWave = x & 3
+                } else if (sub === 0x5) {
+                    panbrelloWave = x & 3
+                } else if (sub === 0x8) {
+                    panAbs = effarg & 0xFF       // S$80xx full 8-bit pan SET
+                }
+                // 0x6/0x7/0xB/0xC/0xD/0xE/0xF — out of scope (control flow / per-tick / NNA).
+            }
+            else if (effop === OP_T) {
+                const hi = (effarg >>> 8) & 0xFF
+                if (hi !== 0) {
+                    bpm = Math.max(24, Math.min(280, hi + 0x18))
+                } else {
+                    const low = effarg & 0xFF
+                    if ((low & 0xF0) === 0x00 || (low & 0xF0) === 0x10) memTSlide = low
+                    // bpm slide accumulates per-tick in the engine; not modelled at row granularity
+                }
+            }
+            else if (effop === OP_V) {
+                globalVol = (effarg >>> 8) & 0xFF
+            }
+            else if (effop === OP_W) {
+                const raw = (effarg !== 0) ? (memW = effarg) : memW
+                if (raw !== 0) {
+                    const hb    = (raw >>> 8) & 0xFF
+                    const hiNib = (hb >>> 4) & 0xF
+                    const loNib = hb & 0xF
+                    if (hb === 0xFF || hb === 0xF0) {
+                        globalVol = clampG(globalVol + 0xF)
+                    } else if (hiNib === 0xF && loNib !== 0) {
+                        globalVol = clampG(globalVol - loNib)
+                    } else if (loNib === 0xF && hiNib !== 0) {
+                        globalVol = clampG(globalVol + hiNib)
+                    } else if (hiNib === 0 && loNib !== 0) {
+                        globalVol = clampG(globalVol - loNib * (speed - 1))
+                    } else if (hiNib !== 0 && loNib === 0) {
+                        globalVol = clampG(globalVol + hiNib * (speed - 1))
+                    }
+                }
+            }
         }
     }
 
     return { lastNote, lastInst, volAbs, panAbs, pitchOff,
+             bpm, speed, globalVol,
+             panLaw, amigaMode, fadeoutCutOnZero,
+             bitcrushDepth, bitcrushSkip, overdriveAmp, clipMode,
+             glissandoOn, vibratoWave, tremoloWave, panbrelloWave,
              memEF, memG, memHU, memR, memY,
-             memD, memI, memJ, memO, memQ, memTSlide }
+             memD, memI, memJ, memO, memQ, memTSlide, memW }
 }
 
 function drawPatternListColumn() {
