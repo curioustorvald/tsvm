@@ -40,6 +40,7 @@ class CharacterLCDdisplay(assetsRoot: String, vm: VM) : GraphicsAdapter(assetsRo
         shader: ShaderProgram?,
         uiFBO: FrameBuffer?
     ) {
+        if (disposed) return
         batch.shader = null
         batch.inUse {
             batch.color = Color.WHITE

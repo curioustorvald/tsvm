@@ -29,8 +29,10 @@ internal object UnsafeHelper {
         return UnsafePtr(ptr, size, caller)
     }
 
-    fun memcpy(src: UnsafePtr, fromIndex: Long, dest: UnsafePtr, toIndex: Long, copyLength: Long) =
+    fun memcpy(src: UnsafePtr, fromIndex: Long, dest: UnsafePtr, toIndex: Long, copyLength: Long) {
+        if (src.destroyed || dest.destroyed) return
         unsafe.copyMemory(src.ptr + fromIndex, dest.ptr + toIndex, copyLength)
+    }
     fun memcpy(srcAddress: Long, destAddress: Long, copyLength: Long) =
         unsafe.copyMemory(srcAddress, destAddress, copyLength)
     fun memcpyRaw(srcObj: Any?, srcPos: Long, destObj: Any?, destPos: Long, len: Long) =
@@ -84,81 +86,96 @@ internal class UnsafePtr(pointer: Long, allocSize: Long, private val caller: Any
         }
     }
 
-    private inline fun checkNullPtr(index: Long) { // ignore what IDEA says and do inline this
-        //// commenting out because of the suspected (or minor?) performance impact.
-        //// You may break the glass and use this tool when some fucking incomprehensible bugs ("vittujen vitun bugit")
-        //// appear (e.g. getting garbage values when it fucking shouldn't)
-
-//        if (destroyed) { throw DanglingPointerException("The pointer is already destroyed ($this)") }
-//        if (index !in 0 until size) throw AddressOverflowException("Index: $index; alloc size: $size; pointer: ${this}\n${Thread.currentThread().stackTrace.joinToString("\n", limit=10) { "    $it" }}")
+    /**
+     * Returns true when the operation should proceed; false when the pointer is destroyed
+     * (so the caller short-circuits to a safe no-op / zero return).
+     *
+     * Why no exception: a JS worker thread that survives killVMenv (because it wasn't
+     * tracked in vm.contexts, e.g. raw java.lang.Thread spawned by JS code) will keep
+     * poking peripheral memory for one or more iterations after dispose(). Letting it
+     * actually call unsafe.putByte on freed memory corrupts the malloc heap and crashes
+     * the JVM with `free_list_checksum_botch`. Returning quietly turns the race into a
+     * harmless no-op until the thread drains.
+     */
+    private inline fun aliveAt(index: Long): Boolean {
+        if (destroyed) return false
+        if (index < 0 || index >= size) return false
+        return true
     }
 
     operator fun get(index: Long): Byte {
-        checkNullPtr(index)
+        if (!aliveAt(index)) return 0
         return UnsafeHelper.unsafe.getByte(ptr + index)
     }
 
     operator fun set(index: Long, value: Byte) {
-        checkNullPtr(index)
+        if (!aliveAt(index)) return
         UnsafeHelper.unsafe.putByte(ptr + index, value)
     }
 
 
     fun getFloatFree(index: Long): Float {
-        checkNullPtr(index)
+        if (!aliveAt(index + 3)) return 0f
         return UnsafeHelper.unsafe.getFloat(ptr + index)
     }
     fun getFloat(unit: Long): Float {
-        checkNullPtr(unit * 4L)
-        return UnsafeHelper.unsafe.getFloat(ptr + (unit * 4L))
+        val idx = unit * 4L
+        if (!aliveAt(idx + 3)) return 0f
+        return UnsafeHelper.unsafe.getFloat(ptr + idx)
     }
 
     fun getIntFree(index: Long): Int {
-        checkNullPtr(index)
+        if (!aliveAt(index + 3)) return 0
         return UnsafeHelper.unsafe.getInt(ptr + index)
     }
     fun getInt(unit: Long): Int {
-        checkNullPtr(unit * 4L)
-        return UnsafeHelper.unsafe.getInt(ptr + (unit * 4L))
+        val idx = unit * 4L
+        if (!aliveAt(idx + 3)) return 0
+        return UnsafeHelper.unsafe.getInt(ptr + idx)
     }
 
     fun getShortFree(index: Long): Short {
-        checkNullPtr(index)
+        if (!aliveAt(index + 1)) return 0
         return UnsafeHelper.unsafe.getShort(ptr + index)
     }
     fun getShort(unit: Long): Short {
-        checkNullPtr(unit * 2L)
-        return UnsafeHelper.unsafe.getShort(ptr + (unit * 2L))
+        val idx = unit * 2L
+        if (!aliveAt(idx + 1)) return 0
+        return UnsafeHelper.unsafe.getShort(ptr + idx)
     }
 
     fun setFloatFree(index: Long, value: Float) {
-        checkNullPtr(index)
+        if (!aliveAt(index + 3)) return
         UnsafeHelper.unsafe.putFloat(ptr + index, value)
     }
     fun setFloat(unit: Long, value: Float) {
-        checkNullPtr(unit * 4L)
-        UnsafeHelper.unsafe.putFloat(ptr + (unit * 4L), value)
+        val idx = unit * 4L
+        if (!aliveAt(idx + 3)) return
+        UnsafeHelper.unsafe.putFloat(ptr + idx, value)
     }
 
     fun setIntFree(index: Long, value: Int) {
-        checkNullPtr(index)
+        if (!aliveAt(index + 3)) return
         UnsafeHelper.unsafe.putInt(ptr + index, value)
     }
     fun setInt(unit: Long, value: Int) {
-        checkNullPtr(unit * 4L)
-        UnsafeHelper.unsafe.putInt(ptr + (unit * 4L), value)
+        val idx = unit * 4L
+        if (!aliveAt(idx + 3)) return
+        UnsafeHelper.unsafe.putInt(ptr + idx, value)
     }
 
     fun setShortFree(index: Long, value: Short) {
-        checkNullPtr(index)
+        if (!aliveAt(index + 1)) return
         UnsafeHelper.unsafe.putShort(ptr + index, value)
     }
     fun setShortUnit(unit: Long, value: Short) {
-        checkNullPtr(unit * 2L)
-        UnsafeHelper.unsafe.putShort(ptr + (unit * 2L), value)
+        val idx = unit * 2L
+        if (!aliveAt(idx + 1)) return
+        UnsafeHelper.unsafe.putShort(ptr + idx, value)
     }
 
     fun fillWith(byte: Byte) {
+        if (destroyed) return
         UnsafeHelper.unsafe.setMemory(ptr, size, byte)
     }
 

@@ -333,6 +333,29 @@ class VM(
             try { it.join(500L) } catch (_: InterruptedException) { Thread.currentThread().interrupt() }
         }
         contexts.clear()
+
+        // Some JS code (e.g. TVDOS) spawns workers that aren't routed through Parallel.attachProgram,
+        // so they never land in `contexts`. We can still find them by walking the JVM thread set and
+        // matching the per-VM suffix that VMRunnerFactory uses for thread names ("…!<vmId>").
+        val suffix = "!${id.text}"
+        val all = arrayOfNulls<Thread>(Thread.activeCount() * 2)
+        val n = Thread.enumerate(all)
+        for (i in 0 until n) {
+            val t = all[i] ?: continue
+            if (t === Thread.currentThread()) continue
+            val name = t.name
+            if (name.endsWith(suffix) || name == "VmRunner:${id.text}") {
+                t.interrupt()
+            }
+        }
+        for (i in 0 until n) {
+            val t = all[i] ?: continue
+            if (t === Thread.currentThread()) continue
+            val name = t.name
+            if (name.endsWith(suffix) || name == "VmRunner:${id.text}") {
+                try { t.join(500L) } catch (_: InterruptedException) { Thread.currentThread().interrupt() }
+            }
+        }
     }
 
     /**

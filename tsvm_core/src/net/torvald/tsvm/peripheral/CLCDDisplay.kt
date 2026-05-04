@@ -45,6 +45,7 @@ class CLCDDisplay(assetsRoot: String, vm: VM) : GraphicsAdapter(assetsRoot, vm, 
         shader: ShaderProgram?,
         uiFBO: FrameBuffer?
     ) {
+        if (disposed) return
         batch.shader = null
         batch.inUse {
             batch.color = Color.WHITE

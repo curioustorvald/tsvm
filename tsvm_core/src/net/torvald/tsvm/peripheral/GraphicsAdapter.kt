@@ -942,7 +942,11 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
         try { this.dispose() } catch (_: GdxRuntimeException) {} catch (_: IllegalArgumentException) {}
     }
 
+    @Volatile var disposed = false; private set
+
     override fun dispose() {
+        if (disposed) return
+        disposed = true
         //testTex.dispose()
 //        paletteShader.tryDispose()
 //        textShader.tryDispose()
@@ -986,6 +990,11 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
     private val isRefSize = (WIDTH == 560 && HEIGHT == 448)
 
     open fun render(delta: Float, uiBatch: SpriteBatch, xoff: Float, yoff: Float, flipY: Boolean = false, shader: ShaderProgram? = null, uiFBO: FrameBuffer? = null) {
+        // Bail out if the adapter has already been torn down. Otherwise touching
+        // any of the disposed Pixmaps / Textures / native buffers below would
+        // raise a GdxRuntimeException or SIGSEGV.
+        if (disposed) return
+
         uiFBO?.end()
 
 
