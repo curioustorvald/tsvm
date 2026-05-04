@@ -325,7 +325,13 @@ class VM(
     }
 
     fun killAllContexts() {
-        contexts.forEach { it.interrupt() }
+        // Snapshot first: interrupt() can race with the worker thread mutating `contexts`
+        // (see Parallel.kill / attachProgram) and we want to wait on every one of them.
+        val snapshot = contexts.toList()
+        snapshot.forEach { it.interrupt() }
+        snapshot.forEach {
+            try { it.join(500L) } catch (_: InterruptedException) { Thread.currentThread().interrupt() }
+        }
         contexts.clear()
     }
 

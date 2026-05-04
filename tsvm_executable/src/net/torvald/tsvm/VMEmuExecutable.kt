@@ -90,6 +90,11 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
     var vmRunners = HashMap<VmId, VMRunner>() // <VM's identifier, VMRunner>
     var coroutineJobs = HashMap<VmId, Thread>() // <VM's identifier, Job>
 
+    // Per-VM rising-edge latch for the RESET key combo (Ctrl+Shift+R+S). The reboot
+    // only fires when the user releases the keys, otherwise we'd restart-spam every
+    // frame while the combo is held.
+    private val rebootLatched = HashMap<VmId, Boolean>()
+
     internal val whatToDoOnVmExceptionQueue = ArrayList<() -> Unit>()
 
     companion object {
@@ -288,15 +293,20 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
     }
 
     private fun reboot(profileName: String) {
-        val vm = currentlyLoadedProfiles[profileName]!!
+        val vm = currentlyLoadedProfiles[profileName] ?: return
 
-        /*vmRunners[vm.id]!!.close()
-        coroutineJobs[vm.id]!!.interrupt()
+        // Tear down the old session (joins the runner thread, then disposes
+        // peripherals) before spinning up a new one. Without the join, the old
+        // JS thread races the new one on shared VM memory / IO state.
+        killVMenv(vm)
+        initVMenv(vm, profileName)
 
-        vm.init()
-        initVMenv(vm, profileName)*/
-
-        // hypervisor will take over by monitoring MMIO addr 48
+        // The old IOSpace was kept (peripheralTable[0] survives init/kill), so
+        // the InputProcessor reference is still valid; just make sure the
+        // currently focused viewport is still wired to it.
+        if (currentVMselection != null && vms[currentVMselection!!]?.vm?.id == vm.id) {
+            Gdx.input.inputProcessor = vm.getIO()
+        }
     }
 
     private fun updateGame(delta: Float) {
@@ -312,8 +322,27 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
         }
 
         vms.forEachIndexed { index, it ->
-            if (it?.vm?.resetDown == true && index == currentVMselection) { reboot(it.profileName) }
-            if (it?.vm?.isRunning == true) it?.vm?.update(delta)
+            if (it == null) return@forEachIndexed
+            val vmId = it.vm.id
+
+            // Trigger reboot on the *release* edge of the RESET key combo, and
+            // only for the focused viewport (resetDown for a hidden VM is
+            // already kept false by IOSpace.update; this guard is belt-and-braces).
+            if (index == currentVMselection) {
+                if (it.vm.resetDown) {
+                    rebootLatched[vmId] = true
+                }
+                else if (rebootLatched[vmId] == true) {
+                    rebootLatched[vmId] = false
+                    reboot(it.profileName)
+                    return@forEachIndexed // VM was just rebuilt; skip the update tick
+                }
+            }
+            else {
+                rebootLatched[vmId] = false
+            }
+
+            if (it.vm.isRunning) it.vm.update(delta)
         }
 
         updateMenu()

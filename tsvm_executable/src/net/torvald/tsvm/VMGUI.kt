@@ -172,8 +172,34 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
     private fun killVMenv() {
         if (vmKilled.compareAndSet(0, System.currentTimeMillis())) {
             System.err.println("VMGUI is killing VM environment...")
+
+            // Order is critical: stop ALL execution first, then dispose peripherals.
+            // If we disposed peripherals while the runner thread is still alive, the
+            // thread would touch destroyed UnsafePtrs and SIGSEGV.
+
+            // 1. Stop parallel/child contexts. park() interrupts and joins them.
             vm.park()
             vm.poke(-90L, -128)
+
+            // 2. Interrupt the main runner thread and cancel the GraalVM context.
+            if (::coroutineJob.isInitialized) coroutineJob.interrupt()
+            try { if (::vmRunner.isInitialized) vmRunner.close() } catch (_: Throwable) {}
+
+            // 3. Wait for the main runner thread to actually finish.
+            if (::coroutineJob.isInitialized && coroutineJob !== Thread.currentThread()) {
+                try {
+                    coroutineJob.join(2000L)
+                    if (coroutineJob.isAlive) {
+                        System.err.println("[VMGUI] runner ${vm.id} did not exit within 2s; proceeding anyway")
+                        coroutineJob.interrupt()
+                    }
+                }
+                catch (_: InterruptedException) {
+                    Thread.currentThread().interrupt()
+                }
+            }
+
+            // 4. Now it's safe to release native resources held by peripherals.
             for (i in 1 until vm.peripheralTable.size) {
                 try {
                     vm.peripheralTable[i].peripheral?.dispose()
@@ -181,8 +207,7 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
                 catch (_: Throwable) {
                 }
             }
-            coroutineJob.interrupt()
-            vmRunner.close()
+
             vm.getPrintStream = { TODO() }
             vm.getErrorStream = { TODO() }
             vm.getInputStream = { TODO() }
@@ -195,12 +220,12 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
     private var rebootRequested = false
 
     private fun reboot() {
-        /*vmRunner.close()
-        coroutineJob.interrupt()
-
-        init()*/
-
-        // hypervisor will take over by monitoring MMIO addr 48
+        // Tear down the old session (joins the runner thread, then disposes
+        // peripherals) before re-initialising. Without the join, the old JS
+        // thread races the new one on shared VM memory / IO state and can
+        // SIGSEGV on disposed peripherals.
+        killVMenv()
+        init()
     }
 
     private var updateAkku = 0.0

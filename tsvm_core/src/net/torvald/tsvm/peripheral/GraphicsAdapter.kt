@@ -1362,8 +1362,12 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
             textCursorIsOn = !textCursorIsOn
         }
 
-        // force light cursor up while typing
-        textCursorIsOn = textCursorIsOn || ((1..254).any { Gdx.input.isKeyPressed(it) })
+        // force light cursor up while typing -- only honour global key state when
+        // this VM is the focused viewport; otherwise hidden VMs would react to
+        // keypresses meant for the focused one.
+        if (Gdx.input.inputProcessor === vm.getIO()) {
+            textCursorIsOn = textCursorIsOn || ((1..254).any { Gdx.input.isKeyPressed(it) })
+        }
 
 
     }

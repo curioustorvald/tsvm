@@ -122,8 +122,39 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
     private var rebootRequested = false
 
     private fun reboot() {
-        vmRunner.close()
-        coroutineJob.interrupt()
+        // Order is critical: stop ALL execution first, then dispose peripherals
+        // before re-initialising. Without this, the old JS thread races the new
+        // one on shared VM memory / IO state and can SIGSEGV on disposed peripherals.
+
+        // 1. Stop parallel/child contexts. park() interrupts and joins them.
+        vm.park()
+        vm.poke(-90L, -128)
+
+        // 2. Interrupt the main runner thread and cancel the GraalVM context.
+        if (::coroutineJob.isInitialized) coroutineJob.interrupt()
+        try { if (::vmRunner.isInitialized) vmRunner.close() } catch (_: Throwable) {}
+
+        // 3. Wait for the main runner thread to actually finish.
+        if (::coroutineJob.isInitialized && coroutineJob !== Thread.currentThread()) {
+            try {
+                coroutineJob.join(2000L)
+                if (coroutineJob.isAlive) {
+                    System.err.println("[VMGUI] runner ${vm.id} did not exit within 2s; proceeding anyway")
+                    coroutineJob.interrupt()
+                }
+            }
+            catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
+        }
+
+        // 4. Now it's safe to release native resources held by peripherals.
+        for (i in 1 until vm.peripheralTable.size) {
+            try {
+                vm.peripheralTable[i].peripheral?.dispose()
+            }
+            catch (_: Throwable) {}
+        }
 
         vm.init()
         init()

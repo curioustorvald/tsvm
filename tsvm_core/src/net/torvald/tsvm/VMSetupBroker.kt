@@ -22,6 +22,16 @@ object VMSetupBroker {
      * @param coroutineJobs Hashmap on the host of VMs that holds the coroutine-job object for the currently running VM-instance. Key: Int(VM's identifier), value: [kotlin.coroutines.Job]
      */
     fun initVMenv(vm: VM, profileJson: JsonValue, profileName: String, gpu: GraphicsAdapter, vmRunners: HashMap<VmId, VMRunner>, coroutineJobs: HashMap<VmId, Thread>, whatToDoOnVmException: (Throwable) -> Unit) {
+        // Refuse to start a new runner while the previous one is still alive:
+        // running both concurrently would race on the VM's memory / IO and lead
+        // to mixed text input, garbled rendering, and SIGSEGV on disposed peripherals.
+        coroutineJobs[vm.id]?.let { old ->
+            if (old.isAlive) {
+                System.err.println("[VMSetupBroker] previous runner for ${vm.id} is still alive; tearing it down before re-init")
+                killVMenv(vm, vmRunners, coroutineJobs)
+            }
+        }
+
         vm.init()
 
         try {
@@ -61,9 +71,38 @@ object VMSetupBroker {
      */
     fun killVMenv(vm: VM, vmRunners: HashMap<VmId, VMRunner>, coroutineJobs: HashMap<VmId, Thread>) {
 
+        // Order is critical: stop ALL execution first, then dispose peripherals.
+        // If we disposed peripherals while the runner thread is still alive, the
+        // thread would touch destroyed UnsafePtrs and SIGSEGV.
+
+        // 1. Stop parallel/child contexts. park() interrupts and joins them.
         vm.park()
         vm.poke(-90L, -128)
 
+        // 2. Interrupt the main runner thread and cancel the GraalVM context.
+        //    context.close(true) cancels in-flight script evaluation.
+        val runnerThread = coroutineJobs[vm.id]
+        runnerThread?.interrupt()
+        try { vmRunners[vm.id]?.close() } catch (_: Throwable) {}
+
+        // 3. Wait for the main runner thread to actually finish.
+        if (runnerThread != null && runnerThread !== Thread.currentThread()) {
+            try {
+                runnerThread.join(2000L)
+                if (runnerThread.isAlive) {
+                    // Last resort: re-interrupt and accept that disposal will
+                    // happen with the thread still alive. This is logged so
+                    // diagnostics surface a stuck VM rather than failing silently.
+                    System.err.println("[VMSetupBroker] runner ${vm.id} did not exit within 2s; proceeding anyway")
+                    runnerThread.interrupt()
+                }
+            }
+            catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
+        }
+
+        // 4. Now it's safe to release native resources held by peripherals.
         for (i in 1 until vm.peripheralTable.size) {
             try {
                 vm.peripheralTable[i].peripheral?.dispose()
@@ -71,8 +110,9 @@ object VMSetupBroker {
             catch (_: Throwable) {}
         }
 
-        coroutineJobs[vm.id]?.interrupt()
-        vmRunners[vm.id]?.close()
+        // 5. Drop runner / job handles so a subsequent initVMenv won't see stale entries.
+        vmRunners.remove(vm.id)
+        coroutineJobs.remove(vm.id)
 
         vm.getPrintStream = { TODO() }
         vm.getErrorStream = { TODO() }
