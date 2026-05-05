@@ -956,13 +956,14 @@ Effects in this section modifies the behaviour of the mixer. Primary intention o
 
 **Plain.** Sets mixer-wide behaviour flags. Available flags are:
 
-    0b 0000 0mfp
+    0b 0000 Fmfp
 
 - p unset: Linear panning mode (tracker-accurate). Centre panning gets 3 dB boost. Default setting.
 - p set: Equal-power panning mode. L/R amplitude is at 0.707 when centre-panned.
 
-- f unset: Linear tone mode. Pitch shift will behave like MIDI/ImpulseTracker/ScreamTracker linear mode. **Coarse and fine E/F arguments are stored as 4096-TET pitch units** and subtracted/added directly from the stored pitch.
-- f set: Amiga (cycle-based) tone mode. Pitch shift will behave like ProTracker/ScreamTracker default mode. **Coarse and fine E/F arguments are stored as raw tracker period units** (the unscaled byte/nibble from the source PT/S3M/IT file) and applied in Amiga period space. Tone portamento (G) remains linear regardless of mode.
+- Ff = 0: Linear tone mode. Pitch shift will behave like MIDI/ImpulseTracker/ScreamTracker linear mode. **Coarse and fine E/F arguments are stored as 4096-TET pitch units** and subtracted/added directly from the stored pitch.
+- Ff = 1: Amiga (cycle-based) tone mode. Pitch shift will behave like ProTracker/ScreamTracker default mode. **Coarse and fine E/F arguments are stored as raw tracker period units** (the unscaled byte/nibble from the source PT/S3M/IT file) and applied in Amiga period space. Tone portamento (G) remains linear regardless of mode.
+- Ff = 2: Linear frequency mode. Pitch shift will behave against frequency number.
 
 - m unset: IT fadeout-zero policy. An instrument with stored volume fadeout = 0 does **not** fade out on key-off; the voice plays through until the volume envelope ends it (or never, if there is no envelope).
 - m set: FT2 fadeout-zero policy. An instrument with stored volume fadeout = 0 is **cut** on the first tick after key-off (or NNA Note-Fade). Nonzero fadeouts behave identically in both modes — the per-tick decrement is always `fadeout / 65536` in unity-volume units.

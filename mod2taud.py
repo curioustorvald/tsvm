@@ -500,7 +500,8 @@ def build_sample_inst_bin(samples: list) -> tuple:
             s.loop_end = min(s.loop_end, n)
         pos += n
 
-    # New 192-byte instrument layout (terranmon.txt:1997-2070).
+    # New 256-byte instrument layout (terranmon.txt:2001+).
+    INST_STRIDE = 256
     inst_bin = bytearray(INSTBIN_SIZE)
     for i, s in enumerate(samples):
         taud_idx = i + 1     # 1-based instrument number
@@ -519,9 +520,11 @@ def build_sample_inst_bin(samples: list) -> tuple:
         # Envelope first point is full-scale; per-sample level is carried by
         # IGV (byte 171) so the envelope must contribute a unit multiplier.
         env_vol   = 63
-        vol_env_flags = 0x0020   # use-envelope bit
+        # MOD has no envelopes; vol LOOP word b=1 just so the engine evaluates
+        # the unit envelope. Pan/PF stay disabled.
+        vol_env_loop = 0x0020   # b enable
 
-        base = taud_idx * 192
+        base = taud_idx * INST_STRIDE
         struct.pack_into('<I', inst_bin, base + 0,  ptr)
         struct.pack_into('<H', inst_bin, base + 4,  s_len)
         struct.pack_into('<H', inst_bin, base + 6,  c2spd)
@@ -529,7 +532,8 @@ def build_sample_inst_bin(samples: list) -> tuple:
         struct.pack_into('<H', inst_bin, base + 10, ls)
         struct.pack_into('<H', inst_bin, base + 12, le)
         inst_bin[base + 14] = flags_byte
-        struct.pack_into('<H', inst_bin, base + 15, vol_env_flags)
+        # LOOP words at 15/17/19; SUSTAIN words at 189/191/193 (left zero).
+        struct.pack_into('<H', inst_bin, base + 15, vol_env_loop)
         struct.pack_into('<H', inst_bin, base + 17, 0)
         struct.pack_into('<H', inst_bin, base + 19, 0)
         inst_bin[base + 21] = env_vol

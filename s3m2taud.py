@@ -476,9 +476,10 @@ def build_sample_inst_bin(instruments: list) -> tuple:
             inst.loop_end = min(inst.loop_end, n)
         pos += n
 
-    # Build instrument bin (256 × 192 bytes)
-    # New layout (terranmon.txt:1997-2070): u32 sample ptr, ..., 25-point envelopes,
-    # plus a host of optional fields. S3M doesn't supply most of those — they default to 0.
+    # Build instrument bin (256 × 256 bytes)
+    # New layout (terranmon.txt:2001+): LOOP words at 15/17/19, SUSTAIN words at 189/191/193.
+    # S3M has no envelope sustain or loop, so SUSTAIN words stay zero.
+    INST_STRIDE = 256
     inst_bin = bytearray(INSTBIN_SIZE)
     for i, inst in enumerate(instruments):
         taud_idx = i + 1
@@ -498,10 +499,10 @@ def build_sample_inst_bin(instruments: list) -> tuple:
         # Volume envelope first point is full-scale; per-sample level is carried
         # by IGV (byte 171) so the envelope contributes a unit multiplier.
         env_vol = 63
-        # Vol env-flags: enable use-envelope bit (b=1) so engine reads the single point.
-        vol_env_flags = 0x0020   # b=bit 5
+        # Vol LOOP word: only b=1 (use envelope) — no actual loop / sustain.
+        vol_env_loop = 0x0020
 
-        base = taud_idx * 192
+        base = taud_idx * INST_STRIDE
         struct.pack_into('<I', inst_bin, base + 0,  ptr)        # u32 sample pointer
         struct.pack_into('<H', inst_bin, base + 4,  s_len)
         struct.pack_into('<H', inst_bin, base + 6,  c2spd)      # rate at TAUD_C4
@@ -509,9 +510,10 @@ def build_sample_inst_bin(instruments: list) -> tuple:
         struct.pack_into('<H', inst_bin, base + 10, ls)
         struct.pack_into('<H', inst_bin, base + 12, le)
         inst_bin[base + 14] = flags_byte
-        struct.pack_into('<H', inst_bin, base + 15, vol_env_flags)
-        struct.pack_into('<H', inst_bin, base + 17, 0)          # pan env-flags
-        struct.pack_into('<H', inst_bin, base + 19, 0)          # pitch/filter env-flags
+        # LOOP words at 15/17/19; SUSTAIN words at 189/191/193 (left zero).
+        struct.pack_into('<H', inst_bin, base + 15, vol_env_loop)
+        struct.pack_into('<H', inst_bin, base + 17, 0)
+        struct.pack_into('<H', inst_bin, base + 19, 0)
         # Volume env point 0: hold at env_vol indefinitely (offset minifloat = 0 → hold).
         inst_bin[base + 21] = env_vol
         inst_bin[base + 22] = 0
@@ -524,7 +526,7 @@ def build_sample_inst_bin(instruments: list) -> tuple:
         inst_bin[base + 183] = 0xFF # filter resonance = off
         inst_bin[base + 186] = 1 # NNA: note cut
 
-        vprint(f"  instrument[{base // 192}] '{inst.name}' ptr: '{ptr}', sampling rate: '{inst.c2spd}'")
+        vprint(f"  instrument[{base // INST_STRIDE}] '{inst.name}' ptr: '{ptr}', sampling rate: '{inst.c2spd}'")
         if inst.c2spd > 65535:
             vprint(f"  warning: sampling rate of '{inst.name}' exceeds 65535 (got '{inst.c2spd}')")
 

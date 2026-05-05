@@ -275,7 +275,7 @@ function noteToStr(note) {
     if (note === 0x0000) return sym.keyoff
     if (pitchTablePresets[PITCH_PRESET_IDX].table.length === 0) return note.hex04()
     const [s, o] = pitchSymLut[note & 0xFFF]
-    return s + ((note >> 12) - 1 + o)
+    return s + ((note >> 12) - 1 + o).toString(16) // octave 10 -> 'a'
 }
 
 /**
@@ -1109,7 +1109,7 @@ function drawVoiceDetail(isVerticalLayout = false, ptn = null, activeRow = -1, c
         let cumLines = []
         if (cumState !== null && lowerH > 0) {
             const _apo  = Math.abs(cumState.pitchOff)
-            const _psgn = cumState.pitchOff > 0 ? '+' : cumState.pitchOff < 0 ? '-' : '='
+            const _psgn = cumState.pitchOff > 0 ? '+' : cumState.pitchOff < 0 ? '-' : ' '
             const _absN = (cumState.lastNote !== 0xFFFF && cumState.pitchOff !== 0)
                 ? noteToStr(Math.max(0, Math.min(0xFFFE, cumState.lastNote + cumState.pitchOff))) + ' '
                 : ''
@@ -1319,7 +1319,7 @@ if (fullPathObj === undefined) {
 
 const logofile = files.open("A:/tvdos/bin/tauthdr.r8")
 const logoBytes = logofile.bread(); logofile.close()
-const logoTexture = new gl.Texture(90, 14, logoBytes)
+const logoTexture = new gl.Texture(92, 14, logoBytes)
 const buttonfile = files.open("A:/tvdos/bin/tautbtn.r8")
 const buttonBytes = buttonfile.bread(); buttonfile.close()
 const buttonTexture = new gl.Texture(2, 28, buttonBytes)
@@ -1689,24 +1689,35 @@ function simulateRowState(ptnDat, uptoRow) {
         // Note column
         const isGRow = (effop === OP_G)
         const isNoteDelay = (effop === OP_S) && (((effarg >>> 12) & 0xF) === 0xD)
+        // Track whether this row reloads the channel's default volume.  Engine:
+        // triggerNote() resets channelVolume to 0x3F on fresh triggers, and an
+        // instrument byte on a tone-porta row also reloads default vol (matches
+        // schism csf_instrument_change inst_column branch).
+        let reloadDefaultVol = false
         if (note !== 0xFFFF && note !== 0xFFFE) {
             if (note === 0x0000) {
                 // key-off; sample stays referenced
             } else if (isGRow) {
                 portaTarget = note
+                if (inst !== 0) reloadDefaultVol = true
             } else if (isNoteDelay) {
                 // Delayed trigger: latched but doesn't fire on this row's first tick.
                 // For "state at end of row" treat as if it triggered.
                 lastNote = note
                 pitchOff = 0
                 portaTarget = -1
+                reloadDefaultVol = true
             } else {
                 lastNote = note
                 pitchOff = 0
                 portaTarget = -1
+                reloadDefaultVol = true
             }
         }
         if (inst !== 0) lastInst = inst
+        // Default vol reset must happen before the volume column so a SET selector
+        // can still override on the same row (engine order: triggerNote → applyVolColumn).
+        if (reloadDefaultVol) volAbs = 0x3F
 
         // Pre-scan effect column for S$80xx (8-bit pan SET wins over volcol/pancol SET).
         const rowHasS80 = (effop === OP_S) && (((effarg >>> 12) & 0xF) === 0x8)
@@ -2089,16 +2100,20 @@ function drawProjectContents(wo) {
     for (let y = PTNVIEW_OFFSET_Y; y < SCRH; y++) fillLine(y, colBackPtn, 255)
 
     let mixerflag = initialTrackerMixerflags
-    let flagstrbuf = ''
+    let flagStrSelected = []
     let flagstr = [
-        ['Linear pan','Equal-energy pan'],
-        ['Linear tone','Amiga tone'],
+        ['Linear pan','EquNrg pan'],
+        ['Linear pitch','Amiga pitch', 'Linear freq', ''], // TODO MONOTONE uses linear-freq pitch
+        ['IT fade','FT2 fade'],
     ]
     for (let i = 0; i < flagstr.length; i++) {
-        let s = flagstr[i][(mixerflag >>> i) & 1 != 0]
-        if (i > 0) flagstrbuf += ', ';
-        flagstrbuf += s
+        if (i != 1 && 1 != 3) {
+            let s = flagstr[i][(mixerflag >>> i) & 1 != 0]
+            flagStrSelected.push(s)
+        }
     }
+    let toneMode = (((mixerflag >>> 1) & 1)) | (((mixerflag >>> 3) & 1) << 1)
+    flagStrSelected.splice(1, 0, flagstr[1][toneMode])
 
 
     let projMeta = {
@@ -2106,7 +2121,7 @@ function drawProjectContents(wo) {
         Patterns: `${song.numPats}/4095 ($${song.numPats.hex03()})`,
         Cues: `${song.lastActiveCue}/1024 ($${song.lastActiveCue.hex03()})`,
         Notation: pitchTablePresets[PITCH_PRESET_IDX].name,
-        Flags: `${flagstrbuf} ($${mixerflag.hex02()})`,
+        Flags: `${flagStrSelected.join(', ')} ($${mixerflag.hex02()})`,
         GlobalVol: initialGlobalVolume,
         MixingVol: initialMixingVolume
     }

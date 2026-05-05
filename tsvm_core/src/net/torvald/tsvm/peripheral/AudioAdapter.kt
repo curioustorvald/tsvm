@@ -135,7 +135,11 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         const val AMIGA_BASE_PERIOD = 428.0
     }
 
-    internal val sampleBin = UnsafeHelper.allocate(737280L, this)
+    // Memory map (terranmon.txt:1985-1997, updated 2026-05-06):
+    //   0..720895       sample bin (704K, was 737280)
+    //   720896..786431  instrument bin (256 inst × 256 bytes = 64K)
+    //   786432..        play data 1 / 2 / TAD blocks (anchors unchanged)
+    internal val sampleBin = UnsafeHelper.allocate(720896L, this)
     internal val instruments = Array(256) { TaudInst(it) }
     internal val playdata = Array(4096) { Array(64) { TaudPlayData(0xFFFF, 0, 0, 0, 32, 0, 0, 0) } }
     internal val playheads: Array<Playhead>
@@ -307,8 +311,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
     override fun peek(addr: Long): Byte {
         return when (val adi = addr.toInt()) {
-            in 0..737279 -> sampleBin[addr]
-            in 737280..786431 -> (adi - 737280).let { instruments[it / 192].getByte(it % 192) }
+            in 0..720895 -> sampleBin[addr]
+            in 720896..786431 -> (adi - 720896).let { instruments[it / 256].getByte(it % 256) }
             in 786432..851967 -> { val off = adi - 786432; playdata[playheads[0].patBank1 * 128 + off / 512][(off % 512) / 8].getByte(off % 8) }
             in 851968..917503 -> { val off = adi - 851968; playdata[playheads[0].patBank2 * 128 + off / 512][(off % 512) / 8].getByte(off % 8) }
             in 917504..983039 -> tadInputBin[addr - 917504]   // TAD input buffer (65536 bytes)
@@ -321,8 +325,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         val adi = addr.toInt()
         val bi = byte.toUint()
         when (adi) {
-            in 0..737279 -> { sampleBin[addr] = byte }
-            in 737280..786431 -> (adi - 737280).let { instruments[it / 192].setByte(it % 192, bi) }
+            in 0..720895 -> { sampleBin[addr] = byte }
+            in 720896..786431 -> (adi - 720896).let { instruments[it / 256].setByte(it % 256, bi) }
             in 786432..851967 -> { val off = adi - 786432; playdata[playheads[0].patBank1 * 128 + off / 512][(off % 512) / 8].setByte(off % 8, bi) }
             in 851968..917503 -> { val off = adi - 851968; playdata[playheads[0].patBank2 * 128 + off / 512][(off % 512) / 8].setByte(off % 8, bi) }
             in 917504..983039 -> tadInputBin[addr - 917504] = byte   // TAD input buffer
@@ -1205,33 +1209,60 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         return amigaPeriodToNoteVal(newPeriod)
     }
 
+    /**
+     * Resolve the active wrap region for an envelope based on the LOOP and
+     * SUSTAIN words and key state.
+     *
+     * Encoding (terranmon.txt:2049+, 2114+):
+     *   LOOP word (offset 15/17/19):    0b 0000_0sss_ssXcb_eeeee
+     *   SUSTAIN word (offset 189/191/193): 0b 0000_0sss_ss00b_eeeee
+     *   In both, bit 5 = b (enable). bits 12..8 = start, bits 4..0 = end.
+     *
+     * Priority (matches schismtracker player/sndmix.c:480-499):
+     *   if SUSTAIN.b and !keyOff : wrap (sus_start, sus_end)
+     *   elif LOOP.b              : wrap (loop_start, loop_end)
+     *   else                     : no wrap (envelope walks forward and holds)
+     *
+     * Returns -1 in `wrapEnd` when no wrap is active.
+     */
+    private inline fun resolveEnvWrap(loopWord: Int, sustainWord: Int, keyOff: Boolean,
+                                       outRange: IntArray) {
+        val susB = (sustainWord ushr 5) and 1 != 0
+        val loopB = (loopWord ushr 5) and 1 != 0
+        if (susB && !keyOff) {
+            outRange[0] = (sustainWord ushr 8) and 0x1F
+            outRange[1] = sustainWord and 0x1F
+        } else if (loopB) {
+            outRange[0] = (loopWord ushr 8) and 0x1F
+            outRange[1] = loopWord and 0x1F
+        } else {
+            outRange[0] = -1
+            outRange[1] = -1
+        }
+    }
+
+    // Reusable per-envelope wrap-range scratch (avoid per-tick allocation).
+    private val volWrap = IntArray(2)
+    private val panWrap = IntArray(2)
+    private val pfWrap  = IntArray(2)
+
     private fun advanceEnvelope(voice: Voice, inst: TaudInst, tickSec: Double) {
-        // 16-bit envelope-flag layout (terranmon.txt:2007-2030):
-        //   0b 0ut sssss pcb eeeee
-        //     bit 14 = u (enable sustain/loop)
-        //     bit 13 = t (sustain — 1=breaks on key-off, 0=loops forever)
-        //     bits 12..8 = sustain/loop start index (0..24)
-        //     bit  7 = p (channel-specific flag — fadeout zero / use default pan)
-        //     bit  6 = c (envelope carry)
-        //     bit  5 = b (use envelope at all)
-        //     bits 4..0 = sustain/loop end index (0..24)
         val maxIdx = 24
 
         // Volume envelope
-        val vSus       = inst.volEnvSustain
-        val vUseEnv    = (vSus ushr 5) and 1 != 0
-        if (vUseEnv && voice.volEnvOn) {
-            val vEnabled   = (vSus ushr 14) and 1 != 0
-            val vIsSustain = (vSus ushr 13) and 1 != 0
-            val vSusOn     = vEnabled && (!vIsSustain || !voice.keyOff)
-            val vSusStart  = (vSus ushr 8) and 0x1F
-            val vSusEnd    = vSus and 0x1F
+        val vEnvActive = (((inst.volEnvLoop ushr 5) and 1) or ((inst.volEnvSustainWord ushr 5) and 1)) != 0
+        if (vEnvActive && voice.volEnvOn) {
+            resolveEnvWrap(inst.volEnvLoop, inst.volEnvSustainWord, voice.keyOff, volWrap)
+            val wStart = volWrap[0]
+            val wEnd   = volWrap[1]
+            val wrapping = wStart >= 0
 
-            if (vSusOn && voice.envIndex == vSusEnd && vSusStart == vSusEnd) {
+            if (wrapping && voice.envIndex == wEnd && wStart == wEnd) {
+                // Hold at the wrap point (FT2 single-point sustain).
                 voice.envVolume = (inst.volEnvelopes[voice.envIndex].value / 63.0).coerceIn(0.0, 1.0)
-            } else if (vSusOn && voice.envIndex == vSusEnd) {
+            } else if (wrapping && voice.envIndex == wEnd) {
                 voice.envTimeSec = 0.0
-                voice.envIndex = vSusStart
+                voice.envIndex = wStart
                 voice.envVolume = (inst.volEnvelopes[voice.envIndex].value / 63.0).coerceIn(0.0, 1.0)
             } else if (voice.envIndex >= maxIdx) {
                 voice.envVolume = (inst.volEnvelopes[maxIdx].value / 63.0).coerceIn(0.0, 1.0)
@@ -1243,7 +1274,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                     voice.envTimeSec += tickSec
                     if (voice.envTimeSec >= vOffset) {
                         voice.envTimeSec -= vOffset
-                        val nextIdx = if (vSusOn && voice.envIndex == vSusEnd) vSusStart
+                        val nextIdx = if (wrapping && voice.envIndex == wEnd) wStart
                                       else (voice.envIndex + 1).coerceAtMost(maxIdx)
                         voice.envIndex = nextIdx
                         voice.envVolume = (inst.volEnvelopes[voice.envIndex].value / 63.0).coerceIn(0.0, 1.0)
@@ -1258,20 +1289,18 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
         // Pan envelope (only when active for this instrument)
         if (!voice.hasPanEnv || !voice.panEnvOn) return
-        val pSus       = inst.panEnvSustain
-        val pUseEnv    = (pSus ushr 5) and 1 != 0
-        if (!pUseEnv) return
-        val pEnabled   = (pSus ushr 14) and 1 != 0
-        val pIsSustain = (pSus ushr 13) and 1 != 0
-        val pSusOn     = pEnabled && (!pIsSustain || !voice.keyOff)
-        val pSusStart  = (pSus ushr 8) and 0x1F
-        val pSusEnd    = pSus and 0x1F
+        val pEnvActive = (((inst.panEnvLoop ushr 5) and 1) or ((inst.panEnvSustainWord ushr 5) and 1)) != 0
+        if (!pEnvActive) return
+        resolveEnvWrap(inst.panEnvLoop, inst.panEnvSustainWord, voice.keyOff, panWrap)
+        val pStart = panWrap[0]
+        val pEnd   = panWrap[1]
+        val pWrapping = pStart >= 0
 
-        if (pSusOn && voice.envPanIndex == pSusEnd && pSusStart == pSusEnd) {
+        if (pWrapping && voice.envPanIndex == pEnd && pStart == pEnd) {
             voice.envPan = inst.panEnvelopes[voice.envPanIndex].value / 255.0
-        } else if (pSusOn && voice.envPanIndex == pSusEnd) {
+        } else if (pWrapping && voice.envPanIndex == pEnd) {
             voice.envPanTimeSec = 0.0
-            voice.envPanIndex = pSusStart
+            voice.envPanIndex = pStart
             voice.envPan = inst.panEnvelopes[voice.envPanIndex].value / 255.0
         } else if (voice.envPanIndex >= maxIdx) {
             voice.envPan = inst.panEnvelopes[maxIdx].value / 255.0
@@ -1283,7 +1312,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 voice.envPanTimeSec += tickSec
                 if (voice.envPanTimeSec >= pOffset) {
                     voice.envPanTimeSec -= pOffset
-                    val nextIdx = if (pSusOn && voice.envPanIndex == pSusEnd) pSusStart
+                    val nextIdx = if (pWrapping && voice.envPanIndex == pEnd) pStart
                                   else (voice.envPanIndex + 1).coerceAtMost(maxIdx)
                     voice.envPanIndex = nextIdx
                     voice.envPan = inst.panEnvelopes[voice.envPanIndex].value / 255.0
@@ -1303,14 +1332,12 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     private fun advancePfEnvelope(voice: Voice, inst: TaudInst, tickSec: Double) {
         if (!voice.hasPfEnv || !voice.pfEnvOn) return
         val maxIdx = 24
-        val pSus       = inst.pfEnvSustain
-        val pUseEnv    = (pSus ushr 5) and 1 != 0
-        if (!pUseEnv) return
-        val pEnabled   = (pSus ushr 14) and 1 != 0
-        val pIsSustain = (pSus ushr 13) and 1 != 0
-        val pSusOn     = pEnabled && (!pIsSustain || !voice.keyOff)
-        val pSusStart  = (pSus ushr 8) and 0x1F
-        val pSusEnd    = pSus and 0x1F
+        val pEnvActive = (((inst.pfEnvLoop ushr 5) and 1) or ((inst.pfEnvSustainWord ushr 5) and 1)) != 0
+        if (!pEnvActive) return
+        resolveEnvWrap(inst.pfEnvLoop, inst.pfEnvSustainWord, voice.keyOff, pfWrap)
+        val pSusStart = pfWrap[0]
+        val pSusEnd   = pfWrap[1]
+        val pSusOn    = pSusStart >= 0
 
         if (pSusOn && voice.envPfIndex == pSusEnd && pSusStart == pSusEnd) {
             voice.envPfValue = inst.pfEnvelopes[voice.envPfIndex].value / 255.0
@@ -1523,7 +1550,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         val sampleLen = inst.sampleLength.coerceAtLeast(1)
         val loopStart = inst.sampleLoopStart.toDouble()
         val loopEnd = inst.sampleLoopEnd.toDouble().coerceAtLeast(1.0)
-        val binMax = 737279  // sampleBin is 737280 bytes (0..737279)
+        val binMax = 720895  // sampleBin is 720896 bytes (0..720895)
 
         val i0 = voice.samplePos.toInt().coerceIn(0, sampleLen - 1)
         val i1 = (i0 + 1).coerceAtMost(sampleLen - 1)
@@ -1578,11 +1605,12 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         voice.envPanIndex = 0
         voice.envPanTimeSec = 0.0
         voice.envPan = inst.panEnvelopes[0].value / 255.0
-        // Pan envelope is active when the `b` (use envelope) flag is set in panEnvSustain.
-        voice.hasPanEnv = (inst.panEnvSustain ushr 5) and 1 != 0
+        // Pan envelope is active when EITHER the LOOP word's b bit OR the SUSTAIN word's b bit is set.
+        voice.hasPanEnv = (((inst.panEnvLoop ushr 5) and 1) or ((inst.panEnvSustainWord ushr 5) and 1)) != 0
         // Pitch/filter envelope state.
-        voice.hasPfEnv      = (inst.pfEnvSustain ushr 5) and 1 != 0
-        voice.envPfIsFilter = (inst.pfEnvSustain ushr 7) and 1 != 0
+        voice.hasPfEnv      = (((inst.pfEnvLoop ushr 5) and 1) or ((inst.pfEnvSustainWord ushr 5) and 1)) != 0
+        // The pf 'm' mode bit (pitch=0, filter=1) lives in the LOOP word at bit 7.
+        voice.envPfIsFilter = (inst.pfEnvLoop ushr 7) and 1 != 0
         voice.envPfIndex    = 0
         voice.envPfTimeSec  = 0.0
         voice.envPfValue    = if (voice.hasPfEnv) inst.pfEnvelopes[0].value / 255.0 else 0.5
@@ -1597,8 +1625,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         voice.randomPanBias = if (inst.panSwing != 0)
             (Math.random() * (2 * inst.panSwing + 1)).toInt() - inst.panSwing else 0
         // Default pan: applied unless the pattern row has already overridden channelPan.
-        // We treat the pan envelope "p" flag (panEnvSustain bit 7) as "use default pan".
-        if ((inst.panEnvSustain ushr 7) and 1 != 0) {
+        // The pan envelope's 'p' flag ("use default pan") lives in the pan LOOP word at bit 7.
+        if ((inst.panEnvLoop ushr 7) and 1 != 0) {
             voice.channelPan = inst.defaultPan
             voice.rowPan = (voice.channelPan ushr 2).coerceIn(0, 63)
         }
@@ -1874,12 +1902,26 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 // call this an "instrument-only retrigger"; in MOD/S3M/IT the sample
                 // keeps playing, but the channel's instrument reference advances.
                 0xFFFF -> { if (row.instrment != 0) voice.instrumentId = row.instrment }
-                0x0000 -> { voice.keyOff = true; voice.active = false }  // key-off; breaks sustain loop
-                0xFFFE -> voice.active = false                  // note cut
+                // Key-off: release sustain; envelope walks past the sustain point and the fadeout
+                // begins (foreground-voice fade path at line ~2380). The voice deactivates when
+                // fadeoutVolume reaches 0, or immediately if FT2-mode fadeStep == 0. Setting
+                // voice.active = false here would defeat both — instruments with sustain points
+                // and non-zero fadeout (FT2 sustain-then-fade idiom) would be cut on the spot.
+                0x0000 -> { voice.keyOff = true }
+                0xFFFE -> voice.active = false                  // note cut (immediate)
                 else -> {
                     if (toneG && voice.active) {
                         // Tone porta: target the note, do not retrigger sample.
                         voice.tonePortaTarget = row.note
+                        // Instrument byte on a porta row reloads the channel's default
+                        // volume even though the sample isn't retriggered. Mirrors schism
+                        // csf_instrument_change (effects.c:1302) which writes
+                        // chan->volume = psmp->volume whenever inst_column is set.
+                        if (row.instrment != 0) {
+                            voice.instrumentId = row.instrment
+                            voice.channelVolume = 0x3F
+                            voice.rowVolume = 0x3F
+                        }
                     } else if ((row.effect == EffectOp.OP_S) && ((row.effectArg ushr 12) and 0xF) == 0xD) {
                         // Note delay: defer trigger to the requested tick. NNA fires when the
                         // deferred trigger actually executes, not now.
@@ -2364,14 +2406,19 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             // Volume fadeout: after key-off OR Note-Fade NNA, decrement per tick.
             // The 12-bit fadeStep is split across volumeFadeoutLow + low nibble of fadeoutHigh.
             // Divisor selects per-tracker semantics:
-            //   FT2 mode (fadeoutCutOnZero=true):  fadeStep / 65536 per tick — matches FT2 .XM (16-bit accumulator, decrement = stored).
-            //   IT  mode (fadeoutCutOnZero=false): fadeStep / 1024  per tick — matches Schism (sndmix.c:331-339 + effects.c:1261:
-            //                                                                  accumulator 65536, decrement = (stored<<5)<<1 = stored·64).
+            //   FT2 mode (fadeoutCutOnZero=true):  fadeStep / 32768 per tick — matches ft2-clone
+            //                                       (ft2_replayer.c:387-390, 1469-1481): the FT2 XM
+            //                                       file format docs claim the accumulator is 16-bit
+            //                                       (65536), but the actual replayer initialises
+            //                                       fadeoutVol to 32768 and decrements by stored.
+            //   IT  mode (fadeoutCutOnZero=false): fadeStep / 1024  per tick — matches Schism
+            //                                       (sndmix.c:331-339 + effects.c:1261: accumulator
+            //                                       65536, decrement = (stored<<5)<<1 = stored·64).
             // Stored 0: FT2 mode cuts on key-off; IT mode leaves voice playing (no fade).
             if (voice.keyOff || voice.noteFading) {
                 val fadeStep = inst.volumeFadeoutLow or ((inst.fadeoutHigh and 0x0F) shl 8)
                 if (fadeStep > 0) {
-                    val divisor = if (ts.fadeoutCutOnZero) 65536.0 else 1024.0
+                    val divisor = if (ts.fadeoutCutOnZero) 32768.0 else 1024.0
                     voice.fadeoutVolume = (voice.fadeoutVolume - fadeStep / divisor).coerceAtLeast(0.0)
                     if (voice.fadeoutVolume <= 0.0) voice.active = false
                 } else if (ts.fadeoutCutOnZero) {
@@ -2427,7 +2474,9 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             if (bg.keyOff || bg.noteFading) {
                 val fadeStep = inst.volumeFadeoutLow or ((inst.fadeoutHigh and 0x0F) shl 8)
                 if (fadeStep > 0) {
-                    val divisor = if (ts.fadeoutCutOnZero) 65536.0 else 1024.0
+                    // Divisor must mirror the foreground-voice fade path above
+                    // (FT2 mode: 32768 to match ft2_replayer.c:387-390+1469-1481).
+                    val divisor = if (ts.fadeoutCutOnZero) 32768.0 else 1024.0
                     bg.fadeoutVolume = (bg.fadeoutVolume - fadeStep / divisor).coerceAtLeast(0.0)
                 } else if (ts.fadeoutCutOnZero) {
                     bg.active = false
@@ -2625,7 +2674,13 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             }
             else -> {
                 ts.rowIndex++
-                if (ts.rowIndex >= 64) {
+                // LEN cue instruction shortens the effective row count so the
+                // engine wraps to the next cue early. Patterns fed by the
+                // converter are still 64 rows long; rows past `rowLimit` are
+                // silent padding that we skip here.
+                val currentInst = cueSheet[ts.cuePos].instruction
+                val rowLimit = if (currentInst is PlayInstPatLen) currentInst.rows else 64
+                if (ts.rowIndex >= rowLimit) {
                     ts.rowIndex = 0
                     advanceTrackerCue(ts, playhead)
                     resetPatternLoopState(ts)
@@ -2637,14 +2692,38 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
     internal data class PlayCue(
         val patterns: IntArray = IntArray(20) { 0xFFF },
-        var instruction: PlayInstruction = PlayInstNop
+        var instruction: PlayInstruction = PlayInstNop,
+        var instByte30: Int = 0,
+        var instByte31: Int = 0,
     ) {
         // Cue layout (32 bytes, 20 voices, 12-bit pattern numbers):
         //   bytes  0-9:  packed low nybbles  (byte i => voice i*2 in hi, voice i*2+1 in lo)
         //   bytes 10-19: packed mid nybbles  (same packing)
         //   bytes 20-29: packed high nybbles (same packing)
-        //   byte  30:    instruction
-        //   byte  31:    unused
+        //   byte  30:    instruction (low byte)
+        //   byte  31:    instruction arg byte (used by 2-byte forms: LEN, BAK, FWD, JMP)
+        // Decoding rules per terranmon.txt §"Cue Sheet":
+        //   00000010 00xxxxxx (LEN)  pattern length: rows = (xxxxxx) + 1, range 1..64
+        //   00000001          (HALT) end of song
+        //   00000000          (NOP)  default 64-row cue
+        //   1000xxxx yyyyyyyy (BAK)  go back 12-bit arg
+        //   1001xxxx yyyyyyyy (FWD)  skip forward 12-bit arg
+        //   1111xxxx yyyyyyyy (JMP)  go to absolute pattern (currently unused)
+        private fun recomputeInstruction() {
+            val b30 = instByte30
+            val b31 = instByte31
+            instruction = when {
+                b30 == 0x02 -> PlayInstPatLen((b31 and 0x3F) + 1)
+                b30 == 0x01 -> PlayInstHalt
+                b30 == 0x00 -> PlayInstNop
+                // BAK: 1000xxxx yyyyyyyy — 12-bit arg combining b30 low nybble + b31.
+                (b30 and 0xF0) == 0x80 -> PlayInstGoBack(((b30 and 0xF) shl 8) or (b31 and 0xFF))
+                // FWD: 1001xxxx yyyyyyyy — 12-bit arg.
+                (b30 and 0xF0) == 0x90 -> PlayInstSkip(((b30 and 0xF) shl 8) or (b31 and 0xFF))
+                // JMP: 1111xxxx yyyyyyyy — reserved (decoder TBD).
+                else -> PlayInstNop
+            }
+        }
         fun write(index: Int, byte: Int) = when (index) {
             in 0..9 -> {
                 val b = index * 2
@@ -2661,13 +2740,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 patterns[b]     = (patterns[b]     and 0x0FF) or (((byte ushr 4) and 0xF) shl 8)
                 patterns[b + 1] = (patterns[b + 1] and 0x0FF) or ((byte and 0xF) shl 8)
             }
-            30 -> { instruction = when {
-                    byte >= 128 -> PlayInstGoBack(byte and 127)
-                    byte in 16..31 -> PlayInstSkip(byte and 15)
-                    byte == 1 -> PlayInstHalt
-                    else -> PlayInstNop
-            } }
-            31 -> {}
+            30 -> { instByte30 = byte and 0xFF; recomputeInstruction() }
+            31 -> { instByte31 = byte and 0xFF; recomputeInstruction() }
             else -> throw InternalError("Bad offset $index")
         }
         fun read(index: Int): Byte = when (index) {
@@ -2683,13 +2757,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 val b = (index - 20) * 2
                 ((((patterns[b] ushr 8) and 0xF) shl 4) or ((patterns[b + 1] ushr 8) and 0xF)).toByte()
             }
-            30 -> when (instruction) {
-                is PlayInstGoBack -> (0b10000000 or instruction.arg).toByte()
-                is PlayInstSkip   -> (0b00010000 or instruction.arg).toByte()
-                is PlayInstHalt   -> 1
-                else              -> 0
-            }
-            31 -> 0
+            30 -> instByte30.toByte()
+            31 -> instByte31.toByte()
             else -> throw InternalError("Bad offset $index")
         }
     }
@@ -2697,6 +2766,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     internal open class PlayInstruction(val arg: Int)
     internal class PlayInstGoBack(arg: Int) : PlayInstruction(arg)
     internal class PlayInstSkip(arg: Int) : PlayInstruction(arg)
+    internal class PlayInstPatLen(val rows: Int) : PlayInstruction(rows)
     internal object PlayInstHalt : PlayInstruction(0)
     internal object PlayInstNop : PlayInstruction(0)
 
@@ -2768,7 +2838,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         var envPfIndex = 0
         var envPfTimeSec = 0.0
         var envPfValue = 0.5               // 0.0..1.0; 0.5 = unity (no pitch shift / unmodulated cutoff)
-        var envPfIsFilter = false          // mirror of inst.pfEnvSustain bit 7 latched at trigger
+        var envPfIsFilter = false          // mirror of inst.pfEnvLoop bit 7 latched at trigger
 
         // Volume fadeout — engaged after key-off, decays to 0 at rate inst.volumeFadeoutLow.
         var fadeoutVolume = 1.0
@@ -3143,77 +3213,92 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
     data class TaudInstEnvPoint(var value: Int, var offset: ThreeFiveMiniUfloat)
     /**
-     * 192-byte instrument record (terranmon.txt:1997-2070).
+     * 256-byte instrument record (terranmon.txt:2001+).
+     *
+     * Envelopes have FOUR independent regions per envelope (vol/pan/pf):
+     *   - 25 envelope nodes (offsets 21 / 71 / 121).
+     *   - LOOP word     (offsets 15 / 17 / 19) — always-active wrap region.
+     *   - SUSTAIN word  (offsets 189 / 191 / 193) — wrap region active ONLY
+     *                   while key is on; released on key-off.
+     *
+     * Priority during playback (matches schismtracker player/sndmix.c:480-499):
+     *   if SUSTAIN.b == 1 and !key_off : wrap (sus_start, sus_end)
+     *   elif LOOP.b == 1               : wrap (loop_start, loop_end)
+     *   else                           : hold at last node
+     *
      * Layout:
      *   0..3   u32 sample pointer
      *   4..5   u16 sample length
-     *   6..7   u16 sampling rate at Middle C (0x5000) // NOTE: Taud treats middle C as C4, but some trackers show you C4 even if they are internally C5. Best practice: copy the value as-is.
+     *   6..7   u16 sampling rate at Middle C (0x5000)
      *   8..9   u16 play start
      *   10..11 u16 loop start
      *   12..13 u16 loop end
      *   14     u8  sample flags (low 2 bits = loop mode 0..3)
-     *   15..16 u16 volume envelope flags    (0b 0ut sssss pcb eeeee)
-     *   17..18 u16 panning envelope flags
-     *   19..20 u16 pitch/filter envelope flags
-     *   21..70  Bit16×25 volume envelope points (value 0x00-0x3F + minifloat dt)
-     *   71..120 Bit16×25 panning envelope points (value 0x00-0xFF, 0x80=centre)
+     *   15..16 u16 volume envelope LOOP word    (0b 0000_0sss_ss0cb_eeeee)
+     *   17..18 u16 panning envelope LOOP word   (0b 0000_0sss_ssp_cb_eeeee, p=use-default-pan)
+     *   19..20 u16 pitch/filter envelope LOOP word (0b 0000_0sss_ssm_cb_eeeee, m=mode)
+     *   21..70  Bit16×25 volume envelope points
+     *   71..120 Bit16×25 panning envelope points
      *   121..170 Bit16×25 pitch/filter envelope points
      *   171    u8 instrument global volume
      *   172    u8 volume fadeout low bits
      *   173    u8 fadeout high bits (low nibble; 0b 0000 ffff)
      *   174    u8 volume swing
-     *   175    u8 vibrato speed (FT2 instrumentwise; IT Vis rescaled to 0..255)
-     *   176    u8 vibrato sweep (FT2-only ramp ticks; 0 for IT)
+     *   175    u8 vibrato speed
+     *   176    u8 vibrato sweep
      *   177    u8 default pan
-     *   178..179 u16 pitch-pan centre (4096-TET)
+     *   178..179 u16 pitch-pan centre
      *   180    s8 pitch-pan separation
      *   181    u8 pan swing
      *   182    u8 default cutoff
      *   183    u8 default resonance
-     *   184..185 u16 sample detune (4096-TET, signed stored as u16)
-     *   186    u8 instrument flag (0b 000 www nn — NNA bits 0-1, vib waveform bits 2-4)
-     *                   NNA: 00=note off, 01=note cut, 10=continue, 11=note fade
-     *                   waveform: 0=sine, 1=ramp-down, 2=square, 3=random, 4=ramp-up (FT2)
-     *   187    u8 vibrato depth (0..255 full range)
-     *   188    u8 vibrato rate  (0..255 full range — IT samplewise Vir)
-     *   189    u8 duplicate-check / action (IT-only — 0b 0000 aadd)
-     *                   dd  = DCT (Duplicate Check Type) 0=off, 1=note, 2=sample, 3=instrument
-     *                   aa  = DCA (Duplicate Check Action) 0=note cut, 1=note off, 2=note fade
-     *   190..191 byte[2] reserved
+     *   184..185 u16 sample detune (signed)
+     *   186    u8 instrument flag (NNA bits 0-1, vib waveform bits 2-4)
+     *   187    u8 vibrato depth
+     *   188    u8 vibrato rate
+     *   189..190 u16 volume envelope SUSTAIN word   (0b 0000_0sss_ss00b_eeeee)
+     *   191..192 u16 panning envelope SUSTAIN word
+     *   193..194 u16 pitch/filter envelope SUSTAIN word
+     *   195    u8 duplicate-check / action (relocated from old offset 189)
+     *                  bits 0-1 = DCT, bits 2-3 = DCA
+     *   196..255 reserved (60 bytes)
      */
     data class TaudInst(
         var index: Int,
 
-        var samplePtr: Int,                 // 32-bit sample bin offset
+        var samplePtr: Int,
         var sampleLength: Int,
-        var samplingRate: Int,              // rate at MIDDLE_C
+        var samplingRate: Int,
         var samplePlayStart: Int,
         var sampleLoopStart: Int,
         var sampleLoopEnd: Int,
-        var loopMode: Int,                  // byte 14, low 3 bits (bits 0-1: loop kind, bit 2: sustain)
-        var volEnvSustain: Int,             // bytes 15-16 (16-bit, see flag layout)
-        var panEnvSustain: Int,             // bytes 17-18
-        var pfEnvSustain: Int,              // bytes 19-20 (pitch/filter)
-        var instGlobalVolume: Int,          // byte 171
-        var volEnvelopes: Array<TaudInstEnvPoint>,   // 25 points
-        var panEnvelopes: Array<TaudInstEnvPoint>,   // 25 points
-        var pfEnvelopes: Array<TaudInstEnvPoint>,    // 25 points (pitch/filter)
-        var volumeFadeoutLow: Int,          // byte 172
-        var fadeoutHigh: Int,               // byte 173 (low nibble — 0b 0000 ffff)
-        var volumeSwing: Int,               // byte 174
-        var vibratoSpeed: Int,              // byte 175
-        var vibratoSweep: Int,              // byte 176 (FT2 ramp ticks)
-        var defaultPan: Int,                // byte 177
-        var pitchPanCentre: Int,            // bytes 178-179
-        var pitchPanSeparation: Int,        // byte 180 (signed)
-        var panSwing: Int,                  // byte 181
-        var defaultCutoff: Int,             // byte 182
-        var defaultResonance: Int,          // byte 183
-        var sampleDetune: Int,              // bytes 184-185 (signed 4096-TET stored as u16)
-        var instrumentFlag: Int,            // byte 186 (NNA + vibrato waveform)
-        var vibratoDepth: Int,              // byte 187 (0..255 full range)
-        var vibratoRate: Int,               // byte 188 (IT samplewise Vir)
-        var dupCheckFlag: Int               // byte 189 (DCT bits 0-1, DCA bits 2-3)
+        var loopMode: Int,
+        var volEnvLoop: Int,                // bytes 15-16 (LOOP word)
+        var panEnvLoop: Int,                // bytes 17-18
+        var pfEnvLoop: Int,                 // bytes 19-20
+        var instGlobalVolume: Int,
+        var volEnvelopes: Array<TaudInstEnvPoint>,
+        var panEnvelopes: Array<TaudInstEnvPoint>,
+        var pfEnvelopes: Array<TaudInstEnvPoint>,
+        var volumeFadeoutLow: Int,
+        var fadeoutHigh: Int,
+        var volumeSwing: Int,
+        var vibratoSpeed: Int,
+        var vibratoSweep: Int,
+        var defaultPan: Int,
+        var pitchPanCentre: Int,
+        var pitchPanSeparation: Int,
+        var panSwing: Int,
+        var defaultCutoff: Int,
+        var defaultResonance: Int,
+        var sampleDetune: Int,
+        var instrumentFlag: Int,
+        var vibratoDepth: Int,
+        var vibratoRate: Int,
+        var volEnvSustainWord: Int,         // bytes 189-190 (SUSTAIN word)
+        var panEnvSustainWord: Int,         // bytes 191-192
+        var pfEnvSustainWord: Int,          // bytes 193-194
+        var dupCheckFlag: Int               // byte 195 (relocated from 189)
     ) {
         constructor(index: Int) : this(
             index, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF,
@@ -3221,7 +3306,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             Array(25) { TaudInstEnvPoint(0x80, ThreeFiveMiniUfloat(0)) },
             Array(25) { TaudInstEnvPoint(0x80, ThreeFiveMiniUfloat(0)) },
             0, 0, 0, 0, 0, 0x80, 0x5000, 0, 0, 0xFF, 0,
-            0, 0, 0, 0, 0
+            0, 0, 0, 0, 0, 0, 0, 0
         )
 
         /** Sample-flag byte 14 bit 2 — when set, the sample loop is a sustain loop:
@@ -3240,8 +3325,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         /** Duplicate Check Action — 0=note cut, 1=note off, 2=note fade. */
         val duplicateCheckAction: Int get() = (dupCheckFlag ushr 2) and 0x03
 
-        // Reserved padding at offsets 190..191 (2 bytes per instrument).
-        private val reserved = ByteArray(2)
+        // Reserved padding at offsets 196..255 (60 bytes per instrument).
+        private val reserved = ByteArray(60)
 
         // Funk repeat (S$Fx00) bit-mask — non-destructive XOR overlay across the loop region.
         // Lazily allocated; a 1-bit flips the byte, a 0-bit leaves it intact.
@@ -3294,12 +3379,12 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             13 -> sampleLoopEnd.ushr(8).toByte()
 
             14 -> (loopMode and 7).toByte()
-            15 -> volEnvSustain.toByte()
-            16 -> volEnvSustain.ushr(8).toByte()
-            17 -> panEnvSustain.toByte()
-            18 -> panEnvSustain.ushr(8).toByte()
-            19 -> pfEnvSustain.toByte()
-            20 -> pfEnvSustain.ushr(8).toByte()
+            15 -> volEnvLoop.toByte()
+            16 -> volEnvLoop.ushr(8).toByte()
+            17 -> panEnvLoop.toByte()
+            18 -> panEnvLoop.ushr(8).toByte()
+            19 -> pfEnvLoop.toByte()
+            20 -> pfEnvLoop.ushr(8).toByte()
 
             in 21..70  -> envPointGet(volEnvelopes, 21,  offset)
             in 71..120 -> envPointGet(panEnvelopes, 71,  offset)
@@ -3323,8 +3408,14 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             186 -> instrumentFlag.toByte()
             187 -> vibratoDepth.toByte()
             188 -> vibratoRate.toByte()
-            189 -> dupCheckFlag.toByte()
-            in 190..191 -> reserved[offset - 190]
+            189 -> volEnvSustainWord.toByte()
+            190 -> volEnvSustainWord.ushr(8).toByte()
+            191 -> panEnvSustainWord.toByte()
+            192 -> panEnvSustainWord.ushr(8).toByte()
+            193 -> pfEnvSustainWord.toByte()
+            194 -> pfEnvSustainWord.ushr(8).toByte()
+            195 -> dupCheckFlag.toByte()
+            in 196..255 -> reserved[offset - 196]
             else -> throw InternalError("Bad offset $offset")
         }
 
@@ -3350,12 +3441,12 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             13 -> { sampleLoopEnd = (sampleLoopEnd and 0x00ff) or (byte shl 8) }
 
             14 -> { loopMode = byte and 7 }
-            15 -> { volEnvSustain = (volEnvSustain and 0xff00) or byte }
-            16 -> { volEnvSustain = (volEnvSustain and 0x00ff) or (byte shl 8) }
-            17 -> { panEnvSustain = (panEnvSustain and 0xff00) or byte }
-            18 -> { panEnvSustain = (panEnvSustain and 0x00ff) or (byte shl 8) }
-            19 -> { pfEnvSustain = (pfEnvSustain and 0xff00) or byte }
-            20 -> { pfEnvSustain = (pfEnvSustain and 0x00ff) or (byte shl 8) }
+            15 -> { volEnvLoop = (volEnvLoop and 0xff00) or byte }
+            16 -> { volEnvLoop = (volEnvLoop and 0x00ff) or (byte shl 8) }
+            17 -> { panEnvLoop = (panEnvLoop and 0xff00) or byte }
+            18 -> { panEnvLoop = (panEnvLoop and 0x00ff) or (byte shl 8) }
+            19 -> { pfEnvLoop = (pfEnvLoop and 0xff00) or byte }
+            20 -> { pfEnvLoop = (pfEnvLoop and 0x00ff) or (byte shl 8) }
 
             in 21..70  -> envPointSet(volEnvelopes, 21,  offset, byte)
             in 71..120 -> envPointSet(panEnvelopes, 71,  offset, byte)
@@ -3363,14 +3454,14 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
             171 -> { instGlobalVolume = byte and 0xFF }
             172 -> { volumeFadeoutLow = byte and 0xFF }
-            173 -> { fadeoutHigh = byte and 0x0F }   // low nibble only (0b 0000 ffff)
+            173 -> { fadeoutHigh = byte and 0x0F }
             174 -> { volumeSwing = byte and 0xFF }
             175 -> { vibratoSpeed = byte and 0xFF }
             176 -> { vibratoSweep = byte and 0xFF }
             177 -> { defaultPan = byte and 0xFF }
             178 -> { pitchPanCentre = (pitchPanCentre and 0xff00) or byte }
             179 -> { pitchPanCentre = (pitchPanCentre and 0x00ff) or (byte shl 8) }
-            180 -> { pitchPanSeparation = byte.toByte().toInt() }   // signed
+            180 -> { pitchPanSeparation = byte.toByte().toInt() }
             181 -> { panSwing = byte and 0xFF }
             182 -> { defaultCutoff = byte and 0xFF }
             183 -> { defaultResonance = byte and 0xFF }
@@ -3379,8 +3470,14 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             186 -> { instrumentFlag = byte and 0xFF }
             187 -> { vibratoDepth = byte and 0xFF }
             188 -> { vibratoRate = byte and 0xFF }
-            189 -> { dupCheckFlag = byte and 0x0F }   // DCT (bits 0-1) + DCA (bits 2-3)
-            in 190..191 -> { reserved[offset - 190] = byte.toByte() }
+            189 -> { volEnvSustainWord = (volEnvSustainWord and 0xff00) or byte }
+            190 -> { volEnvSustainWord = (volEnvSustainWord and 0x00ff) or (byte shl 8) }
+            191 -> { panEnvSustainWord = (panEnvSustainWord and 0xff00) or byte }
+            192 -> { panEnvSustainWord = (panEnvSustainWord and 0x00ff) or (byte shl 8) }
+            193 -> { pfEnvSustainWord = (pfEnvSustainWord and 0xff00) or byte }
+            194 -> { pfEnvSustainWord = (pfEnvSustainWord and 0x00ff) or (byte shl 8) }
+            195 -> { dupCheckFlag = byte and 0x0F }
+            in 196..255 -> { reserved[offset - 196] = byte.toByte() }
             else -> throw InternalError("Bad offset $offset")
         }
     }

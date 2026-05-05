@@ -30,8 +30,9 @@ TAUD_MAGIC       = bytes([0x1F,0x54,0x53,0x56,0x4D,0x61,0x75,0x64])
 TAUD_VERSION     = 1
 TAUD_HEADER_SIZE = 32       # magic(8)+ver(1)+numSongs(1)+compSize(4)+projOff(4)+sig(14)
 TAUD_SONG_ENTRY  = 32       # full spec entry (see encode_song_entry)
-SAMPLEBIN_SIZE   = 737280
-INSTBIN_SIZE     = 49152    # 256 instruments × 192 bytes
+INST_RECORD_SIZE = 256      # widened 2026-05-06 (was 192). 256 inst × 256 = 64K.
+SAMPLEBIN_SIZE   = 720896   # was 737280; 16K reallocated to inst bin (terranmon.txt:1985-1997)
+INSTBIN_SIZE     = INST_RECORD_SIZE * 256   # 65536 = 64K
 SAMPLEINST_SIZE  = SAMPLEBIN_SIZE + INSTBIN_SIZE
 PATTERN_ROWS     = 64
 PATTERN_BYTES    = PATTERN_ROWS * 8     # 512
@@ -45,6 +46,18 @@ NOTE_NOP    = 0xFFFF
 NOTE_KEYOFF = 0x0000
 NOTE_CUT    = 0xFFFE
 TAUD_C4     = 0x5000   # The audio engine's Middle C
+
+# Cue sheet instruction byte (cue offset 30; offset 31 = arg byte for 2-byte forms).
+# Per terranmon.txt §"Cue Sheet":
+#   00000010 00xxxxxx (LEN)  pattern length: rows = (xxxxxx) + 1, range 1..64
+#   00000001          (HALT) end of song
+#   00000000          (NOP)  default 64-row cue
+#   1000xxxx yyyyyyyy (BAK)  go back 12-bit arg
+#   1001xxxx yyyyyyyy (FWD)  skip forward 12-bit arg
+#   1111xxxx yyyyyyyy (JMP)  go to absolute pattern
+CUE_INST_NOP  = 0x00
+CUE_INST_HALT = 0x01
+CUE_INST_LEN  = 0x02
 
 # Taud effect opcodes (base-36: 0..9 → 0x00..0x09, A..Z → 0x0A..0x23)
 TOP_NONE = 0x00
@@ -152,8 +165,13 @@ def rescale_offset_effects(pat_bin: bytes, ratio: float) -> bytes:
     return bytes(out)
 
 
-def encode_cue(patterns12: list, instruction: int) -> bytearray:
-    """Encode a 32-byte cue entry for up to 20 voices with 12-bit pattern numbers."""
+def encode_cue(patterns12: list, instruction) -> bytearray:
+    """Encode a 32-byte cue entry for up to 20 voices with 12-bit pattern numbers.
+
+    `instruction` is either an int (legacy single-byte value placed at byte 30,
+    byte 31 = 0) or a 2-tuple `(byte30, byte31)` for two-byte forms such as
+    LEN (CUE_INST_LEN with row count - 1).
+    """
     pats = list(patterns12) + [0xFFF] * NUM_VOICES
     pats = pats[:NUM_VOICES]
     entry = bytearray(CUE_SIZE)
@@ -162,8 +180,23 @@ def encode_cue(patterns12: list, instruction: int) -> bytearray:
         entry[i]      = ((v0 & 0xF) << 4) | (v1 & 0xF)               # low nybbles
         entry[10 + i] = (((v0 >> 4) & 0xF) << 4) | ((v1 >> 4) & 0xF) # mid nybbles
         entry[20 + i] = (((v0 >> 8) & 0xF) << 4) | ((v1 >> 8) & 0xF) # high nybbles
-    entry[30] = instruction & 0xFF
+    if isinstance(instruction, tuple):
+        b30, b31 = instruction
+        entry[30] = b30 & 0xFF
+        entry[31] = b31 & 0xFF
+    else:
+        entry[30] = instruction & 0xFF
     return entry
+
+
+def cue_instruction_len(rows: int) -> tuple:
+    """Build the 2-byte LEN cue instruction for `rows` (1..64).
+
+    Returns (byte30, byte31) where byte30 = 0x02 and byte31 = (rows - 1) & 0x3F.
+    """
+    if not 1 <= rows <= 64:
+        raise ValueError(f"LEN row count must be 1..64, got {rows}")
+    return (CUE_INST_LEN, (rows - 1) & 0x3F)
 
 
 def deduplicate_patterns(pat_bin: bytes, num_pats: int) -> tuple:

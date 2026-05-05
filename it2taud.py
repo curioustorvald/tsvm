@@ -54,6 +54,7 @@ from taud_common import (
     J_SEMI_TABLE,
     d_arg_to_col, resample_linear, rescale_offset_effects, encode_cue, deduplicate_patterns,
     normalise_sample, encode_song_entry,
+    CUE_INST_NOP, CUE_INST_HALT, CUE_INST_LEN, cue_instruction_len,
 )
 
 
@@ -467,8 +468,9 @@ def parse_samples(data: bytes, h: ITHeader, decompress: bool) -> list:
 
 class ITInstrument:
     __slots__ = ('name', 'dfp', 'gv', 'canonical_sample', 'canonical_volume',
-                 'vol_envelope', 'pan_envelope', 'vol_env_sustain', 'pan_env_sustain',
-                 'pf_envelope', 'pf_env_sustain', 'pf_is_filter',
+                 'vol_envelope', 'pan_envelope', 'pf_envelope', 'pf_is_filter',
+                 'vol_env_loop', 'pan_env_loop', 'pf_env_loop',
+                 'vol_env_sus', 'pan_env_sus', 'pf_env_sus',
                  'ifc', 'ifr', 'fadeout', 'pps', 'ppc', 'rv', 'rp', 'nna',
                  'dct', 'dca')
     # vol_envelope / pan_envelope / pf_envelope: list of 25 (value, minifloat_idx) tuples, or None
@@ -538,14 +540,14 @@ def parse_instruments(data: bytes, h: ITHeader) -> list:
         # Parse IT envelopes (new-format only, ≥cmwt 0x200)
         # Vol envelope at ptr+0x130; pan envelope at ptr+0x182; pf envelope at ptr+0x1D4
         ticks_per_sec = max(h.initial_tempo * 2.0 / 5.0, 1.0)
-        inst.vol_envelope, inst.vol_env_sustain = _parse_it_envelope(
+        inst.vol_envelope, inst.vol_env_loop, inst.vol_env_sus = _parse_it_envelope(
             data, ptr + 0x130, kind='vol', ticks_per_sec=ticks_per_sec)
-        inst.pan_envelope, inst.pan_env_sustain = _parse_it_envelope(
+        inst.pan_envelope, inst.pan_env_loop, inst.pan_env_sus = _parse_it_envelope(
             data, ptr + 0x182, kind='pan', ticks_per_sec=ticks_per_sec)
         # pf envelope: byte 0 bit 7 distinguishes filter (1) from pitch (0).
         pf_flag_byte = data[ptr + 0x1D4] if ptr + 0x1D4 < len(data) else 0
         inst.pf_is_filter = bool(pf_flag_byte & 0x80)
-        inst.pf_envelope, inst.pf_env_sustain = _parse_it_envelope(
+        inst.pf_envelope, inst.pf_env_loop, inst.pf_env_sus = _parse_it_envelope(
             data, ptr + 0x1D4, kind=('filter' if inst.pf_is_filter else 'pitch'),
             ticks_per_sec=ticks_per_sec)
         insts.append(inst)
@@ -555,31 +557,32 @@ def parse_instruments(data: bytes, h: ITHeader) -> list:
 def _parse_it_envelope(data: bytes, env_ptr: int, kind: str,
                        ticks_per_sec: float) -> tuple:
     """Parse one IT envelope block (vol / pan / pitch / filter) into up to 25
-    Taud (value, minifloat_idx) points + a 16-bit sustain/flags word.
+    Taud (value, minifloat_idx) points + LOOP word + SUSTAIN word.
 
-    Returns (points_list, sus_word). points_list has 25 entries (padded
-    with hold-zeros) or None if the envelope is disabled.
+    Returns (points_list, loop_word, sustain_word).
+    points_list has 25 entries (padded with hold) or None if the envelope is
+    disabled. loop_word and sustain_word are zero when the corresponding
+    region is not enabled.
 
     kind:
-      'vol'    — IT 0..64    →  Taud 0..63  (byte 1 = volume)
+      'vol'    — IT 0..64    →  Taud 0..63
       'pan'    — IT -32..+32 →  Taud 0..255 (0x80 = centre)
-      'pitch'  — IT -32..+32 →  Taud 0..255 (0x80 = unity, 1 unit ≈ 1 semitone)
+      'pitch'  — IT -32..+32 →  Taud 0..255 (0x80 = unity)
       'filter' — IT -32..+32 →  Taud 0..255 (0x80 = unity cutoff)
 
-    sus_word layout (16 bits, 0b 0ut sssss pcb eeeee):
-        bit 14 = u (enable sustain/loop)
-        bit 13 = t (sustain — breaks on key-off when set)
-        bits 12..8 = sustain/loop start (5-bit index 0..24)
-        bit  7 = p   (vol: fadeout-zero; pan: use default pan; pf: filter mode)
-        bit  6 = c   (envelope carry)
-        bit  5 = b   (use envelope at all)
-        bits 4..0 = sustain/loop end (5-bit index 0..24)
+    Word layout (terranmon.txt:2049+ / 2114+):
+      LOOP    word: 0b 0000_0sss_ssXcb_eeeee  (X = 'p'/'m' for pan/pf, 0 for vol)
+      SUSTAIN word: 0b 0000_0sss_ss00b_eeeee
+        bits 12..8 = start index, bits 4..0 = end index
+        bit  7 = p (pan: use default pan) / m (pf: pitch=0/filter=1) / 0 (vol)
+        bit  6 = c (envelope carry — placed in the LOOP word)
+        bit  5 = b (enable that region)
     """
     if env_ptr + 82 > len(data):
-        return None, 0
+        return None, 0, 0
     flags = data[env_ptr]
     if not (flags & 0x01):
-        return None, 0          # envelope not enabled
+        return None, 0, 0       # envelope not enabled
 
     num_nodes  = max(1, min(data[env_ptr + 1], 25))
     it_lpb     = data[env_ptr + 2]
@@ -591,20 +594,6 @@ def _parse_it_envelope(data: bytes, env_ptr: int, kind: str,
     carry        = bool(flags & 0x08)
     is_filter    = bool(flags & 0x80) and kind in ('pitch', 'filter')
 
-    # Priority: sus loop > env loop (Taud carries one loop region).
-    if has_sus_loop:
-        use_lb, use_le = it_slb, it_sle
-        has_loop = True
-        is_sustain = True
-    elif has_env_loop:
-        use_lb, use_le = it_lpb, it_lpe
-        has_loop = True
-        is_sustain = False
-    else:
-        use_lb = use_le = -1
-        has_loop = False
-        is_sustain = False
-
     # Read IT nodes: (int8 value, uint16 tick_pos LE)
     nodes = []
     for n in range(num_nodes):
@@ -615,14 +604,13 @@ def _parse_it_envelope(data: bytes, env_ptr: int, kind: str,
         tick = struct.unpack_from('<H', data, nptr + 1)[0]
         nodes.append((val, tick))
     if not nodes:
-        return None, 0
+        return None, 0, 0
 
     def _to_taud_val(it_val: int) -> int:
         if kind == 'vol':
             return min(63, max(0, round(it_val * 63 / 64)))
         if kind == 'pan':
             return min(255, max(0, round((it_val + 32) * 255 / 64)))
-        # pitch / filter: -32..+32 → 0..255 (0x80 = unity)
         return min(255, max(0, round((it_val + 32) * 255 / 64)))
 
     pad_value = (63 if kind == 'vol' else 0x80)
@@ -639,27 +627,34 @@ def _parse_it_envelope(data: bytes, env_ptr: int, kind: str,
                 delta_sec    = max(0.0, (next_tick - tick) / ticks_per_sec)
                 mf_idx       = _nearest_minifloat(delta_sec)
             else:
-                mf_idx = 0          # last real node: hold
+                mf_idx = 0
         else:
-            # Pad: hold at last real node's value.
             taud_val = points[-1][0] if points else pad_value
             mf_idx   = 0
         points.append((taud_val, mf_idx))
 
-    # Build 16-bit sus word.
-    sus_word = 0x0020   # b = 1 (use envelope) — set whenever the envelope is enabled
+    # Build LOOP word (offsets 15/17/19) and SUSTAIN word (offsets 189/191/193).
+    # IT distinguishes envelope loop and sustain loop natively; map both
+    # directly. Bits: 5=b enable, 6=c carry, 7=p (pan default-pan flag) /
+    # m (pf filter mode); 12..8=start, 4..0=end. SUSTAIN word never carries
+    # c/p/m — those live in the LOOP word.
+    loop_word = 0
+    if has_env_loop and 0 <= it_lpb < 25 and 0 <= it_lpe < 25:
+        loop_word |= 0x0020                              # b: enable LOOP
+        loop_word |= (it_lpb & 0x1F) << 8
+        loop_word |= (it_lpe & 0x1F)
     if carry:
-        sus_word |= 0x0040
+        loop_word |= 0x0040                              # c carry — kept in LOOP word
     if is_filter:
-        sus_word |= 0x0080
-    if has_loop and 0 <= use_lb < 25 and 0 <= use_le < 25:
-        sus_word |= 0x4000                      # u
-        if is_sustain:
-            sus_word |= 0x2000                  # t
-        sus_word |= (use_lb & 0x1F) << 8        # sssss
-        sus_word |= (use_le & 0x1F)             # eeeee
+        loop_word |= 0x0080                              # m filter-mode (pf only)
 
-    return points, sus_word
+    sus_word = 0
+    if has_sus_loop and 0 <= it_slb < 25 and 0 <= it_sle < 25:
+        sus_word |= 0x0020                               # b: enable SUSTAIN
+        sus_word |= (it_slb & 0x1F) << 8
+        sus_word |= (it_sle & 0x1F)
+
+    return points, loop_word, sus_word
 
 
 # ── IT pattern parser ─────────────────────────────────────────────────────────
@@ -1008,12 +1003,21 @@ def resolve_it_recalls(patterns_rows: list, order_list: list,
 
 def split_patterns(patterns_rows: list):
     """
-    Returns (chunks, chunk_map).
+    Returns (chunks, chunk_map, chunk_lens).
       chunks: flat list of 64-row grids (list of 64 × 64-channel ITRow arrays)
       chunk_map: list per source pattern of [chunk_idx_0, chunk_idx_1, ...]
+      chunk_lens: list parallel to chunks giving the real row count of each
+                  chunk (64 for full chunks, < 64 for partial-tail chunks).
+                  The cue builder emits a Taud LEN ($02xx) instruction for
+                  any chunk whose length is < 64.
+
+    Patterns ≤ 64 rows produce one chunk of `rows` rows (LEN if rows < 64).
+    Patterns > 64 rows split into ⌊rows/64⌋ full 64-row chunks plus, if
+    `rows % 64 != 0`, a final chunk holding the remainder (which gets LEN).
     """
-    chunks   = []
-    chunk_map = []
+    chunks     = []
+    chunk_map  = []
+    chunk_lens = []
 
     for pi, (grid, rows) in enumerate(patterns_rows):
         if rows == 0:
@@ -1028,7 +1032,10 @@ def split_patterns(patterns_rows: list):
         for k in range(n_chunks):
             r0 = k * PATTERN_ROWS
             r1 = min(r0 + PATTERN_ROWS, rows)
-            # Build a 64-row grid for this chunk
+            chunk_len = r1 - r0
+            # Build a 64-row grid for this chunk (rows past chunk_len are
+            # silent padding; the engine will stop early via LEN when
+            # chunk_len < 64).
             chunk_grid = []
             for ch in range(64):
                 ch_rows = []
@@ -1041,52 +1048,30 @@ def split_patterns(patterns_rows: list):
                         ch_rows.append(ITRow())
                 chunk_grid.append(ch_rows)
 
-            # If this is not the last chunk, add a C $0000 on ch0 row (r1-r0-1)
-            # to immediately break to next order (skip padding rows).
-            # Only needed when the last real row of this chunk is < 63.
-            if k < n_chunks - 1:
-                last_real = r1 - r0 - 1
-                pad_row = chunk_grid[0][last_real]
-                if pad_row.effect == 0:
-                    pad_row.effect     = EFF_C
-                    pad_row.effect_arg = 0
-            elif rows < PATTERN_ROWS and n_chunks == 1:
-                # Single chunk, short pattern → break at last real row
-                last_real = rows - 1
-                if last_real < PATTERN_ROWS - 1:
-                    pad_row = chunk_grid[0][last_real]
-                    if pad_row.effect == 0:
-                        pad_row.effect     = EFF_C
-                        pad_row.effect_arg = 0
-
             idx = len(chunks)
             chunks.append(chunk_grid)
+            chunk_lens.append(chunk_len)
             pat_chunks.append(idx)
 
         chunk_map.append(pat_chunks)
-    return chunks, chunk_map
+    return chunks, chunk_map, chunk_lens
 
 
 def _remap_bc_effects(chunks: list, chunk_map: list,
                       order_list: list, it_ord_to_taud_cue: dict,
                       num_channels: int) -> None:
-    """Rewrite B/C effects using remapped order indices.
+    """Rewrite B (position-jump) effects using remapped order indices.
 
-    B effects in all chunks are rewritten to point to the first chunk
-    of the target IT order.  C effects in non-final chunks of a split
-    pattern get a co-row B to skip remaining chunks.
+    B effects are rewritten to point to the first chunk of the target IT
+    order. C effects (pattern break) need no special handling: each
+    Taud cue carries its own LEN instruction, so a non-final chunk of a
+    split source pattern simply terminates after its real row count
+    when LEN < 64 — but full 64-row non-final chunks rely on the C
+    being emitted by the engine when the source pattern's row pointer
+    naturally hits a chunk boundary. Since splits at exact multiples of
+    64 have no LEN gap, no C-skip injection is required.
     """
-    # For each chunk, record which (it_pat, chunk_k, n_chunks) it came from.
-    # We build this from chunk_map.
-    chunk_info = {}   # chunk_idx → (it_pat_idx, k, n_chunks)
-    for pi, pat_chunks in enumerate(chunk_map):
-        n = len(pat_chunks)
-        for k, ci in enumerate(pat_chunks):
-            chunk_info[ci] = (pi, k, n)
-
     for ci, chunk_grid in enumerate(chunks):
-        pi, k, n = chunk_info.get(ci, (0, 0, 1))
-
         for ch in range(num_channels):
             if ch >= len(chunk_grid): continue
             for row in chunk_grid[ch]:
@@ -1094,25 +1079,6 @@ def _remap_bc_effects(chunks: list, chunk_map: list,
                     it_tgt = row.effect_arg
                     taud_cue = it_ord_to_taud_cue.get(it_tgt, it_tgt)
                     row.effect_arg = taud_cue & 0xFF
-                elif row.effect == EFF_C and k < n - 1:
-                    # C in non-final chunk: need B to skip remaining chunks
-                    # Find the cue index immediately after all chunks of this pat
-                    # (the cue right after the last chunk of pi in the order list)
-                    # We store the B in aux_effect; the Taud builder handles it.
-                    skip_cue = _find_post_pat_cue(pi, order_list, chunk_map,
-                                                  it_ord_to_taud_cue)
-                    if skip_cue is not None:
-                        row.aux_effect = (EFF_B, skip_cue & 0xFF)
-
-def _find_post_pat_cue(pi: int, order_list: list, chunk_map: list,
-                       it_ord_to_taud_cue: dict):
-    """Return the Taud cue index that follows ALL chunks of pattern pi in the order list."""
-    for taud_cue, it_ord in it_ord_to_taud_cue.items():
-        # Find first Taud cue after the last chunk of pi
-        pass
-    # Simpler: walk the Taud cue list (we'll compute it in assemble_taud)
-    # Return None for now — assemble_taud will do a second pass.
-    return None
 
 
 # ── Sample / instrument bin (same as s3m2taud) ────────────────────────────────
@@ -1165,7 +1131,8 @@ def build_sample_inst_bin_it(samples_or_proxy: list,
             s.sus_end  = min(s.sus_end,  n)
         pos += n
 
-    # 192-byte instrument layout (terranmon.txt:1997-2070).
+    # 256-byte instrument layout (terranmon.txt:2001+).
+    INST_STRIDE = 256
     USE_ENV_BIT = 0x0020   # b — set whenever the engine should evaluate the envelope
 
     def _write_env(buf: bytearray, base: int, env_pts):
@@ -1216,7 +1183,7 @@ def build_sample_inst_bin_it(samples_or_proxy: list,
             loop_mode = 0   # no loop
         flags_byte = (loop_mode & 0x3) | sustain_bit
 
-        base = taud_idx * 192
+        base = taud_idx * INST_STRIDE
         struct.pack_into('<I', inst_bin, base + 0,  ptr)
         struct.pack_into('<H', inst_bin, base + 4,  s_len)
         struct.pack_into('<H', inst_bin, base + 6,  c2spd)
@@ -1226,12 +1193,19 @@ def build_sample_inst_bin_it(samples_or_proxy: list,
         inst_bin[base + 14] = flags_byte
 
         idata = (instr_data_by_slot or {}).get(taud_idx) or {}
-        vol_env = idata.get('vol_env')
-        pan_env = idata.get('pan_env')
-        pf_env  = idata.get('pf_env')
-        vol_sus = idata.get('vol_sus', USE_ENV_BIT)
-        pan_sus = idata.get('pan_sus', 0)
-        pf_sus  = idata.get('pf_sus',  0)
+        vol_env       = idata.get('vol_env')
+        pan_env       = idata.get('pan_env')
+        pf_env        = idata.get('pf_env')
+        # LOOP words live at offsets 15/17/19. SUSTAIN words at 189/191/193.
+        # When the source has neither loop nor sustain on the volume envelope
+        # the engine still needs the b flag so the single-point unit envelope
+        # is evaluated — synthesise USE_ENV_BIT into the LOOP word as a fallback.
+        vol_env_loop  = idata.get('vol_env_loop', USE_ENV_BIT)
+        vol_env_sus   = idata.get('vol_env_sus',  0)
+        pan_env_loop  = idata.get('pan_env_loop', 0)
+        pan_env_sus   = idata.get('pan_env_sus',  0)
+        pf_env_loop   = idata.get('pf_env_loop',  0)
+        pf_env_sus    = idata.get('pf_env_sus',   0)
         # Sample-mode default IGV: fold sample default vol (Sv) and sample GV
         # into Taud's IGV. Instrument-mode supplies inst_gv pre-folded.
         if 'inst_gv' in idata:
@@ -1247,9 +1221,10 @@ def build_sample_inst_bin_it(samples_or_proxy: list,
         # effects.c:1261). Clamp defensively to 4095.
         fadeout = min(0xFFF, idata.get('fadeout', 0) & 0xFFFF)
 
-        struct.pack_into('<H', inst_bin, base + 15, vol_sus & 0xFFFF)
-        struct.pack_into('<H', inst_bin, base + 17, pan_sus & 0xFFFF)
-        struct.pack_into('<H', inst_bin, base + 19, pf_sus  & 0xFFFF)
+        # LOOP words at offsets 15/17/19.
+        struct.pack_into('<H', inst_bin, base + 15, vol_env_loop & 0xFFFF)
+        struct.pack_into('<H', inst_bin, base + 17, pan_env_loop & 0xFFFF)
+        struct.pack_into('<H', inst_bin, base + 19, pf_env_loop  & 0xFFFF)
 
         if vol_env:
             _write_env(inst_bin, base + 21,  vol_env)
@@ -1258,8 +1233,10 @@ def build_sample_inst_bin_it(samples_or_proxy: list,
             # carried by IGV (byte 171), so the envelope must be a unit multiplier.
             inst_bin[base + 21] = 63
             inst_bin[base + 22] = 0
-            # Force engine to use this single point.
-            struct.pack_into('<H', inst_bin, base + 15, USE_ENV_BIT)
+            # Force engine to use this single point — set the b bit on the LOOP
+            # word so the envelope is evaluated even though no wrap region exists.
+            cur_loop = struct.unpack_from('<H', inst_bin, base + 15)[0]
+            struct.pack_into('<H', inst_bin, base + 15, cur_loop | USE_ENV_BIT)
 
         if pan_env:
             _write_env(inst_bin, base + 71, pan_env)
@@ -1304,13 +1281,16 @@ def build_sample_inst_bin_it(samples_or_proxy: list,
         inst_bin[base + 187] = idata.get('vib_depth', 0) & 0xFF
         # Byte 188: vibrato rate (0..255 full range, IT samplewise Vir).
         inst_bin[base + 188] = idata.get('vib_rate', 0) & 0xFF
-        # Byte 189: duplicate-check / action (IT-only — bits 0-1 = DCT, bits 2-3 = DCA).
-        #   DCT: 0=off, 1=note, 2=sample, 3=instrument.
-        #   DCA: 0=note cut, 1=note off, 2=note fade.
+        # SUSTAIN words at offsets 189/191/193.
+        struct.pack_into('<H', inst_bin, base + 189, vol_env_sus & 0xFFFF)
+        struct.pack_into('<H', inst_bin, base + 191, pan_env_sus & 0xFFFF)
+        struct.pack_into('<H', inst_bin, base + 193, pf_env_sus  & 0xFFFF)
+        # Byte 195: duplicate-check / action (IT-only — bits 0-1 = DCT, bits 2-3 = DCA).
+        # Relocated 2026-05-06 from old offset 189 (now part of the vol sustain word).
         dct = idata.get('dct', 0) & 0x03
         dca = idata.get('dca', 0) & 0x03
-        inst_bin[base + 189] = (dca << 2) | dct
-        # Bytes 190-191: reserved (already zeroed).
+        inst_bin[base + 195] = (dca << 2) | dct
+        # Bytes 196..255: reserved (already zeroed).
 
         vprint(f"  instrument[{taud_idx}] '{s.name}' ptr:{ptr} c5spd:{s.c5_speed}")
 
@@ -1331,7 +1311,6 @@ def build_pattern_it(chunk_grid: list, ch_idx: int, default_pan: int,
     """Build a 512-byte Taud pattern for one IT channel from a 64-row chunk grid."""
     out = bytearray(PATTERN_BYTES)
     rows = chunk_grid[ch_idx] if ch_idx < len(chunk_grid) else [ITRow()] * PATTERN_ROWS
-    last_inst = 0
     last_note_it = -1
 
     for r, cell in enumerate(rows[:PATTERN_ROWS]):
@@ -1359,9 +1338,6 @@ def build_pattern_it(chunk_grid: list, ch_idx: int, default_pan: int,
         note_taud = NOTE_NOP
         if cell.note >= 0:
             note_taud = encode_note_it(cell.note)
-
-        if cell.inst > 0:
-            last_inst = cell.inst
 
         note_triggers = (0 <= (cell.note if cell.note >= 0 else -1) <= 119)
 
@@ -1392,30 +1368,16 @@ def build_pattern_it(chunk_grid: list, ch_idx: int, default_pan: int,
         else:
             pan_sel, pan_value = SEL_FINE, 0
 
-        # Handle aux_effect (B) stored on a C cell for chunk-skip
-        if cell.aux_effect is not None:
-            aux_cmd, aux_arg = cell.aux_effect
-            if aux_cmd == EFF_B and op == TOP_C:
-                # Encode as B effect; C row break handled by engine's simultaneous B+C
-                op   = TOP_C
-                # We need to emit both; store the B's target in arg16 high byte
-                # Taud simultaneous B+C: B sets order, C sets row. Engine handles.
-                # Encoding: keep op=TOP_C (pattern break), store B target in
-                # a separate "B command on another channel". We can't encode two
-                # effects in one cell, so instead just emit the B effect here
-                # and let the order index point past the remaining chunks.
-                # This is a best-effort; the engine should honour the lowest-channel B.
-                op    = TOP_B
-                arg16 = aux_arg & 0xFF
-
         vol_byte = (vol_value & 0x3F) | ((vol_sel & 0x3) << 6)
         pan_byte = (pan_value & 0x3F) | ((pan_sel & 0x3) << 6)
 
-        taud_inst = last_inst & 0xFF if (note_triggers or cell.inst > 0) else 0
-
+        # Preserve cell.inst==0 verbatim — IT semantics: a note row with no
+        # explicit instrument byte retriggers the channel's currently-loaded
+        # instrument. Filling in last_inst converts that into an explicit
+        # instrument-change, which can break NNA / envelope-reset behaviour.
         base = r * 8
         struct.pack_into('<H', out, base + 0, note_taud)
-        out[base + 2] = taud_inst
+        out[base + 2] = cell.inst & 0xFF
         out[base + 3] = vol_byte
         out[base + 4] = pan_byte
         out[base + 5] = op & 0xFF
@@ -1563,7 +1525,7 @@ def assemble_taud(h: ITHeader, samples: list, instruments: list,
 
     # ── Split patterns into 64-row chunks ────────────────────────────────────
     vprint("  splitting patterns…")
-    chunks, chunk_map = split_patterns(patterns_rows)
+    chunks, chunk_map, chunk_lens = split_patterns(patterns_rows)
 
     # ── Choose active channels ───────────────────────────────────────────────
     active_channels = _active_channels(h, patterns_rows)
@@ -1657,12 +1619,15 @@ def assemble_taud(h: ITHeader, samples: list, instruments: list,
             nna_taud = it_to_taud_nna[inst.nna & 0x03]
 
             instr_data_by_slot[taud_slot] = {
-                'vol_env': inst.vol_envelope,
-                'vol_sus': inst.vol_env_sustain,
-                'pan_env': inst.pan_envelope,
-                'pan_sus': inst.pan_env_sustain,
-                'pf_env':  inst.pf_envelope,
-                'pf_sus':  inst.pf_env_sustain,
+                'vol_env':       inst.vol_envelope,
+                'vol_env_loop':  inst.vol_env_loop,
+                'vol_env_sus':   inst.vol_env_sus,
+                'pan_env':       inst.pan_envelope,
+                'pan_env_loop':  inst.pan_env_loop,
+                'pan_env_sus':   inst.pan_env_sus,
+                'pf_env':        inst.pf_envelope,
+                'pf_env_loop':   inst.pf_env_loop,
+                'pf_env_sus':    inst.pf_env_sus,
                 'inst_gv': inst_gv_255,
                 'fadeout': inst.fadeout,
                 'vib_speed':  vib_speed_taud,
@@ -1739,17 +1704,35 @@ def assemble_taud(h: ITHeader, samples: list, instruments: list,
         sheet[c*CUE_SIZE:c*CUE_SIZE+CUE_SIZE] = encode_cue([], 0)
 
     last_active = -1
+    len_cue_count = 0
     for cue_idx, ci in enumerate(taud_cue_list):
         if cue_idx >= NUM_CUES: break
         base_pat = cue_idx * C
         pats = [pat_remap[base_pat + vi] for vi in range(C)]
-        sheet[cue_idx*CUE_SIZE:(cue_idx+1)*CUE_SIZE] = encode_cue(pats, 0)
+        clen = chunk_lens[ci] if ci < len(chunk_lens) else PATTERN_ROWS
+        if clen < PATTERN_ROWS:
+            instr = cue_instruction_len(clen)
+            len_cue_count += 1
+        else:
+            instr = CUE_INST_NOP
+        sheet[cue_idx*CUE_SIZE:(cue_idx+1)*CUE_SIZE] = encode_cue(pats, instr)
         last_active = cue_idx
 
     if last_active >= 0:
-        sheet[last_active * CUE_SIZE + 30] = 0x01
+        # Halt overlays whatever LEN was on this cue. If both apply
+        # (the song terminates on a partial-tail chunk), the LEN is
+        # mooted by halt — warn so the user is aware.
+        b30_existing = sheet[last_active * CUE_SIZE + 30]
+        if b30_existing == CUE_INST_LEN:
+            vprint(f"  warning: last active cue {last_active} had LEN; "
+                   f"replaced with HALT (partial tail at song terminus)")
+        sheet[last_active * CUE_SIZE + 30] = CUE_INST_HALT
+        sheet[last_active * CUE_SIZE + 31] = 0x00
     else:
-        sheet[30] = 0x01
+        sheet[30] = CUE_INST_HALT
+    if len_cue_count:
+        vprint(f"  emitted {len_cue_count} LEN cue instruction(s) "
+               f"for partial-length patterns")
 
     # ── Header ───────────────────────────────────────────────────────────────
     sig    = (SIGNATURE + b' ' * 14)[:14]

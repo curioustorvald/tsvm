@@ -1985,16 +1985,57 @@ Synchronisation between playheads are not guaranteed. Do not play music in multi
 
 Memory Space
 
-0..737279 RW: Sample bin (720k)
-737280..786431 RW: Instrument bin (256 instruments, 192 bytes each; instrument 0 does nothing; 48k)
+0..720895 RW: Sample bin (704k)
+720896..786431 RW: Instrument bin (256 instruments, 256 bytes each; instrument 0 does nothing; 64k)
 786432..851967 RW: Play data 1 (currently exposed bank; 64k)
 851968..917503 RW: Play data 2 (currently exposed bank; 64k)
 917504..983039 RW: TAD Input Buffer (64k)
 983040..1048575 RW: TAD Decode Output (64k)
 
+(Layout note 2026-05-06: sample bin shrunk by 16k and instrument bin widened
+ by the same amount so all downstream dispatch ranges keep their existing
+ anchors at 786432. Total memory space stays at exactly 1 MiB.)
+
 Sample bin: just raw sample data thrown in there. You need to keep track of starting point for each sample
 
 Instrument bin: Registry for 256 instruments, formatted as:
+
+The instrument record is 256 bytes wide. Envelopes are described by FOUR
+independent regions per envelope (vol / pan / pitch-filter):
+    1. The 25 envelope nodes (offsets 21 / 71 / 121).
+    2. The LOOP word (offsets 15 / 17 / 19) — defines an always-active
+       wrap region. When enabled (b=1) and the envelope position reaches
+       loop_end, it wraps back to loop_start. Active regardless of key
+       state. This is the IT/FT2 envelope loop.
+    3. The SUSTAIN word (offsets 189 / 191 / 193) — defines a wrap
+       region that is ONLY active while the key is on. When the key
+       goes off the sustain "releases" and the envelope position is
+       free to walk past sus_end. Concretely:
+         - FT2-style "sustain point": store sus_start == sus_end (single
+           index). Engine wraps that index → itself, so the envelope
+           holds at the point until key-off.
+         - IT-style "sustain loop":  store sus_start <= sus_end. Engine
+           wraps sus_end → sus_start while key is on, so the envelope
+           loops within the sustain range until key-off.
+    4. (none — there is no separate "release loop"; once sustain releases
+       the envelope walks forward and is captured by the LOOP region if
+       the LOOP region exists and the position enters it.)
+
+Priority during playback follows schismtracker player/sndmix.c:480-499:
+    if SUSTAIN.b == 1 and !key_off : wrap (sus_start, sus_end)
+    elif LOOP.b == 1               : wrap (loop_start, loop_end)
+    else                           : hold at last node
+
+This means SUSTAIN takes precedence over LOOP while the key is on; once
+the key is released, LOOP becomes the active wrap region. Setting both
+to b=0 disables envelope wrapping entirely (envelope plays once and holds
+at its last node).
+
+The b flag is the SOLE enable bit for each region; the historical 't'
+(sustain breaks on key-off) and 'u' (sustain/loop enable) flags are NOT
+present in this encoding — sustain vs loop is now a structural
+distinction (different word at a different offset), not a flag bit.
+
 0   Uint32 Sample Pointer
 4   Uint16 Sample length
 6   Uint16 Sampling rate at C4 (note number 0x5000)
@@ -2006,41 +2047,35 @@ Instrument bin: Registry for 256 instruments, formatted as:
            pp: loop mode. 0-no loop, 1-loop, 2-backandforth, 3-oneshot (ignores note length unless overridden by other notes)
            s: loop is sustain (key-off escapes the loop)
             - IT: look for sample's SusLoop flag
-15  Bit16  Volume envelope sustain/loops and flags
-        * Sustain is implemented by enabling 't' flag. FastTracker has no 'Sus Loop' but only 'Sus Point'; use same value for start and end index
-        0b 0ut sssss 0cb eeeee
-            s: sustain/loop start index
-            e: sustain/loop end index
-
-            b: use envelope
-            c: envelope carry
-
-            t: the loop must sustain (key-off escapes the loop)
-            u: set to enable the sustain/loop
-17  Bit16   Panning envelope sustain/loops and flags
-        * Sustain is implemented by enabling 't' flag
-        0b 0ut sssss pcb eeeee
-            s: sustain/loop start index
-            e: sustain/loop end index
-
-            b: use envelope
-            c: envelope carry
-            p: use default pan (see offset 177 "Default pan value" below)
-
-            t: the loop must sustain (key-off escapes the loop)
-            u: set to enable the sustain/loop
-19  Bit16   Pitch/Filter envelope sustain/loops and flags
-        * Sustain is implemented by enabling 't' flag
-        0b 0ut sssss mcb eeeee
-            s: sustain/loop start index
-            e: sustain/loop end index
-
-            b: use envelope
-            c: envelope carry
-            m: mode (0: on pitch, 1: on filter)
-
-            t: the loop must sustain (key-off escapes the loop)
-            u: set to enable the sustain/loop
+15  Bit16  Volume envelope LOOP word
+        * Always-active wrap region for the volume envelope. See SUSTAIN word at offset 189 for the key-on-only wrap.
+        0b 000_sssss_0cb_eeeee
+            s (bits 12..8) : loop start index (0..24)
+            e (bits 4..0)  : loop end   index (0..24)
+            b (bit 5)      : enable the LOOP (0 = no envelope loop)
+            c (bit 6)      : envelope carry (cross-trigger envelope position carry)
+            (bits 7, 13..15 reserved — set to 0)
+17  Bit16  Panning envelope LOOP word
+        * Always-active wrap region for the pan envelope.
+        0b 000_sssss_pcb_eeeee
+            s (bits 12..8) : loop start index
+            e (bits 4..0)  : loop end   index
+            b (bit 5)      : enable the LOOP
+            c (bit 6)      : envelope carry
+            p (bit 7)      : use default pan (see offset 177 "Default pan value" below).
+                              Independent of LOOP enable; the engine reads this bit
+                              from the LOOP word as the canonical home for envelope-
+                              level meta flags.
+            (bits 13..15 reserved)
+19  Bit16  Pitch/Filter envelope LOOP word
+        * Always-active wrap region for the pitch/filter envelope.
+        0b 000_sssss_mcb_eeeee
+            s (bits 12..8) : loop start index
+            e (bits 4..0)  : loop end   index
+            b (bit 5)      : enable the LOOP
+            c (bit 6)      : envelope carry
+            m (bit 7)      : mode — 0 = pitch envelope, 1 = filter envelope
+            (bits 13..15 reserved)
 21  Bit16x25 Volume envelopes
        Byte 1: Volume (00..3F)
        Byte 2: Time until the next point, in seconds (3.5 Unsigned Minifloat). 0 = hold at this point indefinitely.
@@ -2090,7 +2125,29 @@ Instrument bin: Registry for 256 instruments, formatted as:
         * FastTracker2 has range of 0..16; multiply by (255/16) then round to int
 188 Uint8  Vibrato Rate (0..255 full range)
         * ImpulseTracker sample config. The spec follows ImpulseTracker precisely
-189 Byte[3] Reserved
+189 Bit16  Volume envelope SUSTAIN word
+        * Wrap region active ONLY while key is on. Released on key-off.
+        * FT2 single-point sustain: store sus_start == sus_end (the engine
+          wraps that index → itself, so the envelope holds there).
+        * IT sustain loop: store sus_start <= sus_end (engine wraps the range
+          while key is on; same shape as the LOOP word).
+        0b 000_sssss_00b_eeeee
+            s (bits 12..8) : sustain start index (0..24)
+            e (bits 4..0)  : sustain end   index (0..24)
+            b (bit 5)      : enable the SUSTAIN (0 = no sustain wrap)
+            (bits 6..7, 13..15 reserved — the 'c' carry bit lives in the LOOP word)
+191 Bit16  Panning envelope SUSTAIN word
+        * Same encoding as offset 189, applied to the pan envelope.
+        0b 000_sssss_00b_eeeee
+193 Bit16  Pitch/Filter envelope SUSTAIN word
+        * Same encoding as offset 189, applied to the pitch/filter envelope.
+        0b 000_sssss_00b_eeeee
+195 Bit8   Duplicate Check / Action (IT-only; FT2 leaves this 0)
+        0b 0000 dcdt
+            dt (bits 0..1) : Duplicate Check Type. 0=off, 1=note, 2=sample, 3=instrument.
+            dc (bits 2..3) : Duplicate Check Action. 0=note cut, 1=note off, 2=note fade.
+        * Relocated from offset 189 (which is now the volume sustain word) on 2026-05-06.
+196..255 Reserved (60 bytes free for future per-instrument fields)
 
 
 
@@ -2115,6 +2172,10 @@ TODO:
     [ ] low-number voleffs are too quiet (needs elaboration and test cases)
     [x] scale Oxxxx when samples get resampled
     [x] implement bitcrusher and overdrive  (eff sym '8' and '9')
+    [x] note trigger with inst and note fx set (e.g. portamento) but no volume set is not getting their default volume but getting what was before instead (SATELL.taud ptn 23) -- and simulateRowState() of taut.js always shows old volume instead of default volume, regardless of note fx's existence
+    [ ] implement extended tone mode (MONOTONE compat)
+    [ ] pattern loops stops working after processed once (test with slumberjack.xm)
+    [ ] how does fadeout=0 work on IT? On XM, the note don't decay at all (that's why there's separate CUT value). Also see what Global Behaviour 'm' flag actually do on Taud (or, which slop AI had fed me *sigh*)
 
 
 Play Data: play data are series of tracker-like instructions, visualised as:
@@ -2239,10 +2300,12 @@ Play Head Flags
         Byte 11..20: 0b miV1 miV2, 0b miV3 miV4, 0b miV5 miV6, ... 0b miV19 miV20
         Byte 21..30: 0b hiV1 hiV2, 0b hiV3 hiV4, 0b hiV5 hiV6, ... 0b hiV19 hiV20
     Byte 31..32: instruction
-        1000xxxx yyyyyyyy - Go back 0bxxxxyyyyyyyy patterns
-        1001xxxx yyyyyyyy - Skip forward 0bxxxxyyyyyyyy patterns
-        1111xxxx yyyyyyyy - Go to absolute pattern number 0bxxxxyyyyyyyy
-        00000001 - Halt
+        1000xxxx yyyyyyyy (BAK000) - Go back 0bxxxxyyyyyyyy patterns
+        1001xxxx yyyyyyyy (FWD000) - Skip forward 0bxxxxyyyyyyyy patterns
+        1111xxxx yyyyyyyy (JMP000) - Go to absolute pattern number 0bxxxxyyyyyyyy
+        00000010 00xxxxxx (LEN 00) - Pattern length for this cue (0..63), where 0: 1 row, 63: 64 rows (decoded by AudioAdapter as of 2026-05-05; emitted by xm2taud / it2taud for non-multiple-of-64 source patterns)
+        00000001 00000000 - Halt (HALT  )
+        00000001 00111111 - Fadeout (FADOUT) - Gradually decrease global volume such that at row 63 it reaches zero
         00000000 - No operation
 
 65536..131071 RW: PCM Sample buffer
@@ -2329,9 +2392,9 @@ Endianness: Little
     Uint16  Current Tuning base note (1..65533). A4 (western default) is 0x5C00. C9 (tracker default) is 0xA000. If zero, assume the tracker default value
     Float32 Frequency at the base note. Tracker default is 8363.0. If zero, assume the tracker default
     Uint8   Flags for Global Behaviour (effect symbol '1')
-        0b 0000 0mfp
+        0b 0000 Fmfp
             p: panning law         (0=linear, 1=equal-power)
-            f: tone mode           (0=linear pitch slides, 1=Amiga period slides)
+            Ff: tone mode          (0=linear pitch slides, 1=Amiga period slides, 2=linear-frequency slides, 3=reserved)
             m: fadeout-zero policy (0=IT — stored fadeout 0 means no fadeout;
                                     1=FT2 — stored fadeout 0 means cut on key-off)
     Uint8   Song global volume
