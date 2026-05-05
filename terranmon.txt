@@ -2173,9 +2173,10 @@ TODO:
     [x] scale Oxxxx when samples get resampled
     [x] implement bitcrusher and overdrive  (eff sym '8' and '9')
     [x] note trigger with inst and note fx set (e.g. portamento) but no volume set is not getting their default volume but getting what was before instead (SATELL.taud ptn 23) -- and simulateRowState() of taut.js always shows old volume instead of default volume, regardless of note fx's existence
+    [ ] how does fadeout=0 work on IT? On XM, the note don't decay at all (that's why there's separate CUT value). Also see what Global Behaviour 'm' flag actually do on Taud (or, which slop AI had fed me *sigh*). `slumberjack.xm` plays normally but notes of `4THSYM.it` don't decay at all
     [ ] implement extended tone mode (MONOTONE compat)
     [ ] pattern loops stops working after processed once (test with slumberjack.xm)
-    [ ] how does fadeout=0 work on IT? On XM, the note don't decay at all (that's why there's separate CUT value). Also see what Global Behaviour 'm' flag actually do on Taud (or, which slop AI had fed me *sigh*)
+    [ ] milkytracker-style volume ramping (on sample-end only)
 
 
 Play Data: play data are series of tracker-like instructions, visualised as:
