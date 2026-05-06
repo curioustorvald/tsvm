@@ -19,6 +19,10 @@ const BULLET = "\u00847u"
 const VERT = "\u00B3"
 const TWOVERT = "\u00BA"
 
+if (!_G.TAUT) _G.TAUT = {};
+if (!_G.TAUT.UI) _G.TAUT.UI = {};
+if (!_G.TAUT.UI.NEXTPANEL) _G.TAUT.UI.NEXTPANEL = undefined;
+
 const sym = {
 /* accidentals */
 accnull:"\u00A2\u00A3",
@@ -850,44 +854,44 @@ function drawPatternView(style = timelineRowStyle) {
 function drawControlHint() {
     let hintElemTimeline = [
         [`\u008428u\u008429u`,'Nav'],
-        [`Pg\u008418u`,'Cue'],
+        [`pg\u008418u`,'Cue'],
     ['sep'],
         ['WER','View'],
     ['sep'],
-        ['Sp','Edit'],
+        ['sp','Edit'],
     ['sep'],
         ['n','Solo'],
         ['m','Mute'],
     ['sep'],
-        ['Tab','Panel']
+        ['tab','Panel']
 //    ['sep'],
 //        ['q','Quit'],
     ]
     let hintElemOrders = [
         [`\u008428u\u008429u`,'Nav'],
-        [`Ent`,'Go to cue'],
+        [`ent`,'Go to cue'],
     ['sep'],
-        ['Sp','Edit'],
+        ['sp','Edit'],
     ['sep'],
-        ['Tab','Panel'],
+        ['tab','Panel'],
 //    ['sep'],
 //        ['q','Quit'],
     ]
 
     let hintElemPatterns = [
         [`\u008428u\u008429u`,'Nav'],
-        [`Pg\u008418u`,'Ptn'],
+        [`pg\u008418u`,'Ptn'],
     ['sep'],
-        ['Sp','Edit'],
+        ['sp','Edit'],
     ['sep'],
-        ['Tab','Panel'],
+        ['tab','Panel'],
 //    ['sep'],
 //        ['q','Quit'],
     ]
 
     let hintElemEditNoteValue = [ // only enabled in viewmode 'E' or in pattern editor
         [`\u008428u\u008429u`,'Nav'],
-        [`Pg\u008418u`,'Cue'],
+        [`pg\u008418u`,'Cue'],
     ['sep'],
         [`A${sym.doubledot}G`,'Note'],
         [`0${sym.doubledot}9`,'Oct'],
@@ -903,15 +907,15 @@ function drawControlHint() {
     ]
     let hintElemEditInstValue = [
         [`\u008428u\u008429u`,'Nav'],
-        [`Pg\u008418u`,'Cue'],
+        [`pg\u008418u`,'Cue'],
     ['sep'],
         [`0${sym.doubledot}9 A${sym.doubledot}F`,'Instrument'],
     ['sep'],
-        ['Sp','ExitEdit'],
+        ['sp','ExitEdit'],
     ]
     let hintElemEditVolEff = [
         [`\u008428u\u008429u`,'Nav'],
-        [`Pg\u008418u`,'Cue'],
+        [`pg\u008418u`,'Cue'],
     ['sep'],
         ['h','Set'],
         ['j','SlideDn'],
@@ -924,7 +928,7 @@ function drawControlHint() {
     ]
     let hintElemEditPanEff = [
         [`\u008428u\u008429u`,'Nav'],
-        [`Pg\u008418u`,'Cue'],
+        [`pg\u008418u`,'Cue'],
     ['sep'],
         ['h','Set'],
         ['j','SlideL'],
@@ -937,19 +941,19 @@ function drawControlHint() {
     ]
     let hintElemEditFxSym = [
         [`\u008428u\u008429u`,'Nav'],
-        [`Pg\u008418u`,'Cue'],
+        [`pg\u008418u`,'Cue'],
     ['sep'],
         [`0${sym.doubledot}9 A${sym.doubledot}F`,`FxSym`],
     ['sep'],
-        ['Sp','ExitEdit'],
+        ['sp','ExitEdit'],
     ]
     let hintElemEditFxVal = [
         [`\u008428u\u008429u`,'Nav'],
-        [`Pg\u008418u`,'Cue'],
+        [`pg\u008418u`,'Cue'],
     ['sep'],
         [`0${sym.doubledot}9 A${sym.doubledot}F`,`FxVal`],
     ['sep'],
-        ['Sp','ExitEdit'],
+        ['sp','ExitEdit'],
     ]
 
     const hintElemExternal = [['Tab','Panel']]
@@ -2082,7 +2086,7 @@ const panelPatterns = new win.WindowObject(1, PTNVIEW_OFFSET_Y, SCRW, PTNVIEW_HE
 
 // External sub-program panels: drawContents launches the sub-program synchronously.
 // The sub-program draws rows 4+ and does NOT touch rows 1-3 (drawn by taut.js before launch).
-// On exit, the sub-program sets _G.taut_nextPanel to request a tab switch.
+// On exit, the sub-program sets _G.TAUT.UI.NEXTPANEL to request a tab switch.
 function makeExternalPanelDraw(progName) {
     return function(wo) {
         // stop any playback first
@@ -2090,7 +2094,7 @@ function makeExternalPanelDraw(progName) {
         // update the top bar
         drawAlwaysOnElems()
 
-        _G.taut_nextPanel = undefined
+        _G.TAUT.UI.NEXTPANEL = undefined
         _G.shell.execute(`${progName} ${fullPathObj.full} ${currentPanel}`)
     }
 }
@@ -2617,9 +2621,9 @@ while (!exitFlag) {
     if (pendingExternalDraw) {
         pendingExternalDraw = false
         redrawPanel()
-        while (_G.taut_nextPanel !== undefined && _G.taut_nextPanel !== null) {
-            currentPanel = _G.taut_nextPanel
-            _G.taut_nextPanel = undefined
+        while (_G.TAUT.UI.NEXTPANEL !== undefined && _G.TAUT.UI.NEXTPANEL !== null) {
+            currentPanel = _G.TAUT.UI.NEXTPANEL
+            _G.TAUT.UI.NEXTPANEL = undefined
             applyMuteTransition(currentPanel)
             if (isExternalPanel(currentPanel)) {
                 con.clear(); drawAlwaysOnElems(); drawControlHint()

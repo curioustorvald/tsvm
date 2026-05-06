@@ -4,7 +4,7 @@
  * Rows 1-3 are owned by the parent; this program draws rows 4+.
  *
  * exec_args[1] = path to .taud file
- * Sets _G.taut_nextPanel before returning to request a panel switch.
+ * Sets _G.TAUT.UI.NEXTPANEL before returning to request a panel switch.
  *
  * Created by minjaesong on 2026-04-27
  */
@@ -65,7 +65,7 @@ while (!done) {
         if (!keyJustHit) return
 
         if (keysym === '<TAB>') {
-            _G.taut_nextPanel = (MY_PANEL + (shiftDown ? -1 : 1) + PANEL_COUNT) % PANEL_COUNT
+            _G.TAUT.UI.NEXTPANEL = (MY_PANEL + (shiftDown ? -1 : 1) + PANEL_COUNT) % PANEL_COUNT
             done = true
             return
         }
