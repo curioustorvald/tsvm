@@ -366,7 +366,10 @@ def assemble_taud(mon: dict) -> bytes:
 
     # BPM 150 + ticks=mon_speed → row rate = 60/mon_speed (matches Monotone).
     bpm_stored = 150 - 24
-    flags_byte = 0x04        # m bit: fadeout-zero policy = cut on key-off.
+    # bit 2 reserved (was 'm' fadeout-zero policy; removed). Monotone has no instrument-level
+    # fadeout, so every Taud instrument carries fadeout=0 ("no fade") — notes retire on
+    # sample-end or pattern note-cut instead.
+    flags_byte = 0x00
 
     song_table = encode_song_entry(
         song_offset       = song_offset,

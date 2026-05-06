@@ -1214,11 +1214,12 @@ def build_sample_inst_bin_it(samples_or_proxy: list,
             smp_vol_default = min(getattr(s, 'vol', 64), 64)
             smp_gv_default  = min(getattr(s, 'gv', 64), 64)
             inst_gv = min(255, round(smp_vol_default * smp_gv_default * 255 / (64 * 64)))
-        # IT fadeout (file-stored 0..2048; ITTECH practical max ≈ 1024) maps verbatim to
-        # the Taud 12-bit fadeStep. The player picks divisor 1024 in IT mode (vs 65536
-        # in FT2 mode) so that one fadeStep unit per tick matches Schism's
-        # `chan->fadeout_volume -= (stored<<5)<<1` semantics (sndmix.c:331-339,
-        # effects.c:1261). Clamp defensively to 4095.
+        # IT fadeout (file-stored 0..1024 per ITTECH; some loaders accept up to 2048) maps
+        # verbatim to Taud's 12-bit fadeStep. Schism's per-tick decrement is stored / 1024 of
+        # unit volume (sndmix.c:331-339, effects.c:1261: accumulator 65536, decrement
+        # = (stored<<5)<<1 = stored*64) — identical to Taud's engine divisor of 1024. Clamp
+        # defensively to 4095. See terranmon.txt byte 172/173 and TAUD_NOTE_EFFECTS.md §1
+        # "Volume Fadeout".
         fadeout = min(0xFFF, idata.get('fadeout', 0) & 0xFFFF)
 
         # LOOP words at offsets 15/17/19.
@@ -1751,8 +1752,9 @@ def assemble_taud(h: ITHeader, samples: list, instruments: list,
     vprint(f"  pattern bin: {len(pat_bin)} → {len(pat_comp)} bytes (gzip)")
     vprint(f"  cue sheet:   {len(sheet)} → {len(cue_comp)} bytes (gzip)")
 
-    # flags byte: bit 1 (f) = Amiga pitch-slide mode (IT linear_slides flag inverted)
-    # bit 2 (m) cleared: IT fadeout-zero policy — stored fadeout=0 means "no fadeout".
+    # flags byte: bit 1 (f) = Amiga pitch-slide mode (IT linear_slides flag inverted).
+    # bit 2 was the old 'm' fadeout-zero policy flag and is now reserved (always 0); fadeout
+    # scaling is done per-instrument in this converter — see the fadeout pass-through below.
     flags_byte = 0x00 if h.linear_slides else 0x02
     # IT global/mix volumes are 0..128; rescale to Taud's 0..255 (clamped).
     global_vol_taud = min(0xFF, round(h.global_vol * 255 / 128))

@@ -2090,17 +2090,52 @@ distinction (different word at a different offset), not a flag bit.
             - ImpulseTracker also has samplewise default volume (0..64) and samplewise global volume (0..64), and they must be taken into account because Taud has no samplewise config, following the ImpulseTracker spec
         * FastTracker2 has range of 0..64; multiply by (255/64) then round to int
 172 Uint8  Volume Fadeout low bits
-173 Bit8   Fadeout and vibrato
+173 Bit8   Volume Fadeout high bits
         0b 0000 ffff
-            f: Volume Fadeout high bits
-        * Combined 12-bit fadeout value is the engine's per-tick decrement, in 1/65536 units
-          (a unity-volume voice silenced over (65536 / fadeout) ticks after key-off).
-        * Stored 0: behaviour depends on Global Behaviour bit 'm' (see Song Table) —
-          IT mode (m=0) leaves the voice unfaded; FT2 mode (m=1) cuts on key-off.
-        * Source-format mapping:
-            - IT: stored fadeout (0..1024) MUST be doubled on import (taud = it × 2);
-              Taud's per-tick scale matches FT2 natively, so IT values are scaled to match.
-            - FT2: stored fadeout (0..0xFFF) is passed through unchanged.
+            f: Volume Fadeout high bits (low nibble of byte 173; high nibble reserved, must be zero)
+        * Combined 12-bit unsigned value (range 0..4095). The engine maintains
+          a per-voice fadeoutVolume ∈ [0, 1] initialised to 1.0 on note-on, and
+          while the voice is in key-off or NNA Note-Fade state applies once per
+          song tick:
+              fadeoutVolume -= storedFadeout / 1024.0
+              clamp fadeoutVolume to [0, 1]
+              if fadeoutVolume == 0: voice deactivates
+          The voice's amplitude is multiplied by fadeoutVolume each tick.
+        * Stored value semantics (no separate "use fadeout" flag — like IT and
+          FT2 file formats, "no fade" and "instant cut" are both encoded as
+          extreme values of this same field):
+            - 0          : no fade. fadeoutVolume never moves; the voice plays
+                           at envelope-driven volume indefinitely. Termination
+                           must come from the volume envelope reaching a final
+                           0-valued node, the sample ending, or a note-cut.
+            - 1..1023    : graduated fade. Completes in (1024 / storedFadeout)
+                           ticks. e.g. 1 → 1024 ticks; 32 → 32 ticks.
+            - 1024       : exact 1-tick cut. fadeoutVolume goes 1.0 → 0.0 in
+                           one tick (the canonical "kill on key-off" value).
+            - 1025..4095 : also a 1-tick cut (clamped at 0). The 4× headroom
+                           over 1024 lets converters carry out-of-spec source
+                           values without saturating prematurely.
+        * Tick-rate worked example at default 50 Hz (BPM 125, speed 6):
+            - storedFadeout = 1    → fade ≈ 20.5 s
+            - storedFadeout = 32   → fade ≈ 640 ms
+            - storedFadeout = 1024 → ~20 ms (one tick)
+        * Source-format mapping (converters scale source units → Taud field):
+            - IT: 16-bit field at IT instrument record offset 0x14, range
+              0..1024 per ITTECH (some loaders accept up to 2048). Schism's
+              per-tick decrement is stored / 1024 of unit volume — identical
+              to Taud's unit. Pass-through with clamp:
+                  taud_fadeout = min(it_fadeout & 0xFFFF, 0x0FFF)
+            - FT2/XM: 16-bit field. Spec range 0..0xFFF; MilkyTracker writes
+              up to 32767 to encode the "cut" UI slider position
+              (SectionInstruments.cpp:499-500). FT2's per-tick decrement is
+              stored / 32768 of unit volume — to match Taud's stored / 1024
+              rate, divide source by 32 (round-to-nearest):
+                  taud_fadeout = min((xm_fadeout + 16) // 32, 0x0FFF)
+              XM stored 1..15 round to Taud 0 (originals were >11 min at 50 Hz
+              — effectively "no fade" anyway). Stored 32 → Taud 1 (~20 s).
+              Stored 32767 (Milky cut sentinel) → Taud 1024 (1-tick cut).
+            - MOD/S3M/MON: no instrument-level fadeout in source; converters
+              write 0 (notes retire on sample-end or pattern note-cut).
 174 Uint8  Volume swing (0..255 full range)
 175 Uint8  Vibrato speed
         * ImpulseTracker has samplewise vibrato speed (0..64), and they must be taken into account because Taud has no samplewise config
@@ -2173,7 +2208,21 @@ TODO:
     [x] scale Oxxxx when samples get resampled
     [x] implement bitcrusher and overdrive  (eff sym '8' and '9')
     [x] note trigger with inst and note fx set (e.g. portamento) but no volume set is not getting their default volume but getting what was before instead (SATELL.taud ptn 23) -- and simulateRowState() of taut.js always shows old volume instead of default volume, regardless of note fx's existence
-    [ ] how does fadeout=0 work on IT? On XM, the note don't decay at all (that's why there's separate CUT value). Also see what Global Behaviour 'm' flag actually do on Taud (or, which slop AI had fed me *sigh*). `slumberjack.xm` plays normally but notes of `4THSYM.it` don't decay at all
+    [x] how does fadeout=0 work on IT? On XM, the note don't decay at all (that's why there's separate CUT value). Also see what Global Behaviour 'm' flag actually do on Taud (or, which slop AI had fed me *sigh*). `slumberjack.xm` plays normally but notes of `4THSYM.it` don't decay at all
+        Resolution: confirmed against schismtracker (player/sndmix.c:330-342) and
+        ft2-clone (src/ft2_replayer.c:1467-1481). Both IT and FT2 treat stored
+        fadeout=0 as "no fade" — there is no separate "use fadeout" flag in
+        either file format; "cut" is just the slider-extreme of the same
+        magnitude (MilkyTracker SectionInstruments.cpp:499-500 maps the slider's
+        4097th position to internal 32767). The 'm' flag's claim that FT2 cuts
+        on key-off when fadeout=0 was AI slop. Dropped the flag entirely; the
+        engine now uses a single divisor (1024) and converters scale their
+        source units to match (IT pass-through, XM ÷32). See byte 172-173 of
+        the instrument record for engine semantics.
+        4THSYM.it notes still hang on key-off — that's a separate bug: instruments
+        with fadeout=0 + sustained envelope ending in a 0-valued node need the
+        Schism rule "envelope reached final 0 node ⇒ cut voice"
+        (sndmix.c:494-495). Not yet implemented in AudioAdapter.kt.
     [ ] implement extended tone mode (MONOTONE compat)
     [ ] pattern loops stops working after processed once (test with slumberjack.xm)
     [ ] milkytracker-style volume ramping (on sample-end only)
@@ -2393,11 +2442,12 @@ Endianness: Little
     Uint16  Current Tuning base note (1..65533). A4 (western default) is 0x5C00. C9 (tracker default) is 0xA000. If zero, assume the tracker default value
     Float32 Frequency at the base note. Tracker default is 8363.0. If zero, assume the tracker default
     Uint8   Flags for Global Behaviour (effect symbol '1')
-        0b 0000 Fmfp
+        0b 0000 0Ffp
             p: panning law         (0=linear, 1=equal-power)
             Ff: tone mode          (0=linear pitch slides, 1=Amiga period slides, 2=linear-frequency slides, 3=reserved)
-            m: fadeout-zero policy (0=IT — stored fadeout 0 means no fadeout;
-                                    1=FT2 — stored fadeout 0 means cut on key-off)
+            (bit 2 reserved — was 'm' fadeout-zero policy, removed; fadeout
+             scaling now lives entirely in the converter — see byte 172/173
+             of the instrument record for engine semantics)
     Uint8   Song global volume
         * ImpulseTracker has range of 0..128; multiply by (255/128) then round to int
     Uint8   Song mixing volume

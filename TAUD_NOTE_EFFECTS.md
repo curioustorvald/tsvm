@@ -956,7 +956,7 @@ Effects in this section modifies the behaviour of the mixer. Primary intention o
 
 **Plain.** Sets mixer-wide behaviour flags. Available flags are:
 
-    0b 0000 Fmfp
+    0b 0000 0Ffp
 
 - p unset: Linear panning mode (tracker-accurate). Centre panning gets 3 dB boost. Default setting.
 - p set: Equal-power panning mode. L/R amplitude is at 0.707 when centre-panned.
@@ -965,8 +965,49 @@ Effects in this section modifies the behaviour of the mixer. Primary intention o
 - Ff = 1: Amiga (cycle-based) tone mode. Pitch shift will behave like ProTracker/ScreamTracker default mode. **Coarse and fine E/F arguments are stored as raw tracker period units** (the unscaled byte/nibble from the source PT/S3M/IT file) and applied in Amiga period space. Tone portamento (G) remains linear regardless of mode.
 - Ff = 2: Linear frequency mode. Pitch shift will behave against frequency number.
 
-- m unset: IT fadeout-zero policy. An instrument with stored volume fadeout = 0 does **not** fade out on key-off; the voice plays through until the volume envelope ends it (or never, if there is no envelope).
-- m set: FT2 fadeout-zero policy. An instrument with stored volume fadeout = 0 is **cut** on the first tick after key-off (or NNA Note-Fade). Nonzero fadeouts behave identically in both modes — the per-tick decrement is always `fadeout / 65536` in unity-volume units.
+(Bit 2 is reserved. It previously held an `m` "fadeout-zero policy" flag intended to swap between IT and FT2 semantics for `storedFadeout = 0`. That flag was removed once both trackers were verified to share identical "stored 0 ⇒ no fade" semantics — see schismtracker `player/sndmix.c:330-342` and ft2-clone `src/ft2_replayer.c:1467-1481`. Fadeout scaling now lives in the converters; see "Volume Fadeout" below.)
+
+### Volume Fadeout
+
+Taud's volume fadeout is a single linear decay applied per song tick after key-off (or NNA Note-Fade). It is **the only retirement mechanism** for sustained voices when the volume envelope holds non-zero or has no terminating zero node — without a non-zero stored fadeout, such voices play forever.
+
+The 12-bit stored fadeout lives at instrument-record bytes 172 (low 8 bits) and 173 (low nibble = high 4 bits; high nibble reserved). Range 0..4095. The engine maintains a per-voice `fadeoutVolume ∈ [0, 1]` initialised to 1.0 on note-on, and once per song tick while the voice is keyed off:
+
+```
+fadeoutVolume -= storedFadeout / 1024.0
+clamp fadeoutVolume to [0, 1]
+if fadeoutVolume == 0: voice deactivates
+```
+
+Boundary semantics:
+
+| `storedFadeout` | Behaviour |
+| --- | --- |
+| `0` | No fade. Voice plays at envelope-driven volume indefinitely. |
+| `1..1023` | Graduated fade — completes in `1024 / storedFadeout` ticks. |
+| `1024` | Exact 1-tick cut. The canonical "kill on key-off" value. |
+| `1025..4095` | Also a 1-tick cut (clamped at 0). Headroom for converter robustness. |
+
+There is no separate "use fadeout" flag — both extremes share the same field, exactly as in the IT and XM file formats.
+
+**Tick-rate worked example** (default 50 Hz, BPM 125, speed 6):
+
+- `storedFadeout = 1` → fade ≈ 20.5 s
+- `storedFadeout = 32` → fade ≈ 640 ms
+- `storedFadeout = 1024` → ~20 ms (one tick)
+
+**Converter unit conversion.** Source trackers each expose fadeout in their own unit; converters scale the source value into Taud's 0..4095 field.
+
+- **IT** (`it2taud.py`): IT files store fadeout as a 16-bit field at instrument-record offset `0x14`, range 0..1024 per ITTECH (some loaders accept up to 2048). Schism's per-tick decrement is `stored / 1024` — identical to Taud's unit. **Pass-through with clamp:**
+  ```python
+  taud_fadeout = min(it_fadeout & 0xFFFF, 0x0FFF)
+  ```
+- **FT2 / XM** (`xm2taud.py`): XM files store fadeout as a 16-bit field. Spec range 0..0xFFF; MilkyTracker writes up to 32767 to encode the "cut" UI slider position (`SectionInstruments.cpp:499-500`). FT2's per-tick decrement is `stored / 32768` — to match Taud's `stored / 1024` rate, **divide source by 32 (round-to-nearest):**
+  ```python
+  taud_fadeout = min((xm_fadeout + 16) // 32, 0x0FFF)
+  ```
+  XM stored 1..15 round to Taud 0; the originals were >11 min at 50 Hz — effectively no-fade anyway. Stored 32 → Taud 1 (~20 s). Stored 32767 (Milky cut sentinel) → Taud 1024 (1-tick cut).
+- **MOD / S3M / MON**: source has no instrument-level fadeout. Converter writes Taud `0`. Notes retire on sample-end or pattern note-cut.
 
 **Implementation.**
 - Panning-linear: 

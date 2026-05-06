@@ -1960,11 +1960,11 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 // 1 $xx00 — Global behaviour flags byte in the high byte (see TAUD_NOTE_EFFECTS.md §1).
                 // bit 0 (p): 0=linear pan, 1=equal-power pan
                 // bit 1 (f): 0=linear pitch slides, 1=Amiga-mode pitch slides
-                // bit 2 (m): fadeout-zero policy. 0=IT (stored 0 ⇒ no fadeout), 1=FT2 (stored 0 ⇒ cut on key-off)
+                // bit 2  : reserved (was 'm' fadeout-zero policy; removed — converters now scale
+                //          source fadeout into Taud-native units, so the engine has a single divisor)
                 val flags = rawArg ushr 8
                 ts.panLaw = flags and 1
                 ts.amigaMode = (flags and 2) != 0
-                ts.fadeoutCutOnZero = (flags and 4) != 0
             }
             EffectOp.OP_8 -> {
                 // 8 $xyzz — Bitcrusher.  See TAUD_NOTE_EFFECTS.md §8.
@@ -2405,24 +2405,19 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
             // Volume fadeout: after key-off OR Note-Fade NNA, decrement per tick.
             // The 12-bit fadeStep is split across volumeFadeoutLow + low nibble of fadeoutHigh.
-            // Divisor selects per-tracker semantics:
-            //   FT2 mode (fadeoutCutOnZero=true):  fadeStep / 32768 per tick — matches ft2-clone
-            //                                       (ft2_replayer.c:387-390, 1469-1481): the FT2 XM
-            //                                       file format docs claim the accumulator is 16-bit
-            //                                       (65536), but the actual replayer initialises
-            //                                       fadeoutVol to 32768 and decrements by stored.
-            //   IT  mode (fadeoutCutOnZero=false): fadeStep / 1024  per tick — matches Schism
-            //                                       (sndmix.c:331-339 + effects.c:1261: accumulator
-            //                                       65536, decrement = (stored<<5)<<1 = stored·64).
-            // Stored 0: FT2 mode cuts on key-off; IT mode leaves voice playing (no fade).
+            // Engine semantics (terranmon.txt byte 172/173, TAUD_NOTE_EFFECTS.md §1 "Volume Fadeout"):
+            //   fadeoutVolume -= fadeStep / 1024.0 per tick, clamped at 0.
+            //   stored = 0     : no fade (the if-branch is skipped — voice plays on at envelope volume)
+            //   stored = 1024  : exact 1-tick cut
+            //   stored > 1024  : also a 1-tick cut (clamped)
+            // Both IT and FT2 file formats encode "no fade" as stored=0 and "cut" as the slider-extreme
+            // of the same field; converters scale source values into Taud's 0..4095 unit so the engine
+            // sees one consistent encoding.
             if (voice.keyOff || voice.noteFading) {
                 val fadeStep = inst.volumeFadeoutLow or ((inst.fadeoutHigh and 0x0F) shl 8)
                 if (fadeStep > 0) {
-                    val divisor = if (ts.fadeoutCutOnZero) 32768.0 else 1024.0
-                    voice.fadeoutVolume = (voice.fadeoutVolume - fadeStep / divisor).coerceAtLeast(0.0)
+                    voice.fadeoutVolume = (voice.fadeoutVolume - fadeStep / 1024.0).coerceAtLeast(0.0)
                     if (voice.fadeoutVolume <= 0.0) voice.active = false
-                } else if (ts.fadeoutCutOnZero) {
-                    voice.active = false
                 }
             }
 
@@ -2474,14 +2469,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             if (bg.keyOff || bg.noteFading) {
                 val fadeStep = inst.volumeFadeoutLow or ((inst.fadeoutHigh and 0x0F) shl 8)
                 if (fadeStep > 0) {
-                    // Divisor must mirror the foreground-voice fade path above
-                    // (FT2 mode: 32768 to match ft2_replayer.c:387-390+1469-1481).
-                    val divisor = if (ts.fadeoutCutOnZero) 32768.0 else 1024.0
-                    bg.fadeoutVolume = (bg.fadeoutVolume - fadeStep / divisor).coerceAtLeast(0.0)
-                } else if (ts.fadeoutCutOnZero) {
-                    bg.active = false
-                    bgIt.remove()
-                    continue
+                    // Mirrors the foreground-voice fade path above — single divisor of 1024.
+                    bg.fadeoutVolume = (bg.fadeoutVolume - fadeStep / 1024.0).coerceAtLeast(0.0)
                 }
             }
             // Auto-vibrato keeps running on backgrounds — it's an instrument-intrinsic LFO.
@@ -2982,7 +2971,6 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         // Global mixer config (effect 1).
         var panLaw = 0      // 0 = linear balance (default), 1 = equal-power
         var amigaMode = false  // false = linear pitch slides, true = Amiga period-space slides
-        var fadeoutCutOnZero = false  // false = IT (stored 0 ⇒ no fadeout); true = FT2 (stored 0 ⇒ cut on key-off)
 
         // Pending row-end events (set during a row by B/C; consumed at row end).
         var pendingOrderJump = -1          // -1 = none; otherwise the order index to jump to
@@ -3096,7 +3084,6 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                     trackerState?.let { ts ->
                         ts.panLaw = byte and 1
                         ts.amigaMode = (byte and 2) != 0
-                        ts.fadeoutCutOnZero = (byte and 4) != 0
                     }
                 }
                 8 -> { bpm = byte + 24 }
@@ -3132,7 +3119,6 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 ts.finePatternDelayExtra = 0
                 ts.panLaw = initialGlobalFlags and 1
                 ts.amigaMode = (initialGlobalFlags and 2) != 0
-                ts.fadeoutCutOnZero = (initialGlobalFlags and 4) != 0
                 ts.voices.forEach {
                     it.active = false
                     it.channelVolume = 0x3F

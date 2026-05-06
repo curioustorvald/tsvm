@@ -858,9 +858,14 @@ def _xm_sample_to_proxy(inst: XMInstrument, samp: XMSample,
     p.c2spd       = max(1, round(8363.0 * (2.0 ** (semis / 12.0))))
     loop_type     = samp.flags & XM_SMP_LOOP_MASK
     p.flags       = 1 if loop_type != 0 else 0   # 1=loop on, 0=off
-    # Fadeout: XM stores 0..4095 (FT2 file format); 0 means "no fadeout"
-    # in FT2 — matches Taud's fadeStep semantics where 0 = held forever.
-    p.fadeout     = min(0xFFF, inst.fadeout & 0xFFFF)
+    # Fadeout: XM file value (16-bit, spec range 0..0xFFF; MilkyTracker writes up to 32767
+    # to encode the "cut" UI slider position — SectionInstruments.cpp:499-500). FT2's per-tick
+    # decrement is stored / 32768 of unit volume; Taud's engine uses stored / 1024. Divide
+    # source by 32 (round-to-nearest) to match the per-tick rate. XM stored 1..15 round to
+    # Taud 0 — those originals were >11 min at 50 Hz, effectively no-fade. Stored 32 → Taud 1
+    # (~20 s). Stored 32767 (Milky cut sentinel) → Taud 1024 (1-tick cut). See terranmon.txt
+    # byte 172/173 and TAUD_NOTE_EFFECTS.md §1 "Volume Fadeout".
+    p.fadeout     = min(0xFFF, (int(inst.fadeout & 0xFFFF) + 16) // 32)
     p.vib_speed   = inst.vib_rate          # XM rate ↔ Taud "speed"
     p.vib_depth   = (inst.vib_depth * 2) & 0xFF  # LoaderXM.cpp:217 scaling
     p.vib_sweep   = inst.vib_sweep & 0xFF
@@ -1308,12 +1313,10 @@ def assemble_taud(h: XMHeader, patterns: list, instruments: list) -> bytes:
 
     # Flags byte:
     #   bit 1 (f) = Amiga pitch-slide mode (set when XM uses Amiga period table).
-    #   bit 2 (m) = FT2 fadeout-zero policy (stored 0 ⇒ cut on key-off; fadeStep
-    #               divisor 65536 — XM convention). Without this, the engine
-    #               uses the IT divisor (1024), making fadeout ~64× faster
-    #               than FT2 — voices with non-zero fadeout get silenced
-    #               within a few ticks of key-off instead of fading naturally.
-    flags_byte = (0x00 if h.linear_freq else 0x02) | 0x04
+    #   bit 2     = reserved (was 'm' fadeout-zero policy; removed). XM fadeout values are
+    #               now scaled per-instrument above (÷32 with round-to-nearest), so the
+    #               engine sees Taud-native units and uses its single divisor of 1024.
+    flags_byte = (0x00 if h.linear_freq else 0x02)
     song_table = encode_song_entry(
         song_offset=song_offset,
         num_voices=C,
