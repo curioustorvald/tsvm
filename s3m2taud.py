@@ -499,8 +499,11 @@ def build_sample_inst_bin(instruments: list) -> tuple:
         # Volume envelope first point is full-scale; per-sample level is carried
         # by IGV (byte 171) so the envelope contributes a unit multiplier.
         env_vol = 63
-        # Vol LOOP word: only b=1 (use envelope) — no actual loop / sustain.
-        vol_env_loop = 0x0020
+        # Vol LOOP word: P=1 (envelope present) | b=1 (use envelope) — no actual
+        # loop / sustain. P added 2026-05-06 alongside the pan/pf gate spec
+        # change (terranmon.txt byte 16/18/20 bit 5); informational for vol but
+        # set for consistency. Pan/PF stay zero so the engine sees P=0 there.
+        vol_env_loop = 0x2020
 
         base = taud_idx * INST_STRIDE
         struct.pack_into('<I', inst_bin, base + 0,  ptr)        # u32 sample pointer

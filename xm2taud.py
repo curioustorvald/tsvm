@@ -819,7 +819,11 @@ def _xm_envelope_to_taud(env_pts: list, num_pts: int, env_type: int,
     # LOOP word (offsets 15/17/19): b=enable, bits 12..8=start, 4..0=end.
     # SUSTAIN word (offsets 189/191/193): same bit layout; FT2 single-point
     # sustain is encoded with start == end (engine wraps that index → itself).
-    loop_word = 0x0020   # b: use envelope (vol always; even with no loop the engine evaluates it)
+    # P (bit 13) marks the envelope as present in source — this branch is only
+    # reached when XM_ENV_ON is set, so P is unconditionally 1 here. P gates
+    # whether the engine evaluates pan envelope at all (terranmon.txt byte
+    # 16/18/20 bit 5); for vol it is informational.
+    loop_word = 0x2020   # P (bit 13) | b (bit 5)
     if has_loop:
         loop_word |= (loop_start & 0x1F) << 8
         loop_word |= (loop_end   & 0x1F)
@@ -931,7 +935,8 @@ def build_sample_inst_bin_xm(proxies: list) -> tuple:
             s.loop_end = min(s.loop_end, n)
         pos += n
 
-    USE_ENV_BIT = 0x0020   # b: engine should evaluate the envelope
+    USE_ENV_BIT     = 0x0020   # b: engine should evaluate the envelope (LOOP wrap enable)
+    ENV_PRESENT_BIT = 0x2000   # P: envelope present in source (terranmon.txt byte 16/18/20 bit 5)
     INST_STRIDE = 256
 
     def _write_env(buf: bytearray, base: int, env_pts, pad_value: int) -> None:
@@ -962,13 +967,14 @@ def build_sample_inst_bin_xm(proxies: list) -> tuple:
 
         # Resolve envelope LOOP / SUSTAIN words from the proxy. When XM has no
         # envelope, fall back to a single-point unit envelope (vol LOOP word
-        # b=1 only) and rely on IGV for level.
+        # b=1 plus P=1 for consistency) and rely on IGV for level. Pan stays
+        # zero so the engine sees P=0 there and skips envelope-driven pan.
         if s.vol_env_pts is not None:
             vol_env_loop = s.vol_env_loop_word
             vol_env_sus  = s.vol_env_sus_word
             vol_env      = s.vol_env_pts
         else:
-            vol_env_loop = USE_ENV_BIT
+            vol_env_loop = USE_ENV_BIT | ENV_PRESENT_BIT
             vol_env_sus  = 0
             vol_env      = None
         if s.pan_env_pts is not None:

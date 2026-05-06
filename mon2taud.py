@@ -207,9 +207,9 @@ def build_sample_inst_bin() -> bytes:
     struct.pack_into('<H', inst_bin, base + 10, 0)                       # loop start
     struct.pack_into('<H', inst_bin, base + 12, len(SQUARE_SAMPLE))      # loop end
     inst_bin[base + 14] = 0x01                                           # forward loop
-    struct.pack_into('<H', inst_bin, base + 15, 0x0020)                  # vol-env enabled
-    struct.pack_into('<H', inst_bin, base + 17, 0)                       # pan-env flags
-    struct.pack_into('<H', inst_bin, base + 19, 0)                       # pitch-env flags
+    struct.pack_into('<H', inst_bin, base + 15, 0x2020)                  # vol-env: P (bit 13) | b (bit 5)
+    struct.pack_into('<H', inst_bin, base + 17, 0)                       # pan-env flags (P=0 → mixer skips)
+    struct.pack_into('<H', inst_bin, base + 19, 0)                       # pitch-env flags (P=0 → mixer skips)
     inst_bin[base + 21] = 63                                             # vol env pt 0 = full
     inst_bin[base + 22] = 0
     inst_bin[base + 171] = 0xA0                                          # IGV

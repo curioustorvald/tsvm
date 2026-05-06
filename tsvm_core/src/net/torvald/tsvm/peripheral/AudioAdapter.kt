@@ -1241,6 +1241,12 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         }
     }
 
+    // Envelope-present test (terranmon.txt byte 15/17/19, P bit at LOOP word bit 13).
+    // The P bit is the sole presence signal — converters set it whenever they emit
+    // envelope nodes. Pre-2026-05-06 .taud files without P will not have pan/pf
+    // envelopes evaluated; re-convert from source.
+    private inline fun envPresent(loopWord: Int): Boolean = ((loopWord ushr 13) and 1) != 0
+
     // Reusable per-envelope wrap-range scratch (avoid per-tick allocation).
     private val volWrap = IntArray(2)
     private val panWrap = IntArray(2)
@@ -1305,10 +1311,12 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             }
         }
 
-        // Pan envelope (only when active for this instrument)
+        // Pan envelope. Presence is decided once per trigger and stored on the voice
+        // (voice.hasPanEnv is keyed on LOOP.P — see triggerNote). Like the volume
+        // envelope above, evaluation is no longer gated by the wrap-enable bits: an
+        // envelope marked "present but no wrap" still walks forward, matching the IT
+        // idiom (pan-env flag=0x01) and Schism player/sndmix.c:470-502.
         if (!voice.hasPanEnv || !voice.panEnvOn) return
-        val pEnvActive = (((inst.panEnvLoop ushr 5) and 1) or ((inst.panEnvSustainWord ushr 5) and 1)) != 0
-        if (!pEnvActive) return
         resolveEnvWrap(inst.panEnvLoop, inst.panEnvSustainWord, voice.keyOff, panWrap)
         val pStart = panWrap[0]
         val pEnd   = panWrap[1]
@@ -1348,10 +1356,11 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
      * as advanceEnvelope. Result is stored in `voice.envPfValue` (0.0..1.0; 0.5 = unity).
      */
     private fun advancePfEnvelope(voice: Voice, inst: TaudInst, tickSec: Double) {
+        // Same gate semantics as the pan envelope above: presence (voice.hasPfEnv) is
+        // latched at trigger time from LOOP.P; evaluation is unconditional once
+        // present, so an enabled-no-wrap envelope animates.
         if (!voice.hasPfEnv || !voice.pfEnvOn) return
         val maxIdx = 24
-        val pEnvActive = (((inst.pfEnvLoop ushr 5) and 1) or ((inst.pfEnvSustainWord ushr 5) and 1)) != 0
-        if (!pEnvActive) return
         resolveEnvWrap(inst.pfEnvLoop, inst.pfEnvSustainWord, voice.keyOff, pfWrap)
         val pSusStart = pfWrap[0]
         val pSusEnd   = pfWrap[1]
@@ -1623,10 +1632,14 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         voice.envPanIndex = 0
         voice.envPanTimeSec = 0.0
         voice.envPan = inst.panEnvelopes[0].value / 255.0
-        // Pan envelope is active when EITHER the LOOP word's b bit OR the SUSTAIN word's b bit is set.
-        voice.hasPanEnv = (((inst.panEnvLoop ushr 5) and 1) or ((inst.panEnvSustainWord ushr 5) and 1)) != 0
+        // Envelope-present gate (added 2026-05-06). Driven by the P bit at LOOP-word
+        // bit 13 (high byte's bit 5; offsets 16/18/20 bit 5), set by converters
+        // whenever they emit envelope nodes. See terranmon.txt at byte 15/17/19 for
+        // the bit layout and the file-header preamble for the presence-vs-wrap
+        // distinction.
+        voice.hasPanEnv = envPresent(inst.panEnvLoop)
         // Pitch/filter envelope state.
-        voice.hasPfEnv      = (((inst.pfEnvLoop ushr 5) and 1) or ((inst.pfEnvSustainWord ushr 5) and 1)) != 0
+        voice.hasPfEnv      = envPresent(inst.pfEnvLoop)
         // The pf 'm' mode bit (pitch=0, filter=1) lives in the LOOP word at bit 7.
         voice.envPfIsFilter = (inst.pfEnvLoop ushr 7) and 1 != 0
         voice.envPfIndex    = 0

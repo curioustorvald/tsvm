@@ -521,8 +521,10 @@ def build_sample_inst_bin(samples: list) -> tuple:
         # IGV (byte 171) so the envelope must contribute a unit multiplier.
         env_vol   = 63
         # MOD has no envelopes; vol LOOP word b=1 just so the engine evaluates
-        # the unit envelope. Pan/PF stay disabled.
-        vol_env_loop = 0x0020   # b enable
+        # the unit envelope, plus P=1 (envelope present) for consistency with
+        # the new gate spec (terranmon.txt byte 16/18/20 bit 5). Pan/PF stay
+        # fully zero — the engine sees P=0 there and skips them.
+        vol_env_loop = 0x2020   # P (bit 13) | b (bit 5)
 
         base = taud_idx * INST_STRIDE
         struct.pack_into('<I', inst_bin, base + 0,  ptr)

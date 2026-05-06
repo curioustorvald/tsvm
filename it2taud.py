@@ -571,9 +571,10 @@ def _parse_it_envelope(data: bytes, env_ptr: int, kind: str,
       'filter' — IT -32..+32 →  Taud 0..255 (0x80 = unity cutoff)
 
     Word layout (terranmon.txt:2049+ / 2114+):
-      LOOP    word: 0b 0000_0sss_ssXcb_eeeee  (X = 'p'/'m' for pan/pf, 0 for vol)
+      LOOP    word: 0b 00P0_0sss_ssXcb_eeeee  (X = 'p'/'m' for pan/pf, 0 for vol)
       SUSTAIN word: 0b 0000_0sss_ss00b_eeeee
         bits 12..8 = start index, bits 4..0 = end index
+        bit  13 = P (envelope present; gates pan/pf evaluation in the engine)
         bit  7 = p (pan: use default pan) / m (pf: pitch=0/filter=1) / 0 (vol)
         bit  6 = c (envelope carry — placed in the LOOP word)
         bit  5 = b (enable that region)
@@ -638,7 +639,10 @@ def _parse_it_envelope(data: bytes, env_ptr: int, kind: str,
     # directly. Bits: 5=b enable, 6=c carry, 7=p (pan default-pan flag) /
     # m (pf filter mode); 12..8=start, 4..0=end. SUSTAIN word never carries
     # c/p/m — those live in the LOOP word.
-    loop_word = 0
+    # P (bit 13) marks the envelope as present in source, regardless of LOOP/
+    # SUSTAIN enable. We reach this point only when the IT envelope flag bit 0
+    # is set (handled at function top), so P is unconditionally set here.
+    loop_word = 0x2000                                   # P: envelope present
     if has_env_loop and 0 <= it_lpb < 25 and 0 <= it_lpe < 25:
         loop_word |= 0x0020                              # b: enable LOOP
         loop_word |= (it_lpb & 0x1F) << 8
@@ -1133,7 +1137,8 @@ def build_sample_inst_bin_it(samples_or_proxy: list,
 
     # 256-byte instrument layout (terranmon.txt:2001+).
     INST_STRIDE = 256
-    USE_ENV_BIT = 0x0020   # b — set whenever the engine should evaluate the envelope
+    USE_ENV_BIT     = 0x0020   # b — LOOP wrap enable (legacy; engine still honours)
+    ENV_PRESENT_BIT = 0x2000   # P — envelope present in source (terranmon.txt byte 16/18/20 bit 5)
 
     def _write_env(buf: bytearray, base: int, env_pts):
         """Write 25 (value, minifloat) pairs starting at `buf[base]`. Pads
@@ -1200,7 +1205,8 @@ def build_sample_inst_bin_it(samples_or_proxy: list,
         # When the source has neither loop nor sustain on the volume envelope
         # the engine still needs the b flag so the single-point unit envelope
         # is evaluated — synthesise USE_ENV_BIT into the LOOP word as a fallback.
-        vol_env_loop  = idata.get('vol_env_loop', USE_ENV_BIT)
+        # The P bit is informational for vol but set for consistency.
+        vol_env_loop  = idata.get('vol_env_loop', USE_ENV_BIT | ENV_PRESENT_BIT)
         vol_env_sus   = idata.get('vol_env_sus',  0)
         pan_env_loop  = idata.get('pan_env_loop', 0)
         pan_env_sus   = idata.get('pan_env_sus',  0)
@@ -1236,8 +1242,10 @@ def build_sample_inst_bin_it(samples_or_proxy: list,
             inst_bin[base + 22] = 0
             # Force engine to use this single point — set the b bit on the LOOP
             # word so the envelope is evaluated even though no wrap region exists.
+            # P is also set for consistency (vol-env presence is informational
+            # but converters mark it whenever they emit any node data).
             cur_loop = struct.unpack_from('<H', inst_bin, base + 15)[0]
-            struct.pack_into('<H', inst_bin, base + 15, cur_loop | USE_ENV_BIT)
+            struct.pack_into('<H', inst_bin, base + 15, cur_loop | USE_ENV_BIT | ENV_PRESENT_BIT)
 
         if pan_env:
             _write_env(inst_bin, base + 71, pan_env)

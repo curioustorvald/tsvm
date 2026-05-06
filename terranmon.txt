@@ -2036,6 +2036,36 @@ The b flag is the SOLE enable bit for each region; the historical 't'
 present in this encoding — sustain vs loop is now a structural
 distinction (different word at a different offset), not a flag bit.
 
+Envelope PRESENCE — distinct from LOOP/SUSTAIN enable — is signalled by
+the `P` bit at LOOP-word bit 13 (the high byte's bit 5; offsets 16/18/20
+bit 5). Added 2026-05-06 to disambiguate two cases that the wrap-enable
+bits cannot tell apart on their own:
+    P=0: the source had no envelope of this kind. Engine ignores the
+         node array entirely and the mixer skips envelope-driven output
+         for this voice (pan reads from channelPan only, cutoff/pitch
+         reads from sample defaults only). The 25 node slots may still
+         be left as default-fill garbage; nothing reads them.
+    P=1: envelope is defined. Engine evaluates the nodes every tick.
+         Wrap behaviour is independently controlled by LOOP.b and
+         SUSTAIN.b — when both are 0 the envelope walks once forward
+         and holds at its terminator (the IT idiom for envelope-driven
+         decay tails / shaped attacks).
+The P bit was introduced to fix a gating ambiguity for pan and pitch/
+filter envelopes: the engine could not distinguish "no envelope at all"
+(treat as absent) from "envelope present but neither LOOP nor SUSTAIN
+wrap is enabled" (evaluate and apply, just don't wrap). Volume envelope
+evaluation has always been unconditional in the engine (a default
+single-point envelope at value 63 is harmlessly held at unity), so
+P_vol is currently informational only — converters should still set it
+when the source defines a volume envelope, for consistency and to
+support future per-voice gating.
+
+P is the SOLE presence signal: converters MUST set P=1 whenever they
+emit envelope nodes, regardless of whether the source enables LOOP or
+SUSTAIN. Pre-2026-05-06 .taud files predate the P bit and will not have
+their pan / pf envelopes evaluated by the current engine — re-convert
+from source.
+
 0   Uint32 Sample Pointer
 4   Uint16 Sample length
 6   Uint16 Sampling rate at C4 (note number 0x5000)
@@ -2061,16 +2091,20 @@ distinction (different word at a different offset), not a flag bit.
           the engine deactivates the voice (player/sndmix.c:493-498). Without this,
           instruments with stored fadeout=0 + envelope ending at 0 would silently
           hold their voices forever.
-        0b 000_sssss_0cb_eeeee
+        0b 00P_sssss_0cb_eeeee
             s (bits 12..8) : loop start index (0..24)
             e (bits 4..0)  : loop end   index (0..24)
             b (bit 5)      : enable the LOOP wrap (0 = envelope walks once to its
                              terminator and holds; non-zero loops between s and e)
             c (bit 6)      : envelope carry (cross-trigger envelope position carry)
-            (bits 7, 13..15 reserved — set to 0)
+            P (bit 13)     : envelope present in source (informational for vol —
+                             engine evaluates vol env unconditionally; converters
+                             should set P=1 when emitting nodes for consistency
+                             with pan/pf envelopes, see file-header preamble)
+            (bits 7, 14..15 reserved — set to 0)
 17  Bit16  Panning envelope LOOP word
         * Always-active wrap region for the pan envelope.
-        0b 000_sssss_pcb_eeeee
+        0b 00P_sssss_pcb_eeeee
             s (bits 12..8) : loop start index
             e (bits 4..0)  : loop end   index
             b (bit 5)      : enable the LOOP
@@ -2079,16 +2113,28 @@ distinction (different word at a different offset), not a flag bit.
                               Independent of LOOP enable; the engine reads this bit
                               from the LOOP word as the canonical home for envelope-
                               level meta flags.
-            (bits 13..15 reserved)
+            P (bit 13)     : envelope present in source. Gates whether the mixer
+                             applies envelope-driven pan at all. P=0 ⇒ mixer uses
+                             channelPan only and the node array is ignored. P=1 ⇒
+                             evaluate every tick, even when both LOOP.b and SUSTAIN.b
+                             are 0 (envelope walks once and holds — IT pan-env
+                             flag=0x01 idiom).
+            (bits 14..15 reserved)
 19  Bit16  Pitch/Filter envelope LOOP word
         * Always-active wrap region for the pitch/filter envelope.
-        0b 000_sssss_mcb_eeeee
+        0b 00P_sssss_mcb_eeeee
             s (bits 12..8) : loop start index
             e (bits 4..0)  : loop end   index
             b (bit 5)      : enable the LOOP
             c (bit 6)      : envelope carry
             m (bit 7)      : mode — 0 = pitch envelope, 1 = filter envelope
-            (bits 13..15 reserved)
+            P (bit 13)     : envelope present in source. Same semantics as the
+                             pan envelope's P bit: gates whether the mixer applies
+                             envelope-driven pitch / cutoff at all. P=0 ⇒ no
+                             envelope contribution (sample plays at its own pitch /
+                             default cutoff). P=1 ⇒ evaluate every tick regardless
+                             of LOOP.b / SUSTAIN.b.
+            (bits 14..15 reserved)
 21  Bit16x25 Volume envelopes
        Byte 1: Volume (00..3F)
        Byte 2: Time until the next point, in seconds (3.5 Unsigned Minifloat). 0 = hold at this point indefinitely.
@@ -2270,25 +2316,17 @@ TODO:
             skipped because vEnvActive required either b bit. Now evaluation
             is gated only by voice.volEnvOn (matches CHN_VOLENV in Schism).
             See byte 15 spec for the LOOP word.
-    [ ] Same gate fix needed for pan and pitch/filter envelopes? Currently
-        advanceEnvelope/advancePfEnvelope still require LOOP-b OR SUSTAIN-b
-        before evaluating, AND the same condition feeds voice.hasPanEnv /
-        voice.hasPfEnv which the mixer uses to decide whether to apply
-        envelope-driven pan / cutoff at all. The simple "drop the gate"
-        treatment that worked for vol env doesn't transfer cleanly: an
-        absent pan/pf envelope (FT2 default, no env at all) needs to look
-        different from an enabled-no-wrap envelope so the mixer can ignore
-        the absent case. Options:
-            (a) Distinguish via a new format bit (e.g. byte 15/17/19 bit 7
-                for vol/pan, but bit 7 of pf already carries 'm' filter mode).
-            (b) Content-based detection at note trigger: envelope is "present"
-                if any node has non-default value or non-zero offset.
-            (c) Make the converters write a dedicated "envelope present"
-                sentinel (e.g. start>end in the LOOP word) that the engine
-                recognises as evaluate-but-don't-wrap.
-        Until decided, IT pan/pf envelopes with flags=0x01 will not animate
-        between rows. Workaround: enable IT's envelope loop or sustain bit
-        in source so the converter sets the LOOP/SUSTAIN b bit.
+    [x] Same gate fix needed for pan and pitch/filter envelopes.
+        Resolution (2026-05-06): added P (envelope present) bit at LOOP-word
+        bit 13 (offsets 16/18/20 bit 5) for all three envelopes. Engine
+        gates pan/pf envelope evaluation on P alone; converters set P=1
+        whenever they emit envelope nodes, regardless of LOOP/SUSTAIN
+        enable, so an enabled-no-wrap envelope (IT pan-env flag=0x01)
+        animates correctly. Mixer's hasPanEnv/hasPfEnv read the same gate,
+        so absent envelopes still bypass envelope-driven output. Pre-
+        2026-05-06 .taud files predate the P bit and need re-conversion
+        for pan/pf envelopes to play. See byte 15/17/19 spec for the LOOP
+        word bit layout.
     [ ] implement extended tone mode (MONOTONE compat)
     [ ] pattern loops stops working after processed once (test with slumberjack.xm)
     [ ] milkytracker-style volume ramping (on sample-end only)
