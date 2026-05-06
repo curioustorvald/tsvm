@@ -1014,8 +1014,8 @@ There is no separate "use fadeout" flag — both extremes share the same field, 
   - L_gain = if (pan < 0x80) 1.0 else 1.0 - (pan - 128.0) / 128.0
   - R_gain = if (pan < 0x80) pan / 128.0 else 1.0
 - Panning-equal-power:
-  - L_gain = cos(pi*x / 512.0)
-  - R_gain = sin(pi*x / 512.0)
+  - L_gain = cos(πx / 512.0)
+  - R_gain = sin(πx / 512.0)
 - Amiga tone (both coarse and fine E/F pitch slides). The `slideArg` is a **raw tracker period-unit count** (no scaling), with sign matching linear mode (negative for E, positive for F). Coarse slides apply on every non-first tick; fine slides apply once on tick 0 — the per-step arithmetic is identical:
   - AMIGA_BASE_PERIOD = 428.0  (period at the Taud reference pitch C4 for a standard 8363 Hz instrument, NTSC clock — identical to PT "C-2" period 428)
   - period = AMIGA_BASE_PERIOD × 2^(−(noteVal − C4) / 4096)

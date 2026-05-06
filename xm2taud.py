@@ -611,10 +611,11 @@ def encode_effect_xm(cmd: int, arg: int, ch: int = 0, row: int = 0,
             # Set finetune — convert to S5x sub-effect (4-bit signed nibble).
             return (TOP_S, 0x5000 | (val << 8), None, None)
         if sub == 0x6:
-            # Set loop point / loop. Taud S6x = fine pattern delay; the
-            # closest analogue here is dropping with a warn if val>0.
-            vprint(f"    dropped E6{val:X} (set loop) at ch{ch} row{row}")
-            return (TOP_NONE, 0, None, None)
+            # XM E6x = pattern loop (E60 sets loop start, E6x with x>0 loops
+            # x times). Maps directly onto Taud SBx, which has identical
+            # semantics — the engine handles per-voice loopStartRow /
+            # loopCount in applySEffect (sub 0xB).
+            return (TOP_S, 0xB000 | (val << 8), None, None)
         if sub == 0x8:
             # Pan position 0..15 → set pan column (XM nybble × 17 → 8-bit).
             pan8 = (val << 4) | val

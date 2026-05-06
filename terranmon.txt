@@ -2327,8 +2327,8 @@ TODO:
         2026-05-06 .taud files predate the P bit and need re-conversion
         for pan/pf envelopes to play. See byte 15/17/19 spec for the LOOP
         word bit layout.
-    [ ] implement extended tone mode (MONOTONE compat)
-    [ ] pattern loops stops working after processed once (test with slumberjack.xm)
+    [x] slumberjack.xm: E6x commands are not processed
+    [ ] implement linear-freq tone mode (MONOTONE compat)
     [ ] milkytracker-style volume ramping (on sample-end only)
 
 
