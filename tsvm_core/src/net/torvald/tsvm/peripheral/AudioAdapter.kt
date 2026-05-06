@@ -1947,11 +1947,19 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                         // Instrument byte on a porta row reloads the channel's default
                         // volume even though the sample isn't retriggered. Mirrors schism
                         // csf_instrument_change (effects.c:1302) which writes
-                        // chan->volume = psmp->volume whenever inst_column is set.
+                        // chan->volume = psmp->volume whenever inst_column is set, and
+                        // (effects.c:1402-1403) which clears CHN_KEYOFF | CHN_NOTEFADE
+                        // so an in-progress fadeout from the prior note does not bleed
+                        // into the porta'd note. fadeoutVolume is reset to unity so a
+                        // volume-column SET on this row is heard at face value rather
+                        // than scaled by the decayed tail.
                         if (row.instrment != 0) {
                             voice.instrumentId = row.instrment
                             voice.channelVolume = 0x3F
                             voice.rowVolume = 0x3F
+                            voice.keyOff = false
+                            voice.noteFading = false
+                            voice.fadeoutVolume = 1.0
                         }
                     } else if ((row.effect == EffectOp.OP_S) && ((row.effectArg ushr 12) and 0xF) == 0xD) {
                         // Note delay: defer trigger to the requested tick. NNA fires when the
