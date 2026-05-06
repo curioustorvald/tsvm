@@ -226,7 +226,7 @@ def encode_note(s3m_note: int) -> int:
     if s3m_note == S3M_NOTE_EMPTY:
         return NOTE_NOP
     if s3m_note == S3M_NOTE_OFF:
-        return NOTE_KEYOFF
+        return NOTE_CUT
     octave = (s3m_note >> 4) & 0xF
     pitch  = s3m_note & 0xF
     if pitch > 11:

@@ -132,7 +132,7 @@ def mon_note_to_taud(mon_note: int) -> int:
     if mon_note == 0:
         return NOTE_NOP
     if mon_note == 0x7F:
-        return NOTE_KEYOFF
+        return NOTE_CUT
     val = TAUD_C4 + round((mon_note - MON_NOTE_C4) * 4096.0 / 12.0)
     return max(1, min(0xFFFD, val))
 
