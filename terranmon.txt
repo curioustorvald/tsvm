@@ -2049,10 +2049,23 @@ distinction (different word at a different offset), not a flag bit.
             - IT: look for sample's SusLoop flag
 15  Bit16  Volume envelope LOOP word
         * Always-active wrap region for the volume envelope. See SUSTAIN word at offset 189 for the key-on-only wrap.
+        * IMPORTANT: the `b` bit gates only the LOOP wrap behaviour. The volume
+          envelope itself is always evaluated whenever the per-voice volume-envelope
+          toggle is on (default true on note-on; switched by effect S $7x / S $8x).
+          This matches IT/Schism (player/sndmix.c:470-502): CHN_VOLENV is independent
+          of ENV_VOLLOOP / ENV_VOLSUSTAIN. An envelope with no LOOP and no SUSTAIN
+          (both `b` bits = 0) walks once from start to its terminator and holds —
+          which is the IT idiom for envelope-driven decay tails.
+        * The cut rule: when the volume envelope walks past the last real node in
+          fall-through (no active sustain or loop wrap) AND that node's value is 0,
+          the engine deactivates the voice (player/sndmix.c:493-498). Without this,
+          instruments with stored fadeout=0 + envelope ending at 0 would silently
+          hold their voices forever.
         0b 000_sssss_0cb_eeeee
             s (bits 12..8) : loop start index (0..24)
             e (bits 4..0)  : loop end   index (0..24)
-            b (bit 5)      : enable the LOOP (0 = no envelope loop)
+            b (bit 5)      : enable the LOOP wrap (0 = envelope walks once to its
+                             terminator and holds; non-zero loops between s and e)
             c (bit 6)      : envelope carry (cross-trigger envelope position carry)
             (bits 7, 13..15 reserved — set to 0)
 17  Bit16  Panning envelope LOOP word
@@ -2182,6 +2195,36 @@ distinction (different word at a different offset), not a flag bit.
             dt (bits 0..1) : Duplicate Check Type. 0=off, 1=note, 2=sample, 3=instrument.
             dc (bits 2..3) : Duplicate Check Action. 0=note cut, 1=note off, 2=note fade.
         * Relocated from offset 189 (which is now the volume sustain word) on 2026-05-06.
+        * Semantics (matches IT/Schism player/effects.c:1664-1764 csf_check_nna):
+            - Fires on every fresh foreground note trigger on a channel, BEFORE the
+              NNA-spawn step that would ghost the existing voice. Does NOT fire on
+              tone portamento, on note-off (0x0000), on note-cut (0xFFFE), or on
+              empty cells.
+            - The DCT/DCA values consulted belong to the EXISTING voice's instrument
+              (i.e. the OLD note's instrument, not the incoming note's). Different
+              instruments on the same channel can therefore have asymmetric duplicate
+              behaviour — IT-correct.
+            - Targets: the foreground voice on the same channel AND every background
+              (NNA-ghost) voice spawned earlier from that channel. Each is checked
+              independently against the new (instrument, note) pair.
+            - DCT match conditions:
+                  off (0)        : never matches; DCA never fires
+                  note (1)       : same noteVal AND same instrumentId
+                  sample (2)     : same instrumentId AND same canonical sample (matched
+                                   by samplePtr + sampleLength)
+                  instrument (3) : same instrumentId
+            - DCA actions on a matching voice:
+                  note cut (0)   : fadeoutVolume := 0; voice deactivates this tick
+                  note off (1)   : keyOff := true (sustain releases; volume envelope
+                                   continues past the sustain point; if the instrument
+                                   carries a non-zero fadeout, the fadeout decay starts
+                                   per byte 172/173 semantics)
+                  note fade (2)  : noteFading := true (begin fadeout immediately, no
+                                   sustain release — sample/envelope loops continue)
+            - Order with NNA: applyDuplicateCheck → maybeSpawnBackgroundForNNA →
+              triggerNote. So when DCA flags the foreground voice, the NNA-ghost it
+              spawns inherits that DCA-modified state (e.g. noteFading carries over).
+            - The new note then triggers normally on the foreground channel.
 196..255 Reserved (60 bytes free for future per-instrument fields)
 
 
@@ -2219,10 +2262,33 @@ TODO:
         engine now uses a single divisor (1024) and converters scale their
         source units to match (IT pass-through, XM ÷32). See byte 172-173 of
         the instrument record for engine semantics.
-        4THSYM.it notes still hang on key-off — that's a separate bug: instruments
-        with fadeout=0 + sustained envelope ending in a 0-valued node need the
-        Schism rule "envelope reached final 0 node ⇒ cut voice"
-        (sndmix.c:494-495). Not yet implemented in AudioAdapter.kt.
+        Subsequent fixes for the 4THSYM.it hang:
+        (1) Implemented Schism's envelope-end + last-value-0 ⇒ cut rule
+            (player/sndmix.c:493-498) in AudioAdapter.kt advanceEnvelope.
+        (2) Volume envelope evaluation ungated from LOOP/SUSTAIN `b` bits.
+            IT envelopes with flags=0x01 (enabled-no-loop-no-sustain) had been
+            skipped because vEnvActive required either b bit. Now evaluation
+            is gated only by voice.volEnvOn (matches CHN_VOLENV in Schism).
+            See byte 15 spec for the LOOP word.
+    [ ] Same gate fix needed for pan and pitch/filter envelopes? Currently
+        advanceEnvelope/advancePfEnvelope still require LOOP-b OR SUSTAIN-b
+        before evaluating, AND the same condition feeds voice.hasPanEnv /
+        voice.hasPfEnv which the mixer uses to decide whether to apply
+        envelope-driven pan / cutoff at all. The simple "drop the gate"
+        treatment that worked for vol env doesn't transfer cleanly: an
+        absent pan/pf envelope (FT2 default, no env at all) needs to look
+        different from an enabled-no-wrap envelope so the mixer can ignore
+        the absent case. Options:
+            (a) Distinguish via a new format bit (e.g. byte 15/17/19 bit 7
+                for vol/pan, but bit 7 of pf already carries 'm' filter mode).
+            (b) Content-based detection at note trigger: envelope is "present"
+                if any node has non-default value or non-zero offset.
+            (c) Make the converters write a dedicated "envelope present"
+                sentinel (e.g. start>end in the LOOP word) that the engine
+                recognises as evaluate-but-don't-wrap.
+        Until decided, IT pan/pf envelopes with flags=0x01 will not animate
+        between rows. Workaround: enable IT's envelope loop or sustain bit
+        in source so the converter sets the LOOP/SUSTAIN b bit.
     [ ] implement extended tone mode (MONOTONE compat)
     [ ] pattern loops stops working after processed once (test with slumberjack.xm)
     [ ] milkytracker-style volume ramping (on sample-end only)

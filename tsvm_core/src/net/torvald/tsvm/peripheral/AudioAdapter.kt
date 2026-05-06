@@ -1249,9 +1249,17 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     private fun advanceEnvelope(voice: Voice, inst: TaudInst, tickSec: Double) {
         val maxIdx = 24
 
-        // Volume envelope
-        val vEnvActive = (((inst.volEnvLoop ushr 5) and 1) or ((inst.volEnvSustainWord ushr 5) and 1)) != 0
-        if (vEnvActive && voice.volEnvOn) {
+        // Volume envelope. Evaluation is gated only by voice.volEnvOn (toggled by S$7/$8);
+        // the LOOP/SUSTAIN `b` bits gate WRAPPING behaviour, not whether the envelope runs.
+        // This matches Schism (player/sndmix.c:470-502): CHN_VOLENV is set independently of
+        // ENV_VOLLOOP / ENV_VOLSUSTAIN, so an envelope marked "enabled but no wrap" still
+        // walks forward — which is exactly the IT idiom of an instrument whose envelope
+        // shape provides the natural decay. Without this, IT envelopes with flags=0x01
+        // (enabled-no-loop-no-sustain) would never advance and the envelope-end-zero cut
+        // rule below would never fire — voices would hang forever on key-off / NNA-Continue.
+        // Default-only envelopes (single full-volume point at value 63 with offset 0) are
+        // safe to evaluate: the engine just holds at envVolume = 1.0, no audible effect.
+        if (voice.volEnvOn) {
             resolveEnvWrap(inst.volEnvLoop, inst.volEnvSustainWord, voice.keyOff, volWrap)
             val wStart = volWrap[0]
             val wEnd   = volWrap[1]
