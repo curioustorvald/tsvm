@@ -1265,11 +1265,21 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 voice.envIndex = wStart
                 voice.envVolume = (inst.volEnvelopes[voice.envIndex].value / 63.0).coerceIn(0.0, 1.0)
             } else if (voice.envIndex >= maxIdx) {
-                voice.envVolume = (inst.volEnvelopes[maxIdx].value / 63.0).coerceIn(0.0, 1.0)
+                val vEnd = inst.volEnvelopes[maxIdx].value
+                voice.envVolume = (vEnd / 63.0).coerceIn(0.0, 1.0)
+                // Schism's "envelope-end + last-value-0 ⇒ cut" rule (player/sndmix.c:493-498):
+                // applies only in fall-through (no active sustain or loop wrap) since Schism
+                // suppresses fade_flag inside both wrap branches. Without this rule, instruments
+                // with fadeout=0 + envelope ending at 0 would silently hold their voices forever.
+                if (vEnd == 0 && !wrapping) voice.active = false
             } else {
                 val vOffset = inst.volEnvelopes[voice.envIndex].offset.toDouble()
+                val vCurValue = inst.volEnvelopes[voice.envIndex].value
                 if (vOffset == 0.0) {
-                    voice.envVolume = (inst.volEnvelopes[voice.envIndex].value / 63.0).coerceIn(0.0, 1.0)
+                    // Reached a terminator point — envelope holds here.
+                    voice.envVolume = (vCurValue / 63.0).coerceIn(0.0, 1.0)
+                    // Same Schism cut rule as above: only when in fall-through.
+                    if (vCurValue == 0 && !wrapping) voice.active = false
                 } else {
                     voice.envTimeSec += tickSec
                     if (voice.envTimeSec >= vOffset) {
@@ -1279,7 +1289,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                         voice.envIndex = nextIdx
                         voice.envVolume = (inst.volEnvelopes[voice.envIndex].value / 63.0).coerceIn(0.0, 1.0)
                     } else {
-                        val cur = (inst.volEnvelopes[voice.envIndex].value / 63.0).coerceIn(0.0, 1.0)
+                        val cur = (vCurValue / 63.0).coerceIn(0.0, 1.0)
                         val nxt = (inst.volEnvelopes[(voice.envIndex + 1).coerceAtMost(maxIdx)].value / 63.0).coerceIn(0.0, 1.0)
                         voice.envVolume = cur + (nxt - cur) * (voice.envTimeSec / vOffset)
                     }
