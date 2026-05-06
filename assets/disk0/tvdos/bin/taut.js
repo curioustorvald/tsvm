@@ -146,11 +146,11 @@ Z:"UNIMPLEMENTED", // IT: MIDI macro
 }
 const panFxNames = {
 0:"Set to",
-1:"Slide L",
-2:"Slide R",
+1:"Slide R",
+2:"Slide L",
 3:"Fine slide",
-30:"Fine slide L",
-31:"Fine slide R",
+30:"Fine slide R",
+31:"Fine slide L",
 999:"---",
 }
 const volFxNames = {
@@ -209,7 +209,7 @@ sym:[` \u00E0\u00E1`,` \u00E2\u00E3`,` \u00E4\u00E5`,` \u00E6\u00E7`,` \u00E8\u0
 
 
 const volEffSym = [sym.volset, sym.volup, sym.voldn, sym.volfineup, sym.volfinedn]
-const panEffSym = [sym.panset, sym.panle, sym.panri, sym.panfinele, sym.panfineri]
+const panEffSym = [sym.panset, sym.panri, sym.panle, sym.panfineri, sym.panfinele]
 
 const colNote = 239
 const colInst = 114
@@ -521,7 +521,7 @@ function loadTaud(filePath, songIndex) {
             ptns[i*2]   = ((hi >> 4) << 8) | ((mi >> 4) << 4) | (lo >> 4)
             ptns[i*2+1] = ((hi & 0xF) << 8) | ((mi & 0xF) << 4) | (lo & 0xF)
         }
-        const instr = sys.peek(cueSheetPtr + c * CUE_SIZE + 30) & 0xFF
+        const instr = (sys.peek(cueSheetPtr + c * CUE_SIZE + 30) << 8) | sys.peek(cueSheetPtr + c * CUE_SIZE + 31)
         cues[c] = { ptns, instr }
 
         for (let v = 0; v < NUM_VOICES; v++) {
@@ -557,7 +557,7 @@ let VOCSIZE_TIMELINE_FULL = Math.floor((SCRW - 3) / COLSIZE_TIMELINE_FULL)
 
 const ORDERS_CMD_X   = 5
 const ORDERS_VOICE_X = 9
-const VOCSIZE_ORDERS = Math.floor((SCRW - 8) / 4)
+const VOCSIZE_ORDERS = Math.floor((SCRW - 10) / 4)
 
 const VIEW_TIMELINE = 0
 const VIEW_CUES = 1
@@ -863,7 +863,9 @@ function drawControlHint() {
         ['n','Solo'],
         ['m','Mute'],
     ['sep'],
-        ['tab','Panel']
+        ['tab','Panel'],
+    ['sep'],
+        ['!','Help'],
 //    ['sep'],
 //        ['q','Quit'],
     ]
@@ -874,6 +876,8 @@ function drawControlHint() {
         ['sp','Edit'],
     ['sep'],
         ['tab','Panel'],
+    ['sep'],
+        ['!','Help'],
 //    ['sep'],
 //        ['q','Quit'],
     ]
@@ -885,6 +889,8 @@ function drawControlHint() {
         ['sp','Edit'],
     ['sep'],
         ['tab','Panel'],
+    ['sep'],
+        ['!','Help'],
 //    ['sep'],
 //        ['q','Quit'],
     ]
@@ -902,6 +908,8 @@ function drawControlHint() {
     ['sep'],
         ['=','KOff'],
         ['^','KCut'],
+    ['sep'],
+        ['!','Help'],
 //    ['sep'],
 //        ['Sp','ExitEdit'],
     ]
@@ -911,18 +919,22 @@ function drawControlHint() {
     ['sep'],
         [`0${sym.doubledot}9 A${sym.doubledot}F`,'Instrument'],
     ['sep'],
-        ['sp','ExitEdit'],
+        ['!','Help'],
+    // ['sep'],
+    //     ['sp','ExitEdit'],
     ]
     let hintElemEditVolEff = [
         [`\u008428u\u008429u`,'Nav'],
         [`pg\u008418u`,'Cue'],
     ['sep'],
-        ['h','Set'],
-        ['j','SlideDn'],
-        ['k','SlideUp'],
-        ['u','FineDn'],
-        ['i','FineUp'],
+        ['.','Set'],
+        ['v','SlideUp'],
+        ['^','SlideDn'],
+        ['-','FineDn'],
+        ['=','FineUp'],
         [`0${sym.doubledot}9 A${sym.doubledot}F`,'Val'],
+    ['sep'],
+        ['!','Help'],
 //    ['sep'],
 //        ['Sp','ExitEdit'],
     ]
@@ -930,11 +942,11 @@ function drawControlHint() {
         [`\u008428u\u008429u`,'Nav'],
         [`pg\u008418u`,'Cue'],
     ['sep'],
-        ['h','Set'],
-        ['j','SlideL'],
-        ['k','SlideR'],
-        ['u','FineL'],
-        ['i','FineR'],
+        ['.','Set'],
+        ['<','SlideL'],
+        ['>','SlideR'],
+        ['-','FineL'],
+        ['=','FineR'],
         [`0${sym.doubledot}9 A${sym.doubledot}F`,'Val'],
 //    ['sep'],
 //        ['Sp','ExitEdit'],
@@ -945,7 +957,9 @@ function drawControlHint() {
     ['sep'],
         [`0${sym.doubledot}9 A${sym.doubledot}F`,`FxSym`],
     ['sep'],
-        ['sp','ExitEdit'],
+        ['!','Help'],
+    // ['sep'],
+    //     ['sp','ExitEdit'],
     ]
     let hintElemEditFxVal = [
         [`\u008428u\u008429u`,'Nav'],
@@ -953,10 +967,12 @@ function drawControlHint() {
     ['sep'],
         [`0${sym.doubledot}9 A${sym.doubledot}F`,`FxVal`],
     ['sep'],
-        ['sp','ExitEdit'],
+        ['!','Help'],
+    // ['sep'],
+    //     ['sp','ExitEdit'],
     ]
 
-    const hintElemExternal = [['Tab','Panel']]
+    const hintElemExternal = [['Tab','Panel'],['sep'],['!','Help']]
     let hintElems = [hintElemTimeline, hintElemOrders, hintElemPatterns, hintElemExternal, hintElemExternal, hintElemExternal, hintElemExternal]
     let hintElemPat = [hintElemEditNoteValue, hintElemEditInstValue, hintElemEditVolEff, hintElemEditPanEff, hintElemEditFxSym, hintElemEditFxVal]
 
@@ -1383,7 +1399,7 @@ function drawOrdersHeader() {
     con.color_pair(colVoiceHdr, 255)
     print('    ')
     con.color_pair(colVoiceHdr, ordersColCursor === 0 ? colHighlight : 255)
-    print('Cmd ')
+    print('Comand ')
     for (let c = 0; c < VOCSIZE_ORDERS; c++) {
         const v = ordersVoiceOff + c
         con.color_pair(colVoiceHdr, ordersColCursor === v + 1 ? colHighlight : 255)
@@ -1416,9 +1432,9 @@ function drawOrdersContents(wo) {
             // CMD column — crosshair highlight at (ordersCursor, col 0)
             const cmdBack = (isSel && ordersColCursor === 0) ? colPlayback : back
             con.color_pair(cue.instr ? colStatus : colSep, cmdBack)
-            print(cue.instr ? cue.instr.hex02() : '--')
+            print(cue.instr ? cueInstToStr(cue.instr) : '------')
             con.color_pair(colBackPtn, back)
-            print('  ')
+            print(' ')
             // Voice columns
             for (let c = 0; c < VOCSIZE_ORDERS; c++) {
                 const v     = ordersVoiceOff + c
@@ -1432,6 +1448,35 @@ function drawOrdersContents(wo) {
             const endX = ORDERS_VOICE_X + VOCSIZE_ORDERS * 4
             if (endX <= SCRW) { con.color_pair(colBackPtn, back); print(' '.repeat(SCRW - endX)) }
         }
+    }
+}
+
+function cueInstToStr(inst) {
+    let foreword = (inst >>> 12) & 15
+    let preamble = (inst >>> 8) & 15
+    let arg12 = inst & 0xFFF
+    let arg8 = inst & 0xFF
+    let fallback = `?${inst.hex04()}?`
+    switch (foreword) {
+        case 0b1000:
+            return "BAK" + arg12.hex03()
+        case 0b1001:
+            return "FWD" + arg12.hex03()
+        case 0b1111:
+            return "JMP" + arg12.hex03()
+        case 0b0000:
+            switch (preamble) {
+                case 0b0010:
+                    return "LEN " + arg8.dec02()
+                case 0b0001:
+                    return arg8 ? ("FADE" + arg8.dec02()) : "HALT  "
+                case 0b0000:
+                    return "NO-OP "
+                default:
+                    return fallback
+            }
+        default:
+            return fallback
     }
 }
 
@@ -2405,6 +2450,93 @@ function clampOrdersHoriz() {
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// HELP POPUP
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+const HELP_POPUP_W   = SCRW - 8
+const HELP_POPUP_X   = ((SCRW - HELP_POPUP_W) / 2 | 0) + 1
+const HELP_POPUP_Y   = 5
+const HELP_POPUP_H   = SCRH - HELP_POPUP_Y - 1
+const HELP_CONTENT_X = HELP_POPUP_X + 2
+const HELP_CONTENT_Y = HELP_POPUP_Y + 2
+const HELP_CONTENT_W = HELP_POPUP_W - 6
+const HELP_CONTENT_H = HELP_POPUP_H - 3
+
+// Pre-typeset every panel's help text. taut_helpmsg.js reads HELPMSG_WIDTH for
+// the wrap width and stores ready-to-print display strings into MSG_BY_TABS.
+_G.TAUT.HELPMSG_WIDTH = HELP_CONTENT_W
+_G.shell.execute("taut_helpmsg")
+
+function openHelpPopup() {
+    const helpmsg = _G.TAUT.HELPMSG || {}
+    const lines   = (helpmsg.MSG_BY_TABS && helpmsg.MSG_BY_TABS[currentPanel]) || ['']
+    const colText = helpmsg.COL_TEXT || colWHITE
+
+    const popup = new win.WindowObject(
+        HELP_POPUP_X, HELP_POPUP_Y, HELP_POPUP_W, HELP_POPUP_H,
+        ()=>{}, ()=>{}, `Help: ${PANEL_NAMES[currentPanel]}`, popupDrawFrame
+    )
+    popup.isHighlighted = true
+    popup.titleBack = colPopupBack
+
+    let scroll = 0
+    const maxScroll = Math.max(0, lines.length - HELP_CONTENT_H)
+
+    const repaint = () => {
+        con.color_pair(230, colPopupBack)
+        popup.drawFrame()
+
+        // popupDrawFrame leaves the bottom row unpainted; fill it ourselves.
+        con.color_pair(colText, colPopupBack)
+        con.move(HELP_POPUP_Y + HELP_POPUP_H - 1, HELP_POPUP_X)
+        print(' '.repeat(HELP_POPUP_W))
+
+        for (let r = 0; r < HELP_CONTENT_H; r++) {
+            con.move(HELP_CONTENT_Y + r, HELP_CONTENT_X)
+            con.color_pair(colText, colPopupBack)
+            const line = lines[scroll + r]
+            print((line === undefined) ? ' '.repeat(HELP_CONTENT_W) : line)
+        }
+
+        // scroll indicator on the right inner edge
+        if (lines.length > HELP_CONTENT_H) {
+            const trackH = HELP_CONTENT_H
+            const indPos = (maxScroll === 0) ? 0 : ((scroll * (trackH - 1) / maxScroll) | 0)
+            for (let r = 0; r < trackH; r++) {
+                con.move(HELP_CONTENT_Y + r, HELP_POPUP_X + HELP_POPUP_W - 2)
+                con.color_pair(colPushBtnBack, colPopupBack)
+                print(r === indPos ? '\u00DB' : '\u00B3')
+            }
+        }
+
+        con.color_pair(colStatus, 255)
+    }
+
+    repaint()
+
+    let done = false
+    let eventJustReceived = true
+    while (!done) {
+        input.withEvent(ev => {
+            if (ev[0] !== 'key_down') return
+            //if (1 !== ev[2]) return // allow continuous scroll by key repeat
+            if (eventJustReceived) { eventJustReceived = false; return }
+            const ks = ev[1]
+
+            if (ks === '<ESC>' || ks === '!' || ks === 'q' || ks === '\n') { done = true }
+            else if (ks === '<UP>')        { if (scroll > 0)         { scroll -= 1;                                    repaint() } }
+            else if (ks === '<DOWN>')      { if (scroll < maxScroll) { scroll += 1;                                    repaint() } }
+            else if (ks === '<PAGE_UP>')   {                           scroll = Math.max(0,         scroll - HELP_CONTENT_H); repaint() }
+            else if (ks === '<PAGE_DOWN>') {                           scroll = Math.min(maxScroll, scroll + HELP_CONTENT_H); repaint() }
+            else if (ks === '<HOME>')      {                           scroll = 0;                                            repaint() }
+            else if (ks === '<END>')       {                           scroll = maxScroll;                                    repaint() }
+        })
+    }
+
+    drawAll()
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // GOTO POPUP
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -2610,6 +2742,11 @@ while (!exitFlag) {
 
         if (keyJustHit && shiftDown && event.includes(keys.G)) {
             openGotoPopup()
+            return
+        }
+
+        if (keyJustHit && keysym === '!') {
+            openHelpPopup()
             return
         }
 

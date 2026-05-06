@@ -2458,8 +2458,8 @@ Play Head Flags
         1001xxxx yyyyyyyy (FWD000) - Skip forward 0bxxxxyyyyyyyy patterns
         1111xxxx yyyyyyyy (JMP000) - Go to absolute pattern number 0bxxxxyyyyyyyy
         00000010 00xxxxxx (LEN 00) - Pattern length for this cue (0..63), where 0: 1 row, 63: 64 rows (decoded by AudioAdapter as of 2026-05-05; emitted by xm2taud / it2taud for non-multiple-of-64 source patterns)
-        00000001 00000000 - Halt (HALT  )
-        00000001 00111111 - Fadeout (FADOUT) - Gradually decrease global volume such that at row 63 it reaches zero
+        00000001 00000000 - Halt (HALT  ) - Play the full length of the pattern then stop the playback
+        00000001 00xxxxxx - Fadeout (FADOUT) - Gradually decrease global volume such that at row 0bxxxxxx it reaches zero, then stop the playback
         00000000 - No operation
 
 65536..131071 RW: PCM Sample buffer
