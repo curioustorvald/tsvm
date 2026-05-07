@@ -14,14 +14,15 @@ This converter:
     - splits each Monotone pattern (64 × N voices) into N Taud patterns
     - converts notes (A0=27.5 Hz chromatic) to Taud 4096-TET centred on C4
     - maps the 8 Monotone effects to their closest Taud equivalents
-    - approximates Hz/tick slides (1xx/2xx/3xx) at an A4=440 Hz reference
+    - emits Hz/tick slides (1xx/2xx/3xx) verbatim and turns on Taud's
+      linear-frequency tone mode (Effect 1 ff=2) so the engine interprets
+      E/F/G arguments as Hz at A4=440 Hz reference — no scaling drift
 
 Limits: numVoices ≤ 20, numPatterns × numVoices ≤ 4095.
 """
 
 import argparse
 import gzip
-import math
 import struct
 import sys
 
@@ -51,11 +52,13 @@ MON_EFFECT_LETTERS = ['0', '1', '2', '3', '4', 'B', 'D', 'F']
 # Note value 1 = A0; C4 sits at value 40 (A0 + 39 semitones).
 MON_NOTE_C4 = 40
 
-# Slides are linear-in-Hz on Monotone but linear-in-4096-TET on Taud. Take A4
-# (440 Hz) as the reference: 1 Hz at A4 ≈ 12/(440·ln 2) semitones, scaled by
-# 4096/12 to Taud units. ≈ 161.0. Off by ±1 octave at the extremes; documented
-# in the script header.
-SLIDE_UNITS_PER_HZ = 12.0 / (440.0 * math.log(2.0)) * 4096.0 / 12.0
+# Global behaviour flags byte (Taud Effect 1 / song-table byte 15):
+#   bit 0   (p)  : pan law              — leave 0 (linear) for tracker accuracy
+#   bits 1-2 (ff): tone mode             — 2 = linear-frequency (Hz/tick)
+# Selecting ff=2 makes the engine interpret 1xx/2xx/3xx slide arguments in
+# audible Hz at the A4=440 Hz reference, matching Monotone's MT_PLAY.PAS
+# `Frequency:=Frequency±parm1` arithmetic (see MTSRC/MT_PLAY.PAS:606-630).
+GLOBAL_FLAGS_LINEAR_FREQ = 0b100
 
 
 # ── Taud container ───────────────────────────────────────────────────────────
@@ -150,17 +153,14 @@ def encode_effect(eff_code: int, data: int) -> tuple:
         y = data & 0x7
         return (TOP_J, (J_SEMI_TABLE[x] << 8) | J_SEMI_TABLE[y])
 
-    if letter == '1':                                # slide up Hz/tick → Taud F
-        arg = round(data * SLIDE_UNITS_PER_HZ) & 0xFFFF
-        return (TOP_F, arg)
+    if letter == '1':                                # slide up Hz/tick → Taud F (Hz/tick under ff=2)
+        return (TOP_F, data & 0xFFFF)
 
-    if letter == '2':                                # slide down Hz/tick → Taud E
-        arg = round(data * SLIDE_UNITS_PER_HZ) & 0xFFFF
-        return (TOP_E, arg)
+    if letter == '2':                                # slide down Hz/tick → Taud E (Hz/tick under ff=2)
+        return (TOP_E, data & 0xFFFF)
 
-    if letter == '3':                                # tone porta Hz/tick → Taud G
-        arg = round(data * SLIDE_UNITS_PER_HZ) & 0xFFFF
-        return (TOP_G, arg)
+    if letter == '3':                                # tone porta Hz/tick → Taud G (Hz/tick under ff=2)
+        return (TOP_G, data & 0xFFFF)
 
     if letter == '4':                                # vibrato xy → Taud H
         x = (data >> 3) & 0x7        # speed (3 bits)
@@ -366,10 +366,11 @@ def assemble_taud(mon: dict) -> bytes:
 
     # BPM 150 + ticks=mon_speed → row rate = 60/mon_speed (matches Monotone).
     bpm_stored = 150 - 24
-    # bit 2 reserved (was 'm' fadeout-zero policy; removed). Monotone has no instrument-level
+    # Linear-frequency tone mode (ff=2) so 1xx/2xx/3xx Hz/tick semantics survive verbatim;
+    # pan law stays 0 (linear), bit 2 stays 0 (reserved). Monotone has no instrument-level
     # fadeout, so every Taud instrument carries fadeout=0 ("no fade") — notes retire on
     # sample-end or pattern note-cut instead.
-    flags_byte = 0x00
+    flags_byte = GLOBAL_FLAGS_LINEAR_FREQ
 
     song_table = encode_song_entry(
         song_offset       = song_offset,

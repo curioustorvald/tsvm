@@ -11,15 +11,36 @@ Tags:
 <l> - align left
 <o> - create virtual typesetting box. Left anchor: where the text cursor is. Right anchor: end of the line
 &microtone; - replace with the brand string (<col 211>Micro</col><col 239>tone</col>)
+
 &bul; - replace with bullet (\u00F9)
 &ddot; - replace with double-dot (\u008419u)
 &mdot; - replace with BIGDOT (\u00FA)
 &updn; - up-down arrow (\u008418u)
 &udlr; - four direction arrow (\u008428u\u008429u)
+
 &keyoffsym; - pattern view key-off symbol (\u00A0\u00CD\u00CD\u00A1)
 &notecutsym; - pattern view note-cut symbol (\u00A4\u00A4\u00A4\u00A4)
+
+&demisharp;
+&sharp;
+&sesquisharp;
+&doublesharp;
+&triplesharp;
+&quadsharp;
+&demiflat;
+&flat;
+&sesquiflat;
+&doubleflat;
+&tripleflat;
+&quadflat;
+&accuptick;
+&accdntick;
+&accupup;
+&accdndn;
+
 &nbsp; - nonbreakable space (only meaningful for typesetters)
 &shy; - soft hyphen (only meaningful for typesetters)
+
 default alignment: fully justified
  */
 
@@ -29,7 +50,8 @@ let helpNotation = `<c>CONTROL NOTATON</c>
 &bul;<b>a</b>&ddot;<b>z</b> : <O>alphabet without shift-in</O>
 &bul;<b>A</b>&ddot;<b>Z</b> : <O>alphabet with shift-in</O>
 &bul;<b>^q</b> : <O>hit 'q' with control key</O>
-&bul;<b>^Q</b> : <O>hit 'q' with control and shift key</O>`
+&bul;<b>^Q</b> : <O>hit 'q' with control and shift key</O>
+`
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -37,7 +59,8 @@ let helpJam = `<c>NOTE JAMMING</c>
 
 Push keys to play or insert notes.
 &nbsp;w&nbsp;e&nbsp;&nbsp;&nbsp;t&nbsp;y&nbsp;u
-a&nbsp;s&nbsp;d&nbsp;f&nbsp;g&nbsp;h&nbsp;j&nbsp;k`
+a&nbsp;s&nbsp;d&nbsp;f&nbsp;g&nbsp;h&nbsp;j&nbsp;k
+`
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -50,7 +73,8 @@ let helpCommon = `<c>COMMON CONTROLS</c>
 &bul;<b>O</b> : <O>stop the playback</O>
 &bul;<b>tab</b> : <O>switch forward a tab</O>
 &bul;<b>TAB</b> : <O>switch backward a tab</O>
-&bul;<b>q</b> : <O>close &microtone;</O>`
+&bul;<b>q</b> : <O>close &microtone;</O>
+`
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -79,7 +103,12 @@ Timeline has two distinct modes: view and edit mode. Two modes are toggled using
 &bul;<b>&lt;</b>&mdot;<b>&gt;</b>: <O>(panning column) slide left/right</O>
 &bul;<b>-</b>&mdot;<b>=</b> : <O>(vol/pan col) fine slide down/up</O>
 &bul;<b>&udlr;</b> : <O>move the viewing cursor by columns and rows</O>
-&bul;<b>pg&updn;</b> : <O>go to previous/next cue</O>`
+&bul;<b>pg&updn;</b> : <O>go to previous/next cue</O>
+
+<b>ACCIDENTALS</b>
+&demisharp;&nbsp;&sharp;&nbsp;&doublesharp;&nbsp;&triplesharp;&nbsp;&quadsharp;&nbsp;&demiflat;&nbsp;&flat;&nbsp;&doubleflat;&nbsp;&tripleflat;&nbsp;&nbsp;&accuptick;&nbsp;&nbsp;&accupup;&nbsp;&nbsp;&accdntick;&nbsp;&nbsp;&accdndn;
+<b>C&nbsp;&nbsp;c&nbsp;&nbsp;x&nbsp;&nbsp;cx&nbsp;xx&nbsp;B&nbsp;&nbsp;b&nbsp;&nbsp;bb&nbsp;bbb&nbsp;^&nbsp;&nbsp;^^&nbsp;v&nbsp;&nbsp;vv</b>
+`
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -114,6 +143,22 @@ function expandEntities(s) {
         .replaceAll('&shy;',        '')
         .replaceAll('&lt;',        '<')
         .replaceAll('&gt;',        '>')
+        .replaceAll('&demisharp;',   '\u0080\u0081')
+        .replaceAll('&sharp;',       '\u0082\u0083')
+        .replaceAll('&sesquisharp;', '\u0084132u\u0085')
+        .replaceAll('&doublesharp;', '\u0086\u0087')
+        .replaceAll('&triplesharp;', '\u0088\u0089')
+        .replaceAll('&quadsharp;',   '\u008A\u008B')
+        .replaceAll('&demiflat;',    '\u008C\u008D')
+        .replaceAll('&flat;',        '\u008E\u008F')
+        .replaceAll('&sesquiflat;',  '\u0090\u0091')
+        .replaceAll('&doubleflat;',  '\u0092\u0093')
+        .replaceAll('&tripleflat;',  '\u0094\u0095')
+        .replaceAll('&quadflat;',    '\u0096\u0097')
+        .replaceAll('&accuptick;',    '\u009A')
+        .replaceAll('&accdntick;',    '\u009B')
+        .replaceAll('&accupup;',    '\u009C')
+        .replaceAll('&accdndn;',    '\u009D')
 }
 
 // Tokenise a (post-entity-expansion) line. Returns an array of:
@@ -324,13 +369,13 @@ function typeset(text, customWidth) {
 }
 
 let helpMessages = [ // index: taut.js PANEL_NAMES
-    [helpJam, helpTimeline, helpCommon, helpNotation].join('\n\n'),
-    [helpCommon, helpNotation].join('\n\n'), // placeholder
-    [helpCommon, helpNotation].join('\n\n'), // placeholder
-    [helpCommon, helpNotation].join('\n\n'), // placeholder
-    [helpCommon, helpNotation].join('\n\n'), // placeholder
-    [helpCommon, helpNotation].join('\n\n'), // placeholder
-    [helpCommon, helpNotation].join('\n\n'), // placeholder
+    [helpJam, helpTimeline, helpCommon, helpNotation].join('\n'),
+    [helpCommon, helpNotation].join('\n'), // placeholder
+    [helpCommon, helpNotation].join('\n'), // placeholder
+    [helpCommon, helpNotation].join('\n'), // placeholder
+    [helpCommon, helpNotation].join('\n'), // placeholder
+    [helpCommon, helpNotation].join('\n'), // placeholder
+    [helpCommon, helpNotation].join('\n'), // placeholder
 ]
 
 help.MSG_BY_TABS = helpMessages.map(it => typeset(it))

@@ -2328,7 +2328,17 @@ TODO:
         for pan/pf envelopes to play. See byte 15/17/19 spec for the LOOP
         word bit layout.
     [x] slumberjack.xm: E6x commands are not processed
-    [ ] implement linear-freq tone mode (MONOTONE compat)
+    [x] implement linear-freq tone mode (MONOTONE compat)
+        Resolution: ff=2 in song-table flags byte (was reserved). E / F / G
+        arguments are interpreted as Hz/tick at A4 = 440 Hz / C4 ≈ 261.6256 Hz
+        reference, exactly matching MONOTONE's MT_PLAY.PAS `Frequency`
+        arithmetic (MTSRC/MT_PLAY.PAS:606-630). Per-voice `linearFreq` cache
+        in AudioAdapter.kt preserves sub-noteVal precision across ticks; the
+        Voice cache reseeds on note trigger, fine slides, S$2x finetune, and
+        the start of a fresh multi-tick coarse slide. mon2taud.py now emits
+        Hz values verbatim (no SLIDE_UNITS_PER_HZ scaling) and sets the
+        linear-freq flag in the song-table flags byte. Spec details in
+        TAUD_NOTE_EFFECTS.md §1, §E, §F, §G.
     [ ] milkytracker-style volume ramping (on sample-end only)
 
 
@@ -2430,9 +2440,9 @@ Play Head Flags
     Byte 2
         - PCM Mode: Write non-zero value to start uploading; always 0 when read
         - Tracker Mode: Global mixer flags. Maps directly to Taud effect symbol '1'
-            0b 0000 00fp
+            0b 0000 0ffp
             p: panning mode (0: linear, 1: equal-power)
-            f: pitchshift mode (0: tone-linear, 1: Amiga)
+            ff: pitchshift mode (0: linear pitch slides, 1: Amiga period slides, 2: linear-frequency slides, 3: reserved)
                 Tracker command may change the mixer state, but the changes WILL NOT BE REFLECTED BACK.
                 Starting a new song will use whatever written to this register. In other words, changes
                 made by songs will not persist.
@@ -2551,9 +2561,9 @@ Endianness: Little
     Uint16  Current Tuning base note (1..65533). A4 (western default) is 0x5C00. C9 (tracker default) is 0xA000. If zero, assume the tracker default value
     Float32 Frequency at the base note. Tracker default is 8363.0. If zero, assume the tracker default
     Uint8   Flags for Global Behaviour (effect symbol '1')
-        0b 0000 0Ffp
-            p: panning law         (0=linear, 1=equal-power)
-            Ff: tone mode          (0=linear pitch slides, 1=Amiga period slides, 2=linear-frequency slides, 3=reserved)
+        0b 0000 0ffp
+            p: panning law         (0: linear, 1: equal-power)
+            ff: tone mode          (0: linear pitch slides, 1: Amiga period slides, 2: linear-frequency slides, 3: reserved)
             (bit 2 reserved — was 'm' fadeout-zero policy, removed; fadeout
              scaling now lives entirely in the converter — see byte 172/173
              of the instrument record for engine semantics)

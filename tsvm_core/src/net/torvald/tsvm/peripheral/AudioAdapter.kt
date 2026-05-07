@@ -133,6 +133,12 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         // Trackers may use different labelling conventions (e.g. C5) for Middle C.
         // For non-tracker context, Middle C shall be labelled as C4.
         const val AMIGA_BASE_PERIOD = 428.0
+        // Reference frequency for linear-freq tone mode (toneMode == 2). Fixed at 12-TET
+        // A4 = 440 Hz so that 1 Hz/tick at C4 ≈ 1 Hz at the audible output: 261.6256 ×
+        // 2^(9/12) = 440 Hz exactly. MONOTONE (.MON) — the only source format using
+        // linear-freq slides — uses A0 = 27.5 Hz with the same equal-temperament tuning,
+        // so emitted Hz values map directly to audible Hz at any pitch.
+        const val LINEAR_FREQ_C4_HZ = 261.6255653005986
     }
 
     // Memory map (terranmon.txt:1985-1997, updated 2026-05-06):
@@ -1209,6 +1215,34 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         return amigaPeriodToNoteVal(newPeriod)
     }
 
+    // Linear-frequency mode (toneMode == 2): E / F / G arguments are interpreted as Hz/tick.
+    // The reference is fixed at 12-TET A4 = 440 Hz (so MIDDLE_C ≈ 261.6256 Hz). MONOTONE
+    // (.MON) is the canonical source — its 1xx/2xx/3xx commands use Hz/tick directly, so
+    // mon2taud.py emits the raw byte and relies on this mode. Like Amiga mode, a per-voice
+    // linearFreq cache (`voice.linearFreq`) preserves sub-noteVal precision across ticks;
+    // -1.0 means stale and must be reseeded from current noteVal.
+    private fun noteValToFreqHz(noteVal: Int): Double =
+        LINEAR_FREQ_C4_HZ * 2.0.pow((noteVal - MIDDLE_C).toDouble() / 4096.0)
+
+    private fun freqHzToNoteVal(freq: Double): Int =
+        (MIDDLE_C + 4096.0 * log2(freq / LINEAR_FREQ_C4_HZ)).roundToInt()
+
+    // Per-tick linear-freq slide. Sign convention matches linear/Amiga modes: positive
+    // slideArg = pitch up = freq rises; negative = pitch down = freq falls.
+    private fun linearFreqSlideTick(voice: Voice, slideArg: Int): Int {
+        if (voice.linearFreq < 0.0) voice.linearFreq = noteValToFreqHz(voice.noteVal)
+        voice.linearFreq = (voice.linearFreq + slideArg).coerceAtLeast(1.0)
+        return freqHzToNoteVal(voice.linearFreq)
+    }
+
+    // One-shot linear-freq slide for fine E/F (applied once per row at tick 0); does
+    // not mutate persistent state.
+    private fun linearFreqSlideOnce(noteVal: Int, slideArg: Int): Int {
+        val freq = noteValToFreqHz(noteVal)
+        val newFreq = (freq + slideArg).coerceAtLeast(1.0)
+        return freqHzToNoteVal(newFreq)
+    }
+
     /**
      * Resolve the active wrap region for an envelope based on the LOOP and
      * SUSTAIN words and key state.
@@ -1679,6 +1713,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         voice.noteVal = noteVal
         voice.basePitch = noteVal
         voice.amigaPeriod = -1.0   // fresh trigger: period state must reseed from the new noteVal
+        voice.linearFreq  = -1.0   // ditto for linear-freq mode (toneMode == 2)
         voice.playbackRate = computePlaybackRate(inst, noteVal)
         // Fresh trigger resets channel volume to full ($3F). Per-instrument scaling lives in
         // instGlobalVolume (byte 171), which the mixer applies as a multiplier. Converters
@@ -1824,6 +1859,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         v.noteVal = src.noteVal
         v.basePitch = src.basePitch
         v.amigaPeriod = src.amigaPeriod
+        v.linearFreq  = src.linearFreq
         v.volEnvOn = src.volEnvOn
         v.panEnvOn = src.panEnvOn
         v.pfEnvOn = src.pfEnvOn
@@ -1997,13 +2033,12 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             EffectOp.OP_NONE -> {}
             EffectOp.OP_1 -> {
                 // 1 $xx00 — Global behaviour flags byte in the high byte (see TAUD_NOTE_EFFECTS.md §1).
-                // bit 0 (p): 0=linear pan, 1=equal-power pan
-                // bit 1 (f): 0=linear pitch slides, 1=Amiga-mode pitch slides
-                // bit 2  : reserved (was 'm' fadeout-zero policy; removed — converters now scale
-                //          source fadeout into Taud-native units, so the engine has a single divisor)
+                // bit 0   (p):  0=linear pan, 1=equal-power pan
+                // bits 1-2 (ff): 0=linear pitch, 1=Amiga period, 2=linear frequency (Hz/tick),
+                //                3=reserved
                 val flags = rawArg ushr 8
                 ts.panLaw = flags and 1
-                ts.amigaMode = (flags and 2) != 0
+                ts.toneMode = (flags ushr 1) and 3
             }
             EffectOp.OP_8 -> {
                 // 8 $xyzz — Bitcrusher.  See TAUD_NOTE_EFFECTS.md §8.
@@ -2073,32 +2108,38 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 val arg = resolveArg(rawArg, voice.mem.ef).also { if (rawArg != 0) voice.mem.ef = it }
                 if ((arg and 0xF000) == 0xF000) {
                     val mag = arg and 0x0FFF
-                    voice.noteVal = if (ts.amigaMode)
-                        amigaSlideOnce(voice.noteVal, -mag).coerceIn(0, 0xFFFE)
-                    else
-                        (voice.noteVal - mag).coerceIn(0, 0xFFFE)
+                    voice.noteVal = when (ts.toneMode) {
+                        1    -> amigaSlideOnce(voice.noteVal, -mag)         // Amiga: subtract from pitch ⇒ adds period
+                        2    -> linearFreqSlideOnce(voice.noteVal, -mag)    // Hz/tick: pitch down ⇒ -Hz
+                        else -> voice.noteVal - mag                          // linear 4096-TET
+                    }.coerceIn(0, 0xFFFE)
                     voice.basePitch = voice.noteVal
                     voice.amigaPeriod = -1.0   // reseed on next per-tick slide
+                    voice.linearFreq  = -1.0
                     voice.playbackRate = computePlaybackRate(instruments[voice.instrumentId], voice.noteVal)
                 } else {
                     voice.slideMode = 1; voice.slideArg = -arg
                     voice.amigaPeriod = -1.0   // reseed at the start of a fresh multi-tick slide
+                    voice.linearFreq  = -1.0
                 }
             }
             EffectOp.OP_F -> {
                 val arg = resolveArg(rawArg, voice.mem.ef).also { if (rawArg != 0) voice.mem.ef = it }
                 if ((arg and 0xF000) == 0xF000) {
                     val mag = arg and 0x0FFF
-                    voice.noteVal = if (ts.amigaMode)
-                        amigaSlideOnce(voice.noteVal, mag).coerceIn(0, 0xFFFE)
-                    else
-                        (voice.noteVal + mag).coerceIn(0, 0xFFFE)
+                    voice.noteVal = when (ts.toneMode) {
+                        1    -> amigaSlideOnce(voice.noteVal, mag)
+                        2    -> linearFreqSlideOnce(voice.noteVal, mag)
+                        else -> voice.noteVal + mag
+                    }.coerceIn(0, 0xFFFE)
                     voice.basePitch = voice.noteVal
                     voice.amigaPeriod = -1.0
+                    voice.linearFreq  = -1.0
                     voice.playbackRate = computePlaybackRate(instruments[voice.instrumentId], voice.noteVal)
                 } else {
                     voice.slideMode = 2; voice.slideArg = arg
                     voice.amigaPeriod = -1.0
+                    voice.linearFreq  = -1.0
                 }
             }
             EffectOp.OP_G -> {
@@ -2214,6 +2255,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 voice.noteVal = (voice.noteVal + FINETUNE_OFFSET[x]).coerceIn(0, 0xFFFE)
                 voice.basePitch = voice.noteVal
                 voice.amigaPeriod = -1.0
+                voice.linearFreq  = -1.0
                 voice.playbackRate = computePlaybackRate(instruments[voice.instrumentId], voice.noteVal)
             }
             0x3 -> { voice.vibratoWave = x and 3; voice.vibratoRetrig = (x and 4) == 0 }
@@ -2299,24 +2341,46 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
             // Pitch slides (E/F coarse on tick > 0).
             if (ts.tickInRow > 0 && (voice.slideMode == 1 || voice.slideMode == 2)) {
-                voice.noteVal = if (ts.amigaMode)
-                    amigaSlideTick(voice, voice.slideArg).coerceIn(0, 0xFFFE)
-                else
-                    (voice.noteVal + voice.slideArg).coerceIn(0, 0xFFFE)
+                voice.noteVal = when (ts.toneMode) {
+                    1    -> amigaSlideTick(voice, voice.slideArg)
+                    2    -> linearFreqSlideTick(voice, voice.slideArg)
+                    else -> voice.noteVal + voice.slideArg
+                }.coerceIn(0, 0xFFFE)
                 voice.basePitch = voice.noteVal
             }
 
-            // Tone portamento (G).
+            // Tone portamento (G). In linear-freq mode the speed is interpreted as Hz/tick
+            // so MONOTONE 3xx (port-to-note in Hz) round-trips faithfully; in linear and
+            // Amiga modes the speed is in 4096-TET pitch units (Amiga period units would be
+            // backwards relative to PT semantics — see TAUD_NOTE_EFFECTS.md §G).
             if (voice.tonePortaTarget >= 0 && ts.tickInRow > 0) {
                 val target = voice.tonePortaTarget
                 val sp = voice.tonePortaSpeed
-                val delta = if (target > voice.noteVal) sp else -sp
-                voice.noteVal += delta
-                if ((delta > 0 && voice.noteVal >= target) || (delta < 0 && voice.noteVal <= target)) {
-                    voice.noteVal = target; voice.tonePortaTarget = -1
+                if (ts.toneMode == 2) {
+                    if (voice.linearFreq < 0.0) voice.linearFreq = noteValToFreqHz(voice.noteVal)
+                    val targetFreq = noteValToFreqHz(target)
+                    val dir = if (targetFreq > voice.linearFreq) +1.0 else -1.0
+                    voice.linearFreq += dir * sp
+                    if ((dir > 0 && voice.linearFreq >= targetFreq) ||
+                        (dir < 0 && voice.linearFreq <= targetFreq)) {
+                        voice.linearFreq = targetFreq
+                        voice.noteVal = target
+                        voice.tonePortaTarget = -1
+                    } else {
+                        voice.noteVal = freqHzToNoteVal(voice.linearFreq).coerceIn(0, 0xFFFE)
+                    }
+                    voice.basePitch = voice.noteVal
+                    voice.amigaPeriod = -1.0
+                } else {
+                    val delta = if (target > voice.noteVal) sp else -sp
+                    voice.noteVal += delta
+                    if ((delta > 0 && voice.noteVal >= target) || (delta < 0 && voice.noteVal <= target)) {
+                        voice.noteVal = target; voice.tonePortaTarget = -1
+                    }
+                    voice.basePitch = voice.noteVal
+                    voice.amigaPeriod = -1.0   // tone porta works in linear noteVal space; reseed period
+                    voice.linearFreq  = -1.0
                 }
-                voice.basePitch = voice.noteVal
-                voice.amigaPeriod = -1.0   // tone porta works in linear noteVal space; reseed period
             }
 
             // Volume slides (D coarse on tick > 0).
@@ -2904,6 +2968,9 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         // sub-noteVal precision through repeated round-trip rounding (see amigaSlideTick).
         // -1.0 means "needs reseed from current noteVal".
         var amigaPeriod: Double = -1.0
+        // Linear-frequency-mode state (Hz). Same -1.0 = stale convention as amigaPeriod.
+        // Used by toneMode == 2 (MONOTONE compat) for E / F coarse slides and G tone porta.
+        var linearFreq: Double = -1.0
 
         // Per-row effect state (set in applyTrackerRow, consumed by applyTrackerTick).
         var rowEffect = 0
@@ -3009,7 +3076,12 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
         // Global mixer config (effect 1).
         var panLaw = 0      // 0 = linear balance (default), 1 = equal-power
-        var amigaMode = false  // false = linear pitch slides, true = Amiga period-space slides
+        // Tone-slide mode for E / F / G effects (terranmon.txt §Song Table flags byte):
+        //   0 = linear pitch slides (4096-TET units, default)
+        //   1 = Amiga period slides (raw PT period units, applied in period space)
+        //   2 = linear-frequency slides (Hz/tick — MONOTONE compat)
+        //   3 = reserved
+        var toneMode = 0
 
         // Pending row-end events (set during a row by B/C; consumed at row end).
         var pendingOrderJump = -1          // -1 = none; otherwise the order index to jump to
@@ -3122,7 +3194,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                     initialGlobalFlags = byte
                     trackerState?.let { ts ->
                         ts.panLaw = byte and 1
-                        ts.amigaMode = (byte and 2) != 0
+                        ts.toneMode = (byte ushr 1) and 3
                     }
                 }
                 8 -> { bpm = byte + 24 }
@@ -3157,7 +3229,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 ts.sexWinningChannel = -1
                 ts.finePatternDelayExtra = 0
                 ts.panLaw = initialGlobalFlags and 1
-                ts.amigaMode = (initialGlobalFlags and 2) != 0
+                ts.toneMode = (initialGlobalFlags ushr 1) and 3
                 ts.voices.forEach {
                     it.active = false
                     it.channelVolume = 0x3F

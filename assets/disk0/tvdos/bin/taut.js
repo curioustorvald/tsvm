@@ -1704,7 +1704,7 @@ function simulateRowState(ptnDat, uptoRow) {
     let bpm   = audio.getBPM(PLAYHEAD)   // best-effort starting tempo
     let speed = audio.getTickRate(PLAYHEAD)
     let globalVol = 0xFF
-    let panLaw = 0, amigaMode = false
+    let panLaw = 0, toneMode = 0   // toneMode: 0=linear, 1=Amiga, 2=linear-freq, 3=reserved
 
     let memEF = 0, memG = 0
     let memHU = { speed: 0, depth: 0 }
@@ -1808,8 +1808,8 @@ function simulateRowState(ptnDat, uptoRow) {
         if (effop !== 0 || effarg !== 0) {
             if (effop === OP_1) {
                 const flags = (effarg >>> 8) & 0xFF
-                panLaw    = flags & 1
-                amigaMode = (flags & 2) !== 0
+                panLaw   = flags & 1
+                toneMode = (flags >>> 1) & 3
                 // bit 2 reserved (was 'm' fadeout-zero policy; removed)
             }
             else if (effop === OP_8) {
@@ -1948,7 +1948,7 @@ function simulateRowState(ptnDat, uptoRow) {
 
     return { lastNote, lastInst, volAbs, panAbs, pitchOff,
              bpm, speed, globalVol,
-             panLaw, amigaMode,
+             panLaw, toneMode,
              bitcrushDepth, bitcrushSkip, overdriveAmp, clipMode,
              glissandoOn, vibratoWave, tremoloWave, panbrelloWave,
              memEF, memG, memHU, memR, memY,
@@ -2153,15 +2153,14 @@ function drawProjectContents(wo) {
     let flagstr = [
         ['Linear pan','EquNrg pan'],
         ['Linear pitch','Amiga pitch', 'Linear freq', ''], // TODO MONOTONE uses linear-freq pitch
-        ['IT fade','FT2 fade'],
     ]
     for (let i = 0; i < flagstr.length; i++) {
-        if (i != 1 && 1 != 3) {
+        if (i != 1 && 1 != 2) {
             let s = flagstr[i][(mixerflag >>> i) & 1 != 0]
             flagStrSelected.push(s)
         }
     }
-    let toneMode = (((mixerflag >>> 1) & 1)) | (((mixerflag >>> 3) & 1) << 1)
+    let toneMode = (mixerflag >>> 1) & 3
     flagStrSelected.splice(1, 0, flagstr[1][toneMode])
 
 

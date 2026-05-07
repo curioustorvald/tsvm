@@ -136,7 +136,7 @@ class AudioJSR223Delegate(private val vm: VM) {
             ph.initialGlobalFlags = flags
             ph.trackerState?.let { ts ->
                 ts.panLaw = flags and 1
-                ts.amigaMode = (flags and 2) != 0
+                ts.toneMode = (flags ushr 1) and 3
                 // bit 2 reserved (was 'm' fadeout-zero policy; removed — see AudioAdapter.kt
                 // and TAUD_NOTE_EFFECTS.md §1 "Volume Fadeout")
             }
