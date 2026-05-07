@@ -555,9 +555,10 @@ let timelineRowStyle      = 0
 let COLSIZE_TIMELINE_FULL = TIMELINE_COLSIZES[0]
 let VOCSIZE_TIMELINE_FULL = Math.floor((SCRW - 3) / COLSIZE_TIMELINE_FULL)
 
-const ORDERS_CMD_X   = 5
-const ORDERS_VOICE_X = 9
-const VOCSIZE_ORDERS = Math.floor((SCRW - 10) / 4)
+const ORDERS_CMD_X       = 5
+const ORDERS_VOICE_X     = 12  // 1-indexed col where voice columns begin
+const ORDERS_VOICE_COL_W = 4
+const VOCSIZE_ORDERS     = Math.floor((SCRW - (ORDERS_VOICE_X - 1)) / ORDERS_VOICE_COL_W)
 
 const VIEW_TIMELINE = 0
 const VIEW_CUES = 1
@@ -1407,46 +1408,105 @@ function drawOrdersHeader() {
     }
 }
 
+function drawOrdersRowAt(ci) {
+    const vr = ci - ordersScroll
+    if (vr < 0 || vr >= PTNVIEW_HEIGHT) return
+    const y     = PTNVIEW_OFFSET_Y + vr
+    const maxCue = song.lastActiveCue < 0 ? 0 : song.lastActiveCue
+    const isSel = (ci === ordersCursor)
+    const isCur = playbackMode !== PLAYMODE_NONE && ci === cueIdx
+    const back  = isSel ? (playbackMode !== PLAYMODE_NONE ? colPlayback : colHighlight)
+                        : (isCur ? colPlayback : colBackPtn)
+
+    con.move(y, 1)
+    if (ci > maxCue) {
+        con.color_pair(colBackPtn, colBackPtn)
+        print(' '.repeat(SCRW - 1))
+        return
+    }
+
+    const cue = song.cues[ci]
+    con.color_pair(ci % 4 === 0 ? colRowNumEmph1 : colRowNum, back)
+    print(ci.hex03())
+    con.color_pair(colBackPtn, back)
+    print(' ')
+    // CMD column — crosshair highlight at (ordersCursor, col 0)
+    const cmdBack = (isSel && ordersColCursor === 0) ? colPlayback : back
+    con.color_pair(cue.instr ? colStatus : colSep, cmdBack)
+    print(cue.instr ? cueInstToStr(cue.instr) : '------')
+    con.color_pair(colBackPtn, back)
+    print(' ')
+    // Voice columns
+    for (let c = 0; c < VOCSIZE_ORDERS; c++) {
+        const v     = ordersVoiceOff + c
+        const ptn   = v < song.numVoices ? cue.ptns[v] : CUE_EMPTY
+        const vBack = (isSel && ordersColCursor === v + 1) ? colPlayback : back
+        con.color_pair(ptn === CUE_EMPTY ? colSep : colStatus, vBack)
+        print(ptn === CUE_EMPTY ? '---' : ptn.hex03())
+        con.color_pair(colBackPtn, back)
+        print(' ')
+    }
+    const endX = ORDERS_VOICE_X + VOCSIZE_ORDERS * ORDERS_VOICE_COL_W
+    if (endX <= SCRW) { con.color_pair(colBackPtn, back); print(' '.repeat(SCRW - endX)) }
+}
+
 function drawOrdersContents(wo) {
     drawOrdersHeader()
+    for (let vr = 0; vr < PTNVIEW_HEIGHT; vr++) drawOrdersRowAt(ordersScroll + vr)
+}
+
+// Redraw all rows of one voice column slot (0..VOCSIZE_ORDERS-1).
+function drawOrdersVoiceColumnAt(slot) {
+    const v = ordersVoiceOff + slot
+    const x = ORDERS_VOICE_X + slot * ORDERS_VOICE_COL_W
     const maxCue = song.lastActiveCue < 0 ? 0 : song.lastActiveCue
 
     for (let vr = 0; vr < PTNVIEW_HEIGHT; vr++) {
-        const ci    = ordersScroll + vr
-        const y     = PTNVIEW_OFFSET_Y + vr
+        const ci = ordersScroll + vr
+        const y  = PTNVIEW_OFFSET_Y + vr
+
+        if (ci > maxCue) {
+            con.move(y, x)
+            con.color_pair(colBackPtn, colBackPtn)
+            print('    ')
+            continue
+        }
         const isSel = (ci === ordersCursor)
         const isCur = playbackMode !== PLAYMODE_NONE && ci === cueIdx
         const back  = isSel ? (playbackMode !== PLAYMODE_NONE ? colPlayback : colHighlight)
-                             : (isCur ? colPlayback : colBackPtn)
+                            : (isCur ? colPlayback : colBackPtn)
+        const cue   = song.cues[ci]
+        const ptn   = v < song.numVoices ? cue.ptns[v] : CUE_EMPTY
+        const vBack = (isSel && ordersColCursor === v + 1) ? colPlayback : back
 
-        con.move(y, 1)
-        if (ci > maxCue) {
-            con.color_pair(colBackPtn, colBackPtn)
-            print(' '.repeat(SCRW - 1))
-        } else {
-            const cue = song.cues[ci]
-            con.color_pair(ci % 4 === 0 ? colRowNumEmph1 : colRowNum, back)
-            print(ci.hex03())
-            con.color_pair(colBackPtn, back)
-            print(' ')
-            // CMD column — crosshair highlight at (ordersCursor, col 0)
-            const cmdBack = (isSel && ordersColCursor === 0) ? colPlayback : back
-            con.color_pair(cue.instr ? colStatus : colSep, cmdBack)
-            print(cue.instr ? cueInstToStr(cue.instr) : '------')
-            con.color_pair(colBackPtn, back)
-            print(' ')
-            // Voice columns
-            for (let c = 0; c < VOCSIZE_ORDERS; c++) {
-                const v     = ordersVoiceOff + c
-                const ptn   = v < song.numVoices ? cue.ptns[v] : CUE_EMPTY
-                const vBack = (isSel && ordersColCursor === v + 1) ? colPlayback : back
-                con.color_pair(ptn === CUE_EMPTY ? colSep : colStatus, vBack)
-                print(ptn === CUE_EMPTY ? '---' : ptn.hex03())
-                con.color_pair(colBackPtn, back)
-                print(' ')
-            }
-            const endX = ORDERS_VOICE_X + VOCSIZE_ORDERS * 4
-            if (endX <= SCRW) { con.color_pair(colBackPtn, back); print(' '.repeat(SCRW - endX)) }
+        con.move(y, x)
+        con.color_pair(ptn === CUE_EMPTY ? colSep : colStatus, vBack)
+        print(ptn === CUE_EMPTY ? '---' : ptn.hex03())
+        con.color_pair(colBackPtn, back)
+        print(' ')
+    }
+}
+
+// Memory-shift the voice-column area horizontally by `dVoice` voice columns.
+// Positive = scroll left (new column exposed on right); negative = scroll right.
+// Touches body rows only; the header and Cmd column are untouched.
+function shiftOrdersAreaHorizontal(dVoice) {
+    if (dVoice === 0) return
+    const absD = (dVoice < 0) ? -dVoice : dVoice
+    if (absD >= VOCSIZE_ORDERS) return  // nothing to salvage
+
+    const stripWidth = (VOCSIZE_ORDERS - absD) * ORDERS_VOICE_COL_W
+    const srcX = ORDERS_VOICE_X + (dVoice > 0 ? absD * ORDERS_VOICE_COL_W : 0)
+    const dstX = ORDERS_VOICE_X + (dVoice > 0 ? 0 : absD * ORDERS_VOICE_COL_W)
+    const srcOff = srcX - 1
+    const dstOff = dstX - 1
+
+    for (let p = 0; p < 3; p++) {
+        const chanOff = TEXT_PLANES[p]
+        for (let vr = 0; vr < PTNVIEW_HEIGHT; vr++) {
+            const rowBase = GPU_MEM - chanOff - (PTNVIEW_OFFSET_Y + vr - 1) * SCRW
+            sys.memcpy(rowBase - srcOff, SCRATCH_PTR, stripWidth)
+            sys.memcpy(SCRATCH_PTR, rowBase - dstOff, stripWidth)
         }
     }
 }
@@ -1592,26 +1652,53 @@ function ordersInput(wo, event) {
         stopPlayback(); drawAlwaysOnElems(); return
     }
 
-    if (keysym === '<UP>') {
-        ordersCursor = Math.max(0, ordersCursor - moveDelta)
-        if (ordersCursor < ordersScroll) ordersScroll = ordersCursor
-        drawOrdersContents(wo)
-    } else if (keysym === '<DOWN>') {
-        ordersCursor = Math.min(maxCue, ordersCursor + moveDelta)
-        if (ordersCursor >= ordersScroll + PTNVIEW_HEIGHT) ordersScroll = Math.max(0, ordersCursor - PTNVIEW_HEIGHT + 1)
-        drawOrdersContents(wo)
-    } else if (keysym === '<PAGE_UP>') {
-        ordersCursor = Math.max(0, ordersCursor - PTNVIEW_HEIGHT)
-        ordersScroll = Math.max(0, ordersScroll - PTNVIEW_HEIGHT)
-        drawOrdersContents(wo)
-    } else if (keysym === '<PAGE_DOWN>') {
-        ordersCursor = Math.min(maxCue, ordersCursor + PTNVIEW_HEIGHT)
-        if (ordersCursor >= ordersScroll + PTNVIEW_HEIGHT) ordersScroll = Math.max(0, ordersCursor - PTNVIEW_HEIGHT + 1)
-        drawOrdersContents(wo)
+    if (keysym === '<UP>' || keysym === '<DOWN>' || keysym === '<PAGE_UP>' || keysym === '<PAGE_DOWN>') {
+        const oldCursor = ordersCursor
+        const oldScroll = ordersScroll
+
+        if (keysym === '<UP>') {
+            ordersCursor = Math.max(0, ordersCursor - moveDelta)
+            if (ordersCursor < ordersScroll) ordersScroll = ordersCursor
+        } else if (keysym === '<DOWN>') {
+            ordersCursor = Math.min(maxCue, ordersCursor + moveDelta)
+            if (ordersCursor >= ordersScroll + PTNVIEW_HEIGHT) ordersScroll = Math.max(0, ordersCursor - PTNVIEW_HEIGHT + 1)
+        } else if (keysym === '<PAGE_UP>') {
+            ordersCursor = Math.max(0, ordersCursor - PTNVIEW_HEIGHT)
+            ordersScroll = Math.max(0, ordersScroll - PTNVIEW_HEIGHT)
+        } else if (keysym === '<PAGE_DOWN>') {
+            ordersCursor = Math.min(maxCue, ordersCursor + PTNVIEW_HEIGHT)
+            if (ordersCursor >= ordersScroll + PTNVIEW_HEIGHT) ordersScroll = Math.max(0, ordersCursor - PTNVIEW_HEIGHT + 1)
+        }
+
+        if (ordersCursor === oldCursor && ordersScroll === oldScroll) return
+        const dScroll = ordersScroll - oldScroll
+        if (dScroll === 0) {
+            drawOrdersRowAt(oldCursor)
+            drawOrdersRowAt(ordersCursor)
+        } else if (Math.abs(dScroll) >= PTNVIEW_HEIGHT) {
+            drawOrdersContents(wo)
+        } else {
+            shiftPatternArea(-dScroll)
+            if (dScroll > 0) for (let i = 0; i < dScroll;  i++) drawOrdersRowAt(ordersScroll + PTNVIEW_HEIGHT - 1 - i)
+            else             for (let i = 0; i < -dScroll; i++) drawOrdersRowAt(ordersScroll + i)
+            if (oldCursor >= ordersScroll && oldCursor < ordersScroll + PTNVIEW_HEIGHT) drawOrdersRowAt(oldCursor)
+            drawOrdersRowAt(ordersCursor)
+        }
     } else if (keysym === '<LEFT>' || keysym === '<RIGHT>') {
+        const oldVoiceOff  = ordersVoiceOff
+        const oldColCursor = ordersColCursor
         ordersColCursor += (keysym === '<LEFT>') ? -1 : 1
         clampOrdersHoriz()
-        drawOrdersContents(wo)
+        if (ordersColCursor === oldColCursor) return  // hit edge
+
+        const dVoice = ordersVoiceOff - oldVoiceOff
+        if (dVoice !== 0) {
+            shiftOrdersAreaHorizontal(dVoice)
+            if (dVoice > 0) for (let i = 0; i < dVoice;  i++) drawOrdersVoiceColumnAt(VOCSIZE_ORDERS - 1 - i)
+            else            for (let i = 0; i < -dVoice; i++) drawOrdersVoiceColumnAt(i)
+        }
+        drawOrdersHeader()
+        drawOrdersRowAt(ordersCursor)
     } else if (keyJustHit && keysym === '\n') {
         cueIdx = ordersCursor
         clampCue()
