@@ -139,6 +139,11 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         // linear-freq slides — uses A0 = 27.5 Hz with the same equal-temperament tuning,
         // so emitted Hz values map directly to audible Hz at any pitch.
         const val LINEAR_FREQ_C4_HZ = 261.6255653005986
+        // Anti-click ramp-out: when a sample naturally ends or is cut, the voice keeps
+        // mixing for this many output samples while gain decays linearly to 0.
+        // 8 ms at 32 kHz — long enough to bury the click, short enough not to read as fade.
+        // Applied on sample end only (preserves attack transients on note start).
+        const val RAMP_OUT_SAMPLES = 256
     }
 
     // Memory map (terranmon.txt:1985-1997, updated 2026-05-06):
@@ -1629,6 +1634,11 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         val s1 = (b1 - 127.5) / 127.5
         val sample = s0 + (s1 - s0) * frac
 
+        // While ramping out at sample end, hold position so the mixer keeps emitting the
+        // clamped last-sample value with decaying gain — no further advance, no re-trigger
+        // of the end check.
+        if (voice.rampOutSamples > 0) return sample
+
         if (voice.forward) {
             voice.samplePos += voice.playbackRate
             // When the sustain bit is set, key-off escapes the loop: the sample plays past
@@ -1636,16 +1646,35 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             val effectiveLoopMode =
                 if (inst.sampleLoopSustain && voice.keyOff) 0 else (inst.loopMode and 3)
             when (effectiveLoopMode) {
-                0 -> if (voice.samplePos >= sampleLen) voice.active = false
+                0 -> if (voice.samplePos >= sampleLen) {
+                    voice.samplePos = (sampleLen - 1).toDouble().coerceAtLeast(0.0)
+                    startRampOut(voice)
+                }
                 1 -> if (voice.samplePos >= loopEnd) voice.samplePos -= (loopEnd - loopStart).coerceAtLeast(1.0)
                 2 -> if (voice.samplePos >= loopEnd) { voice.samplePos = loopEnd; voice.forward = false }
-                3 -> if (voice.samplePos >= sampleLen) { voice.samplePos = sampleLen.toDouble() - 1; voice.active = false }
+                3 -> if (voice.samplePos >= sampleLen) {
+                    voice.samplePos = (sampleLen - 1).toDouble().coerceAtLeast(0.0)
+                    startRampOut(voice)
+                }
             }
         } else {
             voice.samplePos -= voice.playbackRate
             if (voice.samplePos < loopStart) { voice.samplePos = loopStart; voice.forward = true }
         }
         return sample
+    }
+
+    /**
+     * Engage the MilkyTracker-style sample-end ramp. The voice keeps emitting its held
+     * last-sample value for [RAMP_OUT_SAMPLES] more output samples while gain decays
+     * linearly from 1.0 to 0.0; the mixer flips voice.active = false at the end.
+     * No-op if already ramping (don't restart a running ramp from a re-entrant call).
+     */
+    private fun startRampOut(voice: Voice) {
+        if (voice.rampOutSamples > 0) return
+        voice.rampOutSamples = RAMP_OUT_SAMPLES
+        voice.rampOutGain    = 1.0
+        voice.rampOutStep    = 1.0 / RAMP_OUT_SAMPLES
     }
 
     /**
@@ -1681,6 +1710,10 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         voice.envPfValue    = if (voice.hasPfEnv) inst.pfEnvelopes[0].value / 255.0 else 0.5
         // Fadeout starts at unity; advances only after key-off.
         voice.fadeoutVolume = 1.0
+        // Cancel any sample-end ramp left over from the previous note — a fresh trigger's
+        // attack must not be muted by a trailing fade.
+        voice.rampOutSamples = 0
+        voice.rampOutGain    = 0.0
         // Auto-vibrato sweep ramp restarts on every fresh trigger.
         voice.autoVibPhase = 0
         voice.autoVibTicksSinceTrigger = 0
@@ -2693,8 +2726,16 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                         rGain = if (pan < 0x80) pan / 128.0 else 1.0
                     }
                 }
-                mixL += s * vol * lGain
-                mixR += s * vol * rGain
+                // Sample-end ramp-out: snapshot gain, advance the ramp, deactivate at zero.
+                val rampGain = if (voice.rampOutSamples > 0) {
+                    val g = voice.rampOutGain
+                    voice.rampOutGain -= voice.rampOutStep
+                    voice.rampOutSamples--
+                    if (voice.rampOutSamples == 0) voice.active = false
+                    g
+                } else 1.0
+                mixL += s * vol * lGain * rampGain
+                mixR += s * vol * rGain * rampGain
             }
             // Background (NNA-ghost) voices — same per-sample mixing path as foreground, but
             // they live in a mixer-private pool that no row event can address.
@@ -2714,14 +2755,24 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 val lGain: Double
                 val rGain: Double
                 when (ts.panLaw) {
-                    1 -> { lGain = cos(PI * pan / 512.0); rGain = sin(PI * pan / 512.0) }
+                    1 -> {
+                        lGain = cos(PI * pan / 512.0)
+                        rGain = sin(PI * pan / 512.0)
+                    }
                     else -> {
                         lGain = if (pan < 0x80) 1.0 else 1.0 - (pan - 128.0) / 128.0
                         rGain = if (pan < 0x80) pan / 128.0 else 1.0
                     }
                 }
-                mixL += s * vol * lGain
-                mixR += s * vol * rGain
+                val rampGain = if (bg.rampOutSamples > 0) {
+                    val g = bg.rampOutGain
+                    bg.rampOutGain -= bg.rampOutStep
+                    bg.rampOutSamples--
+                    if (bg.rampOutSamples == 0) bg.active = false
+                    g
+                } else 1.0
+                mixL += s * vol * lGain * rampGain
+                mixR += s * vol * rGain * rampGain
             }
 
             ts.mixLeft[n]  = mixL.toFloat().coerceIn(-1.0f, 1.0f)
@@ -2945,6 +2996,14 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
         // Volume fadeout — engaged after key-off, decays to 0 at rate inst.volumeFadeoutLow.
         var fadeoutVolume = 1.0
+
+        // MilkyTracker-style anti-click ramp-out. Engaged when a sample naturally ends
+        // (loopMode 0/3 reaching sampleLen). Gain ramps from 1.0 → 0.0 over rampOutSamples
+        // while the held last-sample value keeps being emitted; voice deactivates at 0.
+        // Not engaged on note start — attack transients pass unsmoothed.
+        var rampOutSamples = 0
+        var rampOutGain    = 0.0
+        var rampOutStep    = 0.0
 
         // Auto-vibrato (per-sample on the IT side, hoisted to the instrument here).
         var autoVibPhase = 0               // 8-bit phase counter
