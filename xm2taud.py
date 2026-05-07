@@ -696,6 +696,58 @@ def remap_b_effects_xm(chunks: list, chunk_map: list,
                     row.effect_arg = taud_cue & 0xFF
 
 
+def compute_keyoff_zero_marks_xm(taud_cue_list: list, chunks: list,
+                                 num_xm_channels: int, instruments: list,
+                                 active_channels: list) -> dict:
+    """Identify key-off cells whose bound XM instrument has the volume envelope
+    DISABLED. FT2's keyOff() (ft2_replayer.c:411-435) zeroes realVol/outVol on
+    such key-offs; IT/Schism does not, and the Taud engine follows IT semantics.
+    To preserve XM gating without diverging engine behaviour, the converter pairs
+    each flagged key-off with `SEL_SET vol=0` in the same row's volume column —
+    a later vol-col SET on the channel restores audibility, exactly mirroring
+    the FT2 outVol/realVol path.
+
+    Walks taud_cue_list in playback order so per-channel instrument bindings
+    carry across cues. When the same chunk is visited under conflicting
+    bindings, the union of all flags is kept (conservatively prefers gating).
+
+    Returns: dict mapping chunk_idx → set of (active_voice_idx, row_idx) tuples.
+    The voice_idx matches build_pattern_xm's `ch_idx` (the index into
+    `active_channels`).
+    """
+    xm_to_vi = {ch: vi for vi, ch in enumerate(active_channels)}
+    marks = {}
+    bound = [0] * num_xm_channels   # 1-based XM instrument id; 0 = none
+
+    for ci in taud_cue_list:
+        cg = chunks[ci]
+        chunk_marks = marks.setdefault(ci, set())
+        max_ch = min(num_xm_channels, len(cg))
+        max_rows = max((len(cg[ch]) for ch in range(max_ch)), default=0)
+        for r in range(max_rows):
+            for xm_ch in range(max_ch):
+                if r >= len(cg[xm_ch]):
+                    continue
+                cell = cg[xm_ch][r]
+                # FT2 keyOff() reads ch->instrPtr — the latest binding wins, even
+                # when the inst byte is on the same row as the key-off.
+                if cell.inst > 0:
+                    bound[xm_ch] = cell.inst
+                is_keyoff = (cell.note == XM_NOTE_OFF) or (cell.effect == 0x14)
+                if not is_keyoff:
+                    continue
+                ii = bound[xm_ch]
+                if ii == 0 or ii - 1 >= len(instruments):
+                    continue
+                inst = instruments[ii - 1]
+                if inst.vol_env_type & XM_ENV_ON:
+                    continue
+                vi = xm_to_vi.get(xm_ch)
+                if vi is not None:
+                    chunk_marks.add((vi, r))
+    return marks
+
+
 # ── Sample / instrument bin ───────────────────────────────────────────────────
 
 class _XMSampleProxy:
@@ -999,8 +1051,16 @@ def build_sample_inst_bin_xm(proxies: list) -> tuple:
 # ── Pattern bin builder ───────────────────────────────────────────────────────
 
 def build_pattern_xm(chunk_grid: list, ch_idx: int, default_pan: int,
-                     inst_to_taud_slot: dict, amiga_mode: bool = False) -> bytes:
-    """Render one Taud channel's 512-byte pattern from a 64-row chunk grid."""
+                     inst_to_taud_slot: dict, amiga_mode: bool = False,
+                     keyoff_zero_rows: set = None) -> bytes:
+    """Render one Taud channel's 512-byte pattern from a 64-row chunk grid.
+
+    `keyoff_zero_rows`: optional set of row indices on this channel whose key-off
+    cells should be paired with `SEL_SET vol=0` (FT2 vol-env-off gating — see
+    compute_keyoff_zero_marks_xm).
+    """
+    if keyoff_zero_rows is None:
+        keyoff_zero_rows = frozenset()
     out = bytearray(PATTERN_BYTES)
     if ch_idx >= len(chunk_grid):
         rows = [XMRow()] * PATTERN_ROWS
@@ -1067,6 +1127,17 @@ def build_pattern_xm(chunk_grid: list, ch_idx: int, default_pan: int,
             pan_sel, pan_value = SEL_SET, default_pan & 0x3F
         else:
             pan_sel, pan_value = SEL_FINE, 0
+
+        # FT2 vol-env-off key-off gating: pair the key-off with SEL_SET vol=0
+        # so a later vol-col SET on the channel restores audibility (see
+        # compute_keyoff_zero_marks_xm). Override any vol-col content the row
+        # already has — FT2 zeros realVol/outVol after vol-col is applied
+        # (ft2_replayer.c:411-428), so a SET on the same row would be clobbered.
+        if r in keyoff_zero_rows and note_taud == NOTE_KEYOFF:
+            if not (vol_sel == SEL_FINE and vol_value == 0):
+                vprint(f"    ch{ch_idx} row{r}: FT2 key-off zero overrides "
+                       f"vol-col (sel={vol_sel}, val={vol_value})")
+            vol_sel, vol_value = SEL_SET, 0
 
         vol_byte = (vol_value & 0x3F) | ((vol_sel & 0x3) << 6)
         pan_byte = (pan_value & 0x3F) | ((pan_sel & 0x3) << 6)
@@ -1187,6 +1258,17 @@ def assemble_taud(h: XMHeader, patterns: list, instruments: list) -> bytes:
 
     remap_b_effects_xm(chunks, chunk_map, h.order_list, xm_ord_to_taud_cue, C)
 
+    # FT2 vol-env-off key-off gating: pre-compute per-(chunk, voice, row) flags
+    # for key-off cells whose bound XM instrument has volume envelope disabled.
+    # build_pattern_xm pairs each flagged key-off with `SEL_SET vol=0` so the
+    # IT-style Taud engine reproduces FT2's channel-volume zeroing gate.
+    keyoff_zero_marks = compute_keyoff_zero_marks_xm(
+        taud_cue_list, chunks, h.channels, instruments, active_channels)
+    if any(keyoff_zero_marks.values()):
+        flagged = sum(len(s) for s in keyoff_zero_marks.values())
+        vprint(f"  FT2 keyoff-gate: {flagged} key-off cell(s) paired with vol=0 "
+               f"(vol-env-off instruments)")
+
     # ── Pattern bin ─────────────────────────────────────────────────────────
     total_taud_pats = len(taud_cue_list) * C
     if total_taud_pats > NUM_PATTERNS_MAX:
@@ -1202,10 +1284,13 @@ def assemble_taud(h: XMHeader, patterns: list, instruments: list) -> bytes:
     pat_bin = bytearray()
     for ci in taud_cue_list:
         cg = chunks[ci]
+        chunk_marks = keyoff_zero_marks.get(ci, frozenset())
         for vi, ch in enumerate(active_channels):
+            row_marks = {r for (mvi, r) in chunk_marks if mvi == vi}
             pat_bin += build_pattern_xm(cg, ch, default_pans[vi],
                                         resolve_inst_slot,
-                                        amiga_mode=not h.linear_freq)
+                                        amiga_mode=not h.linear_freq,
+                                        keyoff_zero_rows=row_marks)
     pat_bin = rescale_offset_effects(bytes(pat_bin), sample_ratio)
 
     orig_count = len(taud_cue_list) * C
