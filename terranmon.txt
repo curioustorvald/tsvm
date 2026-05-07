@@ -2345,7 +2345,7 @@ TODO:
         for LEFT/RIGHT and `shiftPatternArea` for UP/DOWN, plus per-row
         (`drawOrdersRowAt`) and per-column (`drawOrdersVoiceColumnAt`) helpers,
         replacing the full-panel redraw on every keystroke.
-    [ ] volume and panning policy to match note effect policy: when note is "retriggerred" (note command with instrument specified), the volume/pan must take default value; if not (note command with instrument 0) the volume/pan must stay at the old value. Make both audio engine and taut.js simulator changes.
+    [x] volume and panning policy to match note effect policy: when note is "retriggerred" (note command with instrument specified), the volume/pan must take default value; if not (note command with instrument 0) the volume/pan must stay at the old value. Make both audio engine and taut.js simulator changes.
 
 
 Play Data: play data are series of tracker-like instructions, visualised as:

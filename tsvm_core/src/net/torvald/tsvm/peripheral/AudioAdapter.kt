@@ -1689,19 +1689,24 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             (Math.random() * (2 * inst.volumeSwing + 1)).toInt() - inst.volumeSwing else 0
         voice.randomPanBias = if (inst.panSwing != 0)
             (Math.random() * (2 * inst.panSwing + 1)).toInt() - inst.panSwing else 0
-        // Default pan: applied unless the pattern row has already overridden channelPan.
-        // The pan envelope's 'p' flag ("use default pan") lives in the pan LOOP word at bit 7.
-        if ((inst.panEnvLoop ushr 7) and 1 != 0) {
-            voice.channelPan = inst.defaultPan
-            voice.rowPan = (voice.channelPan ushr 2).coerceIn(0, 63)
-        }
-        // Pitch-pan separation: when PPS != 0, played notes far from PPC drift in pan.
-        // PPS is signed (-32..+32), full-scale at one octave (4096 4096-TET units) above PPC.
-        if (inst.pitchPanSeparation != 0) {
-            val noteDelta = (noteVal - inst.pitchPanCentre).toDouble() / 4096.0
-            val panShift = (noteDelta * inst.pitchPanSeparation * 4.0).toInt()  // ~×4 = 32→128 swing
-            voice.channelPan = (voice.channelPan + panShift).coerceIn(0, 255)
-            voice.rowPan = (voice.channelPan ushr 2).coerceIn(0, 63)
+        // Default pan / pitch-pan separation: only re-applied when the row carried an instrument
+        // byte. A note-only retrigger (instId == 0) inherits the channel's existing pan, mirroring
+        // the volume policy below.
+        if (instId != 0) {
+            // Default pan: applied unless the pattern row has already overridden channelPan.
+            // The pan envelope's 'p' flag ("use default pan") lives in the pan LOOP word at bit 7.
+            if ((inst.panEnvLoop ushr 7) and 1 != 0) {
+                voice.channelPan = inst.defaultPan
+                voice.rowPan = (voice.channelPan ushr 2).coerceIn(0, 63)
+            }
+            // Pitch-pan separation: when PPS != 0, played notes far from PPC drift in pan.
+            // PPS is signed (-32..+32), full-scale at one octave (4096 4096-TET units) above PPC.
+            if (inst.pitchPanSeparation != 0) {
+                val noteDelta = (noteVal - inst.pitchPanCentre).toDouble() / 4096.0
+                val panShift = (noteDelta * inst.pitchPanSeparation * 4.0).toInt()  // ~×4 = 32→128 swing
+                voice.channelPan = (voice.channelPan + panShift).coerceIn(0, 255)
+                voice.rowPan = (voice.channelPan ushr 2).coerceIn(0, 63)
+            }
         }
         // Filter cutoff/resonance defaults — adjusted per-tick by the pf envelope when in filter mode.
         // 255 = filter off (IT high-bit-clear); 0..254 = active range matching IT 0..127 at double resolution.
@@ -1715,10 +1720,16 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         voice.amigaPeriod = -1.0   // fresh trigger: period state must reseed from the new noteVal
         voice.linearFreq  = -1.0   // ditto for linear-freq mode (toneMode == 2)
         voice.playbackRate = computePlaybackRate(inst, noteVal)
-        // Fresh trigger resets channel volume to full ($3F). Per-instrument scaling lives in
-        // instGlobalVolume (byte 171), which the mixer applies as a multiplier. Converters
-        // therefore no longer need to emit SEL_SET=Sv on note-trigger rows.
-        voice.channelVolume = if (volOverride >= 0) volOverride.coerceIn(0, 0x3F) else 0x3F
+        // Fresh trigger resets channel volume to full ($3F) ONLY when the row carried an
+        // instrument byte; a note-only retrigger (instId == 0) inherits the channel's existing
+        // volume so the user can sustain a held volume across re-triggered notes. Per-instrument
+        // scaling lives in instGlobalVolume (byte 171), which the mixer applies as a multiplier.
+        // Converters therefore no longer need to emit SEL_SET=Sv on note-trigger rows.
+        voice.channelVolume = when {
+            volOverride >= 0 -> volOverride.coerceIn(0, 0x3F)
+            instId != 0     -> 0x3F
+            else            -> voice.channelVolume
+        }
         voice.rowVolume = voice.channelVolume
         voice.noteWasCut = false
         voice.noteFading = false
