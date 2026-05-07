@@ -12,6 +12,7 @@ import java.io.OutputStream
 import java.nio.charset.Charset
 import java.util.*
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.absoluteValue
 import kotlin.math.ceil
 
 
@@ -549,7 +550,7 @@ class VM(
 //        println("peek $addr -> ${offset}@${memspace?.javaClass?.canonicalName}")
 
         return if (memspace == null)
-            throw NullPointerException()//null
+            throw OpenBusException(addr)//null
         else if (memspace is UnsafePtr) {
             if (addr >= memspace.size)
                 throw ErrorIllegalAccess(this, addr)
@@ -564,7 +565,7 @@ class VM(
         val (memspace, offset) = translateAddr(addr)
 
         return if (memspace == null)
-            throw NullPointerException()//null
+            throw OpenBusException(addr)//null
         else if (memspace is UnsafePtr) {
             if (addr >= memspace.size)
                 throw ErrorIllegalAccess(this, addr)
@@ -583,7 +584,7 @@ class VM(
         val (memspace, offset) = translateAddr(addr)
 
         return if (memspace == null)
-            throw NullPointerException()//null
+            throw OpenBusException(addr)//null
         else if (memspace is UnsafePtr) {
             if (addr >= memspace.size)
                 throw ErrorIllegalAccess(this, addr)
@@ -608,7 +609,7 @@ class VM(
         val (memspace, offset) = translateAddr(addr)
 
         return if (memspace == null)
-            throw NullPointerException()//null
+            throw OpenBusException(addr)//null
         else if (memspace is UnsafePtr) {
             if (addr >= memspace.size)
                 throw ErrorIllegalAccess(this, addr)
@@ -853,3 +854,10 @@ class PeripheralEntry2(
 )
 
 internal fun Int.kB() = this * 1024L
+
+fun Long.memAddrToReadable() = "'${this}' (bank " + this.absoluteValue.minus(if (this < 0) 1 else 0).div(1048576) +
+" offset " + this.absoluteValue.minus(if (this < 0) 1 else 0).mod(1048576) + ")"
+
+class OpenBusException(addr: Long) : NullPointerException(
+    "Address ${addr.memAddrToReadable()} is open bus"
+)

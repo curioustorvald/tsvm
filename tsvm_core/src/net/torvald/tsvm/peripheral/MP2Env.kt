@@ -43,6 +43,7 @@ package net.torvald.tsvm.peripheral
 
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUint
 import net.torvald.tsvm.VM
+import net.torvald.tsvm.memAddrToReadable
 import java.util.*
 import kotlin.collections.ArrayList
 import kotlin.math.ceil
@@ -398,7 +399,7 @@ class MP2Env(val vm: VM) {
         };
         // check for valid header: syncword OK, MPEG-Audio Layer 2
         if ((syspeek(mp2_frame!!) != 0xFF) || ((syspeek(mp2_frame!! + 1*incr) and 0xFE) != 0xFC)){
-            throw Error("Invalid MP2 header at $mp2_frame: ${syspeek(mp2_frame!!).toString(16)} ${syspeek(mp2_frame!! + 1*incr).toString(16)}")
+            throw Error("Invalid MP2 header at ${(mp2_frame as Long).memAddrToReadable()}: ${syspeek(mp2_frame!!).toString(16)} ${syspeek(mp2_frame!! + 1*incr).toString(16)}")
         };
 
         // set up the bitstream reader

@@ -54,8 +54,8 @@ public class AppLoader {
 
 
         ArrayList defaultPeripherals = new ArrayList();
-        defaultPeripherals.add(new Pair(3, new PeripheralEntry2("net.torvald.tsvm.peripheral.AudioAdapter", vm)));
-        defaultPeripherals.add(new Pair(4, new PeripheralEntry2("net.torvald.tsvm.peripheral.HostFileHSDPA", vm, "assets/diskMediabin/lnterz_013.mv2", "assets/diskMediabin/ba60d.mov", "", "", 999999999L)));
+        defaultPeripherals.add(new Pair(2, new PeripheralEntry2("net.torvald.tsvm.peripheral.AudioAdapter", vm)));
+        defaultPeripherals.add(new Pair(3, new PeripheralEntry2("net.torvald.tsvm.peripheral.HostFileHSDPA", vm, "assets/diskMediabin/lnterz_013.mv2", "assets/diskMediabin/ba60d.mov", "", "", 999999999L)));
 
 
         EmulInstance reference = new EmulInstance(vm, "net.torvald.tsvm.peripheral.ReferenceGraphicsAdapter", diskPath, 560, 448, defaultPeripherals);
