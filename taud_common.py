@@ -7,8 +7,15 @@ pattern deduper, sample normaliser) that all three converters used to
 duplicate verbatim.
 """
 
+import gzip as _gzip
 import struct
 import sys
+
+try:
+    import zstandard as _zstd
+    _ZSTD_CCTX = _zstd.ZstdCompressor(level=22)
+except ImportError:
+    _ZSTD_CCTX = None
 
 
 # ── Verbose logging (shared across converters via set_verbose) ───────────────
@@ -22,6 +29,37 @@ def set_verbose(b: bool) -> None:
 def vprint(*a, **kw) -> None:
     if VERBOSE:
         print(*a, **kw, file=sys.stderr)
+
+
+# ── Compression (gzip vs zstd; whichever is smaller) ─────────────────────────
+#
+# The Taud loader sniffs the 4-byte magic of every compressed slot and routes
+# to GZIPInputStream or ZstdInputStream accordingly (CompressorDelegate.kt:148-149),
+# so each blob can independently pick whichever codec compresses it smaller.
+
+def best_compress(payload: bytes) -> tuple:
+    """Return (compressed_bytes, method) for the smaller of gzip/zstd output.
+
+    Method is "gzip" or "zstd". Falls back to gzip when the `zstandard`
+    package is not installed.
+    """
+    gz = _gzip.compress(payload, compresslevel=9, mtime=0)
+    if _ZSTD_CCTX is None:
+        return gz, "gzip"
+    zs = _ZSTD_CCTX.compress(payload)
+    if len(zs) < len(gz):
+        return zs, "zstd"
+    return gz, "gzip"
+
+
+def compress_blob(payload: bytes, label: str) -> bytes:
+    """Compress `payload` with whichever of gzip/zstd is smaller; vprint stats; return bytes.
+
+    `label` is the human-readable name in the verbose log line, e.g. "sample+inst bin".
+    """
+    out, method = best_compress(payload)
+    vprint(f"  {label}: {len(payload)} → {len(out)} bytes ({method})")
+    return out
 
 
 # ── Taud container constants ─────────────────────────────────────────────────

@@ -35,7 +35,6 @@ Effect support:
 """
 
 import argparse
-import gzip
 import struct
 import sys
 
@@ -53,7 +52,7 @@ from taud_common import (
     EFF_U, EFF_V, EFF_W, EFF_X, EFF_Y, EFF_Z,
     J_SEMI_TABLE,
     d_arg_to_col, resample_linear, rescale_offset_effects, encode_cue, deduplicate_patterns,
-    normalise_sample, encode_song_entry, nearest_minifloat,
+    normalise_sample, encode_song_entry, nearest_minifloat, compress_blob,
     CUE_INST_NOP, CUE_INST_HALT, CUE_INST_LEN, cue_instruction_len,
 )
 
@@ -702,39 +701,80 @@ def encode_note_it(it_note: int) -> int:
 
 # ── Vol-column decoder ────────────────────────────────────────────────────────
 
-def decode_volcol(vc: int):
-    """Return (vol_sel, vol_value, pan_set, aux_effect) or None for each field."""
+def decode_volcol(vc: int, recall_volslide: int = 0):
+    """Return (vol_sel, vol_value, pan_set, aux_effect) or None for each field.
+
+    IT vol-col x=0 means "recall last value" for the relevant memory cohort
+    (Schism player/effects.c:2097-2137 — Ax/Bx/Cx/Dx share `mem_vc_volslide`,
+    a per-channel slot separate from the main column's D memory; Ex/Fx share
+    `mem_pitchslide` with the main effect column; Gx shares `mem_portanote`
+    with main G; Hx uses the channel's vibrato state). For pitch/porta/
+    vibrato we emit Taud E/F/G/H with arg=0 so Taud's own private (E/F-cohort,
+    G, H/U-cohort) memory recalls naturally. For volume slides Taud has no
+    recall in the volume column, so the converter passes `recall_volslide`
+    (the per-channel A/B/C/D shared memory tracked by build_pattern_it) and
+    substitutes it when x=0.
+    """
     if vc < 0:   # not set
         return SEL_FINE, 0, None, None
     if vc <= VC_VOL_HI:
         return SEL_SET, min(vc, 0x3F), None, None
     if VC_FVUP_LO <= vc <= VC_FVUP_HI:
-        mag = vc - VC_FVUP_LO + 1   # 1..10
+        mag = vc - VC_FVUP_LO            # 0..9 — Schism fmt/it.c:234
+        if mag == 0:
+            mag = recall_volslide
+        if mag == 0:
+            return SEL_FINE, 0, None, None
         return SEL_FINE, (mag & 0x1F) | 0x20, None, None   # fine up
     if VC_FVDN_LO <= vc <= VC_FVDN_HI:
-        mag = vc - VC_FVDN_LO + 1
+        mag = vc - VC_FVDN_LO
+        if mag == 0:
+            mag = recall_volslide
+        if mag == 0:
+            return SEL_FINE, 0, None, None
         return SEL_FINE, mag & 0x1F, None, None              # fine down
     if VC_VUP_LO <= vc <= VC_VUP_HI:
-        return SEL_UP, vc - VC_VUP_LO + 1, None, None
+        mag = vc - VC_VUP_LO
+        if mag == 0:
+            mag = recall_volslide
+        if mag == 0:
+            return SEL_FINE, 0, None, None
+        return SEL_UP, mag, None, None
     if VC_VDN_LO <= vc <= VC_VDN_HI:
-        return SEL_DOWN, vc - VC_VDN_LO + 1, None, None
+        mag = vc - VC_VDN_LO
+        if mag == 0:
+            mag = recall_volslide
+        if mag == 0:
+            return SEL_FINE, 0, None, None
+        return SEL_DOWN, mag, None, None
     if VC_PDN_LO <= vc <= VC_PDN_HI:
-        # Pitch slide down: each unit = 4 ST3 coarse units (1/16 semitone each)
-        units = (vc - VC_PDN_LO + 1) * 4
+        # IT vol-col Ex slides pitch down by 4×e raw IT period units (Schism
+        # player/effects.c:294-298). e=0 recalls mem_pitchslide; emit
+        # E $0000 so Taud's E/F-cohort memory supplies the value.
+        e = vc - VC_PDN_LO
+        units = e * 4
         return SEL_FINE, 0, None, (EFF_E, units & 0xFF)
     if VC_PUP_LO <= vc <= VC_PUP_HI:
-        units = (vc - VC_PUP_LO + 1) * 4
+        f = vc - VC_PUP_LO
+        units = f * 4
         return SEL_FINE, 0, None, (EFF_F, units & 0xFF)
     if VC_PAN_LO <= vc <= VC_PAN_HI:
         pan64 = vc - VC_PAN_LO   # 0..64
         pan6  = min(0x3F, round(pan64 * 63 / 64))
         return SEL_FINE, 0, pan6, None
     if VC_TPORTA_LO <= vc <= VC_TPORTA_HI:
-        spd = VC_TPORTA_TABLE[vc - VC_TPORTA_LO]
+        # IT Gg tone-porta speed: VC_TPORTA_TABLE[0]=0 → g=0 recalls
+        # mem_portanote. Emit G $0000; Taud's private G memory recalls.
+        g = vc - VC_TPORTA_LO
+        spd = VC_TPORTA_TABLE[g]
         return SEL_FINE, 0, None, (EFF_G, spd & 0xFF)
     if VC_VIB_LO <= vc <= VC_VIB_HI:
-        depth = vc - VC_VIB_LO + 1   # 1..10
-        return SEL_FINE, 0, None, (EFF_H, depth & 0x0F)
+        # IT Hh sets vibrato depth (low nybble only) and runs vibrato with
+        # the channel's current vibrato_speed (Schism player/effects.c:391-398
+        # via fx_vibrato). h=0 keeps the existing depth; emit H $0000 so
+        # Taud's H/U cohort memory supplies both speed and depth.
+        h = vc - VC_VIB_LO
+        return SEL_FINE, 0, None, (EFF_H, h & 0x0F)
     return SEL_FINE, 0, None, None
 
 
@@ -1273,10 +1313,41 @@ def build_pattern_it(chunk_grid: list, ch_idx: int, default_pan: int,
     out = bytearray(PATTERN_BYTES)
     rows = chunk_grid[ch_idx] if ch_idx < len(chunk_grid) else [ITRow()] * PATTERN_ROWS
     last_note_it = -1
+    # IT shares one mem_vc_volslide across A/B/C/D vol-col commands (Schism
+    # player/effects.c:2099-2131). Track it locally so x=0 resolves to the
+    # last explicit value within the chunk.
+    mem_vc_volslide = 0
 
     for r, cell in enumerate(rows[:PATTERN_ROWS]):
         # ── Resolve vol-col into overrides ──────────────────────────────────
-        vs, vv, pan_from_vc, aux_eff = decode_volcol(cell.volcol)
+        # Update mem_vc_volslide before decode so a fresh non-zero on this
+        # row stays visible for any later x=0 in the same channel.
+        if (VC_FVUP_LO <= cell.volcol <= VC_VDN_HI):
+            raw_mag = (cell.volcol - VC_FVUP_LO) % 10
+            if raw_mag != 0:
+                mem_vc_volslide = raw_mag
+        vs, vv, pan_from_vc, aux_eff = decode_volcol(cell.volcol, mem_vc_volslide)
+
+        # ── Slot juggling: combine D + G/H into L/K when both are present ──
+        # When the main effect is a pure vol-slide (D) and the vol-col aux is
+        # tone-porta (G) or vibrato depth (H), Taud has dedicated combined
+        # opcodes that capture both: L $xy00 (porta + vol slide) and K $xy00
+        # (vibrato + vol slide). Without this swap the vol-col aux would be
+        # dropped because the main slot is occupied.
+        if aux_eff is not None and cell.effect == EFF_D and cell.effect_arg != 0:
+            aux_op, aux_arg = aux_eff
+            d_arg = cell.effect_arg & 0xFF
+            if aux_op == EFF_G:
+                cell.effect, cell.effect_arg = EFF_L, d_arg
+                aux_eff = None
+            elif aux_op == EFF_H:
+                # K runs vibrato with current memory_HU; vol-col Hh's depth
+                # update is lost (warn so the trade-off is visible).
+                cell.effect, cell.effect_arg = EFF_K, d_arg
+                aux_eff = None
+                if (aux_arg & 0xF) != 0:
+                    vprint(f"    ch{ch_idx} row{r}: D+Hh→K, depth update "
+                           f"{aux_arg & 0xF} folded into K vibrato recall")
 
         # If vol-col provides an aux effect and cell has no main effect, use it
         if aux_eff is not None and cell.effect == 0:
@@ -1284,7 +1355,7 @@ def build_pattern_it(chunk_grid: list, ch_idx: int, default_pan: int,
             aux_eff = None
         elif aux_eff is not None:
             vprint(f"    ch{ch_idx} row{r}: dropped vol-col aux effect "
-                   f"(main effect slot occupied)")
+                   f"(main effect slot occupied: cmd={cell.effect:02X} arg={cell.effect_arg:02X})")
             aux_eff = None
 
         # If vol-col has a pan override
@@ -1621,9 +1692,8 @@ def assemble_taud(h: ITHeader, samples: list, instruments: list,
 
     assert len(sampleinst_raw) == SAMPLEINST_SIZE
 
-    compressed   = gzip.compress(sampleinst_raw, compresslevel=9, mtime=0)
+    compressed   = compress_blob(sampleinst_raw, "sample+inst bin")
     comp_size    = len(compressed)
-    vprint(f"  sample+inst bin: {SAMPLEINST_SIZE} → {comp_size} bytes (gzip)")
 
     # ── BPM / speed ──────────────────────────────────────────────────────────
     speed, tempo = find_initial_bpm_speed(patterns_rows, h.order_list,
@@ -1707,10 +1777,8 @@ def assemble_taud(h: ITHeader, samples: list, instruments: list,
     assert len(header) == TAUD_HEADER_SIZE
 
     # Compress pattern bin and cue sheet (per Taud spec)
-    pat_comp = gzip.compress(bytes(pat_bin), compresslevel=9, mtime=0)
-    cue_comp = gzip.compress(bytes(sheet),   compresslevel=9, mtime=0)
-    vprint(f"  pattern bin: {len(pat_bin)} → {len(pat_comp)} bytes (gzip)")
-    vprint(f"  cue sheet:   {len(sheet)} → {len(cue_comp)} bytes (gzip)")
+    pat_comp = compress_blob(bytes(pat_bin), "pattern bin")
+    cue_comp = compress_blob(bytes(sheet),   "cue sheet")
 
     # flags byte: bit 1 (f) = Amiga pitch-slide mode (IT linear_slides flag inverted).
     # bit 2 was the old 'm' fadeout-zero policy flag and is now reserved (always 0); fadeout

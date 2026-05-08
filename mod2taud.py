@@ -24,7 +24,6 @@ Effect support:
 """
 
 import argparse
-import gzip
 import math
 import struct
 import sys
@@ -40,7 +39,7 @@ from taud_common import (
     SEL_SET, SEL_UP, SEL_DOWN, SEL_FINE,
     J_SEMI_TABLE,
     d_arg_to_col, resample_linear, rescale_offset_effects, encode_cue, deduplicate_patterns,
-    encode_song_entry,
+    encode_song_entry, compress_blob,
 )
 
 
@@ -718,9 +717,8 @@ def assemble_taud(mod: dict) -> bytes:
     sampleinst_raw, _offsets, sample_ratio = build_sample_inst_bin(samples)
     assert len(sampleinst_raw) == SAMPLEINST_SIZE
 
-    compressed = gzip.compress(sampleinst_raw, compresslevel=9, mtime=0)
+    compressed = compress_blob(sampleinst_raw, "sample+inst bin")
     comp_size  = len(compressed)
-    vprint(f"  sample+inst bin: {SAMPLEINST_SIZE} → {comp_size} bytes (gzip)")
 
     speed, tempo = find_initial_bpm_speed(patterns, order_list)
     tempo = max(24, min(280, tempo))
@@ -766,10 +764,8 @@ def assemble_taud(mod: dict) -> bytes:
     cue_sheet = build_cue_sheet(order_list, n_patterns, n_channels, pat_remap)
     assert len(cue_sheet) == NUM_CUES * CUE_SIZE
 
-    pat_comp = gzip.compress(bytes(pat_bin), compresslevel=9, mtime=0)
-    cue_comp = gzip.compress(bytes(cue_sheet), compresslevel=9, mtime=0)
-    vprint(f"  pattern bin: {len(pat_bin)} → {len(pat_comp)} bytes (gzip)")
-    vprint(f"  cue sheet:   {len(cue_sheet)} → {len(cue_comp)} bytes (gzip)")
+    pat_comp = compress_blob(bytes(pat_bin),   "pattern bin")
+    cue_comp = compress_blob(bytes(cue_sheet), "cue sheet")
 
     # ProTracker is Amiga-period-based by definition, so we set the f bit so
     # the engine applies coarse pitch slides in period space (recovers PT's

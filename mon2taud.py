@@ -22,7 +22,6 @@ Limits: numVoices ≤ 20, numPatterns × numVoices ≤ 4095.
 """
 
 import argparse
-import gzip
 import struct
 import sys
 
@@ -35,7 +34,7 @@ from taud_common import (
     TOP_NONE, TOP_A, TOP_B, TOP_C, TOP_E, TOP_F, TOP_G, TOP_H, TOP_J,
     SEL_SET, SEL_FINE,
     J_SEMI_TABLE,
-    encode_cue, deduplicate_patterns, encode_song_entry,
+    encode_cue, deduplicate_patterns, encode_song_entry, compress_blob,
 )
 
 
@@ -324,9 +323,8 @@ def assemble_taud(mon: dict) -> bytes:
     vprint("  building sample/instrument bin…")
     sampleinst_raw = build_sample_inst_bin()
     assert len(sampleinst_raw) == SAMPLEINST_SIZE
-    compressed = gzip.compress(sampleinst_raw, compresslevel=9, mtime=0)
+    compressed = compress_blob(sampleinst_raw, "sample+inst bin")
     comp_size  = len(compressed)
-    vprint(f"  sample+inst bin: {SAMPLEINST_SIZE} → {comp_size} bytes (gzip)")
 
     vprint("  building pattern bin…")
     pat_bin = bytearray()
@@ -346,10 +344,8 @@ def assemble_taud(mon: dict) -> bytes:
     cue_sheet = build_cue_sheet(order_list, num_voices, pat_remap)
     assert len(cue_sheet) == NUM_CUES * CUE_SIZE
 
-    pat_comp = gzip.compress(bytes(pat_bin),  compresslevel=9, mtime=0)
-    cue_comp = gzip.compress(bytes(cue_sheet), compresslevel=9, mtime=0)
-    vprint(f"  pattern bin: {len(pat_bin)} → {len(pat_comp)} bytes (gzip)")
-    vprint(f"  cue sheet:   {len(cue_sheet)} → {len(cue_comp)} bytes (gzip)")
+    pat_comp = compress_blob(bytes(pat_bin),   "pattern bin")
+    cue_comp = compress_blob(bytes(cue_sheet), "cue sheet")
 
     # Header: magic, version, num_songs=1, comp_size of sample+inst, projOff=0, sig.
     sig = (SIGNATURE + b' ' * 14)[:14]

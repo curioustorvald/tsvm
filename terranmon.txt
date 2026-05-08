@@ -2351,6 +2351,7 @@ TODO:
     [ ] remove panning mode selection and replace global panning rule to 3 dB rule (not the equal energy)
     [x] FT2/MOD double effects with 00 as arg (500, 600) missing volume column -> easiest solution: fully implement `L xy00` and `K xy00` and map 5xx to L, 6xx to K (xm2taud, mod2taud), Kxy and Lxy verbatim (s3m2taud.py, it2taud.py). This is justified because the volume effects rely on memory when 00 is given, and said memory effect only get recalled when NoteFx is used. TAUD_NOTE_EFFECTS already has detailed implementation notes. Mark those two commands as implemented sorely for tracker compatibility.
     Also document then implement `Mxx` (set channel volume, not just a note: 0x00 to 0x3F) `Nxy` (channel volume slide: similar to Dxy, but applies to the current channel's volume, not just a note) `Pxy` (channel panning slide. Similar to Dxx: P0y - to the right, Px0 - to the left, PFy - fine pan right, PxF - fine pan left) effects
+    [ ] 8 MB sample RAM via 512k banks
 
 
 Play Data: play data are series of tracker-like instructions, visualised as:

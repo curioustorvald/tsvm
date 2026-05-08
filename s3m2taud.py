@@ -25,7 +25,6 @@ Effect support:
 """
 
 import argparse
-import gzip
 import math
 import struct
 import sys
@@ -44,7 +43,7 @@ from taud_common import (
     EFF_U, EFF_V, EFF_W, EFF_X, EFF_Y, EFF_Z,
     J_SEMI_TABLE,
     d_arg_to_col, resample_linear, rescale_offset_effects, encode_cue, deduplicate_patterns,
-    normalise_sample, encode_song_entry,
+    normalise_sample, encode_song_entry, compress_blob,
 )
 
 
@@ -752,9 +751,8 @@ def assemble_taud(h: S3MHeader, instruments: list, patterns: list) -> bytes:
     assert len(sampleinst_raw) == SAMPLEINST_SIZE
 
     # Compress
-    compressed = gzip.compress(sampleinst_raw, compresslevel=9, mtime=0)
+    compressed = compress_blob(sampleinst_raw, "sample+inst bin")
     comp_size  = len(compressed)
-    vprint(f"  sample+inst bin: {SAMPLEINST_SIZE} → {comp_size} bytes (gzip)")
 
     # Initial BPM / speed
     speed, tempo = find_initial_bpm_speed(patterns, h.order_list,
@@ -810,10 +808,8 @@ def assemble_taud(h: S3MHeader, instruments: list, patterns: list) -> bytes:
     assert len(cue_sheet) == NUM_CUES * CUE_SIZE
 
     # Compress pattern bin and cue sheet (per Taud spec)
-    pat_comp = gzip.compress(bytes(pat_bin), compresslevel=9, mtime=0)
-    cue_comp = gzip.compress(bytes(cue_sheet), compresslevel=9, mtime=0)
-    vprint(f"  pattern bin: {len(pat_bin)} → {len(pat_comp)} bytes (gzip)")
-    vprint(f"  cue sheet:   {len(cue_sheet)} → {len(cue_comp)} bytes (gzip)")
+    pat_comp = compress_blob(bytes(pat_bin),   "pattern bin")
+    cue_comp = compress_blob(bytes(cue_sheet), "cue sheet")
 
     # Song table row (32 bytes; see encode_song_entry).
     # flags byte: bit 1 (f) = Amiga pitch-slide mode (mirrors the S3M linear_slides flag inverted).

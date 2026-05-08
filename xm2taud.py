@@ -37,7 +37,6 @@ Reference:
 """
 
 import argparse
-import gzip
 import math
 import struct
 import sys
@@ -53,7 +52,7 @@ from taud_common import (
     SEL_SET, SEL_UP, SEL_DOWN, SEL_FINE,
     J_SEMI_TABLE,
     d_arg_to_col, resample_linear, rescale_offset_effects, encode_cue, deduplicate_patterns,
-    normalise_sample, encode_song_entry, nearest_minifloat,
+    normalise_sample, encode_song_entry, nearest_minifloat, compress_blob,
     CUE_INST_NOP, CUE_INST_HALT, CUE_INST_LEN, cue_instruction_len,
 )
 
@@ -1080,6 +1079,32 @@ def build_pattern_xm(chunk_grid: list, ch_idx: int, default_pan: int,
         # Pan slide via vol-col D/E (encoded as pan_override below)
         vc_pan_override = _xm_volcol_pan_override(cell.volcol)
 
+        # ── Slot juggling for combined effects ──────────────────────────────
+        # XM main 0x0A (vol slide → TOP_D) + vol-col Mx (porta → TOP_G aux)
+        # combine cleanly into Taud L (porta + vol slide). Same for
+        # vol-col Bx/Ax (vibrato → TOP_H aux) → Taud K (vibrato + vol slide).
+        # Without this swap the vol-col aux would be dropped because the main
+        # slot is already occupied by D. The combined K/L take their slide
+        # nibbles directly from the source D arg (high byte of XM 0x0A),
+        # matching the encoding used by main XM effects 5 (→ L) and 6 (→ K).
+        if (aux_eff is not None and cell.effect == 0x0A
+                and cell.effect_arg != 0):
+            aux_op, aux_arg = aux_eff
+            d_arg = cell.effect_arg & 0xFF
+            if aux_op == TOP_G:
+                # XM A + vol-col M → Taud L verbatim. Porta speed already
+                # lives in Taud's private G memory (vol-col aux → G $00xx).
+                cell.effect, cell.effect_arg = 0x05, d_arg
+                aux_eff = None
+            elif aux_op == TOP_H:
+                # XM A + vol-col B (vibrato depth) → Taud K. K reuses
+                # memory_HU; the vol-col Bx depth update is lost.
+                cell.effect, cell.effect_arg = 0x06, d_arg
+                aux_eff = None
+                if (aux_arg & 0xFF) != 0:
+                    vprint(f"    ch{ch_idx} row{r}: A+Bx→K, depth update "
+                           f"{aux_arg & 0xFF:02X} folded into K vibrato recall")
+
         # ── Main effect translation ─────────────────────────────────────────
         op, arg16, vol_override, pan_override = encode_effect_xm(
             cell.effect, cell.effect_arg, ch_idx, r, amiga_mode=amiga_mode)
@@ -1095,7 +1120,7 @@ def build_pattern_xm(chunk_grid: list, ch_idx: int, default_pan: int,
                 aux_eff = None
             else:
                 vprint(f"    ch{ch_idx} row{r}: dropped vol-col aux effect "
-                       f"(main effect slot occupied)")
+                       f"(main effect slot occupied: cmd={cell.effect:02X} arg={cell.effect_arg:02X})")
 
         # ── Note ────────────────────────────────────────────────────────────
         note_taud = NOTE_NOP
@@ -1230,9 +1255,8 @@ def assemble_taud(h: XMHeader, patterns: list, instruments: list) -> bytes:
     # ── Sample / instrument bin ─────────────────────────────────────────────
     vprint(f"  building sample/inst bin… ({len(proxies) - 1} sample slots used)")
     sampleinst_raw, _, sample_ratio = build_sample_inst_bin_xm(proxies)
-    compressed = gzip.compress(sampleinst_raw, compresslevel=9, mtime=0)
+    compressed = compress_blob(sampleinst_raw, "sample+inst bin")
     comp_size  = len(compressed)
-    vprint(f"  sample+inst bin: {SAMPLEINST_SIZE} → {comp_size} bytes (gzip)")
 
     # ── Tempo / speed ───────────────────────────────────────────────────────
     speed = h.default_speed if h.default_speed > 0 else 6
@@ -1350,10 +1374,8 @@ def assemble_taud(h: XMHeader, patterns: list, instruments: list) -> bytes:
     )
     assert len(header) == TAUD_HEADER_SIZE
 
-    pat_comp = gzip.compress(bytes(pat_bin), compresslevel=9, mtime=0)
-    cue_comp = gzip.compress(bytes(sheet),   compresslevel=9, mtime=0)
-    vprint(f"  pattern bin: {len(pat_bin)} → {len(pat_comp)} bytes (gzip)")
-    vprint(f"  cue sheet:   {len(sheet)} → {len(cue_comp)} bytes (gzip)")
+    pat_comp = compress_blob(bytes(pat_bin), "pattern bin")
+    cue_comp = compress_blob(bytes(sheet),   "cue sheet")
 
     # Flags byte:
     #   bit 1 (f) = Amiga pitch-slide mode (set when XM uses Amiga period table).
