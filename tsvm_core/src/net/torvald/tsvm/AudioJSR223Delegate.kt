@@ -135,10 +135,10 @@ class AudioJSR223Delegate(private val vm: VM) {
         getFirstSnd()?.playheads?.get(playhead)?.let { ph ->
             ph.initialGlobalFlags = flags
             ph.trackerState?.let { ts ->
-                ts.panLaw = flags and 1
-                ts.toneMode = (flags ushr 1) and 3
-                // bit 2 reserved (was 'm' fadeout-zero policy; removed — see AudioAdapter.kt
-                // and TAUD_NOTE_EFFECTS.md §1 "Volume Fadeout")
+                ts.toneMode = flags and 3
+                // Bits 2-7 reserved. Bit 2 was the old 'm' fadeout-zero policy; removed.
+                // Pan law is fixed to the equal-energy engine-wide — no flag bit any more.
+                // See AudioAdapter.kt and TAUD_NOTE_EFFECTS.md §1.
             }
         }
     }

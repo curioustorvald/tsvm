@@ -1791,7 +1791,7 @@ function simulateRowState(ptnDat, uptoRow) {
     let bpm   = audio.getBPM(PLAYHEAD)   // best-effort starting tempo
     let speed = audio.getTickRate(PLAYHEAD)
     let globalVol = 0xFF
-    let panLaw = 0, toneMode = 0   // toneMode: 0=linear, 1=Amiga, 2=linear-freq, 3=reserved
+    let toneMode = 0   // 0=linear, 1=Amiga, 2=linear-freq, 3=reserved
 
     let memEF = 0, memG = 0
     let memHU = { speed: 0, depth: 0 }
@@ -1901,9 +1901,7 @@ function simulateRowState(ptnDat, uptoRow) {
         if (effop !== 0 || effarg !== 0) {
             if (effop === OP_1) {
                 const flags = (effarg >>> 8) & 0xFF
-                panLaw   = flags & 1
-                toneMode = (flags >>> 1) & 3
-                // bit 2 reserved (was 'm' fadeout-zero policy; removed)
+                toneMode = flags & 3
             }
             else if (effop === OP_8) {
                 const x = (effarg >>> 12) & 0xF
@@ -2041,7 +2039,7 @@ function simulateRowState(ptnDat, uptoRow) {
 
     return { lastNote, lastInst, volAbs, panAbs, pitchOff,
              bpm, speed, globalVol,
-             panLaw, toneMode,
+             toneMode,
              bitcrushDepth, bitcrushSkip, overdriveAmp, clipMode,
              glissandoOn, vibratoWave, tremoloWave, panbrelloWave,
              memEF, memG, memHU, memR, memY,
@@ -2242,19 +2240,8 @@ function drawProjectContents(wo) {
     for (let y = PTNVIEW_OFFSET_Y; y < SCRH; y++) fillLine(y, colBackPtn, 255)
 
     let mixerflag = initialTrackerMixerflags
-    let flagStrSelected = []
-    let flagstr = [
-        ['Linear pan','EquNrg pan'],
-        ['Linear pitch','Amiga pitch', 'Linear freq', ''], // TODO MONOTONE uses linear-freq pitch
-    ]
-    for (let i = 0; i < flagstr.length; i++) {
-        if (i != 1 && 1 != 2) {
-            let s = flagstr[i][(mixerflag >>> i) & 1 != 0]
-            flagStrSelected.push(s)
-        }
-    }
-    let toneMode = (mixerflag >>> 1) & 3
-    flagStrSelected.splice(1, 0, flagstr[1][toneMode])
+    let toneModeStr = ['Linear pitch','Amiga pitch','Linear freq',''][mixerflag & 3]
+    let flagStrSelected = [toneModeStr]
 
 
     let projMeta = {

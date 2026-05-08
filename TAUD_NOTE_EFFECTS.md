@@ -181,7 +181,7 @@ Coarse and fine modes are distinguished by the high nibble of the argument:
 - **MONOTONE source** (Taud `ff = 2`):
   - MONOTONE `2xx` → Taud `E $00xx` **verbatim** (Hz/tick). The engine converts the stored pitch to frequency, subtracts the argument, and converts back. MONOTONE has no fine-slide form; converters never emit `E $Fxxx` for ff=2 sources.
 
-The mode flag therefore controls **two** decoder behaviours simultaneously: (a) which numeric scale the converter should have used when emitting coarse arguments, and (b) which arithmetic the engine performs on those arguments per tick. Converters MUST set bits 1-2 (`ff`) of the song-table flags byte to match the units they emit, and MUST NOT mix scales within one Taud song.
+The mode flag therefore controls **two** decoder behaviours simultaneously: (a) which numeric scale the converter should have used when emitting coarse arguments, and (b) which arithmetic the engine performs on those arguments per tick. Converters MUST set bits 0-1 (`ff`) of the song-table flags byte to match the units they emit, and MUST NOT mix scales within one Taud song.
 
 Because E and F share memory in Taud (narrower than ST3's broad shared memory), an ST3 song that used `E00` or `F00` to recall a D, G, or Q argument will break on import; the converter must eagerly resolve ST3 recalls into explicit Taud arguments rather than relying on memory.
 
@@ -1114,16 +1114,13 @@ Effects in this section modifies the behaviour of the mixer. Primary intention o
 
 **Plain.** Sets mixer-wide behaviour flags. Available flags are:
 
-    0b 0000 0ffp
-
-- p unset: Linear panning mode (tracker-accurate). Centre panning gets 3 dB boost. Default setting.
-- p set: Equal-power panning mode. L/R amplitude is at 0.707 when centre-panned.
+    0b 0000 00ff
 
 - ff = 0: Linear tone mode. Pitch shift will behave like MIDI/ImpulseTracker/ScreamTracker linear mode. **Coarse and fine E/F arguments are stored as 4096-TET pitch units** and subtracted/added directly from the stored pitch.
 - ff = 1: Amiga (cycle-based) tone mode. Pitch shift will behave like ProTracker/ScreamTracker default mode. **Coarse and fine E/F arguments are stored as raw tracker period units** (the unscaled byte/nibble from the source PT/S3M/IT file) and applied in Amiga period space. Tone portamento (G) remains linear regardless of mode.
 - ff = 2: Linear-frequency tone mode (MONOTONE compat). **E, F, and G arguments are stored as Hz/tick** (a signed change in audible frequency per song tick), and the engine converts the channel's stored 4096-TET pitch back to a frequency, adds/subtracts the argument, then converts back to 4096-TET. Reference is fixed at 12-TET A4 = 440 Hz / C4 ≈ 261.6256 Hz, which matches MONOTONE's MT_PLAY.PAS `notesHz` table (A0 = 27.5 Hz, equal-temperament). Unlike Amiga mode, *all three* slide effects use the new arithmetic — Monotone's `1xx`, `2xx`, and `3xx` are all in Hz/tick (see MTSRC/MT_PLAY.PAS:606-630).
 
-(Bit 2 is reserved. It previously held an `m` "fadeout-zero policy" flag intended to swap between IT and FT2 semantics for `storedFadeout = 0`. That flag was removed once both trackers were verified to share identical "stored 0 ⇒ no fade" semantics — see schismtracker `player/sndmix.c:330-342` and ft2-clone `src/ft2_replayer.c:1467-1481`. Fadeout scaling now lives in the converters; see "Volume Fadeout" below.)
+(Bits 2-7 are reserved. Bit 2 previously held an `m` "fadeout-zero policy" flag intended to swap between IT and FT2 semantics for `storedFadeout = 0`. That flag was removed once both trackers were verified to share identical "stored 0 ⇒ no fade" semantics — see schismtracker `player/sndmix.c:330-342` and ft2-clone `src/ft2_replayer.c:1467-1481`. Fadeout scaling now lives in the converters; see "Volume Fadeout" below.)
 
 ### Volume Fadeout
 
@@ -1168,10 +1165,7 @@ There is no separate "use fadeout" flag — both extremes share the same field, 
 - **MOD / S3M / MON**: source has no instrument-level fadeout. Converter writes Taud `0`. Notes retire on sample-end or pattern note-cut.
 
 **Implementation.**
-- Panning-linear: 
-  - L_gain = if (pan < 0x80) 1.0 else 1.0 - (pan - 128.0) / 128.0
-  - R_gain = if (pan < 0x80) pan / 128.0 else 1.0
-- Panning-equal-power:
+- Panning (equal-energy):
   - L_gain = cos(πx / 512.0)
   - R_gain = sin(πx / 512.0)
 - Amiga tone (both coarse and fine E/F pitch slides). The `slideArg` is a **raw tracker period-unit count** (no scaling), with sign matching linear mode (negative for E, positive for F). Coarse slides apply on every non-first tick; fine slides apply once on tick 0 — the per-step arithmetic is identical:

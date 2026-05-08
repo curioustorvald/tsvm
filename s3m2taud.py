@@ -812,11 +812,13 @@ def assemble_taud(h: S3MHeader, instruments: list, patterns: list) -> bytes:
     cue_comp = compress_blob(bytes(cue_sheet), "cue sheet")
 
     # Song table row (32 bytes; see encode_song_entry).
-    # flags byte: bit 1 (f) = Amiga pitch-slide mode (mirrors the S3M linear_slides flag inverted).
-    # bit 2 reserved (was 'm' fadeout-zero policy; removed). S3M has no instrument-level
-    # fadeout, so every Taud instrument carries fadeout=0 ("no fade") — notes retire on
-    # sample-end or pattern note-cut effects (SCx) instead, which matches ST3 semantics.
-    flags_byte = (0x00 if h.linear_slides else 0x02)
+    # flags byte: bits 0-1 (ff) = tone mode. ff=1 (Amiga period slides) when S3M's
+    # linear_slides flag is clear; ff=0 otherwise. Pan law is fixed engine-wide to
+    # the equal-energy — no `p` bit any more. Bit 2 reserved (was 'm' fadeout-zero
+    # policy; removed). S3M has no instrument-level fadeout, so every Taud instrument
+    # carries fadeout=0 ("no fade") — notes retire on sample-end or pattern note-cut
+    # effects (SCx) instead, which matches ST3 semantics.
+    flags_byte = (0x00 if h.linear_slides else 0x01)
     song_table = encode_song_entry(
         song_offset=song_offset,
         num_voices=C,

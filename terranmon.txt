@@ -2346,7 +2346,7 @@ TODO:
     [x] FT2/MOD double effects with 00 as arg (500, 600) missing volume column -> easiest solution: fully implement `L xy00` and `K xy00` and map 5xx to L, 6xx to K (xm2taud, mod2taud), Kxy and Lxy verbatim (s3m2taud.py, it2taud.py). This is justified because the volume effects rely on memory when 00 is given, and said memory effect only get recalled when NoteFx is used. TAUD_NOTE_EFFECTS already has detailed implementation notes. Mark those two commands as implemented sorely for tracker compatibility.
     Also document then implement `Mxx` (set channel volume, not just a note: 0x00 to 0x3F) `Nxy` (channel volume slide: similar to Dxy, but applies to the current channel's volume, not just a note) `Pxy` (channel panning slide. Similar to Dxx: P0y - to the right, Px0 - to the left, PFy - fine pan right, PxF - fine pan left) effects
     [x] 8 MB sample RAM via 512k banks
-    [ ] remove panning mode selection and replace global panning rule to 3 dB rule (not the equal energy)
+    [x] remove panning mode selection and replace global panning rule to  equal energy, also move the 'ff' flags to bit 0..1
     [ ] low-number voleffs are too quiet (needs elaboration and test cases)
 
 
@@ -2449,12 +2449,12 @@ Play Head Flags
     Byte 2
         - PCM Mode: Write non-zero value to start uploading; always 0 when read
         - Tracker Mode: Global mixer flags. Maps directly to Taud effect symbol '1'
-            0b 0000 0ffp
-            p: panning mode (0: linear, 1: equal-power)
+            0b 0000 00ff
             ff: pitchshift mode (0: linear pitch slides, 1: Amiga period slides, 2: linear-frequency slides, 3: reserved)
                 Tracker command may change the mixer state, but the changes WILL NOT BE REFLECTED BACK.
                 Starting a new song will use whatever written to this register. In other words, changes
                 made by songs will not persist.
+            Panning law is fixed to the equal-energy; there is no runtime selection.
     Byte 3 (Tracker Mode)
         - BPM (24 to 279. Play Data will change this register)
     Byte 4 (Tracker Mode)
@@ -2573,12 +2573,8 @@ Endianness: Little
     Uint16  Current Tuning base note (1..65533). A4 (western default) is 0x5C00. C9 (tracker default) is 0xA000. If zero, assume the tracker default value
     Float32 Frequency at the base note. Tracker default is 8363.0. If zero, assume the tracker default
     Uint8   Flags for Global Behaviour (effect symbol '1')
-        0b 0000 0ffp
-            p: panning law         (0: linear, 1: equal-power)
+        0b 0000 00ff
             ff: tone mode          (0: linear pitch slides, 1: Amiga period slides, 2: linear-frequency slides, 3: reserved)
-            (bit 2 reserved — was 'm' fadeout-zero policy, removed; fadeout
-             scaling now lives entirely in the converter — see byte 172/173
-             of the instrument record for engine semantics)
     Uint8   Song global volume
         * ImpulseTracker has range of 0..128; multiply by (255/128) then round to int
     Uint8   Song mixing volume

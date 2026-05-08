@@ -1821,10 +1821,12 @@ def assemble_taud(h: ITHeader, samples: list, instruments: list,
     pat_comp = compress_blob(bytes(pat_bin), "pattern bin")
     cue_comp = compress_blob(bytes(sheet),   "cue sheet")
 
-    # flags byte: bit 1 (f) = Amiga pitch-slide mode (IT linear_slides flag inverted).
-    # bit 2 was the old 'm' fadeout-zero policy flag and is now reserved (always 0); fadeout
-    # scaling is done per-instrument in this converter — see the fadeout pass-through below.
-    flags_byte = 0x00 if h.linear_slides else 0x02
+    # flags byte: bits 0-1 (ff) = tone mode. ff=1 (Amiga period slides) when IT's
+    # linear_slides flag is clear; ff=0 otherwise. Pan law is fixed engine-wide to
+    # the equal-energy — no `p` bit any more. Bit 2 was the old 'm' fadeout-zero
+    # policy flag and is now reserved (always 0); fadeout scaling is done per-instrument
+    # in this converter — see the fadeout pass-through below.
+    flags_byte = 0x00 if h.linear_slides else 0x01
     # IT global/mix volumes are 0..128; rescale to Taud's 0..255 (clamped).
     global_vol_taud = min(0xFF, round(h.global_vol * 255 / 128))
     mixing_vol_taud = min(0xFF, round(h.mix_vol    * 255 / 128))

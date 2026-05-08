@@ -12,12 +12,12 @@ import net.torvald.tsvm.ThreeFiveMiniUfloat
 import net.torvald.tsvm.VM
 import net.torvald.tsvm.toInt
 import java.io.ByteArrayInputStream
-import kotlin.math.cos
 import kotlin.math.log2
 import kotlin.math.pow
 import kotlin.math.roundToInt
-import kotlin.math.sin
 import kotlin.math.PI
+import kotlin.math.cos
+import kotlin.math.sin
 
 private class RenderRunnable(val playhead: AudioAdapter.Playhead) : Runnable {
     private fun printdbg(msg: Any) {
@@ -2099,12 +2099,11 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             EffectOp.OP_NONE -> {}
             EffectOp.OP_1 -> {
                 // 1 $xx00 — Global behaviour flags byte in the high byte (see TAUD_NOTE_EFFECTS.md §1).
-                // bit 0   (p):  0=linear pan, 1=equal-power pan
-                // bits 1-2 (ff): 0=linear pitch, 1=Amiga period, 2=linear frequency (Hz/tick),
+                // bits 0-1 (ff): 0=linear pitch, 1=Amiga period, 2=linear frequency (Hz/tick),
                 //                3=reserved
+                // Panning law is fixed to the equal-energy; no runtime selection.
                 val flags = rawArg ushr 8
-                ts.panLaw = flags and 1
-                ts.toneMode = (flags ushr 1) and 3
+                ts.toneMode = flags and 3
             }
             EffectOp.OP_8 -> {
                 // 8 $xyzz — Bitcrusher.  See TAUD_NOTE_EFFECTS.md §8.
@@ -2812,18 +2811,9 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                     val envPanRaw = (voice.envPan * 255.0).roundToInt().coerceIn(0, 255)
                     (voice.channelPan + envPanRaw - 128 + voice.randomPanBias).coerceIn(0, 255)
                 } else (voice.channelPan + voice.randomPanBias).coerceIn(0, 255)
-                val lGain: Double
-                val rGain: Double
-                when (ts.panLaw) {
-                    1 -> { // equal-power: constant loudness at centre (0.707 each)
-                        lGain = cos(PI * pan / 512.0)
-                        rGain = sin(PI * pan / 512.0)
-                    }
-                    else -> { // linear balance (tracker default): centre gives 0 dB on both channels
-                        lGain = if (pan < 0x80) 1.0 else 1.0 - (pan - 128.0) / 128.0
-                        rGain = if (pan < 0x80) pan / 128.0 else 1.0
-                    }
-                }
+                // equal-energy pan law
+                val lGain = cos(PI * pan / 512.0)
+                val rGain = sin(PI * pan / 512.0)
                 // Sample-end ramp-out: snapshot gain, advance the ramp, deactivate at zero.
                 val rampGain = if (voice.rampOutSamples > 0) {
                     val g = voice.rampOutGain
@@ -2850,18 +2840,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                     val envPanRaw = (bg.envPan * 255.0).roundToInt().coerceIn(0, 255)
                     (bg.channelPan + envPanRaw - 128 + bg.randomPanBias).coerceIn(0, 255)
                 } else (bg.channelPan + bg.randomPanBias).coerceIn(0, 255)
-                val lGain: Double
-                val rGain: Double
-                when (ts.panLaw) {
-                    1 -> {
-                        lGain = cos(PI * pan / 512.0)
-                        rGain = sin(PI * pan / 512.0)
-                    }
-                    else -> {
-                        lGain = if (pan < 0x80) 1.0 else 1.0 - (pan - 128.0) / 128.0
-                        rGain = if (pan < 0x80) pan / 128.0 else 1.0
-                    }
-                }
+                val lGain = cos(PI * pan / 512.0)
+                val rGain = sin(PI * pan / 512.0)
                 val rampGain = if (bg.rampOutSamples > 0) {
                     val g = bg.rampOutGain
                     bg.rampOutGain -= bg.rampOutStep
@@ -3251,8 +3231,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         var firstRow = true
         val voices = Array(20) { Voice() }
 
-        // Global mixer config (effect 1).
-        var panLaw = 0      // 0 = linear balance (default), 1 = equal-power
+        // Global mixer config (effect 1). Panning law is fixed to the equal-energy.
         // Tone-slide mode for E / F / G effects (terranmon.txt §Song Table flags byte):
         //   0 = linear pitch slides (4096-TET units, default)
         //   1 = Amiga period slides (raw PT period units, applied in period space)
@@ -3370,8 +3349,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 7 -> if (isPcmMode) { pcmUpload = true } else {
                     initialGlobalFlags = byte
                     trackerState?.let { ts ->
-                        ts.panLaw = byte and 1
-                        ts.toneMode = (byte ushr 1) and 3
+                        ts.toneMode = byte and 3
                     }
                 }
                 8 -> { bpm = byte + 24 }
@@ -3405,8 +3383,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 ts.patternDelayRemaining = 0; ts.patternDelayActive = false
                 ts.sexWinningChannel = -1
                 ts.finePatternDelayExtra = 0
-                ts.panLaw = initialGlobalFlags and 1
-                ts.toneMode = (initialGlobalFlags ushr 1) and 3
+                ts.toneMode = initialGlobalFlags and 3
                 ts.voices.forEach {
                     it.active = false
                     it.channelVolume = 0x3F

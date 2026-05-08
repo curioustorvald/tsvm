@@ -52,12 +52,12 @@ MON_EFFECT_LETTERS = ['0', '1', '2', '3', '4', 'B', 'D', 'F']
 MON_NOTE_C4 = 40
 
 # Global behaviour flags byte (Taud Effect 1 / song-table byte 15):
-#   bit 0   (p)  : pan law              — leave 0 (linear) for tracker accuracy
-#   bits 1-2 (ff): tone mode             — 2 = linear-frequency (Hz/tick)
+#   bits 0-1 (ff): tone mode — 2 = linear-frequency (Hz/tick)
 # Selecting ff=2 makes the engine interpret 1xx/2xx/3xx slide arguments in
 # audible Hz at the A4=440 Hz reference, matching Monotone's MT_PLAY.PAS
 # `Frequency:=Frequency±parm1` arithmetic (see MTSRC/MT_PLAY.PAS:606-630).
-GLOBAL_FLAGS_LINEAR_FREQ = 0b100
+# Panning law is fixed to the equal-energy — there is no `p` bit any more.
+GLOBAL_FLAGS_LINEAR_FREQ = 0b10
 
 
 # ── Taud container ───────────────────────────────────────────────────────────
@@ -362,10 +362,10 @@ def assemble_taud(mon: dict) -> bytes:
 
     # BPM 150 + ticks=mon_speed → row rate = 60/mon_speed (matches Monotone).
     bpm_stored = 150 - 24
-    # Linear-frequency tone mode (ff=2) so 1xx/2xx/3xx Hz/tick semantics survive verbatim;
-    # pan law stays 0 (linear), bit 2 stays 0 (reserved). Monotone has no instrument-level
-    # fadeout, so every Taud instrument carries fadeout=0 ("no fade") — notes retire on
-    # sample-end or pattern note-cut instead.
+    # Linear-frequency tone mode (ff=2) so 1xx/2xx/3xx Hz/tick semantics survive verbatim.
+    # Pan law is fixed engine-wide to the equal-energy (no flag). Monotone has no
+    # instrument-level fadeout, so every Taud instrument carries fadeout=0 ("no fade") —
+    # notes retire on sample-end or pattern note-cut instead.
     flags_byte = GLOBAL_FLAGS_LINEAR_FREQ
 
     song_table = encode_song_entry(

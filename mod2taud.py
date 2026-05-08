@@ -767,13 +767,13 @@ def assemble_taud(mod: dict) -> bytes:
     pat_comp = compress_blob(bytes(pat_bin),   "pattern bin")
     cue_comp = compress_blob(bytes(cue_sheet), "cue sheet")
 
-    # ProTracker is Amiga-period-based by definition, so we set the f bit so
+    # ProTracker is Amiga-period-based by definition, so we set ff=1 (bits 0-1) so
     # the engine applies coarse pitch slides in period space (recovers PT's
-    # characteristic non-linear pitch character).
-    # bit 2 reserved (was 'm' fadeout-zero policy; removed). PT has no instrument-level
-    # fadeout, so every Taud instrument carries fadeout=0 ("no fade") — notes retire
-    # on sample-end or pattern note-cut instead, which matches PT semantics.
-    flags_byte = 0x02
+    # characteristic non-linear pitch character). Pan law is fixed to the
+    # equal-energy engine-wide. PT has no instrument-level fadeout, so every Taud
+    # instrument carries fadeout=0 ("no fade") — notes retire on sample-end or
+    # pattern note-cut instead, which matches PT semantics.
+    flags_byte = 0x01
     song_table = encode_song_entry(
         song_offset=song_offset,
         num_voices=n_channels,

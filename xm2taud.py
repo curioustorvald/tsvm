@@ -1425,11 +1425,13 @@ def assemble_taud(h: XMHeader, patterns: list, instruments: list) -> bytes:
     cue_comp = compress_blob(bytes(sheet),   "cue sheet")
 
     # Flags byte:
-    #   bit 1 (f) = Amiga pitch-slide mode (set when XM uses Amiga period table).
-    #   bit 2     = reserved (was 'm' fadeout-zero policy; removed). XM fadeout values are
-    #               now scaled per-instrument above (÷32 with round-to-nearest), so the
-    #               engine sees Taud-native units and uses its single divisor of 1024.
-    flags_byte = (0x00 if h.linear_freq else 0x02)
+    #   bits 0-1 (ff) = tone mode. ff=1 (Amiga period slides) when XM uses the Amiga
+    #                   period table; ff=0 otherwise. Pan law is fixed engine-wide to
+    #                   the equal-energy — no `p` bit any more.
+    #   bit 2         = reserved (was 'm' fadeout-zero policy; removed). XM fadeout values
+    #                   are now scaled per-instrument above (÷32 with round-to-nearest), so
+    #                   the engine sees Taud-native units and uses its single divisor of 1024.
+    flags_byte = (0x00 if h.linear_freq else 0x01)
     song_table = encode_song_entry(
         song_offset=song_offset,
         num_voices=C,
