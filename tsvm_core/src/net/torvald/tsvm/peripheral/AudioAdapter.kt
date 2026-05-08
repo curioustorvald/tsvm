@@ -1171,7 +1171,10 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         const val OP_J = 0x13
         const val OP_K = 0x14
         const val OP_L = 0x15
+        const val OP_M = 0x16
+        const val OP_N = 0x17
         const val OP_O = 0x18
+        const val OP_P = 0x19
         const val OP_Q = 0x1A
         const val OP_R = 0x1B
         const val OP_S = 0x1C
@@ -2006,7 +2009,9 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             voice.rowEffectArg = row.effectArg
 
             // ── Note ──
-            val toneG = (row.effect == EffectOp.OP_G)
+            // OP_L (combined porta + vol slide) also takes a tone-porta target without retriggering,
+            // mirroring G's behaviour — the L command continues the porta started by an earlier G.
+            val toneG = (row.effect == EffectOp.OP_G || row.effect == EffectOp.OP_L)
             when (row.note) {
                 // No note but an instrument byte is present: latch the instrument so
                 // the *next* note-only trigger picks up the right sample. Trackers
@@ -2211,7 +2216,83 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 voice.arpOff1 = (arg ushr 8) and 0xFF
                 voice.arpOff2 = arg and 0xFF
             }
-            EffectOp.OP_K, EffectOp.OP_L -> {} // engine no-op by design (converter splits them)
+            EffectOp.OP_K -> {
+                // K $xy00 — vibrato continuation + per-tick volume slide. xy lives in the high
+                // byte; $00 recalls K's private memory (TAUD_NOTE_EFFECTS.md §K). Vibrato uses
+                // the H/U memory cohort (no retrigger from K alone). Slide direction: high nibble
+                // = up, low nibble = down; both non-zero ⇒ down wins (ST3 quirk).
+                val raw = (rawArg ushr 8) and 0xFF
+                val arg = if (raw != 0) raw.also { voice.mem.k = it } else voice.mem.k
+                val hi = (arg ushr 4) and 0xF
+                val lo = arg and 0xF
+                voice.vibratoActive = true
+                voice.vibratoFineShift = 6
+                when {
+                    lo != 0 -> { voice.volColSlideDown = lo }   // down wins
+                    hi != 0 -> { voice.volColSlideUp = hi }
+                }
+            }
+            EffectOp.OP_L -> {
+                // L $xy00 — tone-portamento continuation + per-tick volume slide. xy lives in the
+                // high byte; $00 recalls L's private memory (TAUD_NOTE_EFFECTS.md §L). The porta
+                // target was set in the row's note-handling block (toneG includes OP_L); the
+                // porta speed is recalled from G's memory so a prior G's rate carries forward.
+                val raw = (rawArg ushr 8) and 0xFF
+                val arg = if (raw != 0) raw.also { voice.mem.l = it } else voice.mem.l
+                val hi = (arg ushr 4) and 0xF
+                val lo = arg and 0xF
+                voice.tonePortaSpeed = voice.mem.g
+                when {
+                    lo != 0 -> { voice.volColSlideDown = lo }
+                    hi != 0 -> { voice.volColSlideUp = hi }
+                }
+            }
+            EffectOp.OP_M -> {
+                // M $xx00 — set channel volume to the high byte (literal, no recall). IT $40 is
+                // clamped to Taud's $3F cap. See TAUD_NOTE_EFFECTS.md §M.
+                val newVol = ((rawArg ushr 8) and 0xFF).coerceAtMost(0x3F)
+                voice.channelVolume = newVol
+                voice.rowVolume = newVol
+            }
+            EffectOp.OP_N -> {
+                // N $xy00 — channel-volume slide. Same nibble decoding as D but writes the
+                // persistent channelVolume so the change carries past this row.
+                val arg = resolveArg(rawArg, voice.mem.n).also { if (rawArg != 0) voice.mem.n = it }
+                val hi = (arg ushr 8) and 0xFF
+                val lo = hi and 0x0F
+                val hin = (hi ushr 4) and 0x0F
+                when {
+                    hi == 0xFF || hi == 0xF0 -> { voice.channelVolume = (voice.channelVolume + 0xF).coerceAtMost(0x3F); voice.rowVolume = voice.channelVolume }
+                    hin == 0xF && lo != 0 -> { voice.channelVolume = (voice.channelVolume - lo).coerceAtLeast(0); voice.rowVolume = voice.channelVolume }
+                    lo == 0xF && hin != 0 -> { voice.channelVolume = (voice.channelVolume + hin).coerceAtMost(0x3F); voice.rowVolume = voice.channelVolume }
+                    hin == 0 && lo != 0 -> { voice.volColSlideDown = lo }   // coarse down per non-first tick
+                    lo == 0 && hin != 0 -> { voice.volColSlideUp = hin }    // coarse up per non-first tick
+                }
+            }
+            EffectOp.OP_P -> {
+                // P $xy00 — channel-panning slide. D-style nibble layout, but the IT panning
+                // direction convention applies: low nibble = right, high nibble = left.
+                val arg = resolveArg(rawArg, voice.mem.p).also { if (rawArg != 0) voice.mem.p = it }
+                val hi = (arg ushr 8) and 0xFF
+                val lo = hi and 0x0F        // low nibble of high byte → right
+                val hin = (hi ushr 4) and 0x0F   // high nibble of high byte → left
+                when {
+                    hi == 0xFF || hi == 0xF0 -> {  // FF / F0 quirk: fine left by F (high-nib form wins)
+                        voice.channelPan = (voice.channelPan - 0xF).coerceAtLeast(0)
+                        voice.rowPan = (voice.channelPan ushr 2).coerceIn(0, 63)
+                    }
+                    hin == 0xF && lo != 0 -> {     // fine right by lo on tick 0
+                        voice.channelPan = (voice.channelPan + lo).coerceAtMost(0xFF)
+                        voice.rowPan = (voice.channelPan ushr 2).coerceIn(0, 63)
+                    }
+                    lo == 0xF && hin != 0 -> {     // fine left by hin on tick 0
+                        voice.channelPan = (voice.channelPan - hin).coerceAtLeast(0)
+                        voice.rowPan = (voice.channelPan ushr 2).coerceIn(0, 63)
+                    }
+                    hin == 0 && lo != 0 -> { voice.panColSlideRight = lo }   // coarse right per non-first tick
+                    lo == 0 && hin != 0 -> { voice.panColSlideLeft = hin }   // coarse left per non-first tick
+                }
+            }
             EffectOp.OP_O -> {
                 val arg = resolveArg(rawArg, voice.mem.o).also { if (rawArg != 0) voice.mem.o = it }
                 val inst = instruments[voice.instrumentId]
@@ -2947,6 +3028,15 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         var q: Int = 0
         var tslide: Int = 0
         var w: Int = 0
+        // K, L, N, P: each its own private slot. K and L store the high-byte
+        // (xy nibble pair) of the most recent non-zero argument; N and P
+        // store the same high-byte and let the per-tick form recover via
+        // identical decoding to D. (M has no recall — literal-zero — so no
+        // slot is needed.)
+        var k: Int = 0
+        var l: Int = 0
+        var n: Int = 0
+        var p: Int = 0
     }
 
     class Voice {

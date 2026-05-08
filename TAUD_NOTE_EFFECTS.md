@@ -69,7 +69,9 @@ Most effects recall their last non-zero argument when re-issued with $0000. Unli
 - **H and U share one slot** (vibrato speed and depth are jointly recalled; the last-written values persist across both commands).
 - **R has its own slot** (tremolo).
 
-Every other memory-carrying effect (D, I, J, K, L, O, Q, and others) has a private slot.
+Every other memory-carrying effect (D, I, J, K, L, N, O, P, Q, and others) has a private slot.
+
+**Effects without recall (literal zero).** A few effects do *not* recall on $0000 — the argument is taken at face value. **M** (set channel volume), **V** (set global volume), and the volume- / panning-column SET selectors all behave this way: writing `M $0000` or `V $0000` is a literal "set to silence", not a memory recall. Converters lifting from source trackers that *do* share memory (notably ST3, where the `$00` argument may cohabit with D/E/F/etc.'s shared slot) MUST eagerly resolve the recall to an explicit value before emitting, since the Taud engine takes M / V arguments verbatim.
 
 ## 7. Opcode and argument format
 
@@ -404,21 +406,155 @@ The `tick_within_row mod 3` counter resets every row start (so every row begins 
 
 ## K $xy00 — Dual: vibrato continuation and volume slide $xy
 
-**Plain.** **Unimplemented**. On ST3, continues a previously started vibrato (H or U) without retriggering it, while applying a volume slide of `$xy` per non-first tick. Fine volume slides are not available in this form.
+**Plain.** Continues the previously started vibrato (H or U) without retriggering it, while applying a volume slide of `$xy` per non-first tick. Fine volume slides are not available in this form. The K command is implemented sorely for tracker compatibility — new compositions should prefer an explicit `H $0000` (vibrato recall) plus a volume-column slide (`1.$xy` / `2.$xy`), which carries the same semantics with one less hidden dependency.
 
-**Compatibility.** ST3 `Kxy` maps directly. Implementations must convert K to an explicit pair of commands: `H $0000` (continue with stored speed/depth) combined with volume-column command `1.$xy` (volume slide), and emit both.
+**Compatibility.** ST3 / IT `Kxy` map directly to Taud `K $xy00`: the source's `xy` argument byte goes verbatim into the high byte of the Taud argument. ProTracker / FT2 / XM `6xy` map identically. Source-tracker memory cohorts that share K's argument with D (notably the ST3 single-slot shared memory and IT's D/K/L vol-slide cohort) MUST be resolved eagerly by the converter — emit explicit arguments rather than relying on cohort sharing, since Taud's K has its own private slot.
 
-**Implementation.** Execute the per-tick vibrato update as if an H command were active with argument $0000 (recall), then execute a D $0y00 or $x000 slide using the bytes of the K argument: high nibble as up-slide, low nibble as down-slide. If both nibbles are non-zero, down-slide takes precedence (matching ST3). K has no memory of its own; it uses H/U's stored speed and depth.
+**Implementation.** On row parse:
+
+```
+on row parse (K):
+    raw = (arg >> 8) & 0xFF                 # the xy nibble pair lives in the high byte
+    if raw == 0: raw = memory_K
+    else: memory_K = raw
+    voice.vibratoActive = true              # H/U speed and depth come from memory_HU
+    hi_nib = (raw >> 4) & 0xF
+    lo_nib = raw & 0xF
+    # Slide direction: high nibble = up, low nibble = down. Both non-zero ⇒ down wins (ST3 quirk).
+    if hi_nib != 0 and lo_nib == 0:
+        slide_per_tick = +hi_nib
+    elif lo_nib != 0:
+        slide_per_tick = -lo_nib
+    else:
+        slide_per_tick = 0
+
+on every tick (including tick 0):
+    apply vibrato update with memory_HU.speed / memory_HU.depth (see §H)
+
+on tick > 0:
+    channel_volume = clamp(channel_volume + slide_per_tick, 0, $3F)
+    row_volume     = channel_volume
+```
+
+K has its own memory slot (private). The slide always uses the per-tick form — `K $FF00` does **not** trigger a fine slide; the argument's `$F` nibbles are interpreted as `$F`-magnitude per-tick slides (down wins), matching ST3's K and IT's K semantics.
 
 ---
 
 ## L $xy00 — Dual: tone portamento continuation and volume slide $xy
 
-**Plain.** **Unimplemented**. On ST3, continues a previously started tone portamento (G) without retriggering, while applying a volume slide of `$xy` per non-first tick. Fine volume slides are not available here.
+**Plain.** Continues the previously started tone portamento (G) without retriggering, while applying a volume slide of `$xy` per non-first tick. Fine volume slides are not available here. Like K, L is implemented sorely for tracker compatibility — new compositions should prefer an explicit `G $0000` plus a volume-column slide.
 
-**Compatibility.** ST3 `Lxy` maps directly. Like K, L must be equivalently implemented as `G $0000` plus a volume-column slide.
+**Compatibility.** ST3 / IT `Lxy` map directly to Taud `L $xy00`. ProTracker / FT2 / XM `5xy` map identically. As with K, source cohort recalls (ST3 shared memory; IT D/K/L vol-slide cohort) MUST be resolved eagerly by the converter; Taud's L has its own private slot.
 
-**Implementation.** Execute the per-tick G update (recalling G's stored speed), then the D slide as in K. L has no memory of its own.
+**Implementation.** Identical machinery to K with `G` swapped for the LFO update:
+
+```
+on row parse (L):
+    raw = (arg >> 8) & 0xFF
+    if raw == 0: raw = memory_L
+    else: memory_L = raw
+    # Tone portamento target is set by the row's note (see §G); G's stored speed (memory_G) drives the slide.
+    hi_nib = (raw >> 4) & 0xF
+    lo_nib = raw & 0xF
+    if hi_nib != 0 and lo_nib == 0:
+        slide_per_tick = +hi_nib
+    elif lo_nib != 0:
+        slide_per_tick = -lo_nib
+    else:
+        slide_per_tick = 0
+
+on tick > 0:
+    apply tone-portamento step using memory_G.speed (see §G)
+    channel_volume = clamp(channel_volume + slide_per_tick, 0, $3F)
+    row_volume     = channel_volume
+```
+
+L has its own memory slot (private), separate from K's and from D's.
+
+---
+
+## M $xx00 — Set channel volume to $xx
+
+**Plain.** Sets the channel's persistent base volume to `$xx`, in the same 6-bit `$00..$3F` range as a note's default volume. Unlike a volume-column SET (which only writes the *row* volume on a re-triggering row), M overwrites the channel's stored base volume so the change persists across subsequent rows that don't carry an explicit vol-column SET.
+
+**Compatibility.** IT `Mxx` maps directly: the source byte is taken **verbatim** with a clamp to `$3F` (IT's $40 cap snaps down by one). ST3 has no native M; OpenMPT/Schism's S3M-with-IT-extensions does, and the same verbatim-with-clamp rule applies on import. M has **no memory** — `M $0000` is a literal "set channel volume to silence", not a recall. Source-tracker shared-memory recalls (e.g., ST3's single-slot shared memory) MUST be eagerly resolved by the converter before emit.
+
+**Implementation.**
+
+```
+on row parse (M):
+    new_vol = (arg >> 8) & 0xFF
+    if new_vol > 0x3F: new_vol = 0x3F
+    channel_volume = new_vol
+    row_volume     = new_vol
+```
+
+The change takes effect on tick 0 of the row. There is no slide form; for that, use N. The low byte of M's argument is reserved.
+
+---
+
+## N $xy00 — Channel volume slide
+
+**Plain.** Slides the channel's persistent base volume by `$xy` per non-first tick (or once on tick 0 for fine forms). Encoding is identical to D (see §D), but the slide acts on `channel_volume` rather than the per-row note volume — so the change persists into following rows that don't reissue N. Range and clipping match D: `$00..$3F`.
+
+**Compatibility.** IT `Nxy` maps directly to Taud `N $xy00` (high byte = source argument byte, verbatim). ST3 has no native N. N's encoding sub-forms mirror D exactly:
+
+- `N $0y00` — coarse slide down by `$y` per non-first tick.
+- `N $x000` — coarse slide up by `$x` per non-first tick.
+- `N $Fy00` — fine slide down by `$y` on tick 0 only (with the same `$FF` "fine up by $F" quirk as D).
+- `N $xF00` — fine slide up by `$x` on tick 0 only.
+
+**Memory.** N has its own private slot, separate from D's. `N $0000` recalls the last N argument and re-applies it in its original sub-form (coarse vs fine, up vs down).
+
+**Implementation.** Identical to D, with `channel_volume` substituted for the per-row volume target. After every step the result is clamped to `$00..$3F` and `row_volume` is forced to track `channel_volume` so subsequent ticks' mixing reflects the slid value:
+
+```
+on row parse (N):
+    raw = (arg >> 8) & 0xFF
+    if raw == 0: raw = memory_N
+    else: memory_N = raw
+    decode raw exactly as D does (FF / F0 / Fy / xF / 0y / x0 → fine-up-F / coarse / fine forms)
+    schedule per-tick (or apply once) on channel_volume; row_volume = channel_volume after each step
+```
+
+---
+
+## P $xy00 — Channel panning slide
+
+**Plain.** Slides the channel's persistent pan by `$xy` per non-first tick (or once on tick 0 for fine forms). Encoding is layered on D's structural skeleton, but the *direction* of each nibble follows the IT panning convention: the low nibble of the high byte slides **right**, the high nibble of the high byte slides **left**. Pan ranges over the full 8-bit space (`$00`..`$FF`, $80 centre); P writes the persistent `channel_pan` so the change persists across rows.
+
+**Compatibility.** IT `Pxy` maps directly to Taud `P $xy00` (high byte = source argument byte, verbatim). ST3 has no native P. The four sub-forms are:
+
+- `P $0y00` — slide right by `$y` per non-first tick.
+- `P $x000` — slide left by `$x` per non-first tick.
+- `P $Fy00` — fine slide right by `$y` on tick 0 only.
+- `P $xF00` — fine slide left by `$x` on tick 0 only.
+
+The `$FF` corner case (`P $FF00`) follows the D / N quirk: it is interpreted as "fine slide left by `$F`" (the high-nibble form wins when both nibbles are `$F`).
+
+**Memory.** P has its own private slot, separate from D / N. `P $0000` recalls the last P argument and re-applies it in its original sub-form.
+
+**Implementation.**
+
+```
+on row parse (P):
+    raw = (arg >> 8) & 0xFF
+    if raw == 0: raw = memory_P
+    else: memory_P = raw
+    hi_nib = (raw >> 4) & 0xF
+    lo_nib = raw & 0xF
+    if raw == 0xFF or (hi_nib == 0xF and lo_nib == 0): apply fine-left-by-F on tick 0
+    elif hi_nib == 0xF and lo_nib != 0:                apply fine-right-by-lo_nib on tick 0
+    elif lo_nib == 0xF and hi_nib != 0:                apply fine-left-by-hi_nib on tick 0
+    elif hi_nib == 0 and lo_nib != 0:                  per-tick: channel_pan += lo_nib (right)
+    elif lo_nib == 0 and hi_nib != 0:                  per-tick: channel_pan -= hi_nib (left)
+
+on every per-tick or fine step:
+    channel_pan = clamp(channel_pan ± step, 0, 0xFF)
+    row_pan     = channel_pan >> 2     # 6-bit pan value used by the mixer
+```
+
+The mixer reads `channel_pan` (8-bit) directly through the same path as `S $80xx`. P slides interact additively with panbrello (Y) and the panning column's slide selectors, but P has the highest precedence on `channel_pan` because it writes the persistent value rather than a per-row delta.
 
 ---
 
@@ -839,9 +975,7 @@ The background pool is reaped when a ghost's `fadeoutVolume` drops to zero or it
 
 **Plain.** Sets the channel pan to `$xx`, with $00 being full left and $FF being full right. $80 is centre. When this command and panning column's Set Pan are both present, this command takes precedence.
 
-**Compatibility.** IT `Xxx` maps directly. ST3 `S8x` uses a 4-bit value.  
-1. convert by nibble-repeat: ST3 `S83` → Taud `S $8033`. Panning column command `0.$xx` has the same semantics and is the preferred form when a pan column is available in the pattern. ProTracker `8xx` (fine pan) and `E8x` (coarse pan) both map into Taud's 8-bit pan — the ProTracker 8-bit form maps directly; the 4-bit form nibble-repeats.
-2. convert to PanEff: ST3 `S8x` → PanEff `0.yy`, where `yy = round(4.2 * x)`
+**Compatibility.** IT `Xxx` maps directly. ST3 `S8x` uses a 4-bit value. Convert by nibble-repeat: ST3 `S83` → Taud `S $8033`. Panning column command `0.$xx` has the same semantics and is the preferred form when a pan column is available in the pattern. ProTracker `8xx` (fine pan) and `E8x` (coarse pan) both map into Taud's 8-bit pan — the ProTracker 8-bit form maps directly; the 4-bit form nibble-repeats.
 
 **Implementation.** Write `channel_pan = arg & $FF`. The pan value is applied at the mixer: `left_gain = (($FF − pan) × $100) >> 8`, `right_gain = (pan × $100) >> 8`, with both applied before the global volume stage.
 
@@ -1068,8 +1202,8 @@ This table maps each PT effect to its Taud equivalent. Arguments follow PT's two
 | `2 $xx` | `E $00xx` (Amiga mode, `f` set) | Portamento down; raw PT period units, applied in period space |
 | `3 $xx` | `G round($0xxx × 64/3)` | Portamento to note; G is always linear (4096-TET units) regardless of mode |
 | `4 $xy` | `H $xxyy` | Vibrato; nibble-repeat each byte. |
-| `5 $xy` | `L $xy00` | Combined portamento + volume slide (see compatibility note) |
-| `6 $xy` | `K $xy00` | Combined vibrato + volume slide (see compatibility note) |
+| `5 $xy` | `L $xy00` | Combined portamento + volume slide; argument byte verbatim (PT `500` recall is resolved to the previous 5xy by the converter, then emitted as L $xy00) |
+| `6 $xy` | `K $xy00` | Combined vibrato + volume slide; argument byte verbatim (PT `600` recall is resolved to the previous 6xy by the converter, then emitted as K $xy00) |
 | `7 $xy` | `R $xxyy` | Tremolo; nibble-repeat |
 | `8 $xx` | `S $80xx` or panning column `0.$xx` | Fine pan |
 | `9 $xx` | `O $xx00` | Sample offset |
@@ -1103,6 +1237,8 @@ This table maps each PT effect to its Taud equivalent. Arguments follow PT's two
 These quirks of ST3 are worth preserving or flagging when importing S3M files into Taud:
 
 **Shared memory across effects.** In ST3, a single memory slot backs D, E, F, I, J, K, L, Q, R, and S. A `$00` argument on any of these recalls whichever effect last wrote a non-zero argument. Taud narrows this to four cohorts (EF / G / HU / R) plus private slots. The converter must **eagerly resolve ST3 recalls** — walking the pattern in playback order, tracking the shared memory value, and emitting explicit Taud arguments wherever an ST3 recall crosses a cohort boundary. Otherwise a Taud player will either recall the wrong value or recall $0000.
+
+**M / N / P (channel volume and panning).** S3M files produced by IT-aware tools embed M (set channel volume), N (channel volume slide), and P (channel panning slide) using the IT semantics described in §M / §N / §P. These are emitted verbatim into Taud (with M's argument byte clamped to $3F). N and P each have private memory; M is literal-zero. ST3 itself never wrote M / N / P, so legacy S3M files contain none.
 
 **Cxx BCD encoding.** ST3 stores pattern-break row numbers as BCD on disk (`$10` means decimal 10). Taud uses binary. Decode on import; encode on export. Out-of-range BCD bytes (decimal 64 or higher) clamp to row 0.
 

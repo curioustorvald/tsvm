@@ -46,7 +46,7 @@ from taud_common import (
     PATTERN_ROWS, PATTERN_BYTES, NUM_PATTERNS_MAX, NUM_CUES, CUE_SIZE, NUM_VOICES,
     NOTE_NOP, NOTE_KEYOFF, NOTE_CUT, TAUD_C4,
     TOP_NONE, TOP_A, TOP_B, TOP_C, TOP_D, TOP_E, TOP_F, TOP_G, TOP_H, TOP_I,
-    TOP_J, TOP_K, TOP_L, TOP_O, TOP_Q, TOP_R, TOP_S, TOP_T, TOP_U, TOP_V, TOP_W, TOP_Y,
+    TOP_J, TOP_K, TOP_L, TOP_M, TOP_N, TOP_O, TOP_P, TOP_Q, TOP_R, TOP_S, TOP_T, TOP_U, TOP_V, TOP_W, TOP_Y,
     SEL_SET, SEL_UP, SEL_DOWN, SEL_FINE,
     EFF_A, EFF_B, EFF_C, EFF_D, EFF_E, EFF_F, EFF_G, EFF_H, EFF_I, EFF_J,
     EFF_K, EFF_L, EFF_M, EFF_N, EFF_O, EFF_P, EFF_Q, EFF_R, EFF_S, EFF_T,
@@ -809,22 +809,28 @@ def encode_effect_it(cmd: int, arg: int, ch: int = 0, row: int = 0,
         return (TOP_J, (J_SEMI_TABLE[hi_semi] << 8) | J_SEMI_TABLE[lo_semi], None, None)
 
     if cmd == EFF_K:
-        return (TOP_H, 0x0000, d_arg_to_col(arg), None)
+        # K = vibrato continuation + vol slide; emitted verbatim. IT's D/K/L
+        # shared cohort is already resolved upstream by resolve_it_recalls.
+        return (TOP_K, (arg & 0xFF) << 8, None, None)
 
     if cmd == EFF_L:
-        return (TOP_G, 0x0000, d_arg_to_col(arg), None)
+        # L = tone-porta continuation + vol slide; emitted verbatim.
+        return (TOP_L, (arg & 0xFF) << 8, None, None)
 
     if cmd == EFF_M:
-        return (TOP_NONE, 0, (SEL_SET, min(arg, 0x3F)), None)
+        # M = set channel volume; literal byte (no recall). Clamp IT $40 → $3F.
+        return (TOP_M, (min(arg, 0x3F) & 0xFF) << 8, None, None)
 
     if cmd == EFF_N:
-        return (TOP_NONE, 0, d_arg_to_col(arg), None)
+        # N = channel volume slide; D-style encoding.
+        return (TOP_N, (arg & 0xFF) << 8, None, None)
 
     if cmd == EFF_O:
         return (TOP_O, (arg & 0xFF) << 8, None, None)
 
     if cmd == EFF_P:
-        return (TOP_NONE, 0, None, d_arg_to_col(arg))
+        # P = channel panning slide; D-style encoding (low nib = right, high nib = left).
+        return (TOP_P, (arg & 0xFF) << 8, None, None)
 
     if cmd == EFF_Q:
         return (TOP_Q, (arg & 0xFF) << 8, None, None)

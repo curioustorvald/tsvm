@@ -266,12 +266,17 @@ def encode_effect(cmd: int, arg: int, ch: int = 0, row: int = 0) -> tuple:
         return (TOP_H, ((hi * 0x11) << 8) | (lo * 0x11), None, None)
 
     if cmd == 0x5:
-        # Tone porta + vol slide → Taud L (engine splits internally).
-        return (TOP_G, 0x0000, d_arg_to_col(arg), None)
+        # Tone porta + vol slide → Taud L verbatim. PT's 500 recall is already
+        # collapsed by resolve_pt_recalls; if the source had no prior 5xy the
+        # resolved arg is 0, which Taud's L $0000 then recalls from L's own
+        # private memory. Emitting a real L (rather than the previous
+        # G+vol-col split) preserves the slide on rows that also carry a
+        # vol-column SET (e.g., a Cxx fold) — see TAUD_NOTE_EFFECTS.md §L.
+        return (TOP_L, (arg & 0xFF) << 8, None, None)
 
     if cmd == 0x6:
-        # Vibrato + vol slide → Taud K.
-        return (TOP_H, 0x0000, d_arg_to_col(arg), None)
+        # Vibrato + vol slide → Taud K verbatim (same rationale as 0x5).
+        return (TOP_K, (arg & 0xFF) << 8, None, None)
 
     if cmd == 0x7:
         hi = (arg >> 4) & 0xF

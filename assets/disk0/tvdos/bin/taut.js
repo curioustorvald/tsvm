@@ -111,12 +111,12 @@ G:"Portamento   ",
 H:"Vibrato      ",
 I:"Tremor       ",
 J:"Arpeggio     ",
-K:"UNIMPLEMENTED", // Volume slide+Vibrato. Use H0000 and VolEff instead
-L:"UNIMPLEMENTED", // Volume slide+Portamento. Use G0000 and VolEff instead
-M:"UNIMPLEMENTED", // IT: Set channel volume. Use VolEff instead
-N:"UNIMPLEMENTED", // IT: Channel volume slide. Use VolEff instead
+K:"Vibrafade    ",
+L:"Portafade    ",
+M:"Channel vol  ",
+N:"Chan.volslide",
 O:"Sample offset",
-P:"UNIMPLEMENTED", // IT: panning slide. Use PanEff instead
+P:"Chan.panslide",
 Q:"Retrigger    ",
 R:"Tremolo      ",
 S:"Special      ",
@@ -130,12 +130,12 @@ S6:"Fine delay   ",
 S7:"Note action  ",
 S8:"Channel pan  ", // Taud: 8-bit channel panning
 S9:"UNIMPLEMENTED", // IT: Sound control
-SA:"UNIMPLEMENTED", // SC3: Stereo control. IT: Sample offset high twobyte (not applicable because Taud has 64k limit)
+SA:"UNIMPLEMENTED", // ST3: Stereo control. IT: Sample offset high twobyte (not applicable because Taud has 64k limit)
 SB:"Pattern loop ",
 SC:"Note cut     ",
 SD:"Note delay   ",
 SE:"Pattern delay",
-SF:"Funk it      ",
+SF:"Funk repeat  ",
 T:"Tempo        ",
 U:"Fine vibrato ",
 V:"Global volume",

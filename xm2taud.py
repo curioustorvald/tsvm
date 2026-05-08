@@ -490,12 +490,19 @@ def encode_effect_xm(cmd: int, arg: int, ch: int = 0, row: int = 0,
         return (TOP_H, ((hi * 0x11) << 8) | (lo * 0x11), None, None)
 
     if cmd == 0x05:
-        # Tone porta + vol slide → Taud L (G + d_arg vol slide override).
-        return (TOP_G, 0x0000, d_arg_to_col(arg), None)
+        # Tone porta + vol slide → Taud L verbatim. The XM source byte goes
+        # straight into L's high byte; the engine handles the combined
+        # porta-continuation + vol-slide semantics natively (see
+        # TAUD_NOTE_EFFECTS.md §L). XM's 500 (arg = 0) recall is honoured by
+        # Taud's L $0000 recall against L's own private memory, so a 500 row
+        # plays the previously emitted slide rate. This avoids the volume-
+        # column collision that the H+vol-col split form caused on rows
+        # already carrying a vol-column SET.
+        return (TOP_L, (arg & 0xFF) << 8, None, None)
 
     if cmd == 0x06:
-        # Vibrato + vol slide → Taud K (H + d_arg vol slide override).
-        return (TOP_H, 0x0000, d_arg_to_col(arg), None)
+        # Vibrato + vol slide → Taud K verbatim (same rationale as 0x05).
+        return (TOP_K, (arg & 0xFF) << 8, None, None)
 
     if cmd == 0x07:
         hi = (arg >> 4) & 0xF
