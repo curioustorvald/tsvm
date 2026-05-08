@@ -6,9 +6,13 @@ Usage:
 
 Limits:
     - Up to 20 XM channels (excess unused).
-    - Sample bin is 737280 bytes; if all samples together exceed this,
-      every sample is globally resampled down (with c2spd adjusted) so
-      pitch is preserved, mirroring it2taud / mod2taud.
+    - Sample bin is 8 MB (8388608 bytes); if all samples together exceed
+      this, every sample is globally resampled down (with c2spd adjusted)
+      so pitch is preserved, mirroring it2taud / mod2taud. Any individual
+      sample whose 8-bit-mono form still exceeds the u16 length cap
+      (SAMPLE_LEN_LIMIT bytes) is then resampled selectively to fit, and
+      TOP_O sample-offset args on the affected channel are rescaled
+      per-slot.
     - Multi-sample instruments use the sample selected by the *current
       note's* keymap entry; the converter materialises one Taud
       instrument slot per (XM instrument, sample-in-instrument) pair.
@@ -44,14 +48,15 @@ import sys
 from taud_common import (
     set_verbose, vprint,
     TAUD_MAGIC, TAUD_VERSION, TAUD_HEADER_SIZE, TAUD_SONG_ENTRY,
-    SAMPLEBIN_SIZE, INSTBIN_SIZE, SAMPLEINST_SIZE,
+    SAMPLEBIN_SIZE, INSTBIN_SIZE, SAMPLEINST_SIZE, SAMPLE_LEN_LIMIT,
     PATTERN_ROWS, PATTERN_BYTES, NUM_PATTERNS_MAX, NUM_CUES, CUE_SIZE, NUM_VOICES,
     NOTE_NOP, NOTE_KEYOFF, NOTE_CUT, TAUD_C4,
     TOP_NONE, TOP_A, TOP_B, TOP_C, TOP_D, TOP_E, TOP_F, TOP_G, TOP_H, TOP_I,
     TOP_J, TOP_K, TOP_L, TOP_O, TOP_Q, TOP_R, TOP_S, TOP_T, TOP_U, TOP_V, TOP_W, TOP_Y,
     SEL_SET, SEL_UP, SEL_DOWN, SEL_FINE,
     J_SEMI_TABLE,
-    d_arg_to_col, resample_linear, rescale_offset_effects, encode_cue, deduplicate_patterns,
+    d_arg_to_col, resample_linear, rescale_offset_effects_per_slot,
+    encode_cue, deduplicate_patterns,
     normalise_sample, encode_song_entry, nearest_minifloat, compress_blob,
     CUE_INST_NOP, CUE_INST_HALT, CUE_INST_LEN, cue_instruction_len,
 )
@@ -902,24 +907,60 @@ def _xm_sample_to_proxy(inst: XMInstrument, samp: XMSample,
 def build_sample_inst_bin_xm(proxies: list) -> tuple:
     """proxies: list (1-indexed; slot 0 unused) of _XMSampleProxy | None.
 
-    Returns (sampleinst_bin, offsets_dict, ratio).
+    Returns (sampleinst_bin, offsets_dict, slot_ratios) where slot_ratios
+    maps Taud slot index → effective TOP_O scale (combined global ×
+    per-sample resample ratio).
     """
     pcm_list = [(i, s) for i, s in enumerate(proxies)
                 if s is not None and s.sample_data]
 
+    def _scale_sample(s, r):
+        s.sample_data = resample_linear(s.sample_data, r)
+        s.length      = len(s.sample_data)
+        s.loop_begin  = max(0, int(s.loop_begin * r))
+        s.loop_end    = max(0, min(int(s.loop_end * r), s.length))
+        s.c2spd       = max(1, int(s.c2spd * r))
+
+    # ── Pass 1: global pool-overflow resample (8 MB cap) ────────────────────
     total = sum(len(s.sample_data) for _, s in pcm_list)
-    ratio = 1.0
+    global_ratio = 1.0
     if total > SAMPLEBIN_SIZE:
-        ratio = SAMPLEBIN_SIZE / total
+        global_ratio = SAMPLEBIN_SIZE / total
         vprint(f"  info: sample bin overflow ({total} bytes); "
-               f"resampling all by {ratio:.4f}")
+               f"resampling all by {global_ratio:.4f}")
+        seen_g = set()
         for _, s in pcm_list:
-            new_data = resample_linear(s.sample_data, ratio)
-            s.sample_data = new_data
-            s.length      = len(new_data)
-            s.loop_begin  = max(0, int(s.loop_begin * ratio))
-            s.loop_end    = max(0, min(int(s.loop_end * ratio), s.length))
-            s.c2spd       = max(1, int(s.c2spd * ratio))
+            if id(s) in seen_g:
+                continue
+            seen_g.add(id(s))
+            _scale_sample(s, global_ratio)
+
+    # ── Pass 2: per-sample u16 cap (each sample must fit in 65535 bytes) ────
+    # The Taud instrument record stores the sample length as u16, and TOP_O
+    # offsets address up to 0xFF00 bytes — anything longer would silently
+    # truncate at load time and over-shoot O-jumps. Resample only the
+    # over-long samples and remember each one's individual ratio so the
+    # caller can rescale TOP_O args per channel rather than globally.
+    per_sample_ratio = {}     # id(s) → per-sample ratio (after global)
+    seen_p = set()
+    for _, s in pcm_list:
+        if id(s) in seen_p:
+            continue
+        seen_p.add(id(s))
+        if len(s.sample_data) > SAMPLE_LEN_LIMIT:
+            r = SAMPLE_LEN_LIMIT / len(s.sample_data)
+            vprint(f"  info: '{s.name}' exceeds {SAMPLE_LEN_LIMIT}-byte cap "
+                   f"({len(s.sample_data)}); resampling by {r:.4f}")
+            _scale_sample(s, r)
+            per_sample_ratio[id(s)] = r
+
+    # Effective slot → ratio for TOP_O rescaling. XM keymaps can route
+    # several Taud slots to the same _XMSampleProxy (one slot per XM
+    # sample-in-instrument), so they share the same per-sample ratio.
+    slot_ratios = {}
+    for slot_idx, s in pcm_list:
+        slot_ratios[slot_idx] = global_ratio * per_sample_ratio.get(id(s), 1.0)
+    ratio = slot_ratios
 
     sample_bin = bytearray(SAMPLEBIN_SIZE)
     offsets = {}
@@ -1322,7 +1363,13 @@ def assemble_taud(h: XMHeader, patterns: list, instruments: list) -> bytes:
                                         resolve_inst_slot,
                                         amiga_mode=not h.linear_freq,
                                         keyoff_zero_rows=row_marks)
-    pat_bin = rescale_offset_effects(bytes(pat_bin), sample_ratio)
+    # Rescale TOP_O sample-offset args per channel using the active slot's
+    # ratio (combined global + per-sample). Walks pat_bin in cue-major /
+    # channel-minor order, tracking the most recent inst byte seen on each
+    # channel — must run before deduplication so the channel state stays
+    # linear.
+    pat_bin = rescale_offset_effects_per_slot(
+        bytes(pat_bin), len(taud_cue_list), C, sample_ratio)
 
     orig_count = len(taud_cue_list) * C
     pat_bin, pat_remap, num_taud_pats = deduplicate_patterns(pat_bin, orig_count)

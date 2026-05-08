@@ -7,9 +7,9 @@ Usage:
 Limits:
     - Up to 20 MOD channels (excess disabled; hard error if pattern count
       × channel count > 4095).
-    - Sample bin is 737280 bytes; if all samples together exceed this, every
-      sample is globally resampled down (with c2spd adjusted) so pitch is
-      preserved.
+    - Sample bin is 8 MB (8388608 bytes); if all samples together exceed
+      this, every sample is globally resampled down (with c2spd adjusted)
+      so pitch is preserved.
 
 Effect support:
     Full PT effect dispatch per TAUD_NOTE_EFFECTS.md "ProTracker to Taud

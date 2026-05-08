@@ -1985,18 +1985,14 @@ Synchronisation between playheads are not guaranteed. Do not play music in multi
 
 Memory Space
 
-0..720895 RW: Sample bin (704k)
+0..524287 RW: Sample bin window (512k)
 720896..786431 RW: Instrument bin (256 instruments, 256 bytes each; instrument 0 does nothing; 64k)
 786432..851967 RW: Play data 1 (currently exposed bank; 64k)
 851968..917503 RW: Play data 2 (currently exposed bank; 64k)
 917504..983039 RW: TAD Input Buffer (64k)
 983040..1048575 RW: TAD Decode Output (64k)
 
-(Layout note 2026-05-06: sample bin shrunk by 16k and instrument bin widened
- by the same amount so all downstream dispatch ranges keep their existing
- anchors at 786432. Total memory space stays at exactly 1 MiB.)
-
-Sample bin: just raw sample data thrown in there. You need to keep track of starting point for each sample
+Sample bin: just raw sample data thrown in there. You need to keep track of starting point for each sample. Actual sample memory is 8 MB and are banked. Write to MMIO address 46 to switch banks.
 
 Instrument bin: Registry for 256 instruments, formatted as:
 
@@ -2293,7 +2289,6 @@ TODO:
     [x] 4THSYM.it: pitchbend is wrong, some notes keep playing (loudly!) even if new notes are emitted
     [x] `*2taud.py`: some notes are emitted with wrong volume-set command. Tested with GSLINGER.mod: on order 0x15 channel 1, mod2taud.py emits volume 8 -- also many of the effects are dropped. Suggested solution: currently all converters write default volume to the voleff when original modules (.mod/.s3m/.it) specify nothing; we should also write nothing and let the engine resolve the value just like other trackers do (also we now have "Instrument Global Volume" on instrument definition unlike the other time). This bug may affecting other formats, not just mod2taud.py, as well
     [x] nearly_there_.mod: `C#5 SD300 / ... / C-5 SD200 / A#4 / G#4 (at tickspeed 4)`: every `C-5 SD200` (there are four occurances) gets skipped
-    [ ] low-number voleffs are too quiet (needs elaboration and test cases)
     [x] scale Oxxxx when samples get resampled
     [x] implement bitcrusher and overdrive  (eff sym '8' and '9')
     [x] note trigger with inst and note fx set (e.g. portamento) but no volume set is not getting their default volume but getting what was before instead (SATELL.taud ptn 23) -- and simulateRowState() of taut.js always shows old volume instead of default volume, regardless of note fx's existence
@@ -2346,12 +2341,13 @@ TODO:
         (`drawOrdersRowAt`) and per-column (`drawOrdersVoiceColumnAt`) helpers,
         replacing the full-panel redraw on every keystroke.
     [x] volume and panning policy to match note effect policy: when note is "retriggerred" (note command with instrument specified), the volume/pan must take default value; if not (note command with instrument 0) the volume/pan must stay at the old value. Make both audio engine and taut.js simulator changes.
-    [ ] xm volume column commands (+x, -x, Dx, Lx, Mx, Px, Rx, Sx, Ux, Vx) are completely ignored
+    [x] xm volume column commands (+x, -x, Dx, Lx, Mx, Px, Rx, Sx, Ux, Vx) are completely ignored
     [x] theday.xm order 0x28, channel 6..8 has 'note trigger with inst 1 but no volume -> key-off -> set-volume to 0x20 -> key-off -> set-volume to 0x10 -> key-off -> ...' and it sounds like gating: key-off silences the output, set-volume turns on the output again; notably, this behaviour only works when volume envelope is turned off (any fadeouts progress normally). FT2's keyOff (ft2_replayer.c:411-435) zeroes realVol/outVol when the volume envelope is disabled — IT/Schism does not, and Taud's engine follows IT semantics (no fade when fadeStep == 0). Resolved in xm2taud.py: a pre-pass tracks per-channel bound XM instrument across the order-list walk, and any key-off cell whose bound instrument has vol_env_type & XM_ENV_ON == 0 is paired with `SEL_SET vol=0` in the same row. A subsequent vol-col SET on the channel restores audibility — exactly mirroring FT2's outVol/realVol gate without diverging the engine. Engine semantics stay IT-pure.
-    [ ] remove panning mode selection and replace global panning rule to 3 dB rule (not the equal energy)
     [x] FT2/MOD double effects with 00 as arg (500, 600) missing volume column -> easiest solution: fully implement `L xy00` and `K xy00` and map 5xx to L, 6xx to K (xm2taud, mod2taud), Kxy and Lxy verbatim (s3m2taud.py, it2taud.py). This is justified because the volume effects rely on memory when 00 is given, and said memory effect only get recalled when NoteFx is used. TAUD_NOTE_EFFECTS already has detailed implementation notes. Mark those two commands as implemented sorely for tracker compatibility.
     Also document then implement `Mxx` (set channel volume, not just a note: 0x00 to 0x3F) `Nxy` (channel volume slide: similar to Dxy, but applies to the current channel's volume, not just a note) `Pxy` (channel panning slide. Similar to Dxx: P0y - to the right, Px0 - to the left, PFy - fine pan right, PxF - fine pan left) effects
-    [ ] 8 MB sample RAM via 512k banks
+    [x] 8 MB sample RAM via 512k banks
+    [ ] remove panning mode selection and replace global panning rule to 3 dB rule (not the equal energy)
+    [ ] low-number voleffs are too quiet (needs elaboration and test cases)
 
 
 Play Data: play data are series of tracker-like instructions, visualised as:
@@ -2407,6 +2403,7 @@ Audio Adapter MMIO
 44 RW: TAD Decoder Status
     Non-zero value indicates the decoder is busy. Different value may indicate different decoder status.
 45 RW: Select PCM Bin for playhead (writing causes side effects)
+46 RW: Select current sample bank for tracker, exposed at memory space 0..524287
 
 64..2367 RW: MP2 Decoded Samples (unsigned 8-bit stereo)
 2368..4095 RW: MP2 Frame to be decoded
@@ -2562,6 +2559,9 @@ Endianness: Little
     Uint32  Compressed size of SAMPLE+INST section (used to calculate offset to SONG TABLE)
     Uint32  Offset to Project Data. Zero if Project Data is nonexistent
     Byte[14]Tracker/Converter signature
+
+## Sample and Instrument bin image
+    8256 kB when decompressed. First 8 MB holds samples.
 
 ## Song Table
     * Rows of 32 bytes:

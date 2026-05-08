@@ -185,6 +185,61 @@ class AudioJSR223Delegate(private val vm: VM) {
 
     fun getBaseAddr(): Int? = getFirstSnd()?.let { return it.vm.findPeriSlotNum(it)?.times(-131072)?.minus(1) }
     fun getMemAddr(): Int? = getFirstSnd()?.let { return it.vm.findPeriSlotNum(it)?.times(-1048576)?.minus(1) }
+
+    /** Switch the sample-bin window (peripheral memory 0..524287) to bank `bank` (0..15).
+     *  The 8 MB sample pool is organised as 16 × 512 K banks; only the selected bank
+     *  is visible through the window. (terranmon.txt:1985-1997, MMIO 46.) */
+    fun setSampleBank(bank: Int) { getFirstSnd()?.mmio_write(46L, bank.toByte()) }
+    fun getSampleBank(): Int? = getFirstSnd()?.sampleBank
+
+    /** Decompress a Taud sample+instrument blob (gzip or zstd) directly into the
+     *  audio adapter's 8 MB sample pool and 64 K instrument bin, bypassing the user
+     *  memory staging buffer. The decompressed payload must be exactly
+     *  `SAMPLE_BIN_TOTAL + 65536` bytes (8 MB samples followed by 64 K instruments).
+     *
+     *  Needed because user space is capped at 8 MB and cannot hold the full 8256 kB
+     *  decompressed image as a contiguous buffer. */
+    fun uploadSampleInstBlob(srcPtr: Int, srcLen: Int): Int {
+        val snd = getFirstSnd() ?: return 0
+        val inbytes = ByteArray(srcLen) { vm.peek(srcPtr.toLong() + it)!! }
+        val bytes = CompressorDelegate.decomp(inbytes)
+        val sampleSize = AudioAdapter.SAMPLE_BIN_TOTAL.toInt()
+        val instSize = 65536
+        if (bytes.size < sampleSize + instSize) return 0
+        UnsafeHelper.memcpyRaw(
+            bytes, UnsafeHelper.getArrayOffset(bytes),
+            null, snd.sampleBin.ptr,
+            sampleSize.toLong()
+        )
+        for (i in 0 until instSize) {
+            snd.instruments[i / 256].setByte(i % 256, bytes[sampleSize + i].toInt() and 0xFF)
+        }
+        return bytes.size
+    }
+
+    /** Compress the audio adapter's full 8 MB sample pool + 64 K instrument bin
+     *  (8256 kB total) and write the resulting gzip/zstd blob to user-memory `dstPtr`.
+     *  Returns the compressed size. The caller must ensure `dstMaxLen` is large
+     *  enough; for incompressible noise the worst case is ~8.3 MB which exceeds
+     *  user space — but realistic sample data compresses easily. */
+    fun captureSampleInstBlob(dstPtr: Int, dstMaxLen: Int): Int {
+        val snd = getFirstSnd() ?: return 0
+        val sampleSize = AudioAdapter.SAMPLE_BIN_TOTAL.toInt()
+        val instSize = 65536
+        val raw = ByteArray(sampleSize + instSize)
+        UnsafeHelper.memcpyRaw(
+            null, snd.sampleBin.ptr,
+            raw, UnsafeHelper.getArrayOffset(raw),
+            sampleSize.toLong()
+        )
+        for (i in 0 until instSize) {
+            raw[sampleSize + i] = snd.instruments[i / 256].getByte(i % 256)
+        }
+        val compressed = CompressorDelegate.comp(raw)
+        val n = minOf(compressed.size, dstMaxLen)
+        for (i in 0 until n) vm.poke((dstPtr + i).toLong(), compressed[i])
+        return compressed.size
+    }
     fun mp2Init() = getFirstSnd()?.mmio_write(40L, 16)
     fun mp2Decode() = getFirstSnd()?.mmio_write(40L, 1)
     fun mp2InitThenDecode() = getFirstSnd()?.mmio_write(40L, 17)

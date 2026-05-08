@@ -62,7 +62,9 @@ class VMJSR223Delegate(private val vm: VM) {
 //            System.err.println("MEMORY dev=${dev.typestring}, fromIndex=$fromIndex, fromRel=$fromRel")
 
             return if (dev is AudioAdapter) {
-                if (relPtrInDev(fromRel, len, 0, 114687)) dev.sampleBin.ptr + fromRel - 0
+                // Sample-bin window: 0..524287 maps into the 8 MB pool through MMIO 46.
+                if (relPtrInDev(fromRel, len, 0, 524287))
+                    dev.sampleBin.ptr + dev.sampleBank.toLong() * AudioAdapter.SAMPLE_BANK_SIZE + fromRel
                 else null
             }
             else if (dev is GraphicsAdapter) {

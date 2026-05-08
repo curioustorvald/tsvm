@@ -10,7 +10,15 @@ const TAUD_MAGIC        = [0x1F,0x54,0x53,0x56,0x4D,0x61,0x75,0x64]  // \x1F TSV
 const TAUD_VERSION      = 1
 const TAUD_HEADER_SIZE  = 32     // magic(8) + version(1) + numSongs(1) + compSize(4) + projOff(4) + sig(14)
 const TAUD_SONG_ENTRY   = 32     // see encodeSongEntry / decodeSongEntry below
-const SAMPLEINST_SIZE   = 786432 // 737280 sample + 49152 instrument (256 × 192)
+// Sample+instrument image: 8 MB sample pool (banked, 16 × 512 K) + 64 K instrument bin = 8256 kB total.
+// (terranmon.txt:1985-1997, 2533-2564 — bank-switched via MMIO 46.)
+const SAMPLE_BANK_SIZE  = 524288             // 512 K — size of the sample-bin window
+const SAMPLE_BANK_COUNT = 16                 // 16 banks × 512 K = 8 MB
+const SAMPLEBIN_SIZE    = SAMPLE_BANK_SIZE * SAMPLE_BANK_COUNT   // 8 MB
+const INSTBIN_SIZE      = 65536              // 256 inst × 256 bytes
+const SAMPLEINST_SIZE   = SAMPLEBIN_SIZE + INSTBIN_SIZE          // 8454144 = 8256 kB
+const SAMPLEBIN_WINDOW_OFFSET = 0            // peripheral memory window for the active sample bank
+const INSTBIN_WINDOW_OFFSET   = 720896       // peripheral memory offset of instrument bin
 const PATTERN_SIZE      = 512    // bytes per pattern (64 rows × 8 bytes)
 const NUM_PATTERNS_MAX  = 256
 const NUM_CUES          = 1024
@@ -88,17 +96,13 @@ function uploadTaudFile(inFile, songIndex, playhead) {
     }
 
     // -- 4. Decompress and upload sample+instrument bin -----------------------
-    let decompPtr = sys.malloc(SAMPLEINST_SIZE)
-    gzip.decompFromTo(filePtr + pos, compressedSize, decompPtr)
+    // The decompressed image is 8256 kB (8 MB samples bank-major + 64 K instruments)
+    // which exceeds the 8 MB user-space cap, so we route through a hardware helper
+    // that decompresses straight into the adapter's native sample/instrument
+    // storage instead of staging a buffer in user memory.
+    audio.uploadSampleInstBlob(filePtr + pos, compressedSize)
+    audio.setSampleBank(0)
     pos += compressedSize
-
-    // Write decompressed data to peripheral memory (backwards addressing:
-    // peripheral byte k lives at memBase - k).
-    for (let i = 0; i < SAMPLEINST_SIZE; i++) {
-        // TODO use sys.memcpy
-        sys.poke(memBase - i, sys.peek(decompPtr + i))
-    }
-    sys.free(decompPtr)
 
     // -- 5. Parse song-table entry for the requested song --------------------
     let entryOff   = pos + songIndex * TAUD_SONG_ENTRY
@@ -173,14 +177,19 @@ function captureTrackerDataToFile(outFile) {
     const baseAddr = audio.getBaseAddr()
 
     // -- 1. Compress sample+instrument bin ------------------------------------
-    // sys.memcpy(negative_src, positive_dst, len) copies peripheral byte k from
-    // (memBase - k) into (sampleInstBuf + k).
-    let sampleInstBuf = sys.malloc(SAMPLEINST_SIZE)
-    sys.memcpy(memBase, sampleInstBuf, SAMPLEINST_SIZE)
-
-    let compBuf       = sys.malloc(SAMPLEINST_SIZE + 4096)  // headroom for incompressible data
-    let compressedSize = gzip.compFromTo(sampleInstBuf, SAMPLEINST_SIZE, compBuf)
-    sys.free(sampleInstBuf)
+    // The 8256 kB raw image (8 MB samples + 64 K instruments) cannot fit in the
+    // 8 MB user space, so we hand the entire compress step to a hardware helper
+    // that reads directly out of the adapter's native sample/instrument storage.
+    // Realistic sample data compresses well under both gzip and zstd; we cap the
+    // destination at "uncompressed size + 8 K" headroom which suffices for any
+    // sane musical content.
+    const COMP_BUF_CAP = 1024 * 1024 * 4   // 4 MiB cap for compressed sample+inst blob
+    let compBuf       = sys.malloc(COMP_BUF_CAP)
+    let compressedSize = audio.captureSampleInstBlob(compBuf, COMP_BUF_CAP)
+    if (compressedSize > COMP_BUF_CAP) {
+        sys.free(compBuf)
+        throw Error("taud: compressed sample+inst blob exceeded " + COMP_BUF_CAP + " bytes (got " + compressedSize + ")")
+    }
 
     // -- 2. Find last non-empty pattern in bank 0 (all-zero = uninitialized) --
     let numPatsActual = 0

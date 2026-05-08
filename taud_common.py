@@ -72,15 +72,28 @@ TAUD_VERSION     = 1
 TAUD_HEADER_SIZE = 32       # magic(8)+ver(1)+numSongs(1)+compSize(4)+projOff(4)+sig(14)
 TAUD_SONG_ENTRY  = 32       # full spec entry (see encode_song_entry)
 INST_RECORD_SIZE = 256      # widened 2026-05-06 (was 192). 256 inst × 256 = 64K.
-SAMPLEBIN_SIZE   = 720896   # was 737280; 16K reallocated to inst bin (terranmon.txt:1985-1997)
+# Sample+instrument image (terranmon.txt:1985-1997, 2533-2564 — updated 2026-05-08).
+# Sample pool is now 8 MB, banked through MMIO 46 in 16 × 512 K windows.
+# Converters write the pool bank-major (bank 0's 512 K first, then bank 1's, ...);
+# the runtime decompresses the whole blob straight into native peripheral storage,
+# so converters just lay out an 8 MB linear array as if banking didn't exist.
+SAMPLE_BANK_SIZE = 524288               # 512 K per bank
+SAMPLE_BANK_COUNT = 16                  # 16 banks × 512 K = 8 MB
+SAMPLEBIN_SIZE   = SAMPLE_BANK_SIZE * SAMPLE_BANK_COUNT   # 8 MB
 INSTBIN_SIZE     = INST_RECORD_SIZE * 256   # 65536 = 64K
-SAMPLEINST_SIZE  = SAMPLEBIN_SIZE + INSTBIN_SIZE
+SAMPLEINST_SIZE  = SAMPLEBIN_SIZE + INSTBIN_SIZE          # 8454144 = 8256 kB
 PATTERN_ROWS     = 64
 PATTERN_BYTES    = PATTERN_ROWS * 8     # 512
 NUM_PATTERNS_MAX = 4095
 NUM_CUES         = 1024
 CUE_SIZE         = 32
 NUM_VOICES       = 20
+
+# Per-sample length cap. Taud instrument records carry the sample length as
+# a u16 (terranmon.txt:2001+ — bytes 4..5), so any single sample must fit in
+# 65535 bytes. Converters resample over-long samples individually after the
+# global pool-overflow pass and rescale the affected channel's TOP_O args.
+SAMPLE_LEN_LIMIT = 65535
 
 # Note word sentinels
 NOTE_NOP    = 0xFFFF
@@ -269,6 +282,44 @@ def rescale_offset_effects(pat_bin: bytes, ratio: float) -> bytes:
             arg = max(0, min(0xFFFF, int(arg * ratio + 0.5)))
             out[i + 6] = arg & 0xFF
             out[i + 7] = (arg >> 8) & 0xFF
+    return bytes(out)
+
+
+def rescale_offset_effects_per_slot(pat_bin: bytes,
+                                     num_cues: int,
+                                     num_channels: int,
+                                     slot_ratios: dict) -> bytes:
+    """Scale TOP_O args using a per-slot ratio map.
+
+    `pat_bin` is laid out as `num_cues × num_channels` consecutive
+    PATTERN_BYTES (=512) blocks, channel-minor within each cue. For each
+    channel, walk the rows in cue order and track the most recently
+    written slot byte (row offset 2). When a TOP_O effect appears, scale
+    its arg by `slot_ratios[active_slot]`, falling back to ratio 1.0 if
+    the slot is unknown (e.g. row hits an O before any inst byte has
+    selected a sample for the channel).
+    """
+    if not pat_bin or not slot_ratios:
+        return pat_bin
+    if all(r == 1.0 for r in slot_ratios.values()):
+        return pat_bin
+    out = bytearray(pat_bin)
+    active = [0] * num_channels
+    for cue in range(num_cues):
+        for ch in range(num_channels):
+            block = (cue * num_channels + ch) * PATTERN_BYTES
+            for row in range(PATTERN_ROWS):
+                rb = block + row * 8
+                inst = out[rb + 2]
+                if inst != 0:
+                    active[ch] = inst
+                if out[rb + 5] == TOP_O:
+                    ratio = slot_ratios.get(active[ch], 1.0)
+                    if ratio != 1.0:
+                        arg = out[rb + 6] | (out[rb + 7] << 8)
+                        arg = max(0, min(0xFFFF, int(arg * ratio + 0.5)))
+                        out[rb + 6] = arg & 0xFF
+                        out[rb + 7] = (arg >> 8) & 0xFF
     return bytes(out)
 
 

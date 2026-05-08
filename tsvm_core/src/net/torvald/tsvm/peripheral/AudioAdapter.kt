@@ -144,13 +144,26 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         // 8 ms at 32 kHz — long enough to bury the click, short enough not to read as fade.
         // Applied on sample end only (preserves attack transients on note start).
         const val RAMP_OUT_SAMPLES = 256
+
+        // Sample bin: 8 MB total, banked through a 512 K window at peripheral
+        // memory 0..524287. MMIO 46 holds the currently-exposed bank index.
+        const val SAMPLE_BANK_SIZE: Long = 524288L           // 512 K
+        const val SAMPLE_BANK_COUNT: Int = 16                // 16 × 512 K = 8 MB
+        const val SAMPLE_BIN_TOTAL: Long = SAMPLE_BANK_SIZE * SAMPLE_BANK_COUNT
+        const val SAMPLE_BANK_MASK: Int = SAMPLE_BANK_COUNT - 1
     }
 
-    // Memory map (terranmon.txt:1985-1997, updated 2026-05-06):
-    //   0..720895       sample bin (704K, was 737280)
+    // Memory map (terranmon.txt:1985-1997, updated 2026-05-08):
+    //   0..524287       sample bin window (512K — exposes one bank of 8 MB pool)
+    //   524288..720895  reserved (no-op on access)
     //   720896..786431  instrument bin (256 inst × 256 bytes = 64K)
     //   786432..        play data 1 / 2 / TAD blocks (anchors unchanged)
-    internal val sampleBin = UnsafeHelper.allocate(720896L, this)
+    //
+    // Backing sample memory is 8 MB, banked in 16 × 512K pages. MMIO 46 holds
+    // the currently-exposed bank index (0..15); reads/writes through the window
+    // hit `sampleBin[sampleBank * 524288 + offset]`.
+    internal val sampleBin = UnsafeHelper.allocate(SAMPLE_BIN_TOTAL, this)
+    @Volatile var sampleBank: Int = 0  // 0..15, controls the 0..524287 window
     internal val instruments = Array(256) { TaudInst(it) }
     internal val playdata = Array(4096) { Array(64) { TaudPlayData(0xFFFF, 0, 0, 0, 32, 0, 0, 0) } }
     internal val playheads: Array<Playhead>
@@ -322,7 +335,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
     override fun peek(addr: Long): Byte {
         return when (val adi = addr.toInt()) {
-            in 0..720895 -> sampleBin[addr]
+            in 0..524287 -> sampleBin[sampleBank * SAMPLE_BANK_SIZE + addr]
+            in 524288..720895 -> 0  // reserved
             in 720896..786431 -> (adi - 720896).let { instruments[it / 256].getByte(it % 256) }
             in 786432..851967 -> { val off = adi - 786432; playdata[playheads[0].patBank1 * 128 + off / 512][(off % 512) / 8].getByte(off % 8) }
             in 851968..917503 -> { val off = adi - 851968; playdata[playheads[0].patBank2 * 128 + off / 512][(off % 512) / 8].getByte(off % 8) }
@@ -336,7 +350,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         val adi = addr.toInt()
         val bi = byte.toUint()
         when (adi) {
-            in 0..720895 -> { sampleBin[addr] = byte }
+            in 0..524287 -> { sampleBin[sampleBank * SAMPLE_BANK_SIZE + addr] = byte }
+            in 524288..720895 -> { /* reserved */ }
             in 720896..786431 -> (adi - 720896).let { instruments[it / 256].setByte(it % 256, bi) }
             in 786432..851967 -> { val off = adi - 786432; playdata[playheads[0].patBank1 * 128 + off / 512][(off % 512) / 8].setByte(off % 8, bi) }
             in 851968..917503 -> { val off = adi - 851968; playdata[playheads[0].patBank2 * 128 + off / 512][(off % 512) / 8].setByte(off % 8, bi) }
@@ -358,6 +373,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             43 -> tadQuality.toByte()
             44 -> tadBusy.toInt().toByte()
             45 -> selectedPcmBin.toByte()
+            46 -> sampleBank.toByte()
             in 64..2367 -> mediaDecodedBin[addr - 64]
             in 2368..4095 -> mediaFrameBin[addr - 2368]
             in 4096..4097 -> 0
@@ -393,6 +409,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 tadQuality = bi.coerceIn(0, 5)
             }
             45 -> selectedPcmBin = bi % 4
+            46 -> sampleBank = bi and SAMPLE_BANK_MASK
             in 64..2367 -> { mediaDecodedBin[addr - 64] = byte }
             in 2368..4095 -> { mediaFrameBin[addr - 2368] = byte }
             in 32768..65535 -> { (adi - 32768).let {
@@ -1619,7 +1636,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         val sampleLen = inst.sampleLength.coerceAtLeast(1)
         val loopStart = inst.sampleLoopStart.toDouble()
         val loopEnd = inst.sampleLoopEnd.toDouble().coerceAtLeast(1.0)
-        val binMax = 720895  // sampleBin is 720896 bytes (0..720895)
+        val binMax = (SAMPLE_BIN_TOTAL - 1).toInt()  // 8 MB pool, addressed via samplePtr directly (not banked)
 
         val i0 = voice.samplePos.toInt().coerceIn(0, sampleLen - 1)
         val i1 = (i0 + 1).coerceAtMost(sampleLen - 1)

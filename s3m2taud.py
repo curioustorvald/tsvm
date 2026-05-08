@@ -7,9 +7,9 @@ Usage:
 Limits:
     - Up to 20 S3M channels (excess disabled; hard error if pattern count
       × channel count > 4095).
-    - Sample bin is 737280 bytes; if all samples together exceed this, every
-      sample is globally resampled down (with c2spd adjusted) so pitch is
-      preserved.
+    - Sample bin is 8 MB (8388608 bytes); if all samples together exceed
+      this, every sample is globally resampled down (with c2spd adjusted)
+      so pitch is preserved.
     - AdLib instruments are skipped.
 
 Effect support:
