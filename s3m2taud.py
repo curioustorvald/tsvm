@@ -499,8 +499,9 @@ def build_sample_inst_bin(instruments: list) -> tuple:
         loop_mode = 1 if (inst.flags & 1) else 0
         flags_byte = loop_mode & 0x3   # 0b 0000 00pp
 
-        # Volume envelope first point is full-scale; per-sample level is carried
-        # by IGV (byte 171) so the envelope contributes a unit multiplier.
+        # Volume envelope first point is full-scale; per-trigger initial level
+        # is carried by Default Note Volume (byte 196), so the envelope
+        # contributes a unit multiplier.
         env_vol = 63
         # Vol LOOP word: P=1 (envelope present) | b=1 (use envelope) — no actual
         # loop / sustain. P added 2026-05-06 alongside the pan/pf gate spec
@@ -523,14 +524,17 @@ def build_sample_inst_bin(instruments: list) -> tuple:
         # Volume env point 0: hold at env_vol indefinitely (offset minifloat = 0 → hold).
         inst_bin[base + 21] = env_vol
         inst_bin[base + 22] = 0
-        # Instrument Global Volume carries the S3M instrument's default volume (0..64 → 0..255).
-        # The pattern builder no longer emits SEL_SET=Sv on note triggers; the engine
-        # multiplies by IGV instead, so the per-instrument level lives here.
-        inst_bin[base + 171] = min(0xFF, round(min(inst.volume, 64) * 255 / 64))
+        # S3M has no continuous instrumentwise volume scaler — its `inst.volume`
+        # (0..64) is purely the per-trigger initial value, equivalent to IT's
+        # sample.vol. So byte 171 (IGV) stays at full and byte 196 (DNV)
+        # carries the per-instrument default. Pre-2026-05-09 layout folded
+        # inst.volume into IGV — see terranmon §2350.
+        inst_bin[base + 171] = 0xFF                                                    # IGV: continuous unity
         inst_bin[base + 177] = 0x80 # default pan = centre (unused; pan env "p" flag not set)
         inst_bin[base + 182] = 0xFF # filter cutoff = off
         inst_bin[base + 183] = 0xFF # filter resonance = off
         inst_bin[base + 186] = 1 # NNA: note cut
+        inst_bin[base + 196] = min(0xFF, round(min(inst.volume, 64) * 255 / 64))       # DNV
 
         vprint(f"  instrument[{base // INST_STRIDE}] '{inst.name}' ptr: '{ptr}', sampling rate: '{inst.c2spd}'")
         if inst.c2spd > 65535:
@@ -558,8 +562,9 @@ def build_pattern(s3m_grid: list, ch_idx: int, default_pan: int,
 
     Volume column: explicit S3M cell vol -> SEL_SET; M/N/K/L vol slides folded
     by encode_effect -> vol_override; otherwise SEL_FINE/0 (no-op). Per-
-    instrument default volume lives in IGV (byte 171) and is applied by the
-    engine on every fresh trigger, so the converter no longer emits SEL_SET=Sv.
+    instrument default volume lives in DNV (byte 196) and is consulted by
+    the engine when the trigger row has no V column, so the converter
+    doesn't need to emit SEL_SET=Sv on plain trigger rows.
     Pan column: row 0 emits SEL_SET = default_pan to position the channel;
     other rows default to SEL_FINE/0 unless an X/P/etc effect overrides.
     """

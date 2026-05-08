@@ -212,11 +212,15 @@ def build_sample_inst_bin() -> bytes:
     struct.pack_into('<H', inst_bin, base + 19, 0)                       # pitch-env flags (P=0 → mixer skips)
     inst_bin[base + 21] = 63                                             # vol env pt 0 = full
     inst_bin[base + 22] = 0
-    inst_bin[base + 171] = 0xA0                                          # IGV
+    inst_bin[base + 171] = 0xA0                                          # IGV (square-wave headroom)
     inst_bin[base + 177] = 0x80                                          # default pan = centre
     inst_bin[base + 182] = 0xFF                                          # filter cutoff off
     inst_bin[base + 183] = 0xFF                                          # filter resonance off
     inst_bin[base + 186] = 0x01                                          # NNA: cut
+    # Monotone has no per-sample default volume concept (only one synth
+    # voice, no V column overrides). Set DNV to full so triggers get the
+    # full 0x3F rowVolume; the IGV above provides the actual attenuation.
+    inst_bin[base + 196] = 0xFF                                          # DNV: full
 
     return bytes(sample_bin) + bytes(inst_bin)
 

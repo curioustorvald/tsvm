@@ -1826,11 +1826,14 @@ function simulateRowState(ptnDat, uptoRow) {
         const isGRow = (effop === OP_G)
         const isNoteDelay = (effop === OP_S) && (((effarg >>> 12) & 0xF) === 0xD)
         // Track whether this row reloads the channel's default volume.  Engine:
-        // triggerNote() resets channelVolume to 0x3F only when the row carries an
-        // instrument byte; a note-only retrigger (inst === 0) inherits the
-        // channel's existing volume.  Tone-porta rows follow the same rule —
-        // an instrument byte on a porta row reloads default vol (matches
-        // schism csf_instrument_change inst_column branch).
+        // triggerNote() (and the tone-porta-with-inst branch in advanceRow)
+        // seed channelVolume from the instrument's Default Note Volume (byte
+        // 196) — only when the row carries an instrument byte; a note-only
+        // retrigger (inst === 0) inherits the channel's existing volume.
+        // Tone-porta rows follow the same rule (matches schism
+        // csf_instrument_change inst_column branch, effects.c:1302).
+        // The simulator approximates the seed as 0x3F (legacy fallback) — see
+        // the longer note below the reload block for the limitation.
         let reloadDefaultVol = false
         if (note !== 0xFFFF && note !== 0xFFFE) {
             if (note === 0x0000) {
@@ -1858,7 +1861,12 @@ function simulateRowState(ptnDat, uptoRow) {
         // Pan: simulator does not track per-instrument default pan, so it never resets
         // panAbs on trigger — this naturally matches the "stay at old value when inst === 0"
         // half of the policy. The engine-side default-pan reload (gated on inst !== 0)
-        // is invisible here.
+        // is invisible here. Same limitation now applies to default volume: the engine
+        // seeds rowVolume from the instrument's byte-196 "Default Note Volume" since
+        // 2026-05-09 (terranmon §171, §196), but the simulator has no instrument-byte
+        // access, so it falls back to 0x3F — equivalent to the legacy "DNV unset"
+        // path. Tracker UI displays may therefore show a slightly off row volume on
+        // fresh triggers when the instrument carries a reduced DNV.
         if (reloadDefaultVol) volAbs = 0x3F
 
         // Pre-scan effect column for S$80xx (8-bit pan SET wins over volcol/pancol SET).

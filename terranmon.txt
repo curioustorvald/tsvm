@@ -2141,9 +2141,23 @@ from source.
       Byte 1: Value (00..FF)
       Byte 2: Time until the next point, in seconds (3.5 Unsigned Minifloat, biased; range 0..15.75 s, smallest non-zero step 1/256 s ≈ 3.91 ms — chosen so single tracker ticks resolve at every supported BPM). 0 = hold at this point indefinitely.
 171 Uint8  Instrument Global Volume (0..255)
-        * ImpulseTracker has range of 0..128; multiply by (255/128) then round to int
-            - ImpulseTracker also has samplewise default volume (0..64) and samplewise global volume (0..64), and they must be taken into account because Taud has no samplewise config, following the ImpulseTracker spec
-        * FastTracker2 has range of 0..64; multiply by (255/64) then round to int
+        * Continuous multiplier applied on every output sample (matches IT's
+          `chan->instrument_volume`, see Schism player/csndfile.c:1317 and
+          player/sndmix.c:1171). Independent of the volume column / Mxx /
+          Nxx — those operate on rowVolume/channelVolume, while IGV scales
+          the final mix unconditionally.
+        * ImpulseTracker has separate `inst.gv` (0..128) and samplewise
+          `sample.gv` (0..64). Since Taud has no samplewise record, fold
+          the two factors into a single 0..255 value:
+              taud_igv = round(inst.gv * sample.gv * 255 / (128 * 64))
+          The samplewise `sample.vol` (0..64) is NOT folded here — it is the
+          per-trigger default chan_volume in IT (replaceable by V column),
+          and Taud carries it in byte 196 ("Default Note Volume"). Folding
+          it here was the cause of the "low-number voleffs are too quiet"
+          regression (TODO §2350, fixed 2026-05-09).
+        * FastTracker2 has range of 0..64 with no instrumentwise multiplier
+          beyond it; multiply by (255/64) and round. The XM samplewise
+          volume goes into byte 196.
 172 Uint8  Volume Fadeout low bits
 173 Bit8   Volume Fadeout high bits
         0b 0000 ffff
@@ -2267,7 +2281,27 @@ from source.
               triggerNote. So when DCA flags the foreground voice, the NNA-ghost it
               spawns inherits that DCA-modified state (e.g. noteFading carries over).
             - The new note then triggers normally on the foreground channel.
-196..255 Reserved (60 bytes free for future per-instrument fields)
+196 Uint8  Default Note Volume (0..255)
+        * Per-trigger default for `channelVolume` / `rowVolume` when the row
+          carries a fresh note + instrument byte but no explicit volume column
+          (matches IT's `chan->volume = psmp->volume` on note-on, Schism
+          player/effects.c:1302 and :1432). The 8-bit value rescales to
+          Taud's 0..63 row volume range:
+              row_default = round(default_note_volume * 63 / 255)
+          Any explicit V column on the trigger row OVERRIDES this — i.e.
+          rowVolume = vol_value, exactly mirroring IT's "V column replaces
+          chan->volume" rule.
+        * Source-format mapping:
+            - IT:  taud_dnv = round(sample.vol * 255 / 64)        # 0..64 → 0..255
+            - XM:  taud_dnv = round(sample.volume * 255 / 64)     # 0..64 → 0..255
+            - S3M: taud_dnv = round(min(inst.volume, 64) * 255 / 64)
+            - MOD: taud_dnv = round(min(sample.volume, 64) * 255 / 64)
+        * .taud files written before 2026-05-09 stored sample.vol folded into
+          byte 171 (IGV) and left this byte zero. Engines reading those older
+          files SHOULD treat default_note_volume == 0 as "field not present"
+          and fall back to row_default = 63 — preserving the pre-fix behaviour
+          for legacy files where IGV already carries sample.vol.
+197..255 Reserved (59 bytes free for future per-instrument fields)
 
 
 
@@ -2347,7 +2381,19 @@ TODO:
     Also document then implement `Mxx` (set channel volume, not just a note: 0x00 to 0x3F) `Nxy` (channel volume slide: similar to Dxy, but applies to the current channel's volume, not just a note) `Pxy` (channel panning slide. Similar to Dxx: P0y - to the right, Px0 - to the left, PFy - fine pan right, PxF - fine pan left) effects
     [x] 8 MB sample RAM via 512k banks
     [x] remove panning mode selection and replace global panning rule to  equal energy, also move the 'ff' flags to bit 0..1
-    [ ] low-number voleffs are too quiet (needs elaboration and test cases)
+    [x] low-number voleffs are too quiet (resolved 2026-05-09).
+        Root cause: the converters folded IT `sample.vol` into IGV (byte 171),
+        and the engine multiplied by IGV continuously — so any V-column override
+        on a sample with default vol < 64 was attenuated a second time, while
+        IT/Schism's V column replaces `chan->volume` outright (sample.vol does
+        not feature in the continuous `instrument_volume` factor — see
+        player/csndfile.c:1317 and player/sndmix.c:1171).
+        Fix: split the two concepts apart. Byte 171 (IGV) is now pure
+        `inst.gv * sample.gv` continuous multiplier; new byte 196 ("Default
+        Note Volume") carries `sample.vol` and is consulted by triggerNote
+        when no V column is present. Engine + all four `*2taud` converters
+        updated; legacy `.taud` files (byte 196 == 0) fall back to the
+        previous "row volume default = 63" behaviour.
 
 
 Play Data: play data are series of tracker-like instructions, visualised as:

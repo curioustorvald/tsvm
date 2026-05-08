@@ -1013,8 +1013,9 @@ def build_sample_inst_bin_xm(proxies: list) -> tuple:
 
         # Resolve envelope LOOP / SUSTAIN words from the proxy. When XM has no
         # envelope, fall back to a single-point unit envelope (vol LOOP word
-        # b=1 plus P=1 for consistency) and rely on IGV for level. Pan stays
-        # zero so the engine sees P=0 there and skips envelope-driven pan.
+        # b=1 plus P=1 for consistency) and rely on DNV (byte 196) for the
+        # per-trigger initial level. Pan stays zero so the engine sees P=0
+        # there and skips envelope-driven pan.
         if s.vol_env_pts is not None:
             vol_env_loop = s.vol_env_loop_word
             vol_env_sus  = s.vol_env_sus_word
@@ -1063,8 +1064,14 @@ def build_sample_inst_bin_xm(proxies: list) -> tuple:
             inst_bin[base + 121 + k * 2]     = 0x80
             inst_bin[base + 121 + k * 2 + 1] = 0x00
 
-        # IGV: XM volume 0..64 → 0..255
-        inst_bin[base + 171] = min(0xFF, round(s.volume * 255 / 64))
+        # XM has no continuous instrumentwise volume scaler — `s.volume` (0..64)
+        # is purely the per-trigger initial value (FT2 ft2_replayer.c handles
+        # this exactly the same as IT does with sample.vol). So byte 171 (IGV)
+        # stays at full unity and byte 196 (DNV) carries the per-instrument
+        # default. Pre-2026-05-09 layout folded s.volume into IGV — see
+        # terranmon §2350.
+        inst_bin[base + 171] = 0xFF                                                  # IGV: continuous unity
+        inst_bin[base + 196] = min(0xFF, round(s.volume * 255 / 64))                 # DNV
         # Fadeout: 12-bit. Low 8 bits at +172, high 4 bits at +173.
         inst_bin[base + 172] = s.fadeout & 0xFF
         inst_bin[base + 173] = (s.fadeout >> 8) & 0x0F

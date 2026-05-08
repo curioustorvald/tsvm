@@ -1241,14 +1241,21 @@ def build_sample_inst_bin_it(samples_or_proxy: list,
         pan_env_sus   = idata.get('pan_env_sus',  0)
         pf_env_loop   = idata.get('pf_env_loop',  0)
         pf_env_sus    = idata.get('pf_env_sus',   0)
-        # Sample-mode default IGV: fold sample default vol (Sv) and sample GV
-        # into Taud's IGV. Instrument-mode supplies inst_gv pre-folded.
+        # Sample-mode default IGV is now a pure continuous multiplier
+        # (sample.gv only — there is no inst.gv in IT sample mode). The
+        # samplewise default vol (Sv) is carried separately by byte 196.
+        # Instrument-mode supplies both inst_gv and default_note_vol pre-
+        # computed in the upstream proxy walk.
         if 'inst_gv' in idata:
             inst_gv = idata['inst_gv']
         else:
-            smp_vol_default = min(getattr(s, 'vol', 64), 64)
             smp_gv_default  = min(getattr(s, 'gv', 64), 64)
-            inst_gv = min(255, round(smp_vol_default * smp_gv_default * 255 / (64 * 64)))
+            inst_gv = min(255, round(smp_gv_default * 255 / 64))
+        if 'default_note_vol' in idata:
+            default_note_vol = idata['default_note_vol']
+        else:
+            smp_vol_default = min(getattr(s, 'vol', 64), 64)
+            default_note_vol = min(255, round(smp_vol_default * 255 / 64))
         # IT fadeout (file-stored 0..1024 per ITTECH; some loaders accept up to 2048) maps
         # verbatim to Taud's 12-bit fadeStep. Schism's per-tick decrement is stored / 1024 of
         # unit volume (sndmix.c:331-339, effects.c:1261: accumulator 65536, decrement
@@ -1328,7 +1335,11 @@ def build_sample_inst_bin_it(samples_or_proxy: list,
         dct = idata.get('dct', 0) & 0x03
         dca = idata.get('dca', 0) & 0x03
         inst_bin[base + 195] = (dca << 2) | dct
-        # Bytes 196..255: reserved (already zeroed).
+        # Byte 196: default note volume (per-trigger seed for rowVolume when
+        # no V column accompanies a fresh trigger). Replaces the old "fold
+        # sample.vol into IGV" trick — see terranmon byte 196 / TODO §2350.
+        inst_bin[base + 196] = default_note_vol & 0xFF
+        # Bytes 197..255: reserved (already zeroed).
 
         vprint(f"  instrument[{taud_idx}] '{s.name}' ptr:{ptr} c5spd:{s.c5_speed}")
 
@@ -1412,9 +1423,10 @@ def build_pattern_it(chunk_grid: list, ch_idx: int, default_pan: int,
 
         # ── Volume column ────────────────────────────────────────────────────
         # Priority: explicit cell vol (vol-col 0-64) > vol-col slide > main-
-        # effect vol override > nop. The per-instrument default volume is
-        # baked into IGV (byte 171), so the engine resolves note-trigger
-        # default volume itself; the converter no longer emits SEL_SET=Sv.
+        # effect vol override > nop. Per-trigger default volume now lives
+        # in byte 196 of the instrument record (DNV); the engine seeds
+        # rowVolume from it when this row has no V column, so the converter
+        # still doesn't need to emit SEL_SET=Sv on plain trigger rows.
         if cell.volcol >= 0 and cell.volcol <= VC_VOL_HI:
             vol_sel, vol_value = SEL_SET, min(cell.volcol, 0x3F)
         elif vs != SEL_FINE or vv != 0:
@@ -1643,19 +1655,23 @@ def assemble_taud(h: ITHeader, samples: list, instruments: list,
                 continue
             src_smp = samples[si]
             proxy[taud_slot] = src_smp
-            # IT cell-trigger initial volume comes from the sample's default
-            # volume (Sv, 0..64). It is folded into the Taud instrument's IGV
-            # (byte 171) along with IT inst.gv (0..128) and sample gv (0..64),
-            # so the engine applies all three as a single multiplier on every
-            # fresh trigger. inst_vols is retained only for legacy callers.
+            # IT splits per-sample volume into TWO concepts that Taud now
+            # carries in two separate bytes:
+            #   * inst.gv (0..128) * sample.gv (0..64) — continuous multiplier
+            #     on every output sample (matches Schism's
+            #     `chan->instrument_volume = (psmp->global_volume * penv->global_volume) >> 7`,
+            #     csndfile.c:1317). Goes to byte 171 (IGV).
+            #   * sample.vol (Sv, 0..64) — per-trigger seed for chan->volume,
+            #     replaceable by an explicit V column on the same row (Schism
+            #     effects.c:1302, :1432, :1819). Goes to byte 196 (DNV).
+            # Folding sample.vol into IGV (the pre-2026-05-09 layout) caused
+            # any V-column override on a sample with default vol < 64 to be
+            # attenuated a second time — see terranmon §2350.
             smp_default_vol = min(getattr(src_smp, 'vol', 64), 64)
             inst_vols[taud_slot] = min(smp_default_vol, 0x3F)
-
-            # IT inst.gv (0..128) * sample.gv (0..64) * sample.vol (0..64)
-            # collapse into Taud's single instrumentwise IGV (0..255).
             smp_gv = min(getattr(src_smp, 'gv', 64), 64)
-            inst_gv_255 = min(255, round(inst.gv * smp_gv * smp_default_vol * 255
-                                         / (128 * 64 * 64)))
+            inst_gv_255 = min(255, round(inst.gv * smp_gv * 255 / (128 * 64)))
+            default_note_vol_255 = min(255, round(smp_default_vol * 255 / 64))
 
             # IT pitch-pan centre: note number 0..119 (C-5 = 60). The Taud
             # representation is the absolute 4096-TET note value used in patterns
@@ -1699,6 +1715,7 @@ def assemble_taud(h: ITHeader, samples: list, instruments: list,
                 'pf_env_loop':   inst.pf_env_loop,
                 'pf_env_sus':    inst.pf_env_sus,
                 'inst_gv': inst_gv_255,
+                'default_note_vol': default_note_vol_255,
                 'fadeout': inst.fadeout,
                 'vib_speed':  vib_speed_taud,
                 'vib_depth':  vib_depth_taud,

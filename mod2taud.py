@@ -522,8 +522,9 @@ def build_sample_inst_bin(samples: list) -> tuple:
         le       = min(s.loop_end,   65535)
         loop_mode = 1 if (s.flags & 1) else 0
         flags_byte = loop_mode & 0x3
-        # Envelope first point is full-scale; per-sample level is carried by
-        # IGV (byte 171) so the envelope must contribute a unit multiplier.
+        # Envelope first point is full-scale; per-trigger initial level is
+        # carried by Default Note Volume (byte 196) so the envelope must
+        # contribute a unit multiplier.
         env_vol   = 63
         # MOD has no envelopes; vol LOOP word b=1 just so the engine evaluates
         # the unit envelope, plus P=1 (envelope present) for consistency with
@@ -545,14 +546,16 @@ def build_sample_inst_bin(samples: list) -> tuple:
         struct.pack_into('<H', inst_bin, base + 19, 0)
         inst_bin[base + 21] = env_vol
         inst_bin[base + 22] = 0
-        # Instrument Global Volume carries the MOD sample's default volume (0..64 → 0..255).
-        # The pattern builder no longer emits SEL_SET=Sv on note triggers; the engine
-        # multiplies by IGV instead, so the per-instrument level lives here.
-        inst_bin[base + 171] = min(0xFF, round(min(s.volume, 64) * 255 / 64))
+        # MOD has no continuous instrumentwise volume scaler — its `s.volume`
+        # (0..64) is purely the per-trigger initial value. Byte 171 (IGV)
+        # stays at full and byte 196 (DNV) carries the per-instrument default.
+        # Pre-2026-05-09 layout folded s.volume into IGV — see terranmon §2350.
+        inst_bin[base + 171] = 0xFF                                                 # IGV: continuous unity
         inst_bin[base + 177] = 0x80 # default pan = centre (unused; pan env "p" flag not set)
         inst_bin[base + 182] = 0xFF # filter cutoff = off
         inst_bin[base + 183] = 0xFF # filter resonance = off
         inst_bin[base + 186] = 1 # NNA: note cut
+        inst_bin[base + 196] = min(0xFF, round(min(s.volume, 64) * 255 / 64))       # DNV
 
         vprint(f"  instrument[{taud_idx}] '{s.name}' ptr={ptr} c2spd={s.c2spd} "
                f"vol={s.volume} loop=({ls},{le},{'on' if loop_mode else 'off'})")
@@ -573,9 +576,9 @@ def build_pattern(grid: list, ch_idx: int, default_pan: int,
     """Build a 512-byte Taud pattern for one MOD channel.
 
     Volume column: explicit Cxx → SEL_SET; effect-folded vol slide → vol_override;
-    otherwise SEL_FINE/0 (no-op). Per-instrument default volume lives in IGV
-    (byte 171) and is applied by the engine on every fresh trigger — the
-    converter no longer has to emit SEL_SET=Sv to scale notes.
+    otherwise SEL_FINE/0 (no-op). Per-instrument default volume lives in DNV
+    (byte 196) and is consulted by the engine when the trigger row has no V
+    column — the converter doesn't need to emit SEL_SET=Sv on plain triggers.
     """
     out = bytearray(PATTERN_BYTES)
     rows = grid[ch_idx] if ch_idx < len(grid) else [ModRow()] * MOD_PATTERN_ROWS

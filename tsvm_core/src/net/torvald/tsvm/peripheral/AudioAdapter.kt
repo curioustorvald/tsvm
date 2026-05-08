@@ -1701,6 +1701,20 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
      * Trigger a fresh note on [voice]: load the instrument, reset sample position, kick off the envelope.
      * Pulled out so S$Dx (note delay) can defer the same logic to a later tick.
      */
+    /**
+     * Trigger-time default rowVolume seed derived from the instrument's
+     * Default Note Volume (byte 196). Pre-2026-05-09 .taud files left this
+     * byte zero; treating 0 as "field not present" and falling back to 0x3F
+     * keeps legacy behaviour. Used by both [triggerNote] and the tone-porta
+     * + instrument-byte path in [advanceRow] — both must seed identically
+     * (Schism player/effects.c:1302 writes `chan->volume = psmp->volume`
+     * unconditionally on inst-column rows, regardless of porta).
+     */
+    private fun rowVolumeFromDefault(inst: TaudInst): Int {
+        val dnv = inst.defaultNoteVolume
+        return if (dnv == 0) 0x3F else (dnv * 63 + 127) / 255
+    }
+
     private fun triggerNote(voice: Voice, noteVal: Int, instId: Int, volOverride: Int) {
         if (instId != 0) voice.instrumentId = instId
         val inst = instruments[voice.instrumentId]
@@ -1773,14 +1787,18 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         voice.amigaPeriod = -1.0   // fresh trigger: period state must reseed from the new noteVal
         voice.linearFreq  = -1.0   // ditto for linear-freq mode (toneMode == 2)
         voice.playbackRate = computePlaybackRate(inst, noteVal)
-        // Fresh trigger resets channel volume to full ($3F) ONLY when the row carried an
-        // instrument byte; a note-only retrigger (instId == 0) inherits the channel's existing
-        // volume so the user can sustain a held volume across re-triggered notes. Per-instrument
-        // scaling lives in instGlobalVolume (byte 171), which the mixer applies as a multiplier.
-        // Converters therefore no longer need to emit SEL_SET=Sv on note-trigger rows.
+        // Fresh trigger seeds rowVolume from the per-instrument "default note volume"
+        // (byte 196) when the row carried an instrument byte but no explicit V column —
+        // matching IT's `chan->volume = psmp->volume` rule (Schism player/effects.c:1302
+        // and :1432). Pre-2026-05-09 .taud files left byte 196 zero and folded sample.vol
+        // into IGV instead; treating 0 as "field not present" and falling back to 0x3F
+        // preserves legacy behaviour. A note-only retrigger (instId == 0) inherits the
+        // channel's existing volume so held-volume sustains keep working across retriggers.
+        // Continuous per-instrument scaling lives in instGlobalVolume (byte 171), which the
+        // mixer applies independently of this seed.
         voice.channelVolume = when {
             volOverride >= 0 -> volOverride.coerceIn(0, 0x3F)
-            instId != 0     -> 0x3F
+            instId != 0     -> rowVolumeFromDefault(inst)
             else            -> voice.channelVolume
         }
         voice.rowVolume = voice.channelVolume
@@ -2054,11 +2072,17 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                         // so an in-progress fadeout from the prior note does not bleed
                         // into the porta'd note. fadeoutVolume is reset to unity so a
                         // volume-column SET on this row is heard at face value rather
-                        // than scaled by the decayed tail.
+                        // than scaled by the decayed tail. The seed must use the new
+                        // instrument's Default Note Volume (byte 196) — hard-coding
+                        // 0x3F here would push samples with a reduced default vol up
+                        // to full level on every porta-with-inst row (e.g.
+                        // nearly_there_.mod ord 0x1B ch 4 r49 jumped from ~35 to 63
+                        // and the bump persisted through the following vibrato rows).
                         if (row.instrment != 0) {
                             voice.instrumentId = row.instrment
-                            voice.channelVolume = 0x3F
-                            voice.rowVolume = 0x3F
+                            val seedVol = rowVolumeFromDefault(instruments[voice.instrumentId])
+                            voice.channelVolume = seedVol
+                            voice.rowVolume = seedVol
                             voice.keyOff = false
                             voice.noteFading = false
                             voice.fadeoutVolume = 1.0
@@ -3512,7 +3536,12 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
      *   193..194 u16 pitch/filter envelope SUSTAIN word
      *   195    u8 duplicate-check / action (relocated from old offset 189)
      *                  bits 0-1 = DCT, bits 2-3 = DCA
-     *   196..255 reserved (60 bytes)
+     *   196    u8 default note volume (0..255 → 0..63 on read).
+     *                  Per-trigger seed for rowVolume when the row carries
+     *                  a fresh note + instrument byte but no V column. 0
+     *                  means "legacy file, fall back to 0x3F" (pre-2026-05-09
+     *                  files folded sample.vol into IGV instead).
+     *   197..255 reserved (59 bytes)
      */
     data class TaudInst(
         var index: Int,
@@ -3549,7 +3578,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         var volEnvSustainWord: Int,         // bytes 189-190 (SUSTAIN word)
         var panEnvSustainWord: Int,         // bytes 191-192
         var pfEnvSustainWord: Int,          // bytes 193-194
-        var dupCheckFlag: Int               // byte 195 (relocated from 189)
+        var dupCheckFlag: Int,              // byte 195 (relocated from 189)
+        var defaultNoteVolume: Int          // byte 196 — per-trigger rowVolume default
     ) {
         constructor(index: Int) : this(
             index, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF,
@@ -3557,7 +3587,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             Array(25) { TaudInstEnvPoint(0x80, ThreeFiveMiniUfloat(0)) },
             Array(25) { TaudInstEnvPoint(0x80, ThreeFiveMiniUfloat(0)) },
             0, 0, 0, 0, 0, 0x80, 0x5000, 0, 0, 0xFF, 0,
-            0, 0, 0, 0, 0, 0, 0, 0
+            0, 0, 0, 0, 0, 0, 0, 0,
+            0
         )
 
         /** Sample-flag byte 14 bit 2 — when set, the sample loop is a sustain loop:
@@ -3576,8 +3607,9 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         /** Duplicate Check Action — 0=note cut, 1=note off, 2=note fade. */
         val duplicateCheckAction: Int get() = (dupCheckFlag ushr 2) and 0x03
 
-        // Reserved padding at offsets 196..255 (60 bytes per instrument).
-        private val reserved = ByteArray(60)
+        // Reserved padding at offsets 197..255 (59 bytes per instrument).
+        // Byte 196 is the new "default note volume" field — see triggerNote.
+        private val reserved = ByteArray(59)
 
         // Funk repeat (S$Fx00) bit-mask — non-destructive XOR overlay across the loop region.
         // Lazily allocated; a 1-bit flips the byte, a 0-bit leaves it intact.
@@ -3666,7 +3698,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             193 -> pfEnvSustainWord.toByte()
             194 -> pfEnvSustainWord.ushr(8).toByte()
             195 -> dupCheckFlag.toByte()
-            in 196..255 -> reserved[offset - 196]
+            196 -> defaultNoteVolume.toByte()
+            in 197..255 -> reserved[offset - 197]
             else -> throw InternalError("Bad offset $offset")
         }
 
@@ -3728,7 +3761,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             193 -> { pfEnvSustainWord = (pfEnvSustainWord and 0xff00) or byte }
             194 -> { pfEnvSustainWord = (pfEnvSustainWord and 0x00ff) or (byte shl 8) }
             195 -> { dupCheckFlag = byte and 0x0F }
-            in 196..255 -> { reserved[offset - 196] = byte.toByte() }
+            196 -> { defaultNoteVolume = byte and 0xFF }
+            in 197..255 -> { reserved[offset - 197] = byte.toByte() }
             else -> throw InternalError("Bad offset $offset")
         }
     }
