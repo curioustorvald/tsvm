@@ -1190,7 +1190,7 @@ There is no separate "use fadeout" flag — both extremes share the same field, 
 This table maps each PT effect to its Taud equivalent. Arguments follow PT's two-nibble form and expand to Taud's 16-bit form as shown.
 
 | PT effect | Taud effect | Notes |
-|---------|-----------|-------|
+|---------|---------|-------|
 | `0 $xy` | `J $xxyy` | Arpeggio; nibble-repeat each byte. See the 12-TET → Taud table above for conversion losses |
 | `1 $xx` | `F $00xx` (Amiga mode, `f` set) | Portamento up; raw PT period units, applied in period space |
 | `2 $xx` | `E $00xx` (Amiga mode, `f` set) | Portamento down; raw PT period units, applied in period space |
@@ -1220,7 +1220,7 @@ This table maps each PT effect to its Taud equivalent. Arguments follow PT's two
 | `E $Cx` | `S $Cx00` | Note cut |
 | `E $Dx` | `S $Dx00` | Note delay |
 | `E $Ex` | `S $Ex00` | Pattern delay |
-| `E $Fx` | `S $Fx00` | Funk repeat |
+| `E $Fx` | `S $Fyyy` | Funk repeat, where `yyy = funk_table[x]` |
 | `F $xx` (xx < $20) | `A $xx00` | Set speed |
 | `F $xx` (xx ≥ $20) | `T $(xx−$18)00` | Set tempo |
 

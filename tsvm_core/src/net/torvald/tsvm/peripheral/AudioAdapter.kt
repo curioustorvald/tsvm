@@ -3613,16 +3613,25 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
         // Funk repeat (S$Fx00) bit-mask — non-destructive XOR overlay across the loop region.
         // Lazily allocated; a 1-bit flips the byte, a 0-bit leaves it intact.
+        // Mask is sized for the loop length at allocation time; if the loop bounds change
+        // (e.g. a new song reuses this instrument slot with different sample data) the old
+        // mask is stale and must be discarded — otherwise indexing past its end crashes the
+        // render thread with ArrayIndexOutOfBoundsException.
         var funkMask: ByteArray? = null
         fun toggleFunkBit(loopOffset: Int) {
             val len = (sampleLoopEnd - sampleLoopStart).coerceAtLeast(1)
-            val mask = funkMask ?: ByteArray((len + 7) / 8).also { funkMask = it }
+            val expectedSize = (len + 7) / 8
+            var mask = funkMask
+            if (mask == null || mask.size != expectedSize) {
+                mask = ByteArray(expectedSize).also { funkMask = it }
+            }
             val idx = loopOffset.coerceIn(0, len - 1)
             mask[idx / 8] = (mask[idx / 8].toInt() xor (1 shl (idx and 7))).toByte()
         }
         fun funkBit(loopOffset: Int): Boolean {
             val mask = funkMask ?: return false
             val len = (sampleLoopEnd - sampleLoopStart).coerceAtLeast(1)
+            if (mask.size != (len + 7) / 8) { funkMask = null; return false }
             val idx = loopOffset.coerceIn(0, len - 1)
             return (mask[idx / 8].toInt() ushr (idx and 7)) and 1 != 0
         }

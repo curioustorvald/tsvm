@@ -2395,6 +2395,19 @@ TODO:
         updated; legacy `.taud` files (byte 196 == 0) fall back to the
         previous "row volume default = 63" behaviour.
 
+TODO - list of demo songs that MUST ship with Microtone:
+    * 4THSYM (rename to Fourth Symmetriad) — excellent piece for demonstrating NNAs and filter envelopes
+        (C) Skaven 1998
+    * Slumberjack — for demonstrating XM-compatible instrument definitions
+        (C) raina 2005
+    * Space Debris — MOD with tons of effects
+        (C) Captain/Image 1991
+    * Changing Waves — for Funk Repeat emulation
+        (C) 4mat/orb 2023
+    * Aboriginal Derivatives — for demonstrating Monotone compatibility.
+        (C) Jakim 2010
+    * SWINGIN1 (rename to Swinging Waste) — for demonstrating Monotone compatibility.
+        (C) Phoenix/Hornet 2015
 
 Play Data: play data are series of tracker-like instructions, visualised as:
 

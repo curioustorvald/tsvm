@@ -37,6 +37,7 @@ Current topics:
 - `reference_materials/impulse-tracker` — The original source code for ImpulseTracker
 - `reference_materials/MilkyTracker` — FastTracker 2 compatible tracker
 - `reference_materials/schismtracker` — Open-source re-implementation of ImpulseTracker
+- `reference_materials/pt2-clone` — Open-source re-implementation of ProTracker 2
 
 When fetching new references, copy the relevant upstream files verbatim into
 a topic folder, write a `README.md` summarising the relevant maths /
