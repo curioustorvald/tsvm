@@ -906,7 +906,7 @@ def encode_effect_it(cmd: int, arg: int, ch: int = 0, row: int = 0,
 
     if cmd == EFF_T:
         if arg >= 0x20:
-            return (TOP_T, ((arg - 0x18) & 0xFF) << 8, None, None)
+            return (TOP_T, ((arg - 0x19) & 0xFF) << 8, None, None)
         return (TOP_T, arg & 0xFF, None, None)
 
     if cmd == EFF_V:
@@ -1734,8 +1734,8 @@ def assemble_taud(h: ITHeader, samples: list, instruments: list,
     # ── BPM / speed ──────────────────────────────────────────────────────────
     speed, tempo = find_initial_bpm_speed(patterns_rows, h.order_list,
                                           h.initial_speed, h.initial_tempo)
-    tempo     = max(24, min(280, tempo))
-    bpm_stored = (tempo - 24) & 0xFF
+    tempo     = max(25, min(280, tempo))
+    bpm_stored = (tempo - 25) & 0xFF
     vprint(f"  initial speed={speed}, tempo={tempo} BPM")
 
     # ── Pattern bin ──────────────────────────────────────────────────────────

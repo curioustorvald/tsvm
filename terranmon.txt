@@ -2456,7 +2456,7 @@ Play Head Flags
                 made by songs will not persist.
             Panning law is fixed to the equal-energy; there is no runtime selection.
     Byte 3 (Tracker Mode)
-        - BPM (24 to 279. Play Data will change this register)
+        - BPM (25 to 280. Play Data will change this register)
     Byte 4 (Tracker Mode)
         - Tick Rate (Play Data will change this register)
 
@@ -2486,8 +2486,8 @@ Play Head Flags
 Table of 3.5 Minifloat values (CSV).
 Rebiased 2026-05-07 so the smallest non-zero step is 1/256 s and the maximum
 is 15.75 s — every cell is the original LUT value divided by 8. Chosen for
-tracker envelopes: a single song tick (≈ 8.9 ms at BPM 280, ≈ 41.7 ms at
-BPM 24) now lands within ±17 % of an LUT entry across the whole supported
+tracker envelopes: a single song tick (≈ 8.9 ms at BPM 280, ≈ 100 ms at
+BPM 25) now lands within ±17 % of an LUT entry across the whole supported
 BPM range; the previous bias was ±150 % at common BPMs.
      ,000,001,010,011,100,101,110,111,MSB
 00000,0,0.125,0.25,0.5,1,2,4,8
@@ -2568,7 +2568,7 @@ Endianness: Little
     Uint32  Song offset
     Uint8   Number of voices
     Uint16  Number of patterns (0 is invalid. pattern bin length = numPats * 8 bytes)
-    Uint8   Initial BPM (bias of -24. 0x00=24, 0xFF=279)
+    Uint8   Initial BPM (bias of -25. 0x00=25, 0xFF=280)
     Uint8   Initial Tickrate (0 is invalid)
     Uint16  Current Tuning base note (1..65533). A4 (western default) is 0x5C00. C9 (tracker default) is 0xA000. If zero, assume the tracker default value
     Float32 Frequency at the base note. Tracker default is 8363.0. If zero, assume the tracker default
@@ -2738,7 +2738,7 @@ The halt instruction (byte value 0x01 at cue offset 30) is placed on the last ac
 
 ## Tempo mapping
 
-S3M BPM is stored as a raw decimal value. Taud's initial BPM byte uses a bias of -24 (byte 0x00 = 24 BPM, 0xFF = 279 BPM). Conversion: taud_byte = bpm - 24. The converter also scans row 0 of the first pattern in the order list for A (set speed) and T (set tempo) effects and uses those values in preference to the S3M header defaults.
+S3M BPM is stored as a raw decimal value. Taud's initial BPM byte uses a bias of -25 (byte 0x00 = 25 BPM, 0xFF = 280 BPM). Conversion: taud_byte = bpm - 25. The converter also scans row 0 of the first pattern in the order list for A (set speed) and T (set tempo) effects and uses those values in preference to the S3M header defaults.
 
 ## Global volume
 

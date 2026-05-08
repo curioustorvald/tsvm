@@ -351,7 +351,7 @@ def encode_effect(cmd: int, arg: int, ch: int = 0, row: int = 0,
 
     if cmd == EFF_T:
         if arg >= 0x20:
-            return (TOP_T, ((arg - 0x18) & 0xFF) << 8, None, None)
+            return (TOP_T, ((arg - 0x19) & 0xFF) << 8, None, None)
         # OpenMPT slide forms: $0y down per tick, $1y up per tick.
         return (TOP_T, arg & 0xFF, None, None)
 
@@ -757,8 +757,8 @@ def assemble_taud(h: S3MHeader, instruments: list, patterns: list) -> bytes:
     # Initial BPM / speed
     speed, tempo = find_initial_bpm_speed(patterns, h.order_list,
                                           h.initial_speed, h.initial_tempo)
-    tempo = max(24, min(280, tempo))
-    bpm_stored = (tempo - 24) & 0xFF
+    tempo = max(25, min(280, tempo))
+    bpm_stored = (tempo - 25) & 0xFF
     vprint(f"  initial speed={speed}, tempo(BPM)={tempo}")
 
     # Song offset = header(32) + compressed + song_table(8)

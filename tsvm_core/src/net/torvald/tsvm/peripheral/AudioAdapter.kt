@@ -2343,7 +2343,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 val hi = (rawArg ushr 8) and 0xFF
                 if (hi != 0) {
                     val tempoByte = hi
-                    playhead.bpm = (tempoByte + 0x18).coerceIn(24, 280)
+                    playhead.bpm = (tempoByte + 0x19).coerceIn(25, 280)
                 } else {
                     val low = rawArg and 0xFF
                     when (low and 0xF0) {
@@ -2672,8 +2672,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         // Tempo slide — applied once per tick at the playhead level (any channel that armed it).
         for (voice in ts.voices) {
             if (voice.tempoSlideDir != 0 && ts.tickInRow > 0) {
-                val tempoByte = (playhead.bpm - 0x18 + voice.tempoSlideDir * voice.tempoSlideAmount).coerceIn(0, 0xFF)
-                playhead.bpm = (tempoByte + 0x18).coerceIn(24, 280)
+                val tempoByte = (playhead.bpm - 0x19 + voice.tempoSlideDir * voice.tempoSlideAmount).coerceIn(0, 0xFF)
+                playhead.bpm = (tempoByte + 0x19).coerceIn(25, 280)
             }
         }
 
@@ -3274,7 +3274,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         var masterVolume: Int = 0,
         var masterPan: Int = 128,
 //        var samplingRateMult: ThreeFiveMiniUfloat = ThreeFiveMiniUfloat(32),
-        var bpm: Int = 125,                // BPM, derived from tempoByte + 24. Spec default $65 ⇒ 125 BPM.
+        var bpm: Int = 125,                // BPM, derived from tempoByte + 25. Spec default $64 ⇒ 125 BPM.
         var tickRate: Int = 6,
         var pcmUpload: Boolean = false,
         var patBank1: Int = 0,
@@ -3322,7 +3322,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             5 -> masterPan.toByte()
             6 -> (isPcmMode.toInt(7) or isPlaying.toInt(4) or pcmQueueSizeIndex.and(15)).toByte()
             7 -> initialGlobalFlags.toByte()
-            8 -> (bpm - 24).toByte()
+            8 -> (bpm - 25).toByte()
             9 -> tickRate.toByte()
             else -> throw InternalError("Bad offset $index")
         }
@@ -3352,16 +3352,16 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                         ts.toneMode = byte and 3
                     }
                 }
-                8 -> { bpm = byte + 24 }
+                8 -> { bpm = byte + 25 }
                 9 -> { tickRate = byte }
                 else -> throw InternalError("Bad offset $index")
             }
         }
 
-        /*fun getSamplingRate() = 30000 - ((bpm - 24).and(255) or tickRate.and(255).shl(8)).toShort().toInt()
+        /*fun getSamplingRate() = 30000 - ((bpm - 25).and(255) or tickRate.and(255).shl(8)).toShort().toInt()
         fun setSamplingRate(rate: Int) {
             val rateDiff = (rate.coerceIn(0, 95535) - 30000).toShort().toInt()
-            bpm = rateDiff.and(255) + 24
+            bpm = rateDiff.and(255) + 25
             tickRate = rateDiff.ushr(8).and(255)
         }*/
 

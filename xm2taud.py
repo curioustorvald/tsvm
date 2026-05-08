@@ -598,8 +598,8 @@ def encode_effect_xm(cmd: int, arg: int, ch: int = 0, row: int = 0,
             return (TOP_NONE, 0, None, None)
         if arg < 0x20:
             return (TOP_A, (arg & 0xFF) << 8, None, None)
-        # Tempo: Taud T uses bias of -24 in stored form; mirror it2taud:
-        return (TOP_T, ((arg - 0x18) & 0xFF) << 8, None, None)
+        # Tempo: Taud T uses bias of -25 in stored form; mirror it2taud:
+        return (TOP_T, ((arg - 0x19) & 0xFF) << 8, None, None)
 
     if cmd == 0x10:
         # Set global volume 0..64 → Taud V (×4 to fit 0..255).
@@ -1249,7 +1249,7 @@ def assemble_taud(h: XMHeader, patterns: list, instruments: list) -> bytes:
     # XM envelope frames advance once per row tick. Tick rate is derived
     # from BPM the same way ProTracker derives it: ticks_per_sec = BPM × 2/5
     # (matches MilkyTracker's tick clock and it2taud's ticks_per_sec).
-    tempo_for_envs = max(24, min(280, h.default_bpm if h.default_bpm > 0 else 125))
+    tempo_for_envs = max(25, min(280, h.default_bpm if h.default_bpm > 0 else 125))
     ticks_per_sec  = max(1.0, tempo_for_envs * 2.0 / 5.0)
 
     # ── Build XM-instrument → list of Taud slot proxies ─────────────────────
@@ -1302,8 +1302,8 @@ def assemble_taud(h: XMHeader, patterns: list, instruments: list) -> bytes:
     # ── Tempo / speed ───────────────────────────────────────────────────────
     speed = h.default_speed if h.default_speed > 0 else 6
     tempo = h.default_bpm  if h.default_bpm  > 0 else 125
-    tempo = max(24, min(280, tempo))
-    bpm_stored = (tempo - 24) & 0xFF
+    tempo = max(25, min(280, tempo))
+    bpm_stored = (tempo - 25) & 0xFF
     vprint(f"  initial speed={speed}, tempo={tempo} BPM")
 
     # ── Channels / cue list ─────────────────────────────────────────────────

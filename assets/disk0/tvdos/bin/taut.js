@@ -534,7 +534,7 @@ function loadTaud(filePath, songIndex) {
 
     return {
         filePath, version, numSongs, numVoices, numPats,
-        bpm: (bpmStored + 24) & 0xFF, tickRate,
+        bpm: bpmStored + 25, tickRate,
         patterns, cues, lastActiveCue
     }
 }
@@ -2005,7 +2005,7 @@ function simulateRowState(ptnDat, uptoRow) {
             else if (effop === OP_T) {
                 const hi = (effarg >>> 8) & 0xFF
                 if (hi !== 0) {
-                    bpm = Math.max(24, Math.min(280, hi + 0x18))
+                    bpm = Math.max(25, Math.min(280, hi + 0x19))
                 } else {
                     const low = effarg & 0xFF
                     if ((low & 0xF0) === 0x00 || (low & 0xF0) === 0x10) memTSlide = low

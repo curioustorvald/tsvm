@@ -361,7 +361,7 @@ def assemble_taud(mon: dict) -> bytes:
     song_offset = TAUD_HEADER_SIZE + comp_size + TAUD_SONG_ENTRY
 
     # BPM 150 + ticks=mon_speed → row rate = 60/mon_speed (matches Monotone).
-    bpm_stored = 150 - 24
+    bpm_stored = 150 - 25
     # Linear-frequency tone mode (ff=2) so 1xx/2xx/3xx Hz/tick semantics survive verbatim.
     # Pan law is fixed engine-wide to the equal-energy (no flag). Monotone has no
     # instrument-level fadeout, so every Taud instrument carries fadeout=0 ("no fade") —

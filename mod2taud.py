@@ -367,7 +367,7 @@ def encode_effect(cmd: int, arg: int, ch: int = 0, row: int = 0) -> tuple:
             if arg == 0:
                 return (TOP_NONE, 0, None, None)
             return (TOP_A, (arg & 0xFF) << 8, None, None)
-        return (TOP_T, ((arg - 0x18) & 0xFF) << 8, None, None)
+        return (TOP_T, ((arg - 0x19) & 0xFF) << 8, None, None)
 
     return (TOP_NONE, 0, None, None)
 
@@ -721,8 +721,8 @@ def assemble_taud(mod: dict) -> bytes:
     comp_size  = len(compressed)
 
     speed, tempo = find_initial_bpm_speed(patterns, order_list)
-    tempo = max(24, min(280, tempo))
-    bpm_stored = (tempo - 24) & 0xFF
+    tempo = max(25, min(280, tempo))
+    bpm_stored = (tempo - 25) & 0xFF
     vprint(f"  initial speed={speed}, tempo(BPM)={tempo}")
 
     song_offset = TAUD_HEADER_SIZE + comp_size + TAUD_SONG_ENTRY
