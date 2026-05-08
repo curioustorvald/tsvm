@@ -44,6 +44,7 @@ from taud_common import (
     J_SEMI_TABLE,
     d_arg_to_col, resample_linear, rescale_offset_effects, encode_cue, deduplicate_patterns,
     normalise_sample, encode_song_entry, compress_blob,
+    build_project_data,
 )
 
 
@@ -718,7 +719,8 @@ def find_initial_bpm_speed(patterns: list, order_list: list,
     return speed, tempo
 
 
-def assemble_taud(h: S3MHeader, instruments: list, patterns: list) -> bytes:
+def assemble_taud(h: S3MHeader, instruments: list, patterns: list,
+                  with_project_data: bool = True) -> bytes:
     # Determine active channels (bit7 clear = enabled)
     active_channels = [i for i, cs in enumerate(h.channel_settings)
                        if i < 32 and not (cs & 0x80)][:NUM_VOICES]
@@ -765,16 +767,7 @@ def assemble_taud(h: S3MHeader, instruments: list, patterns: list) -> bytes:
     song_offset = TAUD_HEADER_SIZE + comp_size + TAUD_SONG_ENTRY
     num_taud_pats = P * C
 
-    # Header (32 bytes): magic(8)+ver(1)+numSongs(1)+compSize(4)+rsvd(4)+sig(14)
     sig = (SIGNATURE + b' ' * 14)[:14]
-    header = (
-        TAUD_MAGIC +
-        bytes([TAUD_VERSION, 1]) +
-        struct.pack('<I', comp_size) +
-        b'\x00\x00\x00\x00' +
-        sig
-    )
-    assert len(header) == TAUD_HEADER_SIZE
 
     # Pattern bin: for each s3m pattern, for each active channel, 512 bytes
     vprint("  building pattern bin…")
@@ -835,7 +828,34 @@ def assemble_taud(h: S3MHeader, instruments: list, patterns: list) -> bytes:
     )
     assert len(song_table) == TAUD_SONG_ENTRY
 
-    return header + compressed + song_table + pat_comp + cue_comp
+    # Project Data (optional). S3M instruments and samples share the same slot
+    # space, so the names go into both INam and SNam (1-based; slot 0 empty).
+    proj_data = b''
+    proj_off  = 0
+    if with_project_data:
+        names = [''] + [(inst.name if inst is not None else '')
+                        for inst in instruments[:255]]
+        proj_data = build_project_data(
+            project_name=h.title,
+            instrument_names=names,
+            sample_names=names,
+        )
+        if proj_data:
+            proj_off = TAUD_HEADER_SIZE + comp_size + TAUD_SONG_ENTRY \
+                       + len(pat_comp) + len(cue_comp)
+            vprint(f"  project data: {len(proj_data)} bytes @ offset {proj_off}")
+
+    # Header (32 bytes): magic(8)+ver(1)+numSongs(1)+compSize(4)+projOff(4)+sig(14)
+    header = (
+        TAUD_MAGIC +
+        bytes([TAUD_VERSION, 1]) +
+        struct.pack('<I', comp_size) +
+        struct.pack('<I', proj_off) +
+        sig
+    )
+    assert len(header) == TAUD_HEADER_SIZE
+
+    return header + compressed + song_table + pat_comp + cue_comp + proj_data
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
@@ -847,6 +867,9 @@ def main():
     ap.add_argument('output', help='Output .taud file')
     ap.add_argument('-v', '--verbose', action='store_true',
                     help='Print conversion details to stderr')
+    ap.add_argument('--no-project-data', action='store_true',
+                    help='Omit the optional Project Data section '
+                         '(song / instrument / sample names)')
     args = ap.parse_args()
 
     set_verbose(args.verbose)
@@ -862,7 +885,8 @@ def main():
     instruments = parse_instruments(data, h)
     patterns    = parse_patterns(data, h)
 
-    taud = assemble_taud(h, instruments, patterns)
+    taud = assemble_taud(h, instruments, patterns,
+                         with_project_data=not args.no_project_data)
 
     with open(args.output, 'wb') as f:
         f.write(taud)

@@ -411,6 +411,96 @@ def encode_song_entry(song_offset: int, num_voices: int, num_patterns: int,
     return entry
 
 
+# ── Project Data section (terranmon.txt:2601+) ───────────────────────────────
+
+PROJECT_DATA_MAGIC = bytes([0x1E, 0x54, 0x61, 0x75, 0x64, 0x50, 0x72, 0x4A])  # \x1ETaudPrJ
+PROJECT_DATA_HEADER_SIZE = 16   # 8-byte magic + 8 reserved
+
+
+def _name_table_blob(names) -> bytes:
+    """Encode a list of names (slot-indexed; slot 0 is left empty in source) as
+    0x1E-separated UTF-8 bytes. Trailing empty slots are trimmed to save space.
+    Returns b'' when every name is empty.
+    """
+    if not names:
+        return b''
+    end = len(names)
+    while end > 0 and not names[end - 1]:
+        end -= 1
+    if end == 0:
+        return b''
+    return b'\x1E'.join((n or '').encode('utf-8', 'replace') for n in names[:end])
+
+
+def build_project_data(*, project_name: str = '',
+                       author: str = '',
+                       copyright_str: str = '',
+                       sample_names=None,
+                       instrument_names=None,
+                       pattern_names=None,
+                       song_metadata=None) -> bytes:
+    """Build the optional PROJECT DATA section payload.
+
+    Returns the full block (8-byte magic + 8 reserved bytes + concatenated
+    FourCC sections), or b'' when there's nothing to write so the caller can
+    leave the header's projOff field at zero.
+
+    `sample_names` / `instrument_names` / `pattern_names` are slot-indexed
+    lists (entry 0 is typically empty since slot 0 is reserved); they are
+    encoded as 0x1E-separated UTF-8 strings inside SNam / INam / pNam blocks.
+
+    `song_metadata` is an optional list of dicts, one per song:
+        { 'index': int (0..255),
+          'notation': int = 0,
+          'beat_pri': int = 4,
+          'beat_sec': int = 16,
+          'name': str = '',
+          'composer': str = '',
+          'copyright': str = '' }
+    """
+    sections = []
+
+    def add(fourcc: bytes, payload: bytes) -> None:
+        if not payload:
+            return
+        sections.append(fourcc + struct.pack('<I', len(payload)) + payload)
+
+    if project_name:
+        add(b'PNam', project_name.encode('utf-8', 'replace'))
+    if author:
+        add(b'PCom', author.encode('utf-8', 'replace'))
+    if copyright_str:
+        add(b'PCpr', copyright_str.encode('utf-8', 'replace'))
+
+    add(b'INam', _name_table_blob(instrument_names))
+    add(b'SNam', _name_table_blob(sample_names))
+    add(b'pNam', _name_table_blob(pattern_names))
+
+    if song_metadata:
+        smet = bytearray()
+        for entry in song_metadata:
+            idx      = entry.get('index', 0) & 0xFF
+            notation = entry.get('notation', 0) & 0xFFFF
+            beat_pri = entry.get('beat_pri', 4) & 0xFF
+            beat_sec = entry.get('beat_sec', 16) & 0xFF
+            name_b = entry.get('name', '').encode('utf-8', 'replace') + b'\x00'
+            comp_b = entry.get('composer', '').encode('utf-8', 'replace') + b'\x00'
+            copr_b = entry.get('copyright', '').encode('utf-8', 'replace') + b'\x00'
+            payload = (struct.pack('<HBB', notation, beat_pri, beat_sec)
+                       + name_b + comp_b + copr_b)
+            smet.append(idx)
+            smet += struct.pack('<I', len(payload))
+            smet += payload
+        add(b'sMet', bytes(smet))
+
+    if not sections:
+        return b''
+
+    return PROJECT_DATA_MAGIC + b'\x00' * 8 + b''.join(sections)
+
+
+# ── Sample normalisation ─────────────────────────────────────────────────────
+
 def normalise_sample(raw: bytes, signed: bool, is_16bit: bool,
                      is_stereo: bool, name: str) -> bytes:
     """Return unsigned 8-bit mono sample bytes, downmixing/depthing as needed."""

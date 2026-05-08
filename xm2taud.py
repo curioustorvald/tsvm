@@ -59,6 +59,7 @@ from taud_common import (
     encode_cue, deduplicate_patterns,
     normalise_sample, encode_song_entry, nearest_minifloat, compress_blob,
     CUE_INST_NOP, CUE_INST_HALT, CUE_INST_LEN, cue_instruction_len,
+    build_project_data,
 )
 
 
@@ -1245,7 +1246,8 @@ def _active_channels_xm(h: XMHeader, patterns: list) -> list:
 
 # ── Main assembly ─────────────────────────────────────────────────────────────
 
-def assemble_taud(h: XMHeader, patterns: list, instruments: list) -> bytes:
+def assemble_taud(h: XMHeader, patterns: list, instruments: list,
+                  with_project_data: bool = True) -> bytes:
     # XM envelope frames advance once per row tick. Tick rate is derived
     # from BPM the same way ProTracker derives it: ticks_per_sec = BPM × 2/5
     # (matches MilkyTracker's tick clock and it2taud's ticks_per_sec).
@@ -1412,14 +1414,6 @@ def assemble_taud(h: XMHeader, patterns: list, instruments: list) -> bytes:
     # ── Header / song table ─────────────────────────────────────────────────
     song_offset = TAUD_HEADER_SIZE + comp_size + TAUD_SONG_ENTRY
     sig    = (SIGNATURE + b' ' * 14)[:14]
-    header = (
-        TAUD_MAGIC +
-        bytes([TAUD_VERSION, 1]) +
-        struct.pack('<I', comp_size) +
-        b'\x00\x00\x00\x00' +
-        sig
-    )
-    assert len(header) == TAUD_HEADER_SIZE
 
     pat_comp = compress_blob(bytes(pat_bin), "pattern bin")
     cue_comp = compress_blob(bytes(sheet),   "cue sheet")
@@ -1448,7 +1442,37 @@ def assemble_taud(h: XMHeader, patterns: list, instruments: list) -> bytes:
     )
     assert len(song_table) == TAUD_SONG_ENTRY
 
-    return header + compressed + song_table + pat_comp + cue_comp
+    # Project Data (optional). XM nests samples under instruments and the
+    # converter creates one Taud slot per (xm_inst, sample) pair, so SNam is
+    # populated from the per-Taud-slot proxies and INam carries the parent
+    # XM-level instrument names (1-based; slot 0 empty).
+    proj_data = b''
+    proj_off  = 0
+    if with_project_data:
+        inst_names = [''] + [(inst.name if inst is not None else '')
+                             for inst in instruments[:255]]
+        smp_names = [''] + [(p.name if p is not None else '')
+                            for p in proxies[1:256]]
+        proj_data = build_project_data(
+            project_name=h.title,
+            instrument_names=inst_names,
+            sample_names=smp_names,
+        )
+        if proj_data:
+            proj_off = TAUD_HEADER_SIZE + comp_size + TAUD_SONG_ENTRY \
+                       + len(pat_comp) + len(cue_comp)
+            vprint(f"  project data: {len(proj_data)} bytes @ offset {proj_off}")
+
+    header = (
+        TAUD_MAGIC +
+        bytes([TAUD_VERSION, 1]) +
+        struct.pack('<I', comp_size) +
+        struct.pack('<I', proj_off) +
+        sig
+    )
+    assert len(header) == TAUD_HEADER_SIZE
+
+    return header + compressed + song_table + pat_comp + cue_comp + proj_data
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -1460,6 +1484,9 @@ def main():
     ap.add_argument('input',  help='Input .xm file')
     ap.add_argument('output', help='Output .taud file')
     ap.add_argument('-v', '--verbose', action='store_true')
+    ap.add_argument('--no-project-data', action='store_true',
+                    help='Omit the optional Project Data section '
+                         '(song / instrument / sample names)')
     args = ap.parse_args()
     set_verbose(args.verbose)
 
@@ -1478,7 +1505,8 @@ def main():
     patterns, after_patterns = parse_patterns(data, h, patterns_off)
     instruments, _after = parse_instruments(data, h, after_patterns)
 
-    taud = assemble_taud(h, patterns, instruments)
+    taud = assemble_taud(h, patterns, instruments,
+                         with_project_data=not args.no_project_data)
 
     with open(args.output, 'wb') as f:
         f.write(taud)

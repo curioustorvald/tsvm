@@ -55,6 +55,7 @@ from taud_common import (
     encode_cue, deduplicate_patterns,
     normalise_sample, encode_song_entry, nearest_minifloat, compress_blob,
     CUE_INST_NOP, CUE_INST_HALT, CUE_INST_LEN, cue_instruction_len,
+    build_project_data,
 )
 
 
@@ -1561,7 +1562,8 @@ def _active_channels(h: ITHeader, patterns_rows: list) -> list:
     return active
 
 def assemble_taud(h: ITHeader, samples: list, instruments: list,
-                  patterns_rows: list, decompress: bool) -> bytes:
+                  patterns_rows: list, decompress: bool,
+                  with_project_data: bool = True) -> bytes:
     # ── Resolve IT recalls ───────────────────────────────────────────────────
     vprint("  resolving IT recalls…")
     resolve_it_recalls(patterns_rows, h.order_list, 64, h.link_gef,
@@ -1808,14 +1810,6 @@ def assemble_taud(h: ITHeader, samples: list, instruments: list,
 
     # ── Header ───────────────────────────────────────────────────────────────
     sig    = (SIGNATURE + b' ' * 14)[:14]
-    header = (
-        TAUD_MAGIC +
-        bytes([TAUD_VERSION, 1]) +
-        struct.pack('<I', comp_size) +
-        b'\x00\x00\x00\x00' +
-        sig
-    )
-    assert len(header) == TAUD_HEADER_SIZE
 
     # Compress pattern bin and cue sheet (per Taud spec)
     pat_comp = compress_blob(bytes(pat_bin), "pattern bin")
@@ -1846,7 +1840,36 @@ def assemble_taud(h: ITHeader, samples: list, instruments: list,
     )
     assert len(song_table) == TAUD_SONG_ENTRY
 
-    return header + compressed + song_table + pat_comp + cue_comp
+    # Project Data (optional). IT distinguishes instruments from samples, so
+    # both INam and SNam can carry distinct content. Slot 0 is unused, so the
+    # tables are 1-indexed with an empty slot-0 entry.
+    proj_data = b''
+    proj_off  = 0
+    if with_project_data:
+        inst_names = [''] + [(inst.name if inst is not None else '')
+                             for inst in instruments[:255]]
+        smp_names  = [''] + [(s.name if s is not None else '')
+                             for s in samples[:255]]
+        proj_data = build_project_data(
+            project_name=h.title,
+            instrument_names=inst_names,
+            sample_names=smp_names,
+        )
+        if proj_data:
+            proj_off = TAUD_HEADER_SIZE + comp_size + TAUD_SONG_ENTRY \
+                       + len(pat_comp) + len(cue_comp)
+            vprint(f"  project data: {len(proj_data)} bytes @ offset {proj_off}")
+
+    header = (
+        TAUD_MAGIC +
+        bytes([TAUD_VERSION, 1]) +
+        struct.pack('<I', comp_size) +
+        struct.pack('<I', proj_off) +
+        sig
+    )
+    assert len(header) == TAUD_HEADER_SIZE
+
+    return header + compressed + song_table + pat_comp + cue_comp + proj_data
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -1859,6 +1882,9 @@ def main():
     ap.add_argument('-v', '--verbose', action='store_true')
     ap.add_argument('--no-decompress', action='store_true',
                     help='Treat compressed IT samples as silent (debug)')
+    ap.add_argument('--no-project-data', action='store_true',
+                    help='Omit the optional Project Data section '
+                         '(song / instrument / sample names)')
     args = ap.parse_args()
     set_verbose(args.verbose)
 
@@ -1878,7 +1904,8 @@ def main():
     patterns_rows = parse_patterns(data, h)
 
     taud = assemble_taud(h, samples, instruments, patterns_rows,
-                         decompress=not args.no_decompress)
+                         decompress=not args.no_decompress,
+                         with_project_data=not args.no_project_data)
 
     with open(args.output, 'wb') as f:
         f.write(taud)
