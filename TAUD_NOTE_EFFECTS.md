@@ -1058,11 +1058,10 @@ funk_table[16] = { 0, 5, 6, 7, 8, $A, $B, $D, $10, $13, $16, $1A, $20, $2B, $40,
 
 on every tick (when S $Fxxxx is active with x != 0):
     funk_accumulator += funk_length
-    while funk_accumulator >= $80:
-        funk_accumulator -= $80
-        bit = funk_mask[funk_write_pos]
-        funk_mask[funk_write_pos] = bit XOR 1
-        funk_write_pos = (funk_write_pos + 1) mod loop_length
+    if funk_accumulator >= $80:                       # hard reset, drops residual
+        funk_accumulator = 0
+        funk_write_pos = (funk_write_pos + 1) mod loop_length    # pre-increment
+        funk_mask[funk_write_pos] = funk_mask[funk_write_pos] XOR 1
 
 on sample byte read during loop playback:
     raw_byte = sample_data[offset_in_loop]
@@ -1072,7 +1071,7 @@ on sample byte read during loop playback:
         output_byte = raw_byte
 ```
 
-`S $F000` clears `funk_accumulator` but leaves `funk_mask` intact (so the accumulated inversion pattern persists until the instrument is reset). On a fresh note or instrument-change event, Taud optionally resets `funk_mask` to all zero; this is a per-implementation choice, but the recommended default is **reset on instrument-change, preserve on pure note retrigger**.
+`S $F000` clears `funk_accumulator` but leaves `funk_mask` intact (the accumulated inversion pattern persists). **On every fresh note trigger**, `funk_write_pos` resets to 0 (matching PT2's `n_wavestart = n_loopstart`); `funk_accumulator` and `funk_speed` persist across notes. The `funk_mask` itself is **only cleared on cue-start reset** (i.e. song-start / stop-and-replay) — within a single playback session it accumulates as PT2's destructive in-place edits would, but a clean replay always reproduces the same audio without needing to reload the song from disk.
 
 ---
 

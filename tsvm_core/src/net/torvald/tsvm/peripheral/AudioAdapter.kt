@@ -1643,12 +1643,14 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         val frac = voice.samplePos - i0.toDouble()
         var b0 = sampleBin[(basePtr + i0).coerceAtMost(binMax).toLong()].toUint()
         var b1 = sampleBin[(basePtr + i1).coerceAtMost(binMax).toLong()].toUint()
-        // S$Fx funk repeat: XOR the high bit of bytes whose loop-relative index
-        // is set in funkMask. Only meaningful when the sample has a loop region.
+        // S$Fx funk repeat: bit-invert (XOR 0xFF) bytes whose loop-relative index
+        // is set in funkMask. Mirrors PT2's `*p = -1 - *p` (full bitwise NOT) — the
+        // mask is a non-destructive overlay so the source sample stays pristine.
+        // Only meaningful when the sample has a loop region.
         if (inst.funkMask != null && inst.sampleLoopEnd > inst.sampleLoopStart) {
             val ls = inst.sampleLoopStart
-            if (i0 in ls until inst.sampleLoopEnd && inst.funkBit(i0 - ls)) b0 = b0 xor 0x80
-            if (i1 in ls until inst.sampleLoopEnd && inst.funkBit(i1 - ls)) b1 = b1 xor 0x80
+            if (i0 in ls until inst.sampleLoopEnd && inst.funkBit(i0 - ls)) b0 = b0 xor 0xFF
+            if (i1 in ls until inst.sampleLoopEnd && inst.funkBit(i1 - ls)) b1 = b1 xor 0xFF
         }
         val s0 = (b0 - 127.5) / 127.5
         val s1 = (b1 - 127.5) / 127.5
@@ -1751,6 +1753,10 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         // Auto-vibrato sweep ramp restarts on every fresh trigger.
         voice.autoVibPhase = 0
         voice.autoVibTicksSinceTrigger = 0
+        // Funk repeat (S$Fx): PT2 resets n_wavestart to n_loopstart on every fresh
+        // note trigger (pt2_replayer.c:1094, 1100). funkSpeed and funkAccumulator
+        // persist across notes, matching PT2.
+        voice.funkWritePos = 0
         // Random vol/pan swing biases — seeded once per trigger (range determined by inst.volumeSwing/panSwing).
         voice.randomVolBias = if (inst.volumeSwing != 0)
             (Math.random() * (2 * inst.volumeSwing + 1)).toInt() - inst.volumeSwing else 0
@@ -2711,16 +2717,19 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         }
 
         // Funk repeat (S$Fxxxx) — advance bit-mask per tick on instruments with active funkSpeed.
+        // Matches PT2 updateFunk (pt2_replayer.c:278-297): hard-reset accumulator on overflow
+        // (NOT subtract — drops residual), and pre-increment the write pointer before flipping
+        // so the first invert after a fresh trigger lands on loop-relative byte 1.
         for (voice in ts.voices) {
             if (voice.funkSpeed == 0 || !voice.active) continue
             val inst = instruments[voice.instrumentId]
             if (inst.sampleLoopEnd <= inst.sampleLoopStart) continue
             voice.funkAccumulator += voice.funkSpeed
-            while (voice.funkAccumulator >= 0x80) {
-                voice.funkAccumulator -= 0x80
+            if (voice.funkAccumulator >= 0x80) {
+                voice.funkAccumulator = 0
                 val loopLen = (inst.sampleLoopEnd - inst.sampleLoopStart).coerceAtLeast(1)
-                inst.toggleFunkBit(voice.funkWritePos % loopLen)
                 voice.funkWritePos = (voice.funkWritePos + 1) % loopLen
+                inst.toggleFunkBit(voice.funkWritePos)
             }
         }
 
@@ -3426,6 +3435,12 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                     it.noteFading = false
                 }
                 ts.backgroundVoices.clear()
+                // Funk repeat (S$Fx): drop every per-instrument inversion mask so that
+                // stop-and-replay starts from a clean cue-initial state. The masks accumulate
+                // within a single playback (matching PT2's destructive-but-stable behaviour);
+                // here we snapshot back to "no inversions yet" so a fresh play is reproducible
+                // without needing to reload the song from disk.
+                parent.instruments.forEach { it.funkMask = null }
             }
         }
 
