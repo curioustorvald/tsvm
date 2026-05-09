@@ -18,6 +18,7 @@ import java.util.BitSet
 import kotlin.math.abs
 import kotlin.math.ceil
 import kotlin.math.floor
+import kotlin.math.ln
 import kotlin.math.roundToInt
 
 /**
@@ -25,9 +26,11 @@ import kotlin.math.roundToInt
  */
 class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMenu(parent, x, y, w, h) {
 
-    // Per-playhead view mode: 0=detailed pattern, 1=abridged pattern (stub), 2=super-abridged (stub), 3=cuesheet detail
+    // Per-playhead view mode: 0=detailed pattern, 1=abridged pattern (stub), 2=super-abridged (stub),
+    //                         3=cuesheet detail, 4=per-voice waveform
     private val scopeMode = IntArray(4)
     private val scopeScrollHorz = IntArray(4)
+    private val SCOPE_MODE_COUNT = 5
 
     override fun show() {
     }
@@ -50,7 +53,7 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
                         val syTop = h - 7 - 115 * i - 8 * FONT.H
                         val syBot = h - 3 - 115 * i
                         if (my in syTop..syBot) {
-                            scopeMode[3 - i] = (scopeMode[3 - i] + 1) and 3
+                            scopeMode[3 - i] = (scopeMode[3 - i] + 1) % SCOPE_MODE_COUNT
                             break
                         }
                     }
@@ -72,7 +75,7 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
                         val syTop = h - 7 - 115 * i - 8 * FONT.H
                         val syBot = h - 3 - 115 * i
                         if (my in syTop..syBot) {
-                            scopeMode[3 - i] = (scopeMode[3 - i] - 1) and 3
+                            scopeMode[3 - i] = (scopeMode[3 - i] + SCOPE_MODE_COUNT - 1) % SCOPE_MODE_COUNT
                             break
                         }
                     }
@@ -261,6 +264,64 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
     private fun bipolarCeil(d: Double) =  (if (d >= 0.0) ceil(d) else floor(d)).toInt()
     private fun bipolarFloor(d: Double) = (if (d >= 0.0) floor(d) else ceil(d)).toInt()
 
+    /**
+     * Find the most-recent rising-edge zero crossing in [buf] that has at least
+     * [cellW]/2 samples of context on either side, and return its position as a
+     * sub-sample-accurate "age" (samples since the oldest sample at [writePos]).
+     * Returns -1.0 if no usable crossing exists — the caller should then fall back
+     * to a free-running display.
+     */
+    private fun findTriggerAge(buf: FloatArray, writePos: Int, cellW: Int): Double {
+        val bufSize = buf.size
+        val mask = bufSize - 1
+        val halfW = cellW / 2
+        val maxAge = bufSize - halfW          // exclusive: rightmost trigger that still has cellW/2 right-side samples
+        val minAge = halfW                    // inclusive: leftmost trigger that still has cellW/2 left-side samples
+        if (maxAge - 1 <= minAge) return -1.0 // cell is too wide vs the buffer
+
+        // Walk newest → oldest within the search window. The most-recent crossing gives
+        // the freshest snapshot on the right of the trigger, so the eye sees the least lag.
+        var newer = buf[(writePos + maxAge - 1) and mask]
+        for (age in maxAge - 2 downTo minAge) {
+            val older = buf[(writePos + age) and mask]
+            if (older < 0f && newer >= 0f) {
+                // Linear interpolation between the two bracketing samples.
+                val denom = (newer - older)
+                val frac = if (denom > 1e-9f) (-older) / denom else 0f
+                return age + frac.toDouble()
+            }
+            newer = older
+        }
+        return -1.0
+    }
+
+    /**
+     * Pick a cols × rows grid for `n` waveform cells inside an `areaW × areaH` box.
+     * Optimises for cell aspect close to [targetAspect] (in log-space, so 6:1 and 1.5:1
+     * are penalised equally relative to 3:1) and lightly penalises wasted cells. Wide
+     * scope areas naturally get more columns than rows; tall ones flip the other way.
+     */
+    private fun pickWaveformGrid(n: Int, areaW: Int, areaH: Int): IntArray {
+        val targetAspect = 3.0
+        val wastePenalty = 0.3
+        var bestCols = 1
+        var bestRows = n
+        var bestScore = Double.POSITIVE_INFINITY
+        for (cols in 1..n) {
+            val rows = (n + cols - 1) / cols
+            val cellW = areaW.toDouble() / cols
+            val cellH = areaH.toDouble() / rows
+            val aspect = cellW / cellH
+            val score = abs(ln(aspect / targetAspect)) + wastePenalty * (cols * rows - n)
+            if (score < bestScore) {
+                bestScore = score
+                bestCols = cols
+                bestRows = rows
+            }
+        }
+        return intArrayOf(bestCols, bestRows)
+    }
+
     private val VOX_PER_VIEW = arrayOf(6,20,20)
     private val VOL_SYM = arrayOf('@','^','&',' ')
     private val PAN_SYM = arrayOf('@','<','>',' ')
@@ -373,6 +434,91 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
                                 }
                                 batch.color = if (here) Color.WHITE else COL_SOUNDSCOPE_FORE
                                 TINY.draw(batch, "|$instrStr3", cx, ry)
+                            }
+                        }
+
+                        // ── Mode 4: Per-voice waveform ───────────────────────────────────
+                        // Tile one waveform cell per "currently used" voice (cue-sheet
+                        // pattern number != 0xFFF). The soundscope area is wide and short,
+                        // so a cols × rows grid uses the space far better than a vertical
+                        // stack — pickWaveformGrid() picks a layout that keeps cells roughly
+                        // 3:1 wide while minimising empty slots.
+                        4 -> {
+                            val cuePats = IntArray(20) { vi -> readCuePat12(audio, cuePos, vi) }
+                            val activeVoiceIndices = (0 until 20).filter { cuePats[it] != 0xFFF }
+                            if (activeVoiceIndices.isEmpty()) {
+                                batch.color = COL_SOUNDSCOPE_FORE
+                                FONT.draw(batch, "No active voices", x, y + 4)
+                            } else {
+                                val scopeH = 8 * FONT.H + 4
+                                val scopeW = 512
+                                val n = activeVoiceIndices.size
+                                val grid = pickWaveformGrid(n, scopeW, scopeH)
+                                val cols = grid[0]
+                                val rows = grid[1]
+                                val cellW = scopeW / cols
+                                val cellH = scopeH / rows
+                                val halfH = ((cellH - 2) / 2).coerceAtLeast(1)
+                                val voices = ts.voices
+                                val drawLabel = cellH >= TINY.H + 1 && cellW >= 12
+
+                                // Faint grid separators between cells.
+                                batch.color = COL_TRACKER_ROW
+                                for (r in 1 until rows) batch.fillRect(x, y + r * cellH, scopeW, 1)
+                                for (c in 1 until cols) batch.fillRect(x + c * cellW, y, 1, scopeH)
+
+                                for ((slot, vi) in activeVoiceIndices.withIndex()) {
+                                    val voice = voices.getOrNull(vi) ?: continue
+                                    val col = slot % cols
+                                    val row = slot / cols
+                                    val cellX = x + col * cellW
+                                    val cellY = y + row * cellH
+                                    val centerY = cellY + cellH / 2
+
+                                    // baseline
+                                    batch.color = COL_TRACKER_ROW
+                                    batch.fillRect(cellX, centerY, cellW, 1)
+
+                                    // waveform — anchor the cell centre on the most recent
+                                    // sub-sample-accurate rising-edge zero crossing so that
+                                    // periodic signals appear stationary (oscilloscope trigger).
+                                    // Falls back to a free-running, oldest→newest sweep when no
+                                    // usable trigger is found (e.g. silent voice or sub-sub-Hz tone).
+                                    batch.color = COL_VOICE_PALETTE[vi % COL_VOICE_PALETTE.size]
+                                    val buf = voice.scopeBuffer
+                                    val bufSize = buf.size
+                                    val mask = bufSize - 1
+                                    val writePos = voice.scopeWritePos
+                                    val centerCol = cellW / 2
+                                    val triggerAge = findTriggerAge(buf, writePos, cellW)
+                                    val freeRunStep = (bufSize - 1).toDouble() / (cellW - 1).coerceAtLeast(1)
+                                    for (sx in 0 until cellW) {
+                                        val readAge = if (triggerAge >= 0.0)
+                                            triggerAge + (sx - centerCol).toDouble()
+                                        else
+                                            sx * freeRunStep
+                                        val baseAge = floor(readAge).toInt()
+                                        val frac = (readAge - baseAge).toFloat()
+                                        val a = buf[(writePos + baseAge) and mask]
+                                        val b = buf[(writePos + baseAge + 1) and mask]
+                                        val v = ((1f - frac) * a + frac * b).coerceIn(-1f, 1f)
+                                        val h = (v * halfH).roundToInt()
+                                        if (h == 0) {
+                                            batch.fillRect(cellX + sx, centerY, 1, 1)
+                                        } else if (h > 0) {
+                                            batch.fillRect(cellX + sx, centerY, 1, h)
+                                        } else {
+                                            batch.fillRect(cellX + sx, centerY + h, 1, -h)
+                                        }
+                                    }
+
+                                    // voice index label (top-left of cell), only when there is room
+                                    if (drawLabel) {
+                                        batch.color = COL_VOICE_PALETTE[vi % COL_VOICE_PALETTE.size]
+                                        TINY.draw(batch, vi.toString(16).padStart(2, '0').uppercase(),
+                                            cellX + 1, cellY)
+                                    }
+                                }
                             }
                         }
 

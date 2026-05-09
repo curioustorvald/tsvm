@@ -125,6 +125,10 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         internal val DBGPRN = false
         const val SAMPLING_RATE = 32000
         const val TRACKER_CHUNK = 512
+        // Per-voice soundscope ring-buffer length. Power of two so wrap-around is a single AND.
+        // Sized at 2× the soundscope width so the AudioMenu waveform view always has spare
+        // samples on either side of the centre to search for a stable trigger point.
+        const val SCOPE_BUFFER_SIZE = 1024
         // Mixer-private background-voice pool size per playhead. NNA "Continue/Note Off/Note Fade"
         // ghosts displaced foreground voices into this pool; oldest is evicted on overflow.
         const val MAX_BG_VOICES = 64
@@ -2928,7 +2932,13 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             val gvol = playhead.globalVolume / 255.0
             val mvol = playhead.mixingVolume / 255.0
             for (voice in ts.voices) {
-                if (!voice.active || voice.muted) continue
+                if (!voice.active || voice.muted) {
+                    // Keep the soundscope flat between notes / while muted so the AudioMenu
+                    // does not show stale waveform data once the voice goes silent.
+                    voice.scopeBuffer[voice.scopeWritePos] = 0f
+                    voice.scopeWritePos = (voice.scopeWritePos + 1) and (SCOPE_BUFFER_SIZE - 1)
+                    continue
+                }
                 val voiceInst = instruments[voice.instrumentId]
                 val s = applyTaudVoiceFx(voice, applyVoiceFilter(voice, fetchTrackerSample(voice, voiceInst, ts.interpolationMode)))
                 val instGv = voiceInst.instGlobalVolume / 255.0
@@ -2936,8 +2946,12 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 val swingScale = 1.0 + voice.randomVolBias / 255.0
                 // Volume envelope is bypassed (treated as unity) when S $77 has disabled it.
                 val effEnvVol = if (voice.volEnvOn) voice.envVolume else 1.0
-                val vol = effEnvVol * voice.fadeoutVolume * (voice.rowVolume / 63.0) *
-                          swingScale * gvol * mvol * instGv * playhead.masterVolume / 255.0
+                // Split the gain stack so the soundscope can see the voice amplitude independently
+                // of the playhead-wide faders (master / mixing / global volume).
+                val perVoiceGain = effEnvVol * voice.fadeoutVolume * (voice.rowVolume / 63.0) *
+                                   swingScale * instGv
+                val globalGain = gvol * mvol * playhead.masterVolume / 255.0
+                val vol = perVoiceGain * globalGain
                 val pan = if (voice.hasPanEnv && voice.panEnvOn) {
                     val envPanRaw = (voice.envPan * 255.0).roundToInt().coerceIn(0, 255)
                     (voice.channelPan + envPanRaw - 128 + voice.randomPanBias).coerceIn(0, 255)
@@ -2953,6 +2967,12 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                     if (voice.rampOutSamples == 0) voice.active = false
                     g
                 } else 1.0
+                // Per-voice soundscope capture — the voice's actual mono contribution before pan
+                // and before the playhead-global faders. Includes envelope, fadeout, tremolo,
+                // sample-end ramp-out and channel volume so the AudioMenu shows what the voice is
+                // really doing, not the raw instrument sample.
+                voice.scopeBuffer[voice.scopeWritePos] = (s * perVoiceGain * rampGain).toFloat()
+                voice.scopeWritePos = (voice.scopeWritePos + 1) and (SCOPE_BUFFER_SIZE - 1)
                 mixL += s * vol * lGain * rampGain
                 mixR += s * vol * rGain * rampGain
             }
@@ -3386,6 +3406,12 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
         // Effect-recall memory for this voice.
         val mem = MemorySlots()
+
+        // AudioMenu soundscope ring buffer. Holds the most recent post-FX, pre-pan voice
+        // sample values for visualisation only — not consumed by the mixer. Size is a
+        // power of two so the write-position wrap is a simple AND.
+        val scopeBuffer = FloatArray(SCOPE_BUFFER_SIZE)
+        var scopeWritePos = 0
     }
 
     class TrackerState {
