@@ -59,6 +59,9 @@ PT_MEM_TOP = frozenset({0x1, 0x2, 0x3, 0x4, 0x5, 0x6, 0x7, 0xA})
 # E sub-effects with memory (key is sub-nibble of the E command):
 PT_MEM_E_SUB = frozenset({0x1, 0x2, 0xA, 0xB})
 
+GLOBAL_FLAGS_AMIGA_FREQ = 0b01
+GLOBAL_FLAGS_A500_INTP = 0b1000
+
 
 # ── Taud constants (mod-specific) ────────────────────────────────────────────
 
@@ -769,7 +772,7 @@ def assemble_taud(mod: dict, with_project_data: bool = True) -> bytes:
     # equal-energy engine-wide. PT has no instrument-level fadeout, so every Taud
     # instrument carries fadeout=0 ("no fade") — notes retire on sample-end or
     # pattern note-cut instead, which matches PT semantics.
-    flags_byte = 0x01
+    flags_byte = GLOBAL_FLAGS_AMIGA_FREQ | GLOBAL_FLAGS_A500_INTP
     song_table = encode_song_entry(
         song_offset=song_offset,
         num_voices=n_channels,

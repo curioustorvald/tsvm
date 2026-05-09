@@ -59,6 +59,7 @@ MON_NOTE_C4 = 40
 # `Frequency:=Frequency±parm1` arithmetic (see MTSRC/MT_PLAY.PAS:606-630).
 # Panning law is fixed to the equal-energy — there is no `p` bit any more.
 GLOBAL_FLAGS_LINEAR_FREQ = 0b10
+GLOBAL_FLAGS_NO_INTERPOLATION = 0b0100
 
 
 # ── Taud container ───────────────────────────────────────────────────────────
@@ -361,7 +362,7 @@ def assemble_taud(mon: dict, with_project_data: bool = True) -> bytes:
     # Pan law is fixed engine-wide to the equal-energy (no flag). Monotone has no
     # instrument-level fadeout, so every Taud instrument carries fadeout=0 ("no fade") —
     # notes retire on sample-end or pattern note-cut instead.
-    flags_byte = GLOBAL_FLAGS_LINEAR_FREQ
+    flags_byte = GLOBAL_FLAGS_LINEAR_FREQ | GLOBAL_FLAGS_NO_INTERPOLATION
 
     song_table = encode_song_entry(
         song_offset       = song_offset,

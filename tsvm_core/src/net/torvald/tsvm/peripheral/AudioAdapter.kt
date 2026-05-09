@@ -2225,8 +2225,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 // bits 2-3 (rr): 0=Fast Sinc, 1=none, 2=Amiga 500, 3=Amiga 1200
                 // Panning law is fixed to the equal-energy; no runtime selection.
                 val flags = rawArg ushr 8
-                ts.toneMode = flags and 3
-                ts.interpolationMode = (flags ushr 2) and 3
+                playhead.updateTrackerGlobalBehaviour(flags)
             }
             EffectOp.OP_8 -> {
                 // 8 $xyzz — Bitcrusher.  See TAUD_NOTE_EFFECTS.md §8.
@@ -3492,6 +3491,13 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         var pcmQueueSizeIndex: Int = 0,
         val audioDevice: OpenALBufferedAudioDevice,
     ) {
+        fun updateTrackerGlobalBehaviour(flags: Int) {
+            trackerState?.let { ts ->
+                ts.toneMode = flags and 3
+                ts.interpolationMode = (flags ushr 2) and 3
+            }
+        }
+
         var trackerState: TrackerState? = TrackerState()  // default mode is tracker (isPcmMode=false)
 
         // Initial global behaviour flags (song-table byte, written via MMIO register 7 in tracker mode).
@@ -3554,10 +3560,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 } }
                 7 -> if (isPcmMode) { pcmUpload = true } else {
                     initialGlobalFlags = byte
-                    trackerState?.let { ts ->
-                        ts.toneMode = byte and 3
-                        ts.interpolationMode = (byte ushr 2) and 3
-                    }
+                    updateTrackerGlobalBehaviour(initialGlobalFlags)
                 }
                 8 -> { bpm = byte + 25 }
                 9 -> { tickRate = byte }

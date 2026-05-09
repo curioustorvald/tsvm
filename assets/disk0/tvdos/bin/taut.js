@@ -2249,7 +2249,8 @@ function drawProjectContents(wo) {
 
     let mixerflag = initialTrackerMixerflags
     let toneModeStr = ['Linear pitch','Amiga pitch','Linear freq',''][mixerflag & 3]
-    let flagStrSelected = [toneModeStr]
+    let intpModeStr = ['Fast Sinc','No intp.','A500 intp.','A1200 intp.'][(mixerflag >>> 2) & 3]
+    let flagStrSelected = [toneModeStr, intpModeStr]
 
 
     let projMeta = {

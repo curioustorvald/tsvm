@@ -134,12 +134,7 @@ class AudioJSR223Delegate(private val vm: VM) {
     fun setTrackerMixerFlags(playhead: Int, flags: Int) {
         getFirstSnd()?.playheads?.get(playhead)?.let { ph ->
             ph.initialGlobalFlags = flags
-            ph.trackerState?.let { ts ->
-                ts.toneMode = flags and 3
-                // Bits 2-7 reserved. Bit 2 was the old 'm' fadeout-zero policy; removed.
-                // Pan law is fixed to the equal-energy engine-wide — no flag bit any more.
-                // See AudioAdapter.kt and TAUD_NOTE_EFFECTS.md §1.
-            }
+            ph.updateTrackerGlobalBehaviour(flags)
         }
     }
 

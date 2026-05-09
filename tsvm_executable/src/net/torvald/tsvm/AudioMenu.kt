@@ -32,6 +32,20 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
     private val scopeScrollHorz = IntArray(4)
     private val SCOPE_MODE_COUNT = 5
 
+    // Which playhead the big scope is showing. Status-panel clicks change this.
+    private var selectedPlayhead = 0
+
+    // Layout — one big scope on top, four status panels along the bottom.
+    private val bigScopeX = 7
+    private val bigScopeY = 5
+    private val bigScopeW = 622
+    private val bigScopeH = 336
+    private val statusW = 102
+    private val statusH = 8 * FONT.H + 4
+    private val statusY = bigScopeY + bigScopeH + 4
+    // Spread the four status panels evenly across the big-scope width.
+    private fun statusX(i: Int): Int = bigScopeX + i * (bigScopeW - statusW) / 3
+
     override fun show() {
     }
 
@@ -41,96 +55,71 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
     private var guiClickLatched = arrayOf(false, false, false, false, false, false, false, false)
     private var guiKeypressLatched = BitSet(256)
 
+    private fun panelAtMouse(mx: Int, my: Int): Int {
+        if (my !in statusY until (statusY + statusH)) return -1
+        for (i in 0..3) {
+            val sx = statusX(i)
+            if (mx in sx until (sx + statusW)) return i
+        }
+        return -1
+    }
+
+    private fun mouseInBigScope(mx: Int, my: Int): Boolean =
+        mx in bigScopeX until (bigScopeX + bigScopeW) &&
+        my in bigScopeY until (bigScopeY + bigScopeH)
+
     override fun update() {
-        // mouse clicks
+        val mx = Gdx.input.x - x
+        val my = Gdx.input.y - y
+
+        // ── LEFT click ─────────────────────────────────────────────────────────────
+        // On a status panel: select that playhead as the big-scope target.
+        // On the big scope:  cycle scope mode forward for the selected playhead.
         if (Gdx.input.isButtonPressed(Buttons.LEFT)) {
             if (!guiClickLatched[Buttons.LEFT]) {
-                val mx = Gdx.input.x - x
-                val my = Gdx.input.y - y
-
-                if (mx in 117..629) {
-                    for (i in 0..3) {
-                        val syTop = h - 7 - 115 * i - 8 * FONT.H
-                        val syBot = h - 3 - 115 * i
-                        if (my in syTop..syBot) {
-                            scopeMode[3 - i] = (scopeMode[3 - i] + 1) % SCOPE_MODE_COUNT
-                            break
-                        }
-                    }
+                val panel = panelAtMouse(mx, my)
+                if (panel >= 0) {
+                    selectedPlayhead = panel
+                } else if (mouseInBigScope(mx, my)) {
+                    scopeMode[selectedPlayhead] =
+                        (scopeMode[selectedPlayhead] + 1) % SCOPE_MODE_COUNT
                 }
-
                 guiClickLatched[Buttons.LEFT] = true
             }
-        }
-        else {
+        } else {
             guiClickLatched[Buttons.LEFT] = false
         }
+
+        // ── RIGHT click on the big scope: cycle scope mode backward. ────────────────
         if (Gdx.input.isButtonPressed(Buttons.RIGHT)) {
             if (!guiClickLatched[Buttons.RIGHT]) {
-                val mx = Gdx.input.x - x
-                val my = Gdx.input.y - y
-
-                if (mx in 117..629) {
-                    for (i in 0..3) {
-                        val syTop = h - 7 - 115 * i - 8 * FONT.H
-                        val syBot = h - 3 - 115 * i
-                        if (my in syTop..syBot) {
-                            scopeMode[3 - i] = (scopeMode[3 - i] + SCOPE_MODE_COUNT - 1) % SCOPE_MODE_COUNT
-                            break
-                        }
-                    }
+                if (mouseInBigScope(mx, my)) {
+                    scopeMode[selectedPlayhead] =
+                        (scopeMode[selectedPlayhead] + SCOPE_MODE_COUNT - 1) % SCOPE_MODE_COUNT
                 }
-
                 guiClickLatched[Buttons.RIGHT] = true
             }
-        }
-        else {
+        } else {
             guiClickLatched[Buttons.RIGHT] = false
         }
 
-        // keyboard left/right
+        // ── Keyboard left/right: scroll the selected playhead's pattern view. ───────
         if (Gdx.input.isKeyPressed(Input.Keys.LEFT)) {
             if (!guiKeypressLatched[Input.Keys.LEFT]) {
-                val mx = Gdx.input.x - x
-                val my = Gdx.input.y - y
-
-                if (mx in 117..629) {
-                    for (i in 0..3) {
-                        val syTop = h - 7 - 115 * i - 8 * FONT.H
-                        val syBot = h - 3 - 115 * i
-                        if (my in syTop..syBot) {
-                            scopeScrollHorz[3 - i] = (scopeScrollHorz[3 - i] - 1).coerceIn(0, 14)
-                            break
-                        }
-                    }
-                }
-
+                scopeScrollHorz[selectedPlayhead] =
+                    (scopeScrollHorz[selectedPlayhead] - 1).coerceIn(0, 14)
                 guiKeypressLatched[Input.Keys.LEFT] = true
             }
-        }
-        else {
+        } else {
             guiKeypressLatched[Input.Keys.LEFT] = false
         }
         if (Gdx.input.isKeyPressed(Input.Keys.RIGHT)) {
             if (!guiKeypressLatched[Input.Keys.RIGHT]) {
-                val mx = Gdx.input.x - x
-                val my = Gdx.input.y - y
-
-                if (mx in 117..629) {
-                    for (i in 0..3) {
-                        val syTop = h - 7 - 115 * i - 8 * FONT.H
-                        val syBot = h - 3 - 115 * i
-                        if (my in syTop..syBot) {
-                            scopeScrollHorz[3 - i] = (scopeScrollHorz[3 - i] + 1).coerceIn(0, 14)
-                            break
-                        }
-                    }
-                }
-
+                scopeScrollHorz[selectedPlayhead] =
+                    (scopeScrollHorz[selectedPlayhead] + 1).coerceIn(0, 14)
                 guiKeypressLatched[Input.Keys.RIGHT] = true
             }
-        }
-        else {
+        } else {
             guiKeypressLatched[Input.Keys.RIGHT] = false
         }
     }
@@ -170,27 +159,32 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
         val adev = parent.currentlyPersistentVM?.vm?.peripheralTable?.getOrNull(cardIndex ?: -1)?.peripheral as? AudioAdapter
 
         if (adev != null) {
+            val playheads = adev.extortField<Array<AudioAdapter.Playhead>>("playheads")!!
 
-            // draw status LCD
+            // ── Big scope background (row 1) and status-panel backgrounds (row 2) ─────
             batch.inUse {
-                // draw backgrounds
-                batch.color = COL_WELL
-                for (i in 0..3) { batch.fillRect(7, 5 + 115*i, 102, 8*FONT.H + 4) }
-            }
-            for (i in 0..3) {
-                val ahead = adev.extortField<Array<AudioAdapter.Playhead>>("playheads")!![i]
-                drawStatusLCD(adev, ahead, batch, i, 9f + 7, 7f + 7 + 115 * i)
-            }
-
-            // draw Soundscope like this so that the overflown queue sparkline would not be overlaid on top of the envelopes
-            batch.inUse {
-                // draw backgrounds
                 batch.color = COL_SOUNDSCOPE_BACK
-                for (i in 0..3) { batch.fillRect(117, 5 + 115*i, 512, 8*FONT.H + 4) }
+                batch.fillRect(bigScopeX, bigScopeY, bigScopeW, bigScopeH)
+
+                // Highlight border behind the selected status panel.
+                batch.color = COL_HIGHLIGHT2
+                val selX = statusX(selectedPlayhead)
+                batch.fillRect(selX - 2, statusY - 2, statusW + 4, statusH + 4)
+
+                batch.color = COL_WELL
+                for (i in 0..3) batch.fillRect(statusX(i), statusY, statusW, statusH)
             }
+
+            // ── Big scope contents — only the selected playhead ────────────────────────
+            drawSoundscope(adev, playheads[selectedPlayhead], batch, selectedPlayhead,
+                bigScopeX.toFloat(), bigScopeY.toFloat(), bigScopeW, bigScopeH)
+
+            // ── All four status LCDs along the bottom ──────────────────────────────────
+            // Use the same (9, 9) inset from the panel as the original layout, so the
+            // existing label-positioning math inside drawStatusLCD still fits cleanly.
             for (i in 0..3) {
-                val ahead = adev.extortField<Array<AudioAdapter.Playhead>>("playheads")!![i]
-                drawSoundscope(adev, ahead, batch, i, 117f, 5f + 115 * i)
+                drawStatusLCD(adev, playheads[i], batch, i,
+                    statusX(i).toFloat() + 9f, statusY.toFloat() + 9f)
             }
         }
         else {
@@ -206,11 +200,16 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
         // NOTE: Samples count for PCM mode is drawn by drawSoundscope() function, not this one!
 
         batch.inUse {
+            // "P{n+1}" tag — bright on the selected playhead so the panel-as-button
+            // affordance is obvious.
+            batch.color = if (index == selectedPlayhead) COL_HIGHLIGHT2 else Color.WHITE
+            FONT.draw(batch, "P${index + 1}", x, y)
+
             batch.color = Color.WHITE
-            // PLAY icon
+            // PLAY icon (shifted right to make room for the playhead tag)
             if (ahead.isPlaying)
-                FONT.draw(batch, STR_PLAY, x, y)
-            FONT.draw(batch, if (ahead.isPcmMode) "PCM" else "TRACKER", x + 21, y)
+                FONT.draw(batch, STR_PLAY, x + 21, y)
+            FONT.draw(batch, if (ahead.isPcmMode) "PCM" else "TRACKER", x + 42, y)
 
             // PCM Mode labels
             if (ahead.isPcmMode) {
@@ -241,7 +240,7 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
                 FONT.draw(batch, "Tickrate", x, y + 6*FONT.H)
 
                 batch.color = COL_ACTIVE3
-                FONT.drawRalign(batch, "${ahead.trackerState?.cuePos?.toString(16)?.uppercase()?.padStart(2,'0')}:${ahead.trackerState?.rowIndex?.toString()?.uppercase()?.padStart(2,'0')}", x + 84, y + 2*FONT.H)
+                FONT.drawRalign(batch, "${ahead.trackerState?.cuePos?.toString(16)?.uppercase()?.padStart(3,'0')}:${ahead.trackerState?.rowIndex?.toString()?.uppercase()?.padStart(2,'0')}", x + 84, y + 2*FONT.H)
                 FONT.drawRalign(batch, "${ahead.masterVolume}", x + 84, y + 3*FONT.H)
                 FONT.drawRalign(batch, "${ahead.masterPan}", x + 84, y + 4*FONT.H)
                 FONT.drawRalign(batch, "${ahead.bpm}", x + 84, y + 5*FONT.H)
@@ -326,54 +325,62 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
     private val VOL_SYM = arrayOf('@','^','&',' ')
     private val PAN_SYM = arrayOf('@','<','>',' ')
 
-    private fun drawSoundscope(audio: AudioAdapter, ahead: AudioAdapter.Playhead, batch: SpriteBatch, index: Int, x: Float, y: Float) {
+    private fun drawSoundscope(audio: AudioAdapter, ahead: AudioAdapter.Playhead, batch: SpriteBatch, index: Int, x: Float, y: Float, w: Int, h: Int) {
         val gdxadev = ahead.audioDevice
         val bytes = gdxadev.extortField<ByteArray>("bytes")
         val bytesLen = gdxadev.extortField<Int>("bytesLength")!!
-        val envelopeHalfHeight = 27
+        val envelopeHalfHeight = h / 4
+        val lCenterY = h / 4
+        val rCenterY = 3 * h / 4
 
         batch.inUse {
             if (ahead.isPcmMode && bytes != null) {
                 val smpCnt = bytesLen / 4 - 1
 
-                for (s in 0..511) {
-                    val i = (smpCnt * (s / 511.0)).roundToInt().and(0xfffffe)
+                try {
+                    for (s in 0 until w) {
+                        val i = (smpCnt * (s / (w - 1).toDouble())).roundToInt().and(0xfffffe)
 
-                    val smpL = (bytes[i*4].toUint() or bytes[i*4+1].toUint().shl(8)).u16Tos16().toDouble().div(32767)
-                    val smpR = (bytes[i*4+2].toUint() or bytes[i*4+3].toUint().shl(8)).u16Tos16().toDouble().div(32767)
+                        val smpL =
+                            (bytes[i * 4].toUint() or bytes[i * 4 + 1].toUint().shl(8)).u16Tos16().toDouble().div(32767)
+                        val smpR = (bytes[i * 4 + 2].toUint() or bytes[i * 4 + 3].toUint().shl(8)).u16Tos16().toDouble()
+                            .div(32767)
 
-                    val smpLH = smpL * envelopeHalfHeight
-                    val smpRH = smpR * envelopeHalfHeight
+                        val smpLH = smpL * envelopeHalfHeight
+                        val smpRH = smpR * envelopeHalfHeight
 
-                    val smpLHi = bipolarFloor(smpLH)
-                    val smpRHi = bipolarFloor(smpRH)
-                    val smpLHi2 = bipolarCeil(smpLH)
-                    val smpRHi2 = bipolarCeil(smpRH)
+                        val smpLHi = bipolarFloor(smpLH)
+                        val smpRHi = bipolarFloor(smpRH)
+                        val smpLHi2 = bipolarCeil(smpLH)
+                        val smpRHi2 = bipolarCeil(smpRH)
 
-                    val smpLHe = abs(smpLH - smpLHi).toFloat()
-                    val smpRHe = abs(smpRH - smpRHi).toFloat()
+                        val smpLHe = abs(smpLH - smpLHi).toFloat()
+                        val smpRHe = abs(smpRH - smpRHi).toFloat()
 
-                    // antialias in y-axis
-                    if (smpLHi != smpLHi2) {
-                        batch.color = COL_SOUNDSCOPE_FORE.cpy().mul(smpLHe)
-                        batch.fillRect(x + s, y + 27, 1, smpLHi2)
+                        // antialias in y-axis
+                        if (smpLHi != smpLHi2) {
+                            batch.color = COL_SOUNDSCOPE_FORE.cpy().mul(smpLHe)
+                            batch.fillRect(x + s, y + lCenterY, 1, smpLHi2)
+                        }
+                        if (smpRHi != smpRHi2) {
+                            batch.color = COL_SOUNDSCOPE_FORE.cpy().mul(smpRHe)
+                            batch.fillRect(x + s, y + rCenterY, 1, smpRHi2)
+                        }
+
+                        // base texture
+                        batch.color = COL_SOUNDSCOPE_FORE
+                        batch.fillRect(x + s, y + lCenterY, 1, smpLHi)
+                        batch.fillRect(x + s, y + rCenterY, 1, smpRHi)
                     }
-                    if (smpRHi != smpRHi2) {
-                        batch.color = COL_SOUNDSCOPE_FORE.cpy().mul(smpRHe)
-                        batch.fillRect(x + s, y + 81, 1, smpRHi2)
-                    }
 
-                    // base texture
-                    batch.color = COL_SOUNDSCOPE_FORE
-                    batch.fillRect(x + s, y + 27, 1, smpLHi)
-                    batch.fillRect(x + s, y + 81, 1, smpRHi)
+                    // PCM Samples count — drawn inside the scope (top-left) since the status
+                    // panels no longer sit beside it in the new single-scope layout.
+                    batch.color = Color.WHITE
+                    FONT.draw(batch, "Samples", x + 4, y + 4)
+                    batch.color = COL_ACTIVE3
+                    FONT.draw(batch, "${smpCnt + 1}", x + 4 + 8 * FONT.W, y + 4)
                 }
-
-                batch.color = Color.WHITE
-                FONT.draw(batch, "Samples", x - 101, y + 5*FONT.H + 9)
-                batch.color = COL_ACTIVE3
-                FONT.drawRalign(batch, "${smpCnt+1}", x - 17, y + 5*FONT.H + 9)
-
+                catch (_: ArrayIndexOutOfBoundsException) {}
             }
             else {
                 // Tracker pattern visualiser.
@@ -385,7 +392,9 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
                 } else {
                     val cuePos = ts.cuePos
                     val rowIdx = ts.rowIndex
-                    val ROWS   = 17
+                    // Rows scale with available height — the original 17-row layout was sized
+                    // for the old 108-pixel scope; the big scope can show many more rows.
+                    val ROWS   = ((h - 8) / TINY.H).coerceAtLeast(1)
                     val PTN_MAX_ROWS = 63
 
                     when (scopeMode[index]) {
@@ -403,7 +412,7 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
 
                                 if (here) {
                                     batch.color = COL_TRACKER_ROW
-                                    batch.fillRect(x, ry, 512, TINY.H)
+                                    batch.fillRect(x, ry, w, TINY.H)
                                 }
 
                                 var cx = x
@@ -450,8 +459,8 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
                                 batch.color = COL_SOUNDSCOPE_FORE
                                 FONT.draw(batch, "No active voices", x, y + 4)
                             } else {
-                                val scopeH = 8 * FONT.H + 4
-                                val scopeW = 512
+                                val scopeH = h
+                                val scopeW = w
                                 val n = activeVoiceIndices.size
                                 val grid = pickWaveformGrid(n, scopeW, scopeH)
                                 val cols = grid[0]
@@ -515,8 +524,8 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
                                     // voice index label (top-left of cell), only when there is room
                                     if (drawLabel) {
                                         batch.color = COL_VOICE_PALETTE[vi % COL_VOICE_PALETTE.size]
-                                        TINY.draw(batch, vi.toString(16).padStart(2, '0').uppercase(),
-                                            cellX + 1, cellY)
+                                        TINY.draw(batch, (vi+1).toString().padStart(2, '0').uppercase(),
+                                            cellX + 1, cellY + 1)
                                     }
                                 }
                             }
@@ -564,7 +573,7 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
 
                                 if (here) {
                                     batch.color = COL_TRACKER_ROW
-                                    batch.fillRect(patX, ry, 512 - cueW - sepW, TINY.H)
+                                    batch.fillRect(patX, ry, w - cueW - sepW, TINY.H)
                                 }
 
                                 var cx = patX
