@@ -676,7 +676,7 @@ function drawStatusBar() {
     // play/stop sym
     con.color_pair(colWHITE, 255)
     con.move(1,1)
-    print(`${sym.playhead}${PLAYHEAD}`)
+    print(`P${PLAYHEAD+1}`)
     con.move(2,1)
     print((playbackMode == PLAYMODE_NONE) ? sym.statusstop : sym.statusplay)
 

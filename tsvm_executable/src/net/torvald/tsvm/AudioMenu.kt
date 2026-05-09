@@ -8,7 +8,10 @@ import com.badlogic.gdx.graphics.Color
 import com.badlogic.gdx.graphics.g2d.SpriteBatch
 import net.torvald.reflection.extortField
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUint
+import net.torvald.tsvm.EmulatorGuiToolkit.Theme.COL_ACTIVE
+import net.torvald.tsvm.EmulatorGuiToolkit.Theme.COL_ACTIVE2
 import net.torvald.tsvm.EmulatorGuiToolkit.Theme.COL_ACTIVE3
+import net.torvald.tsvm.EmulatorGuiToolkit.Theme.COL_HIGHLIGHT
 import net.torvald.tsvm.EmulatorGuiToolkit.Theme.COL_HIGHLIGHT2
 import net.torvald.tsvm.EmulatorGuiToolkit.Theme.COL_WELL
 import net.torvald.tsvm.VMEmuExecutableWrapper.Companion.FONT
@@ -28,7 +31,7 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
 
     // Per-playhead view mode: 0=detailed pattern, 1=abridged pattern (stub), 2=super-abridged (stub),
     //                         3=cuesheet detail, 4=per-voice waveform
-    private val scopeMode = IntArray(4)
+    private val scopeMode = IntArray(4) { 4 }
     private val scopeScrollHorz = IntArray(4)
     private val SCOPE_MODE_COUNT = 5
 
@@ -167,7 +170,7 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
                 batch.fillRect(bigScopeX, bigScopeY, bigScopeW, bigScopeH)
 
                 // Highlight border behind the selected status panel.
-                batch.color = COL_HIGHLIGHT2
+                batch.color = COL_ACTIVE
                 val selX = statusX(selectedPlayhead)
                 batch.fillRect(selX - 2, statusY - 2, statusW + 4, statusH + 4)
 
@@ -202,7 +205,7 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
         batch.inUse {
             // "P{n+1}" tag — bright on the selected playhead so the panel-as-button
             // affordance is obvious.
-            batch.color = if (index == selectedPlayhead) COL_HIGHLIGHT2 else Color.WHITE
+            batch.color = if (index == selectedPlayhead) COL_ACTIVE else Color.WHITE
             FONT.draw(batch, "P${index + 1}", x, y)
 
             batch.color = Color.WHITE
@@ -321,7 +324,7 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
         return intArrayOf(bestCols, bestRows)
     }
 
-    private val VOX_PER_VIEW = arrayOf(6,20,20)
+    private val VOX_PER_VIEW = arrayOf(10,20,20)
     private val VOL_SYM = arrayOf('@','^','&',' ')
     private val PAN_SYM = arrayOf('@','<','>',' ')
 
@@ -332,6 +335,7 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
         val envelopeHalfHeight = h / 4
         val lCenterY = h / 4
         val rCenterY = 3 * h / 4
+        val patOffY = 0
 
         batch.inUse {
             if (ahead.isPcmMode && bytes != null) {
@@ -376,9 +380,9 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
                     // PCM Samples count — drawn inside the scope (top-left) since the status
                     // panels no longer sit beside it in the new single-scope layout.
                     batch.color = Color.WHITE
-                    FONT.draw(batch, "Samples", x + 4, y + 4)
+                    FONT.draw(batch, "Samples", x + 4, y + patOffY)
                     batch.color = COL_ACTIVE3
-                    FONT.draw(batch, "${smpCnt + 1}", x + 4 + 8 * FONT.W, y + 4)
+                    FONT.draw(batch, "${smpCnt + 1}", x + 4 + 8 * FONT.W, y + patOffY)
                 }
                 catch (_: ArrayIndexOutOfBoundsException) {}
             }
@@ -388,13 +392,13 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
                 val ts = ahead.trackerState
                 if (ts == null) {
                     batch.color = COL_SOUNDSCOPE_FORE
-                    FONT.draw(batch, "No tracker state", x, y + 4)
+                    FONT.draw(batch, "No tracker state", x, y + patOffY)
                 } else {
                     val cuePos = ts.cuePos
                     val rowIdx = ts.rowIndex
                     // Rows scale with available height — the original 17-row layout was sized
                     // for the old 108-pixel scope; the big scope can show many more rows.
-                    val ROWS   = ((h - 8) / TINY.H).coerceAtLeast(1)
+                    val ROWS   = (h / TINY.H).coerceAtLeast(1)
                     val PTN_MAX_ROWS = 63
 
                     when (scopeMode[index]) {
@@ -408,7 +412,7 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
                                 val ci = cueFirst + r
                                 if (ci > 1023) break
                                 val here = ci == cuePos
-                                val ry = y + 4 + r * TINY.H
+                                val ry = y + patOffY +  r * TINY.H
 
                                 if (here) {
                                     batch.color = COL_TRACKER_ROW
@@ -550,12 +554,12 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
                                 batch.color = if (here) Color.WHITE else COL_SOUNDSCOPE_FORE
                                 TINY.draw(batch,
                                     "${if (here) ">" else " "}${ci.toString(16).padStart(3, '0').uppercase()}",
-                                    x, y + 4 + r * TINY.H)
+                                    x, y + patOffY +  r * TINY.H)
                             }
 
                             // Vertical separator
                             batch.color = COL_SOUNDSCOPE_FORE
-                            for (r in 0 until ROWS) TINY.draw(batch, "|", x + cueW, y + 4 + r * TINY.H)
+                            for (r in 0 until ROWS) TINY.draw(batch, "|", x + cueW, y + patOffY +  r * TINY.H)
                              */
 
                             // Pattern index for each voice in current cue
@@ -569,7 +573,7 @@ class AudioMenu(parent: VMEmuExecutable, x: Int, y: Int, w: Int, h: Int) : EmuMe
                                 val ri = rowFirst + r
                                 if (ri > PTN_MAX_ROWS) break
                                 val here = ri == rowIdx
-                                val ry = y + 4 + r * TINY.H
+                                val ry = y + patOffY +  r * TINY.H
 
                                 if (here) {
                                     batch.color = COL_TRACKER_ROW
