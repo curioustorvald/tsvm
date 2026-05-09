@@ -1,7 +1,9 @@
 const SND_BASE_ADDR = audio.getBaseAddr()
 const SND_MEM_ADDR = audio.getMemAddr()
-const TAD_INPUT_ADDR = SND_MEM_ADDR - 262144  // TAD input buffer (matches TAV packet 0x24)
-const TAD_DECODED_ADDR = SND_MEM_ADDR - 262144 + 65536  // TAD decoded buffer
+// tadInputBin lives at audio-local offset 917504 and tadDecodedBin at 983040
+// (post-bef85f6 memory map; the old 262144 offset now hits the enlarged sampleBin).
+const TAD_INPUT_ADDR = SND_MEM_ADDR - 917504  // TAD input buffer (matches TAV packet 0x24)
+const TAD_DECODED_ADDR = SND_MEM_ADDR - 983040  // TAD decoded buffer
 
 if (!SND_BASE_ADDR) return 10
 

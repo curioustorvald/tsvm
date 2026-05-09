@@ -1746,7 +1746,9 @@ try {
                     tadInitialised = true
                 }
 
-                seqread.readBytes(payloadLen, SND_MEM_ADDR - 262144)
+                // tadInputBin lives at audio-local offset 917504 (post-bef85f6 memory map);
+                // the previous 262144 offset now points into the enlarged sampleBin.
+                seqread.readBytes(payloadLen, SND_MEM_ADDR - 917504)
                 audio.tadDecode()
                 audio.tadUploadDecoded(AUDIO_DEVICE, sampleLen)
             }

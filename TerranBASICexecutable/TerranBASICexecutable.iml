@@ -10,5 +10,7 @@
     <orderEntry type="module" module-name="tsvm_core" />
     <orderEntry type="library" name="TerranVirtualDisk" level="project" />
     <orderEntry type="library" name="lib" level="project" />
+    <orderEntry type="library" name="badlogicgames.gdx" level="project" />
+    <orderEntry type="library" name="badlogicgames.gdx.backend.lwjgl3" level="project" />
   </component>
 </module>

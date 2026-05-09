@@ -275,6 +275,7 @@ class AudioJSR223Delegate(private val vm: VM) {
 
 
 
+    // while the following code does work, it was decided that MP3 is "too new" for tsvm and thus removed.
     /*
     js-mp3
     https://github.com/soundbus-technologies/js-mp3

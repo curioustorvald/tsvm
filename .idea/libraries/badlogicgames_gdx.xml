@@ -1,0 +1,11 @@
+<component name="libraryTable">
+  <library name="badlogicgames.gdx" type="repository">
+    <properties maven-id="com.badlogicgames.gdx:gdx:1.12.1" />
+    <CLASSES>
+      <root url="jar://$MAVEN_REPOSITORY$/com/badlogicgames/gdx/gdx/1.12.1/gdx-1.12.1.jar!/" />
+      <root url="jar://$MAVEN_REPOSITORY$/com/badlogicgames/gdx/gdx-jnigen-loader/2.3.1/gdx-jnigen-loader-2.3.1.jar!/" />
+    </CLASSES>
+    <JAVADOC />
+    <SOURCES />
+  </library>
+</component>

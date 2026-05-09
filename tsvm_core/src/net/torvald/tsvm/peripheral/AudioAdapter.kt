@@ -911,24 +911,32 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                             ((tadInputBin[offset++].toUint()) shl 8)
                     )
             val maxIndex = tadInputBin[offset++].toUint()
-            val payloadSize = (
+            val payloadSizeField = (
                     (tadInputBin[offset++].toUint()) or
                             ((tadInputBin[offset++].toUint()) shl 8) or
                             ((tadInputBin[offset++].toUint()) shl 16) or
                             ((tadInputBin[offset++].toUint()) shl 24)
                     )
 
-            // Decompress payload
+            // MSB of payload size = 1 means the payload is stored uncompressed (no Zstd).
+            val payloadIsRaw = (payloadSizeField and 0x80000000.toInt()) != 0
+            val payloadSize = payloadSizeField and 0x7FFFFFFF
+
+            // Read payload bytes
             val compressed = ByteArray(payloadSize)
             UnsafeHelper.memcpyRaw(null, tadInputBin.ptr + offset, compressed, UnsafeHelper.getArrayOffset(compressed), payloadSize.toLong())
 
-            val payload: ByteArray = try {
-                ZstdInputStream(ByteArrayInputStream(compressed)).use { zstd ->
-                    zstd.readBytes()
+            val payload: ByteArray = if (payloadIsRaw) {
+                compressed
+            } else {
+                try {
+                    ZstdInputStream(ByteArrayInputStream(compressed)).use { zstd ->
+                        zstd.readBytes()
+                    }
+                } catch (e: Exception) {
+                    println("ERROR: Zstd decompression failed: ${e.message}")
+                    return
                 }
-            } catch (e: Exception) {
-                println("ERROR: Zstd decompression failed: ${e.message}")
-                return
             }
 
             // Decode using binary tree EZBC - FIXED!
