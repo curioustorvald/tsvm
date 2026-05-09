@@ -828,6 +828,15 @@ When both effects 8 and 9 are active on the same voice the chain is **filter →
 
 S is a multiplexing opcode; the **high nibble of the high byte** selects the sub-effect, and the remainder is the sub-argument.
 
+# S $0x00 — Amiga LPF/LED Switch
+
+**Plain.** `$0100` turns filter off; `$0000` turns it on. The parameter of the filter is somewhat dependent on the current interpolation mode: follows Amiga 1200 LPF on 1200 mode, Amiga 500 LPF on 500 mode. For other interpolation modes, this command is no-op. (see § Effects That Modifies Global Behaviour)
+
+**Compatibility.** ST3/IT `S00`/`S01` and PT `E00`/`E01` maps directly. To actually hear the effect, the interpolation mode must be set to one of the two Amiga modes.
+
+**Implementation.** Per-playhead boolean `ledFilterOn` (default off). Writes from row are gated on `interpolationMode ∈ {Amiga 500, Amiga 1200}`; in linear / no-interp / default modes the filter chain is bypassed entirely so the toggle is a silent no-op. The post-mix LPF chain runs on the stereo bus (left/right state per playhead) before dithering: in Amiga 500 mode a 1-pole RC LPF (R = 360 Ω, C = 0.1 µF, fc ≈ 4421 Hz) is always applied; in Amiga 1200 mode that LPF is bypassed (cutoff ~34 kHz, well above 32 kHz Nyquist — matches `pt2_paula.c`). When the LED toggle is on, an additional 2-pole Sallen-Key LPF (R1=R2=10 kΩ, C1=6800 pF, C2=3900 pF, fc ≈ 3091 Hz, Q ≈ 0.660) is run after the mode LPF. Coefficients precomputed once at SAMPLING_RATE; recurrence follows musicdsp.org #38 with `pt2_rcfilters.c` parameter mapping.
+
+
 ## S $1x00 — PT/ST3/IT Glissando control
 
 **Plain.** `$1000` turns glissando off; `$1100` turns it on. When on, tone portamento (G) output is quantised to the nearest semitone ($0155 approximation) before being sent to the mixer. The internal G pitch counter still advances smoothly; only the audible pitch steps. **This command is implemented sorely for ST3/IT compatibility** and therefore only works in 12-TET context.
@@ -1113,13 +1122,16 @@ Effects in this section modifies the behaviour of the mixer. Primary intention o
 
 **Plain.** Sets mixer-wide behaviour flags. Available flags are:
 
-    0b 0000 00ff
+    0b 0000 rr ff
 
 - ff = 0: Linear tone mode. Pitch shift will behave like MIDI/ImpulseTracker/ScreamTracker linear mode. **Coarse and fine E/F arguments are stored as 4096-TET pitch units** and subtracted/added directly from the stored pitch.
 - ff = 1: Amiga (cycle-based) tone mode. Pitch shift will behave like ProTracker/ScreamTracker default mode. **Coarse and fine E/F arguments are stored as raw tracker period units** (the unscaled byte/nibble from the source PT/S3M/IT file) and applied in Amiga period space. Tone portamento (G) remains linear regardless of mode.
 - ff = 2: Linear-frequency tone mode (MONOTONE compat). **E, F, and G arguments are stored as Hz/tick** (a signed change in audible frequency per song tick), and the engine converts the channel's stored 4096-TET pitch back to a frequency, adds/subtracts the argument, then converts back to 4096-TET. Reference is fixed at 12-TET A4 = 440 Hz / C4 ≈ 261.6256 Hz, which matches MONOTONE's MT_PLAY.PAS `notesHz` table (A0 = 27.5 Hz, equal-temperament). Unlike Amiga mode, *all three* slide effects use the new arithmetic — Monotone's `1xx`, `2xx`, and `3xx` are all in Hz/tick (see MTSRC/MT_PLAY.PAS:606-630).
 
-(Bits 2-7 are reserved. Bit 2 previously held an `m` "fadeout-zero policy" flag intended to swap between IT and FT2 semantics for `storedFadeout = 0`. That flag was removed once both trackers were verified to share identical "stored 0 ⇒ no fade" semantics — see schismtracker `player/sndmix.c:330-342` and ft2-clone `src/ft2_replayer.c:1467-1481`. Fadeout scaling now lives in the converters; see "Volume Fadeout" below.)
+- rr = 0: Yes interpolation. Actual interpolation algorithm is implementation-dependent, but recommended to use either Fast Sinc or Linear.
+- rr = 1: No interpolation.
+- rr = 2: Amiga 500 interpolation.
+- rr = 3: Amiga 1200 interpolation.
 
 ### Volume Fadeout
 
@@ -1204,7 +1216,7 @@ This table maps each PT effect to its Taud equivalent. Arguments follow PT's two
 | `B $xx` | `B $00xx` | Position jump |
 | `C $xx` | Volume column `0.$xx` | Set volume |
 | `D $xx` | `C $00xx` (after BCD decode) | Pattern break |
-| `E $0x` | `S $000x` | (UNIMPLEMENTED) Set filter |
+| `E $0x` | `S $0x00` | Set low-pass filter |
 | `E $1x` | `F $F00x` (Amiga mode, `f` set) | Fine pitch slide up; raw PT period units, applied in period space at tick 0 |
 | `E $2x` | `E $F00x` (Amiga mode, `f` set) | Fine pitch slide down; raw PT period units, applied in period space at tick 0 |
 | `E $3x` | `S $1x00` | Glissando control |

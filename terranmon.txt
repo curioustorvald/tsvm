@@ -2394,6 +2394,7 @@ TODO:
         when no V column is present. Engine + all four `*2taud` converters
         updated; legacy `.taud` files (byte 196 == 0) fall back to the
         previous "row volume default = 63" behaviour.
+    [ ] Physical Presence order 1F chn 2: note cuts unexpectedly fast?
 
 TODO - list of demo songs that MUST ship with Microtone:
     * 4THSYM (rename to Fourth Symmetriad) — excellent piece for demonstrating NNAs and filter envelopes

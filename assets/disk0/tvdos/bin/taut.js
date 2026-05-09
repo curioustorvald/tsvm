@@ -120,7 +120,7 @@ P:"Chan.panslide",
 Q:"Retrigger    ",
 R:"Tremolo      ",
 S:"Special      ",
-S0:"UNIMPLEMENTED", // PT: Set audio filter
+S0:"Amiga Filter ",
 S1:"Gliss. ctrl  ",
 S2:"Sample tune  ",
 S3:"Vibrato LFO  ",
@@ -140,7 +140,7 @@ T:"Tempo        ",
 U:"Fine vibrato ",
 V:"Global volume",
 W:"G.Vol Slide  ",
-X:"UNIMPLEMENTED", // IT: 8-bit channel panning. Use S80xx instead
+X:"UNIMPLEMENTED", // IT: 8-bit channel panning. Use S 80xx instead
 Y:"Panbrello    ",
 Z:"UNIMPLEMENTED", // IT: MIDI macro
 }

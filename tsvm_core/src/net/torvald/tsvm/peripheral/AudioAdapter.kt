@@ -18,6 +18,7 @@ import kotlin.math.roundToInt
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin
+import kotlin.math.exp
 
 private class RenderRunnable(val playhead: AudioAdapter.Playhead) : Runnable {
     private fun printdbg(msg: Any) {
@@ -151,6 +152,70 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         const val SAMPLE_BANK_COUNT: Int = 16                // 16 × 512 K = 8 MB
         const val SAMPLE_BIN_TOTAL: Long = SAMPLE_BANK_SIZE * SAMPLE_BANK_COUNT
         const val SAMPLE_BANK_MASK: Int = SAMPLE_BANK_COUNT - 1
+
+        // Interpolation modes (TAUD_NOTE_EFFECTS.md §1, bits 2-3 of global behaviour flags).
+        //   0 = default (Fast Sinc, 16-tap windowed sinc), 1 = none (zero-order hold),
+        //   2 = Amiga 500 (ZOH + A500 1-pole LPF), 3 = Amiga 1200 (ZOH + A1200 LPF — bypassed).
+        // Amiga modes additionally apply a 2-pole Sallen-Key "LED" LPF when ts.ledFilterOn,
+        // which is toggled by S $0000 / S $0100 (TAUD_NOTE_EFFECTS.md §"S $0x00").
+        const val INTERP_DEFAULT = 0
+        const val INTERP_NONE    = 1
+        const val INTERP_A500    = 2
+        const val INTERP_A1200   = 3
+
+        // Fast Sinc — 16-tap windowed sinc with 1024 sub-sample positions.
+        // Mirrors MilkyTracker's MIXER_SINCTABLE (ResamplerSinc.h: WIDTH=8, 1024-step table,
+        // window = 0.5 + 0.5·cos(πi / WIDTH·step)).  Coefficients are symmetric so we only
+        // store half the kernel; the second half is index-mirrored at lookup time.
+        const val SINC_WIDTH = 8
+        const val SINC_PRECISION_SHIFT = 10
+        const val SINC_PRECISION = 1 shl SINC_PRECISION_SHIFT     // 1024
+        private val SINC_TABLE: DoubleArray = run {
+            val n = SINC_PRECISION * SINC_WIDTH
+            val out = DoubleArray(n)
+            val winFreq = PI / SINC_WIDTH / SINC_PRECISION
+            out[0] = 1.0
+            for (i in 1 until n) {
+                val t = i * PI / SINC_PRECISION
+                val win = 0.5 + 0.5 * cos(winFreq * i)
+                out[i] = sin(t) / t * win
+            }
+            out
+        }
+
+        /** Windowed-sinc kernel value for fractional offset `frac ∈ [0,1)` and signed tap [−WIDTH+1, WIDTH]. */
+        private fun sincTap(frac: Double, tap: Int): Double {
+            val x = (tap - frac) * SINC_PRECISION  // distance in sub-sample units
+            val ax = kotlin.math.abs(x)
+            val idx = ax.toInt()
+            if (idx >= SINC_PRECISION * SINC_WIDTH - 1) return 0.0
+            // Linear interpolation between adjacent table entries for sub-sub-sample precision.
+            val f = ax - idx
+            return SINC_TABLE[idx] * (1.0 - f) + SINC_TABLE[idx + 1] * f
+        }
+
+        // Amiga filter coefficients (precomputed at SAMPLING_RATE = 32 kHz, see pt2_paula.c
+        // and pt2_rcfilters.c).  All filters operate on the post-mix stereo bus per playhead.
+        //
+        //   A500_LP : 1-pole RC LPF, R = 360 Ω, C = 0.1 µF  →  fc ≈ 4420.97 Hz
+        //   LED_LP  : 2-pole Sallen-Key, R1=R2=10 kΩ, C1=6800 pF, C2=3900 pF
+        //             →  fc ≈ 3090.53 Hz, Q ≈ 0.660225
+        //   A1200_LP: cutoff ~34.4 kHz, well above Nyquist at 32 kHz → bypassed (matches pt2-clone).
+        private val AMIGA_A500_LP_FC = 4420.971
+        private val AMIGA_LED_FC     = 3090.533
+        private val AMIGA_LED_Q      = 0.660225
+
+        // 1-pole coefficients (Direct Form II) for A500 LPF.
+        val AMIGA_A500_B1: Double = exp(-2.0 * PI * AMIGA_A500_LP_FC / SAMPLING_RATE)
+        val AMIGA_A500_A0: Double = 1.0 - AMIGA_A500_B1
+
+        // 2-pole biquad coefficients (musicdsp.org #38) for LED Sallen-Key LPF.
+        private val AMIGA_LED_A_BASE = 1.0 / kotlin.math.tan(PI * AMIGA_LED_FC / SAMPLING_RATE)
+        private val AMIGA_LED_B_BASE = 1.0 / AMIGA_LED_Q
+        val AMIGA_LED_A1: Double = 1.0 / (1.0 + AMIGA_LED_B_BASE * AMIGA_LED_A_BASE + AMIGA_LED_A_BASE * AMIGA_LED_A_BASE)
+        val AMIGA_LED_A2: Double = 2.0 * AMIGA_LED_A1
+        val AMIGA_LED_B1: Double = 2.0 * (1.0 - AMIGA_LED_A_BASE * AMIGA_LED_A_BASE) * AMIGA_LED_A1
+        val AMIGA_LED_B2: Double = (1.0 - AMIGA_LED_B_BASE * AMIGA_LED_A_BASE + AMIGA_LED_A_BASE * AMIGA_LED_A_BASE) * AMIGA_LED_A1
     }
 
     // Memory map (terranmon.txt:1985-1997, updated 2026-05-08):
@@ -1629,32 +1694,54 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         return pitchDelta
     }
 
-    private fun fetchTrackerSample(voice: Voice, inst: TaudInst): Double {
+    /**
+     * Read one PCM sample (in [-1, 1]) at integer index [idx], honouring the instrument's
+     * funk-repeat mask.  Out-of-range indices are clamped to the sample bounds; the
+     * caller is responsible for wrapping into a loop region first if loop semantics apply.
+     */
+    private fun readSamplePoint(inst: TaudInst, idx: Int, sampleLen: Int, binMax: Int): Double {
+        val i = idx.coerceIn(0, sampleLen - 1)
+        var b = sampleBin[(inst.samplePtr + i).coerceAtMost(binMax).toLong()].toUint()
+        if (inst.funkMask != null && inst.sampleLoopEnd > inst.sampleLoopStart) {
+            val ls = inst.sampleLoopStart
+            if (i in ls until inst.sampleLoopEnd && inst.funkBit(i - ls)) b = b xor 0xFF
+        }
+        return (b - 127.5) / 127.5
+    }
+
+    private fun fetchTrackerSample(voice: Voice, inst: TaudInst, interpMode: Int): Double {
         if (inst.index == 0) return 0.0
 
-        val basePtr = inst.samplePtr
         val sampleLen = inst.sampleLength.coerceAtLeast(1)
         val loopStart = inst.sampleLoopStart.toDouble()
         val loopEnd = inst.sampleLoopEnd.toDouble().coerceAtLeast(1.0)
         val binMax = (SAMPLE_BIN_TOTAL - 1).toInt()  // 8 MB pool, addressed via samplePtr directly (not banked)
 
         val i0 = voice.samplePos.toInt().coerceIn(0, sampleLen - 1)
-        val i1 = (i0 + 1).coerceAtMost(sampleLen - 1)
         val frac = voice.samplePos - i0.toDouble()
-        var b0 = sampleBin[(basePtr + i0).coerceAtMost(binMax).toLong()].toUint()
-        var b1 = sampleBin[(basePtr + i1).coerceAtMost(binMax).toLong()].toUint()
-        // S$Fx funk repeat: bit-invert (XOR 0xFF) bytes whose loop-relative index
-        // is set in funkMask. Mirrors PT2's `*p = -1 - *p` (full bitwise NOT) — the
-        // mask is a non-destructive overlay so the source sample stays pristine.
-        // Only meaningful when the sample has a loop region.
-        if (inst.funkMask != null && inst.sampleLoopEnd > inst.sampleLoopStart) {
-            val ls = inst.sampleLoopStart
-            if (i0 in ls until inst.sampleLoopEnd && inst.funkBit(i0 - ls)) b0 = b0 xor 0xFF
-            if (i1 in ls until inst.sampleLoopEnd && inst.funkBit(i1 - ls)) b1 = b1 xor 0xFF
+
+        // Interpolation:
+        //   INTERP_DEFAULT (0): 16-tap windowed sinc (Fast Sinc; MilkyTracker MIXER_SINCTABLE)
+        //   INTERP_NONE    (1): nearest-neighbour
+        //   INTERP_A500/A1200 (2/3): zero-order hold per Paula; LPF applied at mix stage
+        // Edge clamping: out-of-range taps are clipped to sample bounds (acceptable smear
+        // at sample edges; matches MilkyTracker's outSideLoop fallback).
+        val sample: Double = when (interpMode) {
+            INTERP_DEFAULT -> {
+                var acc = 0.0
+                // Taps span [i0 - WIDTH + 1, i0 + WIDTH], with the kernel centred on i0+frac.
+                for (j in -SINC_WIDTH + 1 .. SINC_WIDTH) {
+                    val coeff = sincTap(frac, j)
+                    if (coeff != 0.0) acc += readSamplePoint(inst, i0 + j, sampleLen, binMax) * coeff
+                }
+                acc
+            }
+            INTERP_NONE, INTERP_A500, INTERP_A1200 ->
+                // Paula-style ZOH — emit the integer-indexed sample byte without
+                // sub-sample fade. Aliasing is removed by the post-mix Amiga LPFs.
+                readSamplePoint(inst, i0, sampleLen, binMax)
+            else -> readSamplePoint(inst, i0, sampleLen, binMax)
         }
-        val s0 = (b0 - 127.5) / 127.5
-        val s1 = (b1 - 127.5) / 127.5
-        val sample = s0 + (s1 - s0) * frac
 
         // While ramping out at sample end, hold position so the mixer keeps emitting the
         // clamped last-sample value with decaying gain — no further advance, no re-trigger
@@ -2131,9 +2218,11 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 // 1 $xx00 — Global behaviour flags byte in the high byte (see TAUD_NOTE_EFFECTS.md §1).
                 // bits 0-1 (ff): 0=linear pitch, 1=Amiga period, 2=linear frequency (Hz/tick),
                 //                3=reserved
+                // bits 2-3 (rr): 0=Fast Sinc, 1=none, 2=Amiga 500, 3=Amiga 1200
                 // Panning law is fixed to the equal-energy; no runtime selection.
                 val flags = rawArg ushr 8
                 ts.toneMode = flags and 3
+                ts.interpolationMode = (flags ushr 2) and 3
             }
             EffectOp.OP_8 -> {
                 // 8 $xyzz — Bitcrusher.  See TAUD_NOTE_EFFECTS.md §8.
@@ -2421,6 +2510,15 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         val sub = (arg ushr 12) and 0xF
         val x = (arg ushr 8) and 0xF
         when (sub) {
+            0x0 -> {
+                // S $0000 = LED on, S $0100 = LED off (PT E00 / E01 — pt2_replayer.c:608
+                // computes filterOn = (cmd & 1) ^ 1, so x=0 → on, x=1 → off).
+                // Only meaningful in Amiga interpolation modes; on linear / no-interp the
+                // filter chain is bypassed so writes are silent no-ops.
+                if (ts.interpolationMode == INTERP_A500 || ts.interpolationMode == INTERP_A1200) {
+                    ts.ledFilterOn = (x == 0)
+                }
+            }
             0x1 -> voice.glissandoOn = (x != 0)
             0x2 -> {
                 voice.noteVal = (voice.noteVal + FINETUNE_OFFSET[x]).coerceIn(1, 0xFFFD)
@@ -2832,7 +2930,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             for (voice in ts.voices) {
                 if (!voice.active || voice.muted) continue
                 val voiceInst = instruments[voice.instrumentId]
-                val s = applyTaudVoiceFx(voice, applyVoiceFilter(voice, fetchTrackerSample(voice, voiceInst)))
+                val s = applyTaudVoiceFx(voice, applyVoiceFilter(voice, fetchTrackerSample(voice, voiceInst, ts.interpolationMode)))
                 val instGv = voiceInst.instGlobalVolume / 255.0
                 // Volume swing bias (random per-trigger, ±randomVolBias of 0..255 units folded into the 0..63 row volume).
                 val swingScale = 1.0 + voice.randomVolBias / 255.0
@@ -2863,7 +2961,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             for (bg in ts.backgroundVoices) {
                 if (!bg.active || bg.muted) continue
                 val bgInst = instruments[bg.instrumentId]
-                val s = applyTaudVoiceFx(bg, applyVoiceFilter(bg, fetchTrackerSample(bg, bgInst)))
+                val s = applyTaudVoiceFx(bg, applyVoiceFilter(bg, fetchTrackerSample(bg, bgInst, ts.interpolationMode)))
                 val instGv = bgInst.instGlobalVolume / 255.0
                 val swingScale = 1.0 + bg.randomVolBias / 255.0
                 val effEnvVol = if (bg.volEnvOn) bg.envVolume else 1.0
@@ -2884,6 +2982,40 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 } else 1.0
                 mixL += s * vol * lGain * rampGain
                 mixR += s * vol * rGain * rampGain
+            }
+
+            // Amiga interpolation modes: post-mix LPF chain (matches pt2-clone Paula stage).
+            // INTERP_A500 applies the 1-pole RC LPF (~4421 Hz). INTERP_A1200 has a cutoff
+            // above Nyquist so its LPF is bypassed. The 2-pole "LED" filter (~3091 Hz, Q≈0.66)
+            // is added on either Amiga mode when ts.ledFilterOn (S $0000 = on, S $0100 = off).
+            // No-op for INTERP_DEFAULT and INTERP_NONE so non-Amiga modes pay no cost.
+            when (ts.interpolationMode) {
+                INTERP_A500 -> {
+                    ts.amigaLPStateL = mixL * AMIGA_A500_A0 + ts.amigaLPStateL * AMIGA_A500_B1
+                    ts.amigaLPStateR = mixR * AMIGA_A500_A0 + ts.amigaLPStateR * AMIGA_A500_B1
+                    mixL = ts.amigaLPStateL
+                    mixR = ts.amigaLPStateR
+                    if (ts.ledFilterOn) {
+                        val sl = ts.amigaLEDStateL; val sr = ts.amigaLEDStateR
+                        val outL = mixL * AMIGA_LED_A1 + sl[0] * AMIGA_LED_A2 + sl[1] * AMIGA_LED_A1 - sl[2] * AMIGA_LED_B1 - sl[3] * AMIGA_LED_B2
+                        val outR = mixR * AMIGA_LED_A1 + sr[0] * AMIGA_LED_A2 + sr[1] * AMIGA_LED_A1 - sr[2] * AMIGA_LED_B1 - sr[3] * AMIGA_LED_B2
+                        sl[1] = sl[0]; sl[0] = mixL; sl[3] = sl[2]; sl[2] = outL
+                        sr[1] = sr[0]; sr[0] = mixR; sr[3] = sr[2]; sr[2] = outR
+                        mixL = outL; mixR = outR
+                    }
+                }
+                INTERP_A1200 -> {
+                    // A1200 1-pole LPF cutoff (~34 kHz) is above Nyquist at SAMPLING_RATE = 32 kHz,
+                    // so it is bypassed (matches pt2_paula.c: useLowpassFilter = false).
+                    if (ts.ledFilterOn) {
+                        val sl = ts.amigaLEDStateL; val sr = ts.amigaLEDStateR
+                        val outL = mixL * AMIGA_LED_A1 + sl[0] * AMIGA_LED_A2 + sl[1] * AMIGA_LED_A1 - sl[2] * AMIGA_LED_B1 - sl[3] * AMIGA_LED_B2
+                        val outR = mixR * AMIGA_LED_A1 + sr[0] * AMIGA_LED_A2 + sr[1] * AMIGA_LED_A1 - sr[2] * AMIGA_LED_B1 - sr[3] * AMIGA_LED_B2
+                        sl[1] = sl[0]; sl[0] = mixL; sl[3] = sl[2]; sl[2] = outL
+                        sr[1] = sr[0]; sr[0] = mixR; sr[3] = sr[2]; sr[2] = outR
+                        mixL = outL; mixR = outR
+                    }
+                }
             }
 
             ts.mixLeft[n]  = mixL.toFloat().coerceIn(-1.0f, 1.0f)
@@ -3272,6 +3404,21 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         //   3 = reserved
         var toneMode = 0
 
+        // Interpolation mode (TAUD_NOTE_EFFECTS.md §1, bits 2-3 of global behaviour flags).
+        // 0=Fast Sinc default, 1=none, 2=Amiga 500, 3=Amiga 1200. See AudioAdapter.INTERP_*.
+        var interpolationMode = INTERP_DEFAULT
+        // Amiga "LED" 2-pole LPF on/off (S $0000 = on, S $0100 = off; PT E00/E01).
+        // Only applies when interpolationMode is INTERP_A500 or INTERP_A1200.
+        var ledFilterOn = false
+
+        // Per-playhead Amiga filter state.  Live on the post-mix stereo bus so voice
+        // come/go does not reset filter history.  All zeroed on resetParams().
+        var amigaLPStateL = 0.0
+        var amigaLPStateR = 0.0
+        // 2-pole biquad delay line: [in_z1, in_z2, out_z1, out_z2] for L and R.
+        val amigaLEDStateL = DoubleArray(4)
+        val amigaLEDStateR = DoubleArray(4)
+
         // Pending row-end events (set during a row by B/C; consumed at row end).
         var pendingOrderJump = -1          // -1 = none; otherwise the order index to jump to
         var pendingRowJump = -1            // -1 = none; otherwise the row index for the next pattern
@@ -3383,6 +3530,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                     initialGlobalFlags = byte
                     trackerState?.let { ts ->
                         ts.toneMode = byte and 3
+                        ts.interpolationMode = (byte ushr 2) and 3
                     }
                 }
                 8 -> { bpm = byte + 25 }
@@ -3417,6 +3565,10 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 ts.sexWinningChannel = -1
                 ts.finePatternDelayExtra = 0
                 ts.toneMode = initialGlobalFlags and 3
+                ts.interpolationMode = (initialGlobalFlags ushr 2) and 3
+                ts.ledFilterOn = false
+                ts.amigaLPStateL = 0.0; ts.amigaLPStateR = 0.0
+                ts.amigaLEDStateL.fill(0.0); ts.amigaLEDStateR.fill(0.0)
                 ts.voices.forEach {
                     it.active = false
                     it.channelVolume = 0x3F
