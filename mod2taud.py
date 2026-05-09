@@ -182,6 +182,26 @@ def parse_mod(data: bytes):
                 inst   = (b0 & 0xF0) | ((b2 >> 4) & 0x0F)
                 effect = b2 & 0x0F
                 arg    = b3
+                # MT-style PT-strict cell rewrites (LoaderMOD.cpp:354-365):
+                # PT does not recall arg for portamento up/down (1xx, 2xx) or
+                # volume slide (Axx); the literal arg is read every tick. The
+                # vol-slide nibbles in 5xx/6xx likewise take literal args, with
+                # the recalled state living in the porta/vibrato side. So a
+                # zero-arg cell decays to a no-slide variant: 1/2/A drop to
+                # no-op, 5 collapses to bare tone-porta (3), 6 to bare vibrato
+                # (4). Without this, resolve_pt_recalls would back-fill these
+                # zero args from the cohort memory and produce a continuous
+                # slide where PT plays a single-row swell (canonical bug:
+                # GSLINGER ord 0x03 ch1 — `5 01` on r30/r38 with `5 00` on the
+                # rest, was fading 24→0 in 5 rows instead of stair-stepping
+                # 24→14 across 16 rows).
+                if arg == 0:
+                    if effect in (0x1, 0x2, 0xA):
+                        effect = 0x0
+                    elif effect == 0x5:
+                        effect = 0x3
+                    elif effect == 0x6:
+                        effect = 0x4
                 cell = grid[ch][r]
                 cell.period     = period
                 cell.inst       = inst

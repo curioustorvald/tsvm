@@ -2145,11 +2145,28 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             // mirroring G's behaviour — the L command continues the porta started by an earlier G.
             val toneG = (row.effect == EffectOp.OP_G || row.effect == EffectOp.OP_L)
             when (row.note) {
-                // No note but an instrument byte is present: latch the instrument so
-                // the *next* note-only trigger picks up the right sample. Trackers
-                // call this an "instrument-only retrigger"; in MOD/S3M/IT the sample
-                // keeps playing, but the channel's instrument reference advances.
-                0xFFFF -> { if (row.instrment != 0) voice.instrumentId = row.instrment }
+                // No note but an instrument byte is present: latch the instrument and
+                // re-seed the channel volume from the new sample's Default Note Volume.
+                // PT, FT2, IT and Schism all do this — pt2_replayer.c:1086 writes
+                // ch->n_volume = s->volume on every sample-byte row regardless of note;
+                // ft2_replayer.c:1431-1434 calls resetVolumes(ch) when (note==0 && inst>0);
+                // schism csf_instrument_change writes chan->volume = psmp->volume whenever
+                // inst_column is set. Without this, a MOD pattern that runs continuous
+                // volume slides while re-asserting the sample byte each row (e.g.
+                // physical_presence ord 0x1F ch2: every row carries `... 1E A0F/A09/A02`)
+                // silences after the first row because the slide saturates at 0 and there's
+                // nothing to lift the volume back up before the next slide starts.
+                0xFFFF -> {
+                    if (row.instrment != 0) {
+                        voice.instrumentId = row.instrment
+                        val seedVol = rowVolumeFromDefault(instruments[voice.instrumentId])
+                        voice.channelVolume = seedVol
+                        voice.rowVolume = seedVol
+                        voice.keyOff = false
+                        voice.noteFading = false
+                        voice.fadeoutVolume = 1.0
+                    }
+                }
                 // Key-off: release sustain; envelope walks past the sustain point and the fadeout
                 // begins (foreground-voice fade path at line ~2380). The voice deactivates when
                 // fadeoutVolume reaches 0, or immediately if FT2-mode fadeStep == 0. Setting
