@@ -1659,17 +1659,14 @@ function ordersInput(wo, event) {
 
         if (keysym === '<UP>') {
             ordersCursor = Math.max(0, ordersCursor - moveDelta)
-            if (ordersCursor < ordersScroll) ordersScroll = ordersCursor
         } else if (keysym === '<DOWN>') {
             ordersCursor = Math.min(maxCue, ordersCursor + moveDelta)
-            if (ordersCursor >= ordersScroll + PTNVIEW_HEIGHT) ordersScroll = Math.max(0, ordersCursor - PTNVIEW_HEIGHT + 1)
         } else if (keysym === '<PAGE_UP>') {
             ordersCursor = Math.max(0, ordersCursor - PTNVIEW_HEIGHT)
-            ordersScroll = Math.max(0, ordersScroll - PTNVIEW_HEIGHT)
         } else if (keysym === '<PAGE_DOWN>') {
             ordersCursor = Math.min(maxCue, ordersCursor + PTNVIEW_HEIGHT)
-            if (ordersCursor >= ordersScroll + PTNVIEW_HEIGHT) ordersScroll = Math.max(0, ordersCursor - PTNVIEW_HEIGHT + 1)
         }
+        scrollOrdersTo(ordersCursor)
 
         if (ordersCursor === oldCursor && ordersScroll === oldScroll) return
         const dScroll = ordersScroll - oldScroll
@@ -1753,6 +1750,19 @@ function scrollPatternGridTo(row) {
     if (patternGridScroll < 0) patternGridScroll = 0
     if (patternGridScroll + PTNVIEW_HEIGHT > ROWS_PER_PAT)
         patternGridScroll = Math.max(0, ROWS_PER_PAT - PTNVIEW_HEIGHT)
+}
+
+function scrollOrdersTo(ci) {
+    const maxCue = song.lastActiveCue < 0 ? 0 : song.lastActiveCue
+    const total  = maxCue + 1
+    if (ci < ordersScroll) ordersScroll = ci
+    if (ci < ordersScroll + (PTNVIEW_HEIGHT >>> 1) && ordersScroll > 0)
+        ordersScroll = ci - (PTNVIEW_HEIGHT >>> 1)
+    if (ci >= ordersScroll + ((PTNVIEW_HEIGHT + 1) >>> 1))
+        ordersScroll = ci - ((PTNVIEW_HEIGHT + 1) >>> 1) + 1
+    if (ordersScroll < 0) ordersScroll = 0
+    if (ordersScroll + PTNVIEW_HEIGHT > total)
+        ordersScroll = Math.max(0, total - PTNVIEW_HEIGHT)
 }
 
 function clampPatternGrid() {
@@ -2455,8 +2465,7 @@ function updatePlayback() {
         if (currentPanel === VIEW_TIMELINE) redrawPanel()
         else if (currentPanel === VIEW_PATTERN_DETAILS && song.numPats > 0) { simStateKey = ''; redrawPanel() }
         else if (currentPanel === VIEW_CUES) {
-            if (cueIdx < ordersScroll) ordersScroll = cueIdx
-            if (cueIdx >= ordersScroll + PTNVIEW_HEIGHT) ordersScroll = Math.max(0, cueIdx - PTNVIEW_HEIGHT + 1)
+            scrollOrdersTo(cueIdx)
             drawOrdersContents()
         }
     } else if (previewActive || nowCue === cueIdx) {
