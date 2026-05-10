@@ -241,7 +241,7 @@ Glissando control (S $1x) snaps the output pitch to the nearest semitone after e
 
 **Plain.** Slides the channel's current pitch toward the note specified in the same row, at $xxxx units per tick (after tick 0), stopping when the target is reached. A row with G and a note does **not** re-trigger the sample — the note's pitch becomes the portamento target and the already-sounding sample continues at its current pitch.
 
-The unit of `$xxxx` depends on the song-table tone mode (effect `1`, bits 1-2):
+The unit of `$xxxx` depends on the song-table tone mode (effect `1`, bits 0-1):
 
 - `ff = 0` (linear) and `ff = 1` (Amiga): 4096-TET pitch units per tick. Amiga sources should be converted to linear units on G, since the original PT G slide already operated semi-linearly within a small range and the shared-memory pitfall of E/F does not apply here.
 - `ff = 2` (linear-frequency): Hz/tick. The engine walks the channel's *frequency* toward the target note's frequency by `±$xxxx` Hz each non-first tick. This is MONOTONE's `3xx` behaviour verbatim (MTSRC/MT_PLAY.PAS:620-630).
@@ -1122,16 +1122,18 @@ Effects in this section modifies the behaviour of the mixer. Primary intention o
 
 **Plain.** Sets mixer-wide behaviour flags. Available flags are:
 
-    0b 0000 rr ff
+    0b 000 rrr ff
 
 - ff = 0: Linear tone mode. Pitch shift will behave like MIDI/ImpulseTracker/ScreamTracker linear mode. **Coarse and fine E/F arguments are stored as 4096-TET pitch units** and subtracted/added directly from the stored pitch.
 - ff = 1: Amiga (cycle-based) tone mode. Pitch shift will behave like ProTracker/ScreamTracker default mode. **Coarse and fine E/F arguments are stored as raw tracker period units** (the unscaled byte/nibble from the source PT/S3M/IT file) and applied in Amiga period space. Tone portamento (G) remains linear regardless of mode.
 - ff = 2: Linear-frequency tone mode (MONOTONE compat). **E, F, and G arguments are stored as Hz/tick** (a signed change in audible frequency per song tick), and the engine converts the channel's stored 4096-TET pitch back to a frequency, adds/subtracts the argument, then converts back to 4096-TET. Reference is fixed at 12-TET A4 = 440 Hz / C4 ≈ 261.6256 Hz, which matches MONOTONE's MT_PLAY.PAS `notesHz` table (A0 = 27.5 Hz, equal-temperament). Unlike Amiga mode, *all three* slide effects use the new arithmetic — Monotone's `1xx`, `2xx`, and `3xx` are all in Hz/tick (see MTSRC/MT_PLAY.PAS:606-630).
 
-- rr = 0: Yes interpolation. Actual interpolation algorithm is implementation-dependent, but recommended to use either Fast Sinc or Linear.
-- rr = 1: No interpolation.
-- rr = 2: Amiga 500 interpolation.
-- rr = 3: Amiga 1200 interpolation.
+- rrr = 0: Yes interpolation. Actual interpolation algorithm is implementation-dependent, but recommended to use either Fast Sinc or Linear.
+- rrr = 1: No interpolation.
+- rrr = 2: Amiga 500 interpolation.
+- rrr = 3: Amiga 1200 interpolation.
+- rrr = 4: SNES 4-tap Gaussian
+- rrr = 5: Preserve delta modulation (linear intp.)
 
 ### Volume Fadeout
 

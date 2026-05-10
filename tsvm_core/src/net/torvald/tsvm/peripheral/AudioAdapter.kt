@@ -126,9 +126,9 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         const val SAMPLING_RATE = 32000
         const val TRACKER_CHUNK = 512
         // Per-voice soundscope ring-buffer length. Power of two so wrap-around is a single AND.
-        // Sized at 2× the soundscope width so the AudioMenu waveform view always has spare
+        // Sized at 4× the soundscope width so the AudioMenu waveform view always has spare
         // samples on either side of the centre to search for a stable trigger point.
-        const val SCOPE_BUFFER_SIZE = 1024
+        const val SCOPE_BUFFER_SIZE = 2048
         // Mixer-private background-voice pool size per playhead. NNA "Continue/Note Off/Note Fade"
         // ghosts displaced foreground voices into this pool; oldest is evicted on overflow.
         const val MAX_BG_VOICES = 64
@@ -149,6 +149,14 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         // 8 ms at 32 kHz — long enough to bury the click, short enough not to read as fade.
         // Applied on sample end only (preserves attack transients on note start).
         const val RAMP_OUT_SAMPLES = 256
+        // Volume-change anti-click ramp: voleff/notefx (volume column, D vol-slides,
+        // tremor, tremolo, retrig vol-mod, fine slides etc.) mutate Voice.rowVolume
+        // mid-note. The mixer ramps the actual applied gain across [VOL_RAMP_SAMPLES]
+        // output samples to mask the discontinuity. ~2 ms at 32 kHz — short enough
+        // not to smear tremolo at fast speeds, long enough to bury per-tick slide
+        // steps. Bypassed on fresh note triggers (triggerNote snaps currentMixVolume
+        // to target) so attack transients pass through untouched.
+        const val VOL_RAMP_SAMPLES = 64
 
         // Sample bin: 8 MB total, banked through a 512 K window at peripheral
         // memory 0..524287. MMIO 46 holds the currently-exposed bank index.
@@ -167,11 +175,11 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         const val INTERP_A500    = 2
         const val INTERP_A1200   = 3
 
-        // Fast Sinc — 16-tap windowed sinc with 1024 sub-sample positions.
+        // Fast Sinc — 6-tap windowed sinc with 1024 sub-sample positions.
         // Mirrors MilkyTracker's MIXER_SINCTABLE (ResamplerSinc.h: WIDTH=8, 1024-step table,
         // window = 0.5 + 0.5·cos(πi / WIDTH·step)).  Coefficients are symmetric so we only
         // store half the kernel; the second half is index-mirrored at lookup time.
-        const val SINC_WIDTH = 8
+        const val SINC_WIDTH = 3
         const val SINC_PRECISION_SHIFT = 10
         const val SINC_PRECISION = 1 shl SINC_PRECISION_SHIFT     // 1024
         private val SINC_TABLE: DoubleArray = run {
@@ -1421,7 +1429,11 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 // applies only in fall-through (no active sustain or loop wrap) since Schism
                 // suppresses fade_flag inside both wrap branches. Without this rule, instruments
                 // with fadeout=0 + envelope ending at 0 would silently hold their voices forever.
-                if (vEnd == 0 && !wrapping) voice.active = false
+                // Use startRampOut instead of bare active=false so the trailing sample value
+                // fades to zero over RAMP_OUT_SAMPLES (~8 ms); a hard deactivation here would
+                // click because envVolMix still has not fully reached 0 by the time this tick
+                // fires.
+                if (vEnd == 0 && !wrapping) startRampOut(voice)
             } else {
                 val vOffset = inst.volEnvelopes[voice.envIndex].offset.toDouble()
                 val vCurValue = inst.volEnvelopes[voice.envIndex].value
@@ -1429,7 +1441,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                     // Reached a terminator point — envelope holds here.
                     voice.envVolume = (vCurValue / 63.0).coerceIn(0.0, 1.0)
                     // Same Schism cut rule as above: only when in fall-through.
-                    if (vCurValue == 0 && !wrapping) voice.active = false
+                    if (vCurValue == 0 && !wrapping) startRampOut(voice)
                 } else {
                     voice.envTimeSec += tickSec
                     if (voice.envTimeSec >= vOffset) {
@@ -1741,8 +1753,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         val sample: Double = when (interpMode) {
             INTERP_DEFAULT -> {
                 var acc = 0.0
-                // Taps span [i0 - WIDTH + 1, i0 + WIDTH], with the kernel centred on i0+frac.
-                for (j in -SINC_WIDTH + 1 .. SINC_WIDTH) {
+                // Taps span [i0 - WIDTH, i0 + WIDTH], with the kernel centred on i0+frac.
+                for (j in -SINC_WIDTH .. SINC_WIDTH) {
                     val coeff = sincTap(frac, j)
                     if (coeff != 0.0) acc += readSamplePoint(inst, i0 + j, sampleLen, binMax) * coeff
                 }
@@ -1799,6 +1811,38 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     }
 
     /**
+     * Per-sample volume-ramp tick. Smooths [Voice.currentMixVolume] toward
+     * `rowVolume / 63.0` over [VOL_RAMP_SAMPLES] samples whenever the mixer
+     * detects a discrepancy. Discrepancies arise from voleff/notefx that
+     * mutate rowVolume mid-note (volume column SET / fine slides, D
+     * vol-slide tick, vol-column slide tick, tremor gating, tremolo,
+     * retrig vol-mod, S$80 cuts, etc.). Fresh triggers bypass this by
+     * snapping currentMixVolume in [triggerNote], so attacks are unsmoothed.
+     */
+    private fun advanceVolumeRamp(voice: Voice) {
+        val target = voice.rowVolume / 63.0
+        // Deferred key-on snap: triggerNote arms this so the first mixer sample after a
+        // fresh trigger re-syncs to the post-row rowVolume (already adjusted by any
+        // V-column SET / fine slide on the same row). Bypasses the ramp entirely.
+        if (voice.snapMixVolume) {
+            voice.currentMixVolume = target
+            voice.volRampSamples = 0
+            voice.volRampStep = 0.0
+            voice.snapMixVolume = false
+            return
+        }
+        if (voice.volRampSamples > 0) {
+            voice.currentMixVolume += voice.volRampStep
+            voice.volRampSamples--
+            if (voice.volRampSamples == 0) voice.currentMixVolume = target
+        } else if (voice.currentMixVolume != target) {
+            voice.volRampStep = (target - voice.currentMixVolume) / VOL_RAMP_SAMPLES
+            voice.volRampSamples = VOL_RAMP_SAMPLES - 1
+            voice.currentMixVolume += voice.volRampStep
+        }
+    }
+
+    /**
      * Trigger a fresh note on [voice]: load the instrument, reset sample position, kick off the envelope.
      * Pulled out so S$Dx (note delay) can defer the same logic to a later tick.
      */
@@ -1827,6 +1871,11 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         voice.envIndex = 0
         voice.envTimeSec = 0.0
         voice.envVolume = (inst.volEnvelopes[0].value / 63.0).coerceIn(0.0, 1.0)
+        // Snap the per-sample-smoothed envelope to the fresh starting value so attack
+        // transients land at the envelope's node-0 value immediately. Per-tick step is
+        // recomputed by applyTrackerTick on the next tick boundary.
+        voice.envVolMix = voice.envVolume
+        voice.envVolStep = 0.0
         voice.envPanIndex = 0
         voice.envPanTimeSec = 0.0
         voice.envPan = inst.panEnvelopes[0].value / 255.0
@@ -1907,6 +1956,16 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             else            -> voice.channelVolume
         }
         voice.rowVolume = voice.channelVolume
+        // Defer the anti-click ramp snap to the next mixer sample. applyVolColumn and
+        // applyEffectRow run *after* triggerNote in applyTrackerRow and frequently
+        // override rowVolume on the same row (e.g., a key-on row carrying a V column
+        // value of 30). Snapping currentMixVolume here would set it to 1.0, then the
+        // mixer would detect the lowered post-volColumn target and ramp DOWN from
+        // 1.0 — an audible transient spike at every soft-attack note. The deferred
+        // snap reads rowVolume after the row has fully resolved.
+        voice.snapMixVolume = true
+        voice.volRampSamples = 0
+        voice.volRampStep = 0.0
         voice.noteWasCut = false
         voice.noteFading = false
         // S $73..$7C state resets on each fresh trigger so per-note overrides don't leak.
@@ -2015,10 +2074,17 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         v.rowVolume = src.rowVolume
         v.channelPan = src.channelPan
         v.rowPan = src.rowPan
+        // Inherit the smoothed gain so the ghost picks up where the foreground left off
+        // without a click. Ramp state (counter/step) intentionally not copied — the ghost
+        // doesn't take new voleff/notefx events, so any in-flight ramp can complete via
+        // the snap-to-target on first mix iteration.
+        v.currentMixVolume = src.currentMixVolume
         v.keyOff = src.keyOff
         v.envIndex = src.envIndex
         v.envTimeSec = src.envTimeSec
         v.envVolume = src.envVolume
+        v.envVolMix = src.envVolMix
+        v.envVolStep = src.envVolStep
         v.envPanIndex = src.envPanIndex
         v.envPanTimeSec = src.envPanTimeSec
         v.envPan = src.envPan
@@ -2614,6 +2680,10 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
     private fun applyTrackerTick(ts: TrackerState, playhead: Playhead) {
         val tickSec = 2.5 / playhead.bpm
+        // Samples-per-tick at the current BPM — used to spread the per-tick envVolume
+        // jump across the upcoming tick interval so the mixer hears a continuous slope
+        // instead of a stair-step. Recomputed every tick because BPM can change mid-row.
+        val spt = SAMPLING_RATE * tickSec
         for (vi in 0 until ts.voices.size) {
             val voice = ts.voices[vi]
             if (!voice.active && voice.noteDelayTick < 0) continue
@@ -2634,7 +2704,11 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 voice.noteDelayTick = -1
             }
 
-            if (!voice.active) { advanceEnvelope(voice, inst, tickSec); continue }
+            if (!voice.active) {
+                advanceEnvelope(voice, inst, tickSec)
+                voice.envVolStep = if (spt > 0.0) (voice.envVolume - voice.envVolMix) / spt else 0.0
+                continue
+            }
 
             // Pitch slides (E/F coarse on tick > 0).
             if (ts.tickInRow > 0 && (voice.slideMode == 1 || voice.slideMode == 2)) {
@@ -2822,6 +2896,12 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             }
 
             advanceEnvelope(voice, inst, tickSec)
+            // Compute per-sample slope so envVolMix walks smoothly to the new envVolume
+            // across the next tick interval; this turns the mixer's view of the envelope
+            // from a stair-step into a continuous ramp and removes the per-tick clicks
+            // that are otherwise audible on steep envelope slopes (e.g., XM volume
+            // envelopes with fast attack/decay nodes — the slumberjack.xm symptom).
+            voice.envVolStep = if (spt > 0.0) (voice.envVolume - voice.envVolMix) / spt else 0.0
             advancePfEnvelope(voice, inst, tickSec)
         }
 
@@ -2868,6 +2948,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             if (!bg.active) { bgIt.remove(); continue }
             val inst = instruments[bg.instrumentId]
             advanceEnvelope(bg, inst, tickSec)
+            bg.envVolStep = if (spt > 0.0) (bg.envVolume - bg.envVolMix) / spt else 0.0
             advancePfEnvelope(bg, inst, tickSec)
             if (bg.keyOff || bg.noteFading) {
                 val fadeStep = inst.volumeFadeoutLow or ((inst.fadeoutHigh and 0x0F) shl 8)
@@ -2968,11 +3049,19 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 val instGv = voiceInst.instGlobalVolume / 255.0
                 // Volume swing bias (random per-trigger, ±randomVolBias of 0..255 units folded into the 0..63 row volume).
                 val swingScale = 1.0 + voice.randomVolBias / 255.0
+                // Per-sample envelope smoothing: walk envVolMix toward the tick-set
+                // envVolume so the mixer sees a continuous slope instead of the per-tick
+                // stair-step that produces clicks on steep envelope segments.
+                voice.envVolMix += voice.envVolStep
                 // Volume envelope is bypassed (treated as unity) when S $77 has disabled it.
-                val effEnvVol = if (voice.volEnvOn) voice.envVolume else 1.0
+                val effEnvVol = if (voice.volEnvOn) voice.envVolMix else 1.0
+                // Anti-click ramp: smooths voleff/notefx-driven rowVolume steps. Key-on
+                // triggers snap currentMixVolume to target (in triggerNote) so attacks
+                // are passed through unramped.
+                advanceVolumeRamp(voice)
                 // Split the gain stack so the soundscope can see the voice amplitude independently
                 // of the playhead-wide faders (master / mixing / global volume).
-                val perVoiceGain = effEnvVol * voice.fadeoutVolume * (voice.rowVolume / 63.0) *
+                val perVoiceGain = effEnvVol * voice.fadeoutVolume * voice.currentMixVolume *
                                    swingScale * instGv
                 val globalGain = gvol * mvol * playhead.masterVolume / 255.0
                 val vol = perVoiceGain * globalGain
@@ -3008,8 +3097,13 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 val s = applyTaudVoiceFx(bg, applyVoiceFilter(bg, fetchTrackerSample(bg, bgInst, ts.interpolationMode)))
                 val instGv = bgInst.instGlobalVolume / 255.0
                 val swingScale = 1.0 + bg.randomVolBias / 255.0
-                val effEnvVol = if (bg.volEnvOn) bg.envVolume else 1.0
-                val vol = effEnvVol * bg.fadeoutVolume * (bg.rowVolume / 63.0) *
+                bg.envVolMix += bg.envVolStep
+                val effEnvVol = if (bg.volEnvOn) bg.envVolMix else 1.0
+                // Background voices don't receive new voleff/notefx events, but ghosting
+                // can leave currentMixVolume mid-ramp from the foreground's last change —
+                // keep advancing so the inherited ramp completes cleanly.
+                advanceVolumeRamp(bg)
+                val vol = effEnvVol * bg.fadeoutVolume * bg.currentMixVolume *
                           swingScale * gvol * mvol * instGv * playhead.masterVolume / 255.0
                 val pan = if (bg.hasPanEnv && bg.panEnvOn) {
                     val envPanRaw = (bg.envPan * 255.0).roundToInt().coerceIn(0, 255)
@@ -3274,10 +3368,36 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         var channelPan = 0x80              // 8-bit; $80 centre. Cell column packs into 6-bit, S$80xx writes the full 8-bit.
         var rowPan = 32                    // 6-bit pan used by mixer, derived from channelPan
 
+        // Anti-click volume ramp. The mixer feeds [currentMixVolume] (smoothed copy of
+        // rowVolume/63) into the per-voice gain stack instead of rowVolume directly so
+        // that voleff/notefx-driven steps (vol column, D slides, tremor, tremolo, retrig
+        // vol-mod, fine slides) ramp across [VOL_RAMP_SAMPLES] samples rather than
+        // jumping. triggerNote() arms [snapMixVolume] so the next mixer sample re-syncs
+        // currentMixVolume to rowVolume/63 — bypassing the ramp on key-on attacks.
+        // The snap is deferred (not applied inside triggerNote) because applyVolColumn
+        // and applyEffectRow run *after* triggerNote in applyTrackerRow and may lower
+        // rowVolume on the same row (e.g., a key-on with a low V column value); snapping
+        // immediately in triggerNote would leave currentMixVolume at 1.0 and force a
+        // ramp-down to the new low target, producing an audible transient spike.
+        var currentMixVolume = 1.0
+        var volRampSamples = 0
+        var volRampStep = 0.0
+        var snapMixVolume = false
+
         var keyOff = false
         var envIndex = 0
         var envTimeSec = 0.0
         var envVolume = 1.0
+        // Per-sample smoothed copy of envVolume. advanceEnvelope() runs once per tick
+        // (~640 samples at 125 BPM, 32 kHz) and overwrites envVolume with a stair-step
+        // approximation of the linear interpolation between envelope nodes — between
+        // ticks envVolume is held constant, so steep envelope slopes click audibly at
+        // every tick boundary. The mixer feeds envVolMix to the gain stack instead;
+        // applyTrackerTick computes envVolStep so envVolMix ramps linearly across the
+        // upcoming tick interval and lands on the new envVolume by the next tick.
+        // triggerNote snaps envVolMix to the fresh envVolume so attacks aren't smeared.
+        var envVolMix = 1.0
+        var envVolStep = 0.0
         var envPanIndex = 0
         var envPanTimeSec = 0.0
         var envPan = 0.5                   // 0.0=full-left, 1.0=full-right, 0.5=centre
@@ -3627,6 +3747,12 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                     it.active = false
                     it.channelVolume = 0x3F
                     it.rowVolume = 0x3F
+                    it.currentMixVolume = 1.0
+                    it.volRampSamples = 0
+                    it.volRampStep = 0.0
+                    it.snapMixVolume = false
+                    it.envVolMix = 1.0
+                    it.envVolStep = 0.0
                     it.channelPan = 0x80
                     it.rowPan = 32
                     it.glissandoOn = false

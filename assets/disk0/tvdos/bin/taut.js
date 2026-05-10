@@ -1,5 +1,5 @@
 /**
- * TSVM Audio Device Tracker
+ * Microtone. formerly known as TSVM Audio Device Tracker. (taut)
  *
  * Created by minjaesong on 2026-04-20
  */
@@ -19,6 +19,7 @@ const BULLET = "\u00847u"
 const VERT = "\u00B3"
 const TWOVERT = "\u00BA"
 
+// global var for the app
 if (!_G.TAUT) _G.TAUT = {};
 if (!_G.TAUT.UI) _G.TAUT.UI = {};
 if (!_G.TAUT.UI.NEXTPANEL) _G.TAUT.UI.NEXTPANEL = undefined;

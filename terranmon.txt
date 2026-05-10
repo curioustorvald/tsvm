@@ -2634,8 +2634,9 @@ Endianness: Little
     Uint16  Current Tuning base note (1..65533). A4 (western default) is 0x5C00. C9 (tracker default) is 0xA000. If zero, assume the tracker default value
     Float32 Frequency at the base note. Tracker default is 8363.0. If zero, assume the tracker default
     Uint8   Flags for Global Behaviour (effect symbol '1')
-        0b 0000 00ff
+        0b 000 rrr ff
             ff: tone mode          (0: linear pitch slides, 1: Amiga period slides, 2: linear-frequency slides, 3: reserved)
+            rrr: interpolation mode (0: default, 1: none, 2: Amiga 500, 3: Amiga 1200, 4: SNES 4-tap Gaussian, 5: preserve delta modulation)
     Uint8   Song global volume
         * ImpulseTracker has range of 0..128; multiply by (255/128) then round to int
     Uint8   Song mixing volume
