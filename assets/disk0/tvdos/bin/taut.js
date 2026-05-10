@@ -20,9 +20,9 @@ const VERT = "\u00B3"
 const TWOVERT = "\u00BA"
 
 // global var for the app
-if (!_G.TAUT) _G.TAUT = {};
-if (!_G.TAUT.UI) _G.TAUT.UI = {};
-if (!_G.TAUT.UI.NEXTPANEL) _G.TAUT.UI.NEXTPANEL = undefined;
+_G.TAUT = {};
+_G.TAUT.UI = {};
+_G.TAUT.UI.NEXTPANEL = undefined;
 
 const sym = {
 /* accidentals */
@@ -51,7 +51,7 @@ doubledntick:"\u009D",
 
 
 /* special notes */
-keyoff:"\u00A0\u00CD\u00CD\u00A1",
+keyoff:"\u00A0\u00B1\u00B1\u00A1",
 notecut:"\u00A4\u00A4\u00A4\u00A4",
 
 /* special effects */
@@ -2591,10 +2591,11 @@ function openHelpPopup() {
         if (lines.length > HELP_CONTENT_H) {
             const trackH = HELP_CONTENT_H
             const indPos = (maxScroll === 0) ? 0 : ((scroll * (trackH - 1) / maxScroll) | 0)
+            con.color_pair(colStatus, colPopupBack)
             for (let r = 0; r < trackH; r++) {
                 con.move(HELP_CONTENT_Y + r, HELP_POPUP_X + HELP_POPUP_W - 2)
-                con.color_pair(colPushBtnBack, colPopupBack)
-                print(r === indPos ? '\u00DB' : '\u00B3')
+                let trough = (r == 0) ? 0xBA : (r == trackH - 1) ? 0xBC : 0xBB
+                print(String.fromCharCode(r === indPos ? (trough + 3) : (trough)))
             }
         }
 

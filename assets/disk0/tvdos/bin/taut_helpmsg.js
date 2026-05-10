@@ -18,7 +18,7 @@ Tags:
 &updn; - up-down arrow (\u008418u)
 &udlr; - four direction arrow (\u008428u\u008429u)
 
-&keyoffsym; - pattern view key-off symbol (\u00A0\u00CD\u00CD\u00A1)
+&keyoffsym; - pattern view key-off symbol (\u00A0\u00B1\u00B1\u00A1)
 &notecutsym; - pattern view note-cut symbol (\u00A4\u00A4\u00A4\u00A4)
 
 &demisharp;
@@ -44,8 +44,8 @@ Tags:
 default alignment: fully justified
  */
 
-let helpNotation = `<c>CONTROL NOTATON</c>
-
+let helpNotation = `<c>CONTROL NOTATION</c>
+<c>\u00B7${'\u00B8'.repeat(16)}\u00B9</c>
 &microtone; <O>shortcuts differentiate normal and shifted shortcuts.</O>
 &bul;<b>a</b>&ddot;<b>z</b> : <O>alphabet without shift-in</O>
 &bul;<b>A</b>&ddot;<b>Z</b> : <O>alphabet with shift-in</O>
@@ -56,7 +56,7 @@ let helpNotation = `<c>CONTROL NOTATON</c>
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 let helpJam = `<c>NOTE JAMMING</c>
-
+<c>\u00B7${'\u00B8'.repeat(12)}\u00B9</c>
 Push keys to play or insert notes.
 &nbsp;w&nbsp;e&nbsp;&nbsp;&nbsp;t&nbsp;y&nbsp;u
 a&nbsp;s&nbsp;d&nbsp;f&nbsp;g&nbsp;h&nbsp;j&nbsp;k
@@ -65,7 +65,7 @@ a&nbsp;s&nbsp;d&nbsp;f&nbsp;g&nbsp;h&nbsp;j&nbsp;k
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 let helpCommon = `<c>COMMON CONTROLS</c>
-
+<c>\u00B7${'\u00B8'.repeat(15)}\u00B9</c>
 &bul;<b>!</b> : <O>show this help message</O>
 &bul;<b>Y</b> : <O>play the entire song from the current cue</O>
 &bul;<b>U</b> : <O>play the current cue then stop</O>
@@ -79,10 +79,11 @@ let helpCommon = `<c>COMMON CONTROLS</c>
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 let helpTimeline = `<c>TIMELINE VIEW</c>
-
+<c>\u00B7${'\u00B8'.repeat(13)}\u00B9</c>
 Timeline has two distinct modes: view and edit mode. Two modes are toggled using the space bar.
 
-<b>VIEW MODE</b>
+<b>&nbsp;VIEW MODE</b>
+<b>\u00B7${'\u00B8'.repeat(9)}\u00B9</b>
 &bul;Note jamming : <O>plays the note</O>
 &bul;<b>&udlr;</b> : <O>move the viewing cursor by voices and rows</O>
 &bul;<b>pg&updn;</b> : <O>go to previous/next cue</O>
@@ -90,22 +91,25 @@ Timeline has two distinct modes: view and edit mode. Two modes are toggled using
 &bul;<b>n</b> : <O>toggle soloing of the selected voice</O>
 &bul;<b>m</b> : <O>toggle muting of the selected voice</O>
 
-<b>EDIT MODE</b>
+<b>&nbsp;EDIT MODE</b>
+<b>\u00B7${'\u00B8'.repeat(9)}\u00B9</b>
 &bul;Note jamming : <O>(note column) inserts the note</O>
 &bul;<b>{</b>&mdot;<b>}</b> : <O>(note column) lower/raise a note by one octave (or period)</O>
 &bul;<b>[</b>&mdot;<b>]</b> : <O>(note column) lower/raise a note by one unit</O>
-&bul;<b>=</b> : <O>(note column) insert a key-off &keyoffsym;</O>
-&bul;<b>^</b> : <O>(note column) insert a note-cut &notecutsym;</O>
-&bul;<b>.</b> : <O>remove a symbol on the selected column</O>
+&bul;<b>z</b> : <O>(note column) insert a key-off &keyoffsym;</O>
+&bul;<b>x</b> : <O>(note column) insert a note-cut &notecutsym;</O>
+&bul;<b>.</b> : <O>clear fields</O>
 &bul;<b>bksp</b> : <O>delete one character on the selected column</O>
 &bul;<b>0</b>&ddot;<b>9</b> <b>a</b>&ddot;<b>f</b> : <O>inserts a (hexa)decimal number</O>
+&bul;<b>0</b>&ddot;<b>9</b> <b>a</b>&ddot;<b>z</b> : <O>(fx column) inserts an effect</O>
 &bul;<b>^</b>&mdot;<b>v</b> : <O>(volume column) slide up/down</O>
 &bul;<b>&lt;</b>&mdot;<b>&gt;</b>: <O>(panning column) slide left/right</O>
 &bul;<b>-</b>&mdot;<b>=</b> : <O>(vol/pan col) fine slide down/up</O>
 &bul;<b>&udlr;</b> : <O>move the viewing cursor by columns and rows</O>
 &bul;<b>pg&updn;</b> : <O>go to previous/next cue</O>
 
-<b>ACCIDENTALS</b>
+<b>&nbsp;ACCIDENTALS</b>
+<b>\u00B7${'\u00B8'.repeat(11)}\u00B9</b>
 &demisharp;&nbsp;&sharp;&nbsp;&doublesharp;&nbsp;&triplesharp;&nbsp;&quadsharp;&nbsp;&demiflat;&nbsp;&flat;&nbsp;&doubleflat;&nbsp;&tripleflat;&nbsp;&nbsp;&accuptick;&nbsp;&nbsp;&accupup;&nbsp;&nbsp;&accdntick;&nbsp;&nbsp;&accdndn;
 <b>C&nbsp;&nbsp;c&nbsp;&nbsp;cx&nbsp;x&nbsp;&nbsp;xx&nbsp;B&nbsp;&nbsp;b&nbsp;&nbsp;bb&nbsp;bbb&nbsp;^&nbsp;&nbsp;^^&nbsp;v&nbsp;&nbsp;vv</b>
 `
@@ -115,6 +119,7 @@ Timeline has two distinct modes: view and edit mode. Two modes are toggled using
 // assemble help text pieces to complete help message
 
 const SCRW = con.getmaxyx()[1]
+const HRULE = '\u00B4\u00B5'.repeat((_G.TAUT.HELPMSG_WIDTH) >>> 1) + '\n'
 
 // Display-command palette. taut.js's popup uses (HELP_COL_TEXT on background) as the
 // default colour pair, so embedded `\x1B[38;5;Nm` codes switch foreground only.
@@ -137,7 +142,7 @@ function expandEntities(s) {
         .replaceAll('&mdot;',       '\u00FA')
         .replaceAll('&updn;',       '\u008418u')
         .replaceAll('&udlr;',       '\u008428u\u008429u')
-        .replaceAll('&keyoffsym;',  '\u00A0\u00CD\u00CD\u00A1')
+        .replaceAll('&keyoffsym;',  '\u00A0\u00B1\u00B1\u00A1')
         .replaceAll('&notecutsym;', '\u00A4\u00A4\u00A4\u00A4')
         .replaceAll('&nbsp;',       '\u007F')
         .replaceAll('&shy;',        '')
@@ -369,13 +374,13 @@ function typeset(text, customWidth) {
 }
 
 let helpMessages = [ // index: taut.js PANEL_NAMES
-    [helpJam, helpTimeline, helpCommon, helpNotation].join('\n'),
-    [helpCommon, helpNotation].join('\n'), // placeholder
-    [helpCommon, helpNotation].join('\n'), // placeholder
-    [helpCommon, helpNotation].join('\n'), // placeholder
-    [helpCommon, helpNotation].join('\n'), // placeholder
-    [helpCommon, helpNotation].join('\n'), // placeholder
-    [helpCommon, helpNotation].join('\n'), // placeholder
+    [helpJam, helpTimeline, helpCommon, helpNotation].join(HRULE),
+    [helpCommon, helpNotation].join(HRULE), // placeholder
+    [helpCommon, helpNotation].join(HRULE), // placeholder
+    [helpCommon, helpNotation].join(HRULE), // placeholder
+    [helpCommon, helpNotation].join(HRULE), // placeholder
+    [helpCommon, helpNotation].join(HRULE), // placeholder
+    [helpCommon, helpNotation].join(HRULE), // placeholder
 ]
 
 help.MSG_BY_TABS = helpMessages.map(it => typeset(it))
