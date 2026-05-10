@@ -3765,6 +3765,36 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                     it.nnaOverride = -1
                     it.volEnvOn = true; it.panEnvOn = true; it.pfEnvOn = true
                     it.noteFading = false
+                    // "What's playing" state — must be cleared alongside the volume reset
+                    // above, otherwise a voice can carry a stale instrumentId from a prior
+                    // session into a freshly-reset volume slot. Concretely: end of session
+                    // leaves voice.instrumentId = N from the last retrigger; resetParams
+                    // (run on session exit and re-entry) clears channelVolume back to 0x3F
+                    // but used to leave instrumentId = N. The next session's first play of
+                    // a row carrying note + porta + no instrument byte then triggers
+                    // instruments[N] (a real sample) at the porta-target pitch with
+                    // channelVolume = 0x3F — the unreeeal_superhero_3.taud cue-0 ch7/ch8
+                    // "loud wrong note" symptom. triggerNote already reseeds these on a
+                    // row carrying an instrument byte, so the asymmetry was only audible
+                    // for the run of porta-only rows preceding the first inst-byte row.
+                    it.instrumentId = 0
+                    it.samplePos = 0.0
+                    it.playbackRate = 1.0
+                    it.forward = true
+                    it.keyOff = false
+                    it.envIndex = 0; it.envTimeSec = 0.0; it.envVolume = 1.0
+                    it.envPanIndex = 0; it.envPanTimeSec = 0.0; it.envPan = 0.5
+                    it.hasPanEnv = false
+                    it.envPfIndex = 0; it.envPfTimeSec = 0.0; it.envPfValue = 0.5
+                    it.hasPfEnv = false; it.envPfIsFilter = false
+                    it.fadeoutVolume = 1.0
+                    it.rampOutSamples = 0; it.rampOutGain = 0.0; it.rampOutStep = 0.0
+                    it.noteVal = 0xFFFF; it.basePitch = 0x4000
+                    it.amigaPeriod = -1.0; it.linearFreq = -1.0
+                    it.tonePortaTarget = -1; it.tonePortaSpeed = 0
+                    it.filterY1 = 0.0; it.filterY2 = 0.0
+                    it.filterCutoffCached = -1; it.filterResonanceCached = -1
+                    it.currentCutoff = 0xFF; it.currentResonance = 0xFF
                 }
                 ts.backgroundVoices.clear()
                 // Funk repeat (S$Fx): drop every per-instrument inversion mask so that
