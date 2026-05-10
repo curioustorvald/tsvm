@@ -16,8 +16,11 @@ const TRACKER_SIGNATURE = "TsvmTaut"+BUILD_DATE // 14-byte string
 const MIDDOT = "\u00FA"
 const BIGDOT = "\u00F9"
 const BULLET = "\u00847u"
-const VERT = "\u00B3"
-const TWOVERT = "\u00BA"
+const VERTCHAR = "\u00CA"
+const TWOVERTCHAR = "\u00DA"
+const DOTHORZ = "\u00B4\u00B5"
+const VERT = 0xCA
+const TWOVERT = 0xDA
 
 // global var for the app
 _G.TAUT = {};
@@ -747,7 +750,7 @@ function drawSeparators(style) {
         for (let c = 0; c < VOCSIZE_TIMELINE_FULL - 1; c++) {
             for (let y = PTNVIEW_OFFSET_Y - 1; y < PTNVIEW_HEIGHT; y++) {
                 con.move(y, PTNVIEW_OFFSET_X + COLSIZE_TIMELINE_FULL * (c+1) - 1)
-                con.prnch(0xB3)
+                con.prnch(VERT)
             }
         }
     }
@@ -1123,7 +1126,8 @@ function drawVoiceDetail(isVerticalLayout = false, ptn = null, activeRow = -1, c
         const sepY = PTNVIEW_OFFSET_Y + upperHeight
         con.move(sepY, dx)
         con.color_pair(colSep, 255)
-        print('\u00C4'.repeat(detailW))
+        print(DOTHORZ.repeat(detailW >>> 1))
+        if (detailW % 2 == 1) print(DOTHORZ[0])
 
         // Lower section: cumulative state.
         const lowerY0 = sepY + 1
@@ -2163,8 +2167,8 @@ function drawPatternsContents(wo) {
     // Column separators
     con.color_pair(colSep, 255)
     for (let y = PTNVIEW_OFFSET_Y - 1; y < PTNVIEW_OFFSET_Y + PTNVIEW_HEIGHT; y++) {
-        con.move(y, PATEDITOR_SEP1_X); con.prnch(0xB3)
-        con.move(y, PATEDITOR_SEP2_X); con.prnch(0xB3)
+        con.move(y, PATEDITOR_SEP1_X); con.prnch(VERT)
+        con.move(y, PATEDITOR_SEP2_X); con.prnch(VERT)
     }
 
     const activeRow = getActiveRowForDetail()
@@ -2202,8 +2206,8 @@ function patternsInput(wo, event) {
         drawPatternGrid()
         con.color_pair(colSep, 255)
         for (let y = PTNVIEW_OFFSET_Y - 1; y < PTNVIEW_OFFSET_Y + PTNVIEW_HEIGHT; y++) {
-            con.move(y, PATEDITOR_SEP1_X); con.prnch(0xB3)
-            con.move(y, PATEDITOR_SEP2_X); con.prnch(0xB3)
+            con.move(y, PATEDITOR_SEP1_X); con.prnch(VERT)
+            con.move(y, PATEDITOR_SEP2_X); con.prnch(VERT)
         }
         const activeRow = getActiveRowForDetail()
         const key = `${patternIdx}:${activeRow}:${playbackMode}`
@@ -2221,8 +2225,8 @@ function patternsInput(wo, event) {
         clampPatternGrid()
         drawPatternGridRowAt(patternGridRow - patternGridScroll)
         con.color_pair(colSep, 255)
-        con.move(patternGridRow - patternGridScroll + PTNVIEW_OFFSET_Y, PATEDITOR_SEP1_X); con.prnch(0xB3)
-        con.move(patternGridRow - patternGridScroll + PTNVIEW_OFFSET_Y, PATEDITOR_SEP2_X); con.prnch(0xB3)
+        con.move(patternGridRow - patternGridScroll + PTNVIEW_OFFSET_Y, PATEDITOR_SEP1_X); con.prnch(VERT)
+        con.move(patternGridRow - patternGridScroll + PTNVIEW_OFFSET_Y, PATEDITOR_SEP2_X); con.prnch(VERT)
         return
     }
 
