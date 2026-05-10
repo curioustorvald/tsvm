@@ -54,7 +54,7 @@ A pattern is a rectangular grid of rows and channels; each cell holds one note e
 | Parameter | Value |
 |---|---|
 | Speed | $06 (6 ticks/row) |
-| Tempo byte | $65 (125 BPM; see effect T for the $18 offset) |
+| Tempo byte | $64 (125 BPM; see effect T for the $19 offset) |
 | Global volume | $80 (mid-scale) |
 | Channel volume | $3F (full) |
 | Pan (all channels) | $80 (centre) |
@@ -627,13 +627,13 @@ Taud splits T by which byte carries the value:
 
 ### T $xx00 (high byte non-zero) — Set tempo
 
-**Plain.** Sets the Taud tempo byte to `$xx`. The resulting BPM is `$xx + $18`: Taud byte $00 → 24 BPM, $65 → 125 BPM (default), $FF → 279 BPM.
+**Plain.** Sets the Taud tempo byte to `$xx`. The resulting BPM is `$xx + $19`: Taud byte $00 → 25 BPM, $64 → 125 BPM (default), $FF → 280 BPM.
 
-**Compatibility.** ST3 `Txx` (where `xx ∈ $20..$FF`) stores BPM directly; convert with `taud_byte = xx − $18`. Taud byte $08 corresponds to ST3's minimum BPM of 32; Taud bytes below $08 are inexpressible in ST3 and should round up to $08 (BPM 32) when exporting. OpenMPT's extended tempo slides (`T $0x` down, `T $1x` up) in S3M files map to Taud T $00xx — see below.
+**Compatibility.** ST3 `Txx` (where `xx ∈ $20..$FF`) stores BPM directly; convert with `taud_byte = xx − $18`. Taud byte $07 corresponds to ST3's minimum BPM of 32; Taud bytes below $07 are inexpressible in ST3 and should round up to $07 (BPM 32) when exporting. OpenMPT's extended tempo slides (`T $0x` down, `T $1x` up) in S3M files map to Taud T $00xx — see below.
 
-ProTracker `Fxx` with `xx ≥ $20` maps to Taud `T $(xx − $18)00`; `Fxx` with `xx < $20` maps to A (speed) instead.
+ProTracker `Fxx` with `xx ≥ $20` maps to Taud `T $(xx − $19)00`; `Fxx` with `xx < $20` maps to A (speed) instead.
 
-**Implementation.** If the high byte is non-zero, set `tempo_byte = arg >> 8`; derive `BPM = tempo_byte + $18`; compute tick duration as `samples_per_tick = 32000 × 5 / (BPM × 2) = 80000 / BPM` (integer truncated) at the fixed 32000 Hz output rate. Example: BPM 125 → 640 samples per tick; BPM 24 → 3333 samples per tick; BPM 279 → 286 samples per tick. There is no memory for set-tempo.
+**Implementation.** If the high byte is non-zero, set `tempo_byte = arg >> 8`; derive `BPM = tempo_byte + $19`; compute tick duration as `samples_per_tick = 32000 × 5 / (BPM × 2) = 80000 / BPM` (integer truncated) at the fixed 32000 Hz output rate. Example: BPM 125 → 640 samples per tick; BPM 24 → 3200 samples per tick; BPM 280 → 286 samples per tick. There is no memory for set-tempo.
 
 ### T $00xy (high byte zero) — Tempo slide
 
@@ -1249,7 +1249,7 @@ These quirks of ST3 are worth preserving or flagging when importing S3M files in
 
 **Cxx BCD encoding.** ST3 stores pattern-break row numbers as BCD on disk (`$10` means decimal 10). Taud uses binary. Decode on import; encode on export. Out-of-range BCD bytes (decimal 64 or higher) clamp to row 0.
 
-**Tempo range.** ST3 accepts tempos $20..$FF (BPM 32..255); Taud accepts bytes $00..$FF (BPM 24..279). Imported ST3 tempos must be shifted down by $18; Taud tempos below $08 and above $E7 cannot be represented in ST3 and should clamp on export.
+**Tempo range.** ST3 accepts tempos $20..$FF (BPM 32..255); Taud accepts bytes $00..$FF (BPM 25..280). Imported ST3 tempos must be shifted down by $19; Taud tempos below $07 and above $E6 cannot be represented in ST3 and should clamp on export.
 
 **SBx + SEx interaction.** ST3 miscounts loop iterations when pattern delay is active inside a pattern loop; Taud fixes this. Songs that depended on the bug for their intended playback will loop fewer times in Taud. Flag such songs on import.
 
@@ -1267,7 +1267,7 @@ These quirks of ST3 are worth preserving or flagging when importing S3M files in
 - **ST3 Amiga mode** (`linear_slides` clear): both coarse (Exx/Fxx) and fine/extra-fine (EFx/EEx/FFx/FEx) are stored **verbatim** as raw ST3 period units — coarse as `E/F $00xx`, fine as `E/F $F00x` — with no scaling. Taud `f` flag is **set**; the engine applies both forms in Amiga period space at playback, exactly recovering the source's period-step count and the non-linear pitch character.
 - G (tone portamento) is always converted with `round(× 64/3)` and treated as linear, regardless of mode.
 
-**Default tempo byte.** Taud's default $65 equals 125 BPM under the $18 offset; this is not the same as ST3's `$7D` default, which maps to Taud `$65` after subtracting $18. Converters must remap on both import and export.
+**Default tempo byte.** Taud's default $64 equals 125 BPM under the $19 offset; this is not the same as ST3's `$7D` default, which maps to Taud `$64` after subtracting $19. Converters must remap on both import and export.
 
 ---
 
