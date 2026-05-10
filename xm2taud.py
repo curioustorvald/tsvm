@@ -41,6 +41,7 @@ Reference:
 """
 
 import argparse
+import copy
 import math
 import struct
 import sys
@@ -59,7 +60,7 @@ from taud_common import (
     encode_cue, deduplicate_patterns,
     normalise_sample, encode_song_entry, nearest_minifloat, compress_blob,
     CUE_INST_NOP, CUE_INST_HALT, CUE_INST_LEN, cue_instruction_len,
-    build_project_data,
+    build_project_data, detect_subsongs,
 )
 
 
@@ -694,18 +695,42 @@ def split_patterns_xm(patterns: list):
 
 def remap_b_effects_xm(chunks: list, chunk_map: list,
                        order_list: list, xm_ord_to_taud_cue: dict,
-                       num_channels: int) -> None:
+                       num_channels: int,
+                       *, default_target: int = None,
+                       warn_label: str = '',
+                       chunk_indices=None) -> None:
     """Rewrite XM B (position jump) effects so the argument indexes Taud cues
     rather than XM order positions. (Pattern break Dxx already targets a row,
     no remap needed — the post-break behaviour is "advance to next order",
-    which Taud emulates correctly when the cue ends.)"""
-    for chunk_grid in chunks:
+    which Taud emulates correctly when the cue ends.)
+
+    `default_target`: when a Bxx target isn't in `xm_ord_to_taud_cue` (a
+    cross-subsong jump), rewrite to this cue index instead of preserving
+    the literal target. Use 0 to make cross-song jumps loop the subsong.
+
+    `chunk_indices`: optional iterable; when provided, only these chunks are
+    visited. Used by multi-song to skip unreferenced chunks (avoids spurious
+    cross-song warnings on chunks not emitted in this song).
+    """
+    crossings = 0
+    iter_indices = (chunk_indices if chunk_indices is not None
+                    else range(len(chunks)))
+    for ci in iter_indices:
+        chunk_grid = chunks[ci]
         for ch in range(min(num_channels, len(chunk_grid))):
             for row in chunk_grid[ch]:
                 if row.effect == 0x0B:
                     xm_ord = row.effect_arg & 0xFF
-                    taud_cue = xm_ord_to_taud_cue.get(xm_ord, xm_ord)
-                    row.effect_arg = taud_cue & 0xFF
+                    if xm_ord in xm_ord_to_taud_cue:
+                        row.effect_arg = xm_ord_to_taud_cue[xm_ord] & 0xFF
+                    elif default_target is not None:
+                        crossings += 1
+                        row.effect_arg = default_target & 0xFF
+                    else:
+                        row.effect_arg = xm_ord & 0xFF
+    if crossings and warn_label:
+        vprint(f"  warning: {warn_label}: {crossings} Bxx target(s) cross "
+               f"subsong boundary; clamped to cue {default_target}")
 
 
 def compute_keyoff_zero_marks_xm(taud_cue_list: list, chunks: list,
@@ -1253,6 +1278,147 @@ def _active_channels_xm(h: XMHeader, patterns: list) -> list:
 
 # ── Main assembly ─────────────────────────────────────────────────────────────
 
+def _per_pattern_bxx_xm(patterns: list):
+    """Return callable(pat_idx) → (set_of_bxx_target_orders, kills_fallthrough)
+    for `detect_subsongs`. XM patterns vary in length; `kills_fallthrough` is
+    True when a Bxx (effect 0x0B) appears on the absolute last row.
+    `patterns[pi]` is `(grid, rows)`; `grid` is `[channel][row]`.
+    """
+    def fn(pat_idx: int):
+        if pat_idx < 0 or pat_idx >= len(patterns):
+            return set(), False
+        grid, rows = patterns[pat_idx]
+        targets = set()
+        last_row_has_b = False
+        for ch_rows in grid:
+            n = min(rows, len(ch_rows))
+            for r in range(n):
+                cell = ch_rows[r]
+                if cell.effect == 0x0B:
+                    targets.add(cell.effect_arg & 0xFF)
+                    if r == rows - 1:
+                        last_row_has_b = True
+        return targets, last_row_has_b
+    return fn
+
+
+def _build_song_payload_xm(h: XMHeader, patterns_template: list,
+                           instruments: list, positions: list,
+                           sample_ratio: dict, active_channels: list,
+                           default_pans: list, resolve_inst_slot,
+                           *, song_label: str = 'song') -> tuple:
+    """Build pattern bin + cue sheet + (subset of) song-entry kwargs for
+    one subsong. The caller fills in song_offset, flags_byte, and shared
+    globals.
+
+    Patterns aren't mutated by per-order walks in XM (no recall resolution),
+    but `remap_b_effects_xm` mutates chunk grids — so we deep-copy chunks
+    per song. (`compute_keyoff_zero_marks_xm` only reads.)
+    """
+    chunks, chunk_map, chunk_lens = split_patterns_xm(patterns_template)
+
+    C = len(active_channels)
+
+    cue_list = []
+    pos_to_cue = {}
+    for pos in positions:
+        order = h.order_list[pos]
+        if order >= h.pattern_count or order >= len(chunk_map):
+            continue
+        pos_to_cue[pos] = len(cue_list)
+        for ci in chunk_map[order]:
+            cue_list.append(ci)
+
+    if not cue_list:
+        # Degenerate subsong (e.g. all orders point to invalid patterns).
+        vprint(f"  warning: [{song_label}] no playable cues; emitting halt-only song")
+
+    remap_b_effects_xm(chunks, chunk_map, h.order_list, pos_to_cue, C,
+                       default_target=0, warn_label=song_label,
+                       chunk_indices=set(cue_list))
+
+    keyoff_zero_marks = compute_keyoff_zero_marks_xm(
+        cue_list, chunks, h.channels, instruments, active_channels)
+    if any(keyoff_zero_marks.values()):
+        flagged = sum(len(s) for s in keyoff_zero_marks.values())
+        vprint(f"  [{song_label}] FT2 keyoff-gate: {flagged} key-off cell(s) "
+               f"paired with vol=0 (vol-env-off instruments)")
+
+    total_taud_pats = len(cue_list) * C
+    if total_taud_pats > NUM_PATTERNS_MAX:
+        sys.exit(f"error: [{song_label}] {len(cue_list)} cues × {C} channels = "
+                 f"{total_taud_pats} > {NUM_PATTERNS_MAX} Taud pattern limit.")
+
+    pat_bin = bytearray()
+    for ci in cue_list:
+        cg = chunks[ci]
+        chunk_marks = keyoff_zero_marks.get(ci, frozenset())
+        for vi, ch in enumerate(active_channels):
+            row_marks = {r for (mvi, r) in chunk_marks if mvi == vi}
+            pat_bin += build_pattern_xm(cg, ch, default_pans[vi],
+                                        resolve_inst_slot,
+                                        amiga_mode=not h.linear_freq,
+                                        keyoff_zero_rows=row_marks)
+    pat_bin = rescale_offset_effects_per_slot(
+        bytes(pat_bin), len(cue_list), C, sample_ratio)
+
+    orig_count = len(cue_list) * C
+    pat_bin, pat_remap, num_taud_pats = deduplicate_patterns(pat_bin, orig_count)
+    vprint(f"  [{song_label}] patterns: {orig_count} → {num_taud_pats} unique "
+           f"({orig_count - num_taud_pats} deduplicated)")
+
+    sheet = bytearray(NUM_CUES * CUE_SIZE)
+    for c in range(NUM_CUES):
+        sheet[c * CUE_SIZE:c * CUE_SIZE + CUE_SIZE] = encode_cue([], 0)
+
+    last_active = -1
+    len_cue_count = 0
+    for cue_idx, ci in enumerate(cue_list):
+        if cue_idx >= NUM_CUES: break
+        base_pat = cue_idx * C
+        pats = [pat_remap[base_pat + vi] for vi in range(C)]
+        clen = chunk_lens[ci] if ci < len(chunk_lens) else PATTERN_ROWS
+        if clen < PATTERN_ROWS:
+            instr = cue_instruction_len(clen)
+            len_cue_count += 1
+        else:
+            instr = CUE_INST_NOP
+        sheet[cue_idx * CUE_SIZE:(cue_idx + 1) * CUE_SIZE] = encode_cue(pats, instr)
+        last_active = cue_idx
+
+    if last_active >= 0:
+        if sheet[last_active * CUE_SIZE + 30] == CUE_INST_LEN:
+            vprint(f"  [{song_label}] warning: last active cue {last_active} "
+                   f"had LEN; replaced with HALT (partial tail at song terminus)")
+        sheet[last_active * CUE_SIZE + 30] = CUE_INST_HALT
+        sheet[last_active * CUE_SIZE + 31] = 0x00
+    else:
+        sheet[30] = CUE_INST_HALT
+    if len_cue_count:
+        vprint(f"  [{song_label}] emitted {len_cue_count} LEN cue instruction(s) "
+               f"for partial-length patterns")
+
+    pat_comp = compress_blob(bytes(pat_bin), f"[{song_label}] pattern bin")
+    cue_comp = compress_blob(bytes(sheet),   f"[{song_label}] cue sheet")
+
+    # Speed/tempo are file-wide for XM; pass them through the kwargs so the
+    # outer function fills in shared header fields uniformly.
+    speed = h.default_speed if h.default_speed > 0 else 6
+    tempo = h.default_bpm  if h.default_bpm  > 0 else 125
+    tempo = max(25, min(280, tempo))
+    bpm_stored = (tempo - 25) & 0xFF
+
+    entry_kwargs = dict(
+        num_voices=C,
+        num_patterns=num_taud_pats,
+        bpm_stored=bpm_stored,
+        tick_rate=speed,
+        pat_bin_comp_size=len(pat_comp),
+        cue_sheet_comp_size=len(cue_comp),
+    )
+    return pat_comp, cue_comp, entry_kwargs
+
+
 def assemble_taud(h: XMHeader, patterns: list, instruments: list,
                   with_project_data: bool = True) -> bytes:
     # XM envelope frames advance once per row tick. Tick rate is derived
@@ -1315,46 +1481,11 @@ def assemble_taud(h: XMHeader, patterns: list, instruments: list,
     bpm_stored = (tempo - 25) & 0xFF
     vprint(f"  initial speed={speed}, tempo={tempo} BPM")
 
-    # ── Channels / cue list ─────────────────────────────────────────────────
+    # ── Channels / pattern split (shared) ───────────────────────────────────
     active_channels = _active_channels_xm(h, patterns)
     C = len(active_channels)
     if C == 0:
         sys.exit("error: no active channels found")
-
-    chunks, chunk_map, chunk_lens = split_patterns_xm(patterns)
-
-    taud_cue_list = []
-    xm_ord_to_taud_cue = {}
-    for oi, order in enumerate(h.order_list[:h.order_count]):
-        if order >= h.pattern_count:
-            continue
-        if order >= len(chunk_map):
-            continue
-        xm_ord_to_taud_cue.setdefault(oi, len(taud_cue_list))
-        for ci in chunk_map[order]:
-            taud_cue_list.append(ci)
-
-    if not taud_cue_list:
-        sys.exit("error: order list resolved to no playable cues")
-
-    remap_b_effects_xm(chunks, chunk_map, h.order_list, xm_ord_to_taud_cue, C)
-
-    # FT2 vol-env-off key-off gating: pre-compute per-(chunk, voice, row) flags
-    # for key-off cells whose bound XM instrument has volume envelope disabled.
-    # build_pattern_xm pairs each flagged key-off with `SEL_SET vol=0` so the
-    # IT-style Taud engine reproduces FT2's channel-volume zeroing gate.
-    keyoff_zero_marks = compute_keyoff_zero_marks_xm(
-        taud_cue_list, chunks, h.channels, instruments, active_channels)
-    if any(keyoff_zero_marks.values()):
-        flagged = sum(len(s) for s in keyoff_zero_marks.values())
-        vprint(f"  FT2 keyoff-gate: {flagged} key-off cell(s) paired with vol=0 "
-               f"(vol-env-off instruments)")
-
-    # ── Pattern bin ─────────────────────────────────────────────────────────
-    total_taud_pats = len(taud_cue_list) * C
-    if total_taud_pats > NUM_PATTERNS_MAX:
-        sys.exit(f"error: {len(taud_cue_list)} cues × {C} channels = "
-                 f"{total_taud_pats} > {NUM_PATTERNS_MAX} Taud pattern limit.")
 
     # Default pan per active channel: alternate L/R FT2-style (0,12,12,0,...).
     def _xm_default_pan(idx: int) -> int:
@@ -1362,92 +1493,57 @@ def assemble_taud(h: XMHeader, patterns: list, instruments: list,
         return 16 if side in (0, 3) else 47
     default_pans = [_xm_default_pan(i) for i in range(C)]
 
-    pat_bin = bytearray()
-    for ci in taud_cue_list:
-        cg = chunks[ci]
-        chunk_marks = keyoff_zero_marks.get(ci, frozenset())
-        for vi, ch in enumerate(active_channels):
-            row_marks = {r for (mvi, r) in chunk_marks if mvi == vi}
-            pat_bin += build_pattern_xm(cg, ch, default_pans[vi],
-                                        resolve_inst_slot,
-                                        amiga_mode=not h.linear_freq,
-                                        keyoff_zero_rows=row_marks)
-    # Rescale TOP_O sample-offset args per channel using the active slot's
-    # ratio (combined global + per-sample). Walks pat_bin in cue-major /
-    # channel-minor order, tracking the most recent inst byte seen on each
-    # channel — must run before deduplication so the channel state stays
-    # linear.
-    pat_bin = rescale_offset_effects_per_slot(
-        bytes(pat_bin), len(taud_cue_list), C, sample_ratio)
-
-    orig_count = len(taud_cue_list) * C
-    pat_bin, pat_remap, num_taud_pats = deduplicate_patterns(pat_bin, orig_count)
-    vprint(f"  patterns: {orig_count} → {num_taud_pats} unique "
-           f"({orig_count - num_taud_pats} deduplicated)")
-
-    # ── Cue sheet ───────────────────────────────────────────────────────────
-    sheet = bytearray(NUM_CUES * CUE_SIZE)
-    for c in range(NUM_CUES):
-        sheet[c * CUE_SIZE:c * CUE_SIZE + CUE_SIZE] = encode_cue([], 0)
-
-    last_active = -1
-    len_cue_count = 0
-    for cue_idx, ci in enumerate(taud_cue_list):
-        if cue_idx >= NUM_CUES:
-            break
-        base_pat = cue_idx * C
-        pats = [pat_remap[base_pat + vi] for vi in range(C)]
-        clen = chunk_lens[ci] if ci < len(chunk_lens) else PATTERN_ROWS
-        if clen < PATTERN_ROWS:
-            instr = cue_instruction_len(clen)
-            len_cue_count += 1
-        else:
-            instr = CUE_INST_NOP
-        sheet[cue_idx * CUE_SIZE:(cue_idx + 1) * CUE_SIZE] = encode_cue(pats, instr)
-        last_active = cue_idx
-
-    if last_active >= 0:
-        if sheet[last_active * CUE_SIZE + 30] == CUE_INST_LEN:
-            vprint(f"  warning: last active cue {last_active} had LEN; "
-                   f"replaced with HALT (partial tail at song terminus)")
-        sheet[last_active * CUE_SIZE + 30] = CUE_INST_HALT
-        sheet[last_active * CUE_SIZE + 31] = 0x00
+    # ── Detect subsongs ──────────────────────────────────────────────────────
+    # XM has no terminator marker; `order_count` bounds the live order list.
+    # Out-of-range pattern refs (≥ pattern_count) are skipped during playback,
+    # so we feed the detector a slice of length `order_count` and treat
+    # everything ≥ pattern_count as a skip.
+    orders_view = list(h.order_list[:h.order_count])
+    skip_set = set(range(h.pattern_count, 256))
+    subsongs = detect_subsongs(orders_view, _per_pattern_bxx_xm(patterns),
+                               terminators=(),
+                               skip_marker=skip_set)
+    if not subsongs:
+        vprint("  warning: no traversable orders in source; emitting empty song")
+        subsongs = [{'entry': 0, 'positions': []}]
+    n_songs = len(subsongs)
+    if n_songs == 1:
+        vprint(f"  detected 1 song ({len(subsongs[0]['positions'])} orders)")
     else:
-        sheet[30] = CUE_INST_HALT
-    if len_cue_count:
-        vprint(f"  emitted {len_cue_count} LEN cue instruction(s) "
-               f"for partial-length patterns")
+        vprint(f"  detected {n_songs} subsongs:")
+        for i, ss in enumerate(subsongs):
+            vprint(f"    song {i}: entry@{ss['entry']}, {len(ss['positions'])} orders")
 
-    # ── Header / song table ─────────────────────────────────────────────────
-    song_offset = TAUD_HEADER_SIZE + comp_size + TAUD_SONG_ENTRY
-    sig    = (SIGNATURE + b' ' * 14)[:14]
+    # ── Build per-song payloads ──────────────────────────────────────────────
+    song_payloads = []
+    for i, ss in enumerate(subsongs):
+        label = f"song {i}" if n_songs > 1 else "song"
+        song_payloads.append(_build_song_payload_xm(
+            h, patterns, instruments, ss['positions'],
+            sample_ratio, active_channels, default_pans,
+            resolve_inst_slot,
+            song_label=label))
 
-    pat_comp = compress_blob(bytes(pat_bin), "pattern bin")
-    cue_comp = compress_blob(bytes(sheet),   "cue sheet")
+    # ── Layout offsets and song table ────────────────────────────────────────
+    song_table_off = TAUD_HEADER_SIZE + comp_size
+    first_song_off = song_table_off + TAUD_SONG_ENTRY * n_songs
 
-    # Flags byte:
-    #   bits 0-1 (ff) = tone mode. ff=1 (Amiga period slides) when XM uses the Amiga
-    #                   period table; ff=0 otherwise. Pan law is fixed engine-wide to
-    #                   the equal-energy — no `p` bit any more.
-    #   bit 2         = reserved (was 'm' fadeout-zero policy; removed). XM fadeout values
-    #                   are now scaled per-instrument above (÷32 with round-to-nearest), so
-    #                   the engine sees Taud-native units and uses its single divisor of 1024.
     flags_byte = (0x00 if h.linear_freq else 0x01)
-    song_table = encode_song_entry(
-        song_offset=song_offset,
-        num_voices=C,
-        num_patterns=num_taud_pats,
-        bpm_stored=bpm_stored,
-        tick_rate=speed,
-        base_note=0xA000,
-        base_freq=8363.0,
-        flags_byte=flags_byte,
-        pat_bin_comp_size=len(pat_comp),
-        cue_sheet_comp_size=len(cue_comp),
-        global_vol=0xFF,
-        mixing_vol=0x80,
-    )
-    assert len(song_table) == TAUD_SONG_ENTRY
+    song_table = bytearray()
+    cur_off = first_song_off
+    for pat_comp, cue_comp, entry_kwargs in song_payloads:
+        # Header BPM/speed go into per-song; flags is shared (XM doesn't switch
+        # period mode mid-file).
+        entry = encode_song_entry(song_offset=cur_off,
+                                  flags_byte=flags_byte,
+                                  global_vol=0xFF,
+                                  mixing_vol=0x80,
+                                  base_note=0xA000,
+                                  base_freq=8363.0,
+                                  **entry_kwargs)
+        assert len(entry) == TAUD_SONG_ENTRY
+        song_table += entry
+        cur_off += len(pat_comp) + len(cue_comp)
 
     # Project Data (optional). XM nests samples under instruments and the
     # converter creates one Taud slot per (xm_inst, sample) pair, so SNam is
@@ -1466,20 +1562,28 @@ def assemble_taud(h: XMHeader, patterns: list, instruments: list,
             sample_names=smp_names,
         )
         if proj_data:
-            proj_off = TAUD_HEADER_SIZE + comp_size + TAUD_SONG_ENTRY \
-                       + len(pat_comp) + len(cue_comp)
+            proj_off = cur_off
             vprint(f"  project data: {len(proj_data)} bytes @ offset {proj_off}")
 
+    sig = (SIGNATURE + b' ' * 14)[:14]
     header = (
         TAUD_MAGIC +
-        bytes([TAUD_VERSION, 1]) +
+        bytes([TAUD_VERSION, n_songs & 0xFF]) +
         struct.pack('<I', comp_size) +
         struct.pack('<I', proj_off) +
         sig
     )
     assert len(header) == TAUD_HEADER_SIZE
 
-    return header + compressed + song_table + pat_comp + cue_comp + proj_data
+    out = bytearray()
+    out += header
+    out += compressed
+    out += song_table
+    for pat_comp, cue_comp, _ in song_payloads:
+        out += pat_comp
+        out += cue_comp
+    out += proj_data
+    return bytes(out)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────

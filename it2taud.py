@@ -35,6 +35,7 @@ Effect support:
 """
 
 import argparse
+import copy
 import struct
 import sys
 
@@ -55,7 +56,7 @@ from taud_common import (
     encode_cue, deduplicate_patterns,
     normalise_sample, encode_song_entry, nearest_minifloat, compress_blob,
     CUE_INST_NOP, CUE_INST_HALT, CUE_INST_LEN, cue_instruction_len,
-    build_project_data,
+    build_project_data, detect_subsongs,
 )
 
 
@@ -1057,7 +1058,10 @@ def split_patterns(patterns_rows: list):
 
 def _remap_bc_effects(chunks: list, chunk_map: list,
                       order_list: list, it_ord_to_taud_cue: dict,
-                      num_channels: int) -> None:
+                      num_channels: int,
+                      *, default_target: int = None,
+                      warn_label: str = '',
+                      chunk_indices=None) -> None:
     """Rewrite B (position-jump) effects using remapped order indices.
 
     B effects are rewritten to point to the first chunk of the target IT
@@ -1068,15 +1072,36 @@ def _remap_bc_effects(chunks: list, chunk_map: list,
     being emitted by the engine when the source pattern's row pointer
     naturally hits a chunk boundary. Since splits at exact multiples of
     64 have no LEN gap, no C-skip injection is required.
+
+    `default_target` (multi-song): when a Bxx points to an order outside
+    `it_ord_to_taud_cue` (a cross-subsong jump), rewrite to this cue
+    index instead of preserving the literal target. Set to 0 to make
+    cross-song jumps loop the subsong; leave None for legacy behaviour.
+
+    `chunk_indices`: optional iterable; when provided, only these chunks
+    are visited. Used by multi-song to skip unreferenced chunks (avoids
+    spurious cross-song warnings on chunks that won't be emitted).
     """
-    for ci, chunk_grid in enumerate(chunks):
+    crossings = 0
+    iter_indices = (chunk_indices if chunk_indices is not None
+                    else range(len(chunks)))
+    for ci in iter_indices:
+        chunk_grid = chunks[ci]
         for ch in range(num_channels):
             if ch >= len(chunk_grid): continue
             for row in chunk_grid[ch]:
                 if row.effect == EFF_B:
                     it_tgt = row.effect_arg
-                    taud_cue = it_ord_to_taud_cue.get(it_tgt, it_tgt)
-                    row.effect_arg = taud_cue & 0xFF
+                    if it_tgt in it_ord_to_taud_cue:
+                        row.effect_arg = it_ord_to_taud_cue[it_tgt] & 0xFF
+                    elif default_target is not None:
+                        crossings += 1
+                        row.effect_arg = default_target & 0xFF
+                    else:
+                        row.effect_arg = it_tgt & 0xFF
+    if crossings and warn_label:
+        vprint(f"  warning: {warn_label}: {crossings} Bxx target(s) cross "
+               f"subsong boundary; clamped to cue {default_target}")
 
 
 # ── Sample / instrument bin (same as s3m2taud) ────────────────────────────────
@@ -1573,22 +1598,176 @@ def _active_channels(h: ITHeader, patterns_rows: list) -> list:
         active = active[:NUM_VOICES]
     return active
 
+def _per_pattern_bxx_it(patterns_rows: list):
+    """Return callable(pat_idx) → (set_of_bxx_target_orders, kills_fallthrough)
+    for use by `detect_subsongs`. `kills_fallthrough` is True iff the pattern
+    carries a Bxx on its absolute last row — the unconditional terminating
+    jump idiom every tracker uses for "song ends here, loop back".
+    """
+    def fn(pat_idx: int):
+        if pat_idx < 0 or pat_idx >= len(patterns_rows):
+            return set(), False
+        grid, rows = patterns_rows[pat_idx]
+        targets = set()
+        last_row_has_b = False
+        for ch in range(64):
+            if ch >= len(grid): continue
+            ch_rows = grid[ch]
+            for r in range(min(rows, len(ch_rows))):
+                cell = ch_rows[r]
+                if cell.effect == EFF_B:
+                    targets.add(cell.effect_arg)
+                    if r == rows - 1:
+                        last_row_has_b = True
+        return targets, last_row_has_b
+    return fn
+
+
+def _build_song_payload(h: ITHeader, patterns_rows_template: list,
+                        positions: list, sample_ratio: dict,
+                        inst_vols: dict, active_channels: list,
+                        *, song_label: str = 'song') -> tuple:
+    """Build pattern bin + cue sheet + song-entry kwargs for one subsong.
+
+    Returns (pat_comp, cue_comp, entry_kwargs). The caller fills in
+    `song_offset` from the global layout before calling encode_song_entry.
+
+    `patterns_rows_template` is deep-copied so per-song stateful walks
+    (recall resolution, late-note-delay relocation, Bxx remap on chunks)
+    don't leak into the next subsong.
+    """
+    pats = copy.deepcopy(patterns_rows_template)
+    virtual_orders = [h.order_list[pos] for pos in positions]
+
+    vprint(f"  [{song_label}] resolving IT recalls…")
+    resolve_it_recalls(pats, virtual_orders, 64, h.link_gef,
+                       old_effects=h.old_effects)
+
+    init_speed, _ = find_initial_bpm_speed(pats, virtual_orders,
+                                           h.initial_speed, h.initial_tempo)
+    relocate_late_note_delays(pats, virtual_orders, 64, init_speed)
+
+    chunks, chunk_map, chunk_lens = split_patterns(pats)
+
+    C = len(active_channels)
+
+    # Cue list = expand each subsong position into chunk indices for its pattern.
+    # pos_to_cue maps the original order-list position → first cue in this song.
+    cue_list = []
+    pos_to_cue = {}
+    for pos in positions:
+        order = h.order_list[pos]
+        if order >= IT_ORD_END or order >= len(chunk_map):
+            continue
+        pos_to_cue[pos] = len(cue_list)
+        for ci in chunk_map[order]:
+            cue_list.append(ci)
+
+    # Bxx remap: source-position → cue-index. Cross-subsong Bxx targets clamp
+    # to cue 0 (loop the subsong rather than jump out of bounds). Only walk
+    # chunks that this song actually emits — avoids spurious warnings on
+    # patterns owned by other subsongs.
+    _remap_bc_effects(chunks, chunk_map, virtual_orders, pos_to_cue, C,
+                      default_target=0, warn_label=song_label,
+                      chunk_indices=set(cue_list))
+
+    speed, tempo = find_initial_bpm_speed(pats, virtual_orders,
+                                          h.initial_speed, h.initial_tempo)
+    tempo = max(25, min(280, tempo))
+    bpm_stored = (tempo - 25) & 0xFF
+    vprint(f"  [{song_label}] initial speed={speed}, tempo={tempo} BPM")
+
+    default_pans = [_it_default_pan(h.chnl_pan[ch]) for ch in active_channels]
+    total_taud_pats = len(cue_list) * C
+    if total_taud_pats > NUM_PATTERNS_MAX:
+        sys.exit(
+            f"error: [{song_label}] {len(cue_list)} cues × {C} channels = "
+            f"{total_taud_pats} > {NUM_PATTERNS_MAX} Taud pattern limit."
+        )
+
+    pat_bin = bytearray()
+    for ci in cue_list:
+        cg = chunks[ci]
+        for vi, ch in enumerate(active_channels):
+            pat_bin += build_pattern_it(cg, ch, default_pans[vi], inst_vols,
+                                          amiga_mode=not h.linear_slides)
+
+    pat_bin = rescale_offset_effects_per_slot(
+        bytes(pat_bin), len(cue_list), C, sample_ratio)
+
+    orig_count = len(cue_list) * C
+    pat_bin, pat_remap, num_taud_pats = deduplicate_patterns(pat_bin, orig_count)
+    vprint(f"  [{song_label}] patterns: {orig_count} → {num_taud_pats} unique "
+           f"({orig_count - num_taud_pats} deduplicated)")
+
+    sheet = bytearray(NUM_CUES * CUE_SIZE)
+    for c in range(NUM_CUES):
+        sheet[c*CUE_SIZE:c*CUE_SIZE+CUE_SIZE] = encode_cue([], 0)
+
+    last_active = -1
+    len_cue_count = 0
+    for cue_idx, ci in enumerate(cue_list):
+        if cue_idx >= NUM_CUES: break
+        base_pat = cue_idx * C
+        pat_idx_list = [pat_remap[base_pat + vi] for vi in range(C)]
+        clen = chunk_lens[ci] if ci < len(chunk_lens) else PATTERN_ROWS
+        if clen < PATTERN_ROWS:
+            instr = cue_instruction_len(clen)
+            len_cue_count += 1
+        else:
+            instr = CUE_INST_NOP
+        sheet[cue_idx*CUE_SIZE:(cue_idx+1)*CUE_SIZE] = encode_cue(pat_idx_list, instr)
+        last_active = cue_idx
+
+    if last_active >= 0:
+        b30_existing = sheet[last_active * CUE_SIZE + 30]
+        if b30_existing == CUE_INST_LEN:
+            vprint(f"  [{song_label}] warning: last active cue {last_active} had LEN; "
+                   f"replaced with HALT (partial tail at song terminus)")
+        sheet[last_active * CUE_SIZE + 30] = CUE_INST_HALT
+        sheet[last_active * CUE_SIZE + 31] = 0x00
+    else:
+        sheet[30] = CUE_INST_HALT
+    if len_cue_count:
+        vprint(f"  [{song_label}] emitted {len_cue_count} LEN cue instruction(s) "
+               f"for partial-length patterns")
+
+    pat_comp = compress_blob(bytes(pat_bin), f"[{song_label}] pattern bin")
+    cue_comp = compress_blob(bytes(sheet),   f"[{song_label}] cue sheet")
+
+    flags_byte = 0x00 if h.linear_slides else 0x01
+    global_vol_taud = min(0xFF, round(h.global_vol * 255 / 128))
+    mixing_vol_taud = min(0xFF, round(h.mix_vol    * 255 / 128))
+
+    entry_kwargs = dict(
+        num_voices=C,
+        num_patterns=num_taud_pats,
+        bpm_stored=bpm_stored,
+        tick_rate=speed,
+        base_note=0xA000,   # C9
+        base_freq=8363.0,
+        flags_byte=flags_byte,
+        pat_bin_comp_size=len(pat_comp),
+        cue_sheet_comp_size=len(cue_comp),
+        global_vol=global_vol_taud,
+        mixing_vol=mixing_vol_taud,
+    )
+    return pat_comp, cue_comp, entry_kwargs
+
+
 def assemble_taud(h: ITHeader, samples: list, instruments: list,
                   patterns_rows: list, decompress: bool,
                   with_project_data: bool = True) -> bytes:
-    # ── Resolve IT recalls ───────────────────────────────────────────────────
-    vprint("  resolving IT recalls…")
-    resolve_it_recalls(patterns_rows, h.order_list, 64, h.link_gef,
-                       old_effects=h.old_effects)
+    # ── Active channels (shared across subsongs) ─────────────────────────────
+    active_channels = _active_channels(h, patterns_rows)
+    C = len(active_channels)
+    if C == 0:
+        sys.exit("error: no active channels found")
 
-    init_speed, _ = find_initial_bpm_speed(patterns_rows, h.order_list,
-                                           h.initial_speed, h.initial_tempo)
-    relocate_late_note_delays(patterns_rows, h.order_list, 64, init_speed)
-
-    # ── Check SBx chunk crossing (warn only) ─────────────────────────────────
+    # ── SBx chunk-crossing warning (informational only; pattern data is read,
+    #    not modified, so this is safe to do once over the shared template) ──
     for pi, (grid, rows) in enumerate(patterns_rows):
         if rows <= PATTERN_ROWS: continue
-        n_chunks = (rows + PATTERN_ROWS - 1) // PATTERN_ROWS
         for ch in range(64):
             if ch >= len(grid): continue
             loop_start_chunk = None
@@ -1604,36 +1783,6 @@ def assemble_taud(h: ITHeader, samples: list, instruments: list,
                             vprint(f"  warning: pattern {pi} ch{ch}: SBx crosses "
                                    f"chunk boundary (loops may misbehave)")
                             break
-
-    # ── Split patterns into 64-row chunks ────────────────────────────────────
-    vprint("  splitting patterns…")
-    chunks, chunk_map, chunk_lens = split_patterns(patterns_rows)
-
-    # ── Choose active channels ───────────────────────────────────────────────
-    active_channels = _active_channels(h, patterns_rows)
-    C = len(active_channels)
-    if C == 0:
-        sys.exit("error: no active channels found")
-
-    # ── Build the ordered list of (taud_chunk_idx, voice_idx) triples ────────
-    # Expand order list: each IT order → sequence of chunk indices for that pattern
-    taud_cue_list = []   # list of chunk_idx (source patterns, already chunked)
-    it_ord_to_taud_cue = {}   # first taud cue for IT order i
-
-    for oi, order in enumerate(h.order_list):
-        if order == IT_ORD_END:
-            break
-        if order == IT_ORD_SKIP:
-            continue
-        if order >= len(chunk_map):
-            continue
-        it_ord_to_taud_cue.setdefault(oi, len(taud_cue_list))
-        for ci in chunk_map[order]:
-            taud_cue_list.append(ci)
-
-    # ── Remap B effects ──────────────────────────────────────────────────────
-    _remap_bc_effects(chunks, chunk_map, h.order_list, it_ord_to_taud_cue,
-                      len(active_channels))
 
     # ── Build sample proxy list (0-indexed, slot 0 unused) ──────────────────
     # When use_instruments: map Taud instrument slots to samples via canonical_sample.
@@ -1750,116 +1899,47 @@ def assemble_taud(h: ITHeader, samples: list, instruments: list,
     compressed   = compress_blob(sampleinst_raw, "sample+inst bin")
     comp_size    = len(compressed)
 
-    # ── BPM / speed ──────────────────────────────────────────────────────────
-    speed, tempo = find_initial_bpm_speed(patterns_rows, h.order_list,
-                                          h.initial_speed, h.initial_tempo)
-    tempo     = max(25, min(280, tempo))
-    bpm_stored = (tempo - 25) & 0xFF
-    vprint(f"  initial speed={speed}, tempo={tempo} BPM")
-
-    # ── Pattern bin ──────────────────────────────────────────────────────────
-    vprint("  building pattern bin…")
-    default_pans = [_it_default_pan(h.chnl_pan[ch]) for ch in active_channels]
-    total_taud_pats = len(taud_cue_list) * C
-    if total_taud_pats > NUM_PATTERNS_MAX:
-        sys.exit(
-            f"error: {len(taud_cue_list)} cues × {C} channels = "
-            f"{total_taud_pats} > {NUM_PATTERNS_MAX} Taud pattern limit."
-        )
-
-    pat_bin = bytearray()
-    for ci in taud_cue_list:
-        cg = chunks[ci]
-        for vi, ch in enumerate(active_channels):
-            pat_bin += build_pattern_it(cg, ch, default_pans[vi], inst_vols,
-                                          amiga_mode=not h.linear_slides)
-
-    # Rescale TOP_O sample-offset args per channel using the active slot's
-    # ratio (combined global + per-sample). Walks pat_bin in cue-major /
-    # channel-minor order, tracking the most recent inst byte seen on each
-    # channel — must run before deduplication so the channel state stays
-    # linear.
-    pat_bin = rescale_offset_effects_per_slot(
-        bytes(pat_bin), len(taud_cue_list), C, sample_ratio)
-
-    orig_count   = len(taud_cue_list) * C
-    pat_bin, pat_remap, num_taud_pats = deduplicate_patterns(pat_bin, orig_count)
-    vprint(f"  patterns: {orig_count} → {num_taud_pats} unique "
-           f"({orig_count - num_taud_pats} deduplicated)")
-
-    # ── Cue sheet ────────────────────────────────────────────────────────────
-    vprint("  building cue sheet…")
-    song_offset = TAUD_HEADER_SIZE + comp_size + TAUD_SONG_ENTRY
-    sheet       = bytearray(NUM_CUES * CUE_SIZE)
-    for c in range(NUM_CUES):
-        sheet[c*CUE_SIZE:c*CUE_SIZE+CUE_SIZE] = encode_cue([], 0)
-
-    last_active = -1
-    len_cue_count = 0
-    for cue_idx, ci in enumerate(taud_cue_list):
-        if cue_idx >= NUM_CUES: break
-        base_pat = cue_idx * C
-        pats = [pat_remap[base_pat + vi] for vi in range(C)]
-        clen = chunk_lens[ci] if ci < len(chunk_lens) else PATTERN_ROWS
-        if clen < PATTERN_ROWS:
-            instr = cue_instruction_len(clen)
-            len_cue_count += 1
-        else:
-            instr = CUE_INST_NOP
-        sheet[cue_idx*CUE_SIZE:(cue_idx+1)*CUE_SIZE] = encode_cue(pats, instr)
-        last_active = cue_idx
-
-    if last_active >= 0:
-        # Halt overlays whatever LEN was on this cue. If both apply
-        # (the song terminates on a partial-tail chunk), the LEN is
-        # mooted by halt — warn so the user is aware.
-        b30_existing = sheet[last_active * CUE_SIZE + 30]
-        if b30_existing == CUE_INST_LEN:
-            vprint(f"  warning: last active cue {last_active} had LEN; "
-                   f"replaced with HALT (partial tail at song terminus)")
-        sheet[last_active * CUE_SIZE + 30] = CUE_INST_HALT
-        sheet[last_active * CUE_SIZE + 31] = 0x00
+    # ── Detect subsongs ──────────────────────────────────────────────────────
+    subsongs = detect_subsongs(h.order_list, _per_pattern_bxx_it(patterns_rows),
+                               terminators=(IT_ORD_END,),
+                               skip_marker=IT_ORD_SKIP)
+    if not subsongs:
+        # Degenerate file: every order is a terminator. Emit one empty subsong.
+        vprint("  warning: no traversable orders in source; emitting empty song")
+        subsongs = [{'entry': 0, 'positions': []}]
+    n_songs = len(subsongs)
+    if n_songs == 1:
+        vprint(f"  detected 1 song ({len(subsongs[0]['positions'])} orders)")
     else:
-        sheet[30] = CUE_INST_HALT
-    if len_cue_count:
-        vprint(f"  emitted {len_cue_count} LEN cue instruction(s) "
-               f"for partial-length patterns")
+        vprint(f"  detected {n_songs} subsongs:")
+        for i, ss in enumerate(subsongs):
+            vprint(f"    song {i}: entry@{ss['entry']}, {len(ss['positions'])} orders")
 
-    # ── Header ───────────────────────────────────────────────────────────────
-    sig    = (SIGNATURE + b' ' * 14)[:14]
+    # ── Build per-song payloads ──────────────────────────────────────────────
+    song_payloads = []   # list of (pat_comp, cue_comp, entry_kwargs)
+    for i, ss in enumerate(subsongs):
+        label = f"song {i}" if n_songs > 1 else "song"
+        song_payloads.append(_build_song_payload(
+            h, patterns_rows, ss['positions'],
+            sample_ratio, inst_vols, active_channels,
+            song_label=label))
 
-    # Compress pattern bin and cue sheet (per Taud spec)
-    pat_comp = compress_blob(bytes(pat_bin), "pattern bin")
-    cue_comp = compress_blob(bytes(sheet),   "cue sheet")
+    # ── Compute layout offsets and assemble song table ───────────────────────
+    song_table_off = TAUD_HEADER_SIZE + comp_size
+    first_song_off = song_table_off + TAUD_SONG_ENTRY * n_songs
 
-    # flags byte: bits 0-1 (ff) = tone mode. ff=1 (Amiga period slides) when IT's
-    # linear_slides flag is clear; ff=0 otherwise. Pan law is fixed engine-wide to
-    # the equal-energy — no `p` bit any more. Bit 2 was the old 'm' fadeout-zero
-    # policy flag and is now reserved (always 0); fadeout scaling is done per-instrument
-    # in this converter — see the fadeout pass-through below.
-    flags_byte = 0x00 if h.linear_slides else 0x01
-    # IT global/mix volumes are 0..128; rescale to Taud's 0..255 (clamped).
-    global_vol_taud = min(0xFF, round(h.global_vol * 255 / 128))
-    mixing_vol_taud = min(0xFF, round(h.mix_vol    * 255 / 128))
-    song_table = encode_song_entry(
-        song_offset=song_offset,
-        num_voices=C,
-        num_patterns=num_taud_pats,
-        bpm_stored=bpm_stored,
-        tick_rate=speed,
-        base_note=0xA000,   # C9
-        base_freq=8363.0,
-        flags_byte=flags_byte,
-        pat_bin_comp_size=len(pat_comp),
-        cue_sheet_comp_size=len(cue_comp),
-        global_vol=global_vol_taud,
-        mixing_vol=mixing_vol_taud,
-    )
-    assert len(song_table) == TAUD_SONG_ENTRY
+    song_table = bytearray()
+    cur_off = first_song_off
+    for pat_comp, cue_comp, entry_kwargs in song_payloads:
+        entry = encode_song_entry(song_offset=cur_off, **entry_kwargs)
+        assert len(entry) == TAUD_SONG_ENTRY
+        song_table += entry
+        cur_off += len(pat_comp) + len(cue_comp)
 
-    # Project Data (optional). IT distinguishes instruments from samples, so
-    # both INam and SNam can carry distinct content. Slot 0 is unused, so the
-    # tables are 1-indexed with an empty slot-0 entry.
+    # ── Project Data (optional) ──────────────────────────────────────────────
+    # IT distinguishes instruments from samples, so both INam and SNam can carry
+    # distinct content. Slot 0 is unused, so the tables are 1-indexed with an
+    # empty slot-0 entry.
     proj_data = b''
     proj_off  = 0
     if with_project_data:
@@ -1873,20 +1953,29 @@ def assemble_taud(h: ITHeader, samples: list, instruments: list,
             sample_names=smp_names,
         )
         if proj_data:
-            proj_off = TAUD_HEADER_SIZE + comp_size + TAUD_SONG_ENTRY \
-                       + len(pat_comp) + len(cue_comp)
+            proj_off = cur_off
             vprint(f"  project data: {len(proj_data)} bytes @ offset {proj_off}")
 
+    # ── Header ───────────────────────────────────────────────────────────────
+    sig = (SIGNATURE + b' ' * 14)[:14]
     header = (
         TAUD_MAGIC +
-        bytes([TAUD_VERSION, 1]) +
+        bytes([TAUD_VERSION, n_songs & 0xFF]) +
         struct.pack('<I', comp_size) +
         struct.pack('<I', proj_off) +
         sig
     )
     assert len(header) == TAUD_HEADER_SIZE
 
-    return header + compressed + song_table + pat_comp + cue_comp + proj_data
+    out = bytearray()
+    out += header
+    out += compressed
+    out += song_table
+    for pat_comp, cue_comp, _ in song_payloads:
+        out += pat_comp
+        out += cue_comp
+    out += proj_data
+    return bytes(out)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────

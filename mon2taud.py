@@ -22,6 +22,7 @@ Limits: numVoices ≤ 20, numPatterns × numVoices ≤ 4095.
 """
 
 import argparse
+import copy
 import struct
 import sys
 
@@ -35,7 +36,7 @@ from taud_common import (
     SEL_SET, SEL_FINE,
     J_SEMI_TABLE,
     encode_cue, deduplicate_patterns, encode_song_entry, compress_blob,
-    build_project_data,
+    build_project_data, detect_subsongs,
 )
 
 
@@ -304,6 +305,130 @@ def find_initial_speed(patterns: list, order_list: list, num_voices: int) -> int
 
 # ── Top-level assembly ───────────────────────────────────────────────────────
 
+def _per_pattern_bxx_mon(patterns: list, num_voices: int):
+    """Return callable(pat_idx) → (set_of_bxx_target_orders, kills_fallthrough)
+    for `detect_subsongs`. Monotone effect index 5 is 'B' (position jump);
+    arg is 6 bits (0..63). Patterns are 64 rows × num_voices. `grid[v][r]`.
+    """
+    def fn(pat_idx: int):
+        if pat_idx < 0 or pat_idx >= len(patterns):
+            return set(), False
+        grid = patterns[pat_idx]
+        targets = set()
+        last_row_has_b = False
+        for v in range(min(num_voices, len(grid))):
+            v_rows = grid[v]
+            for r in range(min(MON_PATTERN_ROWS, len(v_rows))):
+                cell = v_rows[r]
+                if cell.effect == 5:
+                    targets.add(cell.effect_arg & 0x3F)
+                    if r == MON_PATTERN_ROWS - 1:
+                        last_row_has_b = True
+        return targets, last_row_has_b
+    return fn
+
+
+def _build_song_payload_mon(mon: dict, patterns_template: list,
+                            positions: list, num_voices: int,
+                            *, song_label: str = 'song') -> tuple:
+    """Build pattern bin + cue sheet + song-entry kwargs for one Monotone
+    subsong. Mutates a deepcopy of the patterns to remap Bxx targets to
+    per-song cue indices.
+    """
+    patterns = copy.deepcopy(patterns_template)
+    order_list = mon['order_list']
+    n_patterns = mon['n_patterns']
+    virtual_orders = [order_list[pos] for pos in positions]
+
+    speed = find_initial_speed(patterns, virtual_orders, num_voices)
+    vprint(f"  [{song_label}] initial speed (ticks/row): {speed}")
+
+    cue_list = []
+    pos_to_cue = {}
+    for pos in positions:
+        order = order_list[pos]
+        if order >= n_patterns:
+            continue
+        pos_to_cue[pos] = len(cue_list)
+        cue_list.append(order)
+
+    used_ordered = []
+    seen = set()
+    for src_pat in cue_list:
+        if src_pat not in seen:
+            used_ordered.append(src_pat)
+            seen.add(src_pat)
+    pat_idx_remap = {src: i for i, src in enumerate(used_ordered)}
+    P_used = len(used_ordered)
+
+    if P_used * num_voices > NUM_PATTERNS_MAX:
+        sys.exit(f"error: [{song_label}] {P_used} patterns × {num_voices} voices = "
+                 f"{P_used*num_voices} > {NUM_PATTERNS_MAX} Taud pattern limit.")
+
+    # Bxx remap: source position → cue index. Cross-song clamps to cue 0.
+    crossings = 0
+    for src_pat in used_ordered:
+        if src_pat >= len(patterns): continue
+        grid = patterns[src_pat]
+        for v in range(min(num_voices, len(grid))):
+            for row in grid[v]:
+                if row.effect == 5:
+                    if row.effect_arg in pos_to_cue:
+                        row.effect_arg = pos_to_cue[row.effect_arg] & 0x3F
+                    else:
+                        crossings += 1
+                        row.effect_arg = 0
+    if crossings:
+        vprint(f"  warning: [{song_label}]: {crossings} Bxx target(s) cross "
+               f"subsong boundary; clamped to cue 0")
+
+    pat_bin = bytearray()
+    for src_pat in used_ordered:
+        grid = patterns[src_pat]
+        for v in range(num_voices):
+            pat_bin += build_taud_pattern(grid, v)
+
+    orig_count = P_used * num_voices
+    pat_bin, pat_remap, num_taud_pats = deduplicate_patterns(bytes(pat_bin), orig_count)
+    vprint(f"  [{song_label}] patterns: {orig_count} → {num_taud_pats} unique "
+           f"({orig_count - num_taud_pats} deduplicated)")
+
+    sheet = bytearray(NUM_CUES * CUE_SIZE)
+    for c in range(NUM_CUES):
+        sheet[c*CUE_SIZE:(c+1)*CUE_SIZE] = encode_cue([], 0)
+
+    last_active = -1
+    for cue_idx, src_pat in enumerate(cue_list):
+        if cue_idx >= NUM_CUES: break
+        new_pat_idx = pat_idx_remap[src_pat]
+        orig_pats = [new_pat_idx * num_voices + v for v in range(num_voices)]
+        sheet[cue_idx*CUE_SIZE:(cue_idx+1)*CUE_SIZE] = encode_cue(
+            [pat_remap[p] for p in orig_pats], 0)
+        last_active = cue_idx
+    if last_active >= 0:
+        sheet[last_active * CUE_SIZE + 30] = 0x01
+
+    pat_comp = compress_blob(bytes(pat_bin), f"[{song_label}] pattern bin")
+    cue_comp = compress_blob(bytes(sheet),   f"[{song_label}] cue sheet")
+
+    flags_byte = GLOBAL_FLAGS_LINEAR_FREQ | GLOBAL_FLAGS_NO_INTERPOLATION
+    bpm_stored = 150 - 25
+    entry_kwargs = dict(
+        num_voices=num_voices,
+        num_patterns=num_taud_pats,
+        bpm_stored=bpm_stored,
+        tick_rate=speed,
+        base_note=0xA000,
+        base_freq=SQUARE_C2SPD,
+        flags_byte=flags_byte,
+        pat_bin_comp_size=len(pat_comp),
+        cue_sheet_comp_size=len(cue_comp),
+        global_vol=0xFF,
+        mixing_vol=round(180 / num_voices),
+    )
+    return pat_comp, cue_comp, entry_kwargs
+
+
 def assemble_taud(mon: dict, with_project_data: bool = True) -> bytes:
     num_voices = mon['num_voices']
     patterns   = mon['patterns']
@@ -313,18 +438,7 @@ def assemble_taud(mon: dict, with_project_data: bool = True) -> bytes:
     if num_voices > NUM_VOICES:
         vprint(f"  warning: {num_voices} voices > {NUM_VOICES}; truncating")
         num_voices = NUM_VOICES
-
-    if n_patterns * num_voices > NUM_PATTERNS_MAX:
-        sys.exit(
-            f"error: {n_patterns} patterns × {num_voices} voices = "
-            f"{n_patterns*num_voices} > {NUM_PATTERNS_MAX} Taud limit"
-        )
-
-    vprint(f"  voices: {num_voices}, mon patterns: {n_patterns}, "
-           f"taud patterns: {n_patterns * num_voices}")
-
-    speed = find_initial_speed(patterns, order_list, num_voices)
-    vprint(f"  initial speed (ticks/row): {speed}")
+    vprint(f"  voices: {num_voices}, mon patterns: {n_patterns}")
 
     vprint("  building sample/instrument bin…")
     sampleinst_raw = build_sample_inst_bin()
@@ -332,53 +446,44 @@ def assemble_taud(mon: dict, with_project_data: bool = True) -> bytes:
     compressed = compress_blob(sampleinst_raw, "sample+inst bin")
     comp_size  = len(compressed)
 
-    vprint("  building pattern bin…")
-    pat_bin = bytearray()
-    for pi in range(n_patterns):
-        grid = patterns[pi]
-        for v in range(num_voices):
-            pat_bin += build_taud_pattern(grid, v)
-    assert len(pat_bin) == n_patterns * num_voices * PATTERN_BYTES
+    # ── Detect subsongs ──────────────────────────────────────────────────────
+    # Monotone strips 0xFF (skip) markers during parse, so the order list is
+    # already a clean sequence of pattern indices. No terminator/skip values
+    # to feed the detector — subsongs only emerge from the Bxx graph.
+    skip_set = set(range(n_patterns, 256))   # invalid pattern refs → skip
+    subsongs = detect_subsongs(order_list,
+                               _per_pattern_bxx_mon(patterns, num_voices),
+                               terminators=(),
+                               skip_marker=skip_set)
+    if not subsongs:
+        vprint("  warning: no traversable orders in source; emitting empty song")
+        subsongs = [{'entry': 0, 'positions': []}]
+    n_songs = len(subsongs)
+    if n_songs == 1:
+        vprint(f"  detected 1 song ({len(subsongs[0]['positions'])} orders)")
+    else:
+        vprint(f"  detected {n_songs} subsongs:")
+        for i, ss in enumerate(subsongs):
+            vprint(f"    song {i}: entry@{ss['entry']}, {len(ss['positions'])} orders")
 
-    vprint("  deduplicating patterns…")
-    orig_count = n_patterns * num_voices
-    pat_bin, pat_remap, num_taud_pats = deduplicate_patterns(bytes(pat_bin), orig_count)
-    vprint(f"  patterns: {orig_count} → {num_taud_pats} unique "
-           f"({orig_count - num_taud_pats} deduplicated)")
+    # ── Build per-song payloads ──────────────────────────────────────────────
+    song_payloads = []
+    for i, ss in enumerate(subsongs):
+        label = f"song {i}" if n_songs > 1 else "song"
+        song_payloads.append(_build_song_payload_mon(
+            mon, patterns, ss['positions'], num_voices, song_label=label))
 
-    vprint("  building cue sheet…")
-    cue_sheet = build_cue_sheet(order_list, num_voices, pat_remap)
-    assert len(cue_sheet) == NUM_CUES * CUE_SIZE
+    # ── Layout offsets and song table ────────────────────────────────────────
+    song_table_off = TAUD_HEADER_SIZE + comp_size
+    first_song_off = song_table_off + TAUD_SONG_ENTRY * n_songs
 
-    pat_comp = compress_blob(bytes(pat_bin),   "pattern bin")
-    cue_comp = compress_blob(bytes(cue_sheet), "cue sheet")
-
-    sig = (SIGNATURE + b' ' * 14)[:14]
-    song_offset = TAUD_HEADER_SIZE + comp_size + TAUD_SONG_ENTRY
-
-    # BPM 150 + ticks=mon_speed → row rate = 60/mon_speed (matches Monotone).
-    bpm_stored = 150 - 25
-    # Linear-frequency tone mode (ff=2) so 1xx/2xx/3xx Hz/tick semantics survive verbatim.
-    # Pan law is fixed engine-wide to the equal-energy (no flag). Monotone has no
-    # instrument-level fadeout, so every Taud instrument carries fadeout=0 ("no fade") —
-    # notes retire on sample-end or pattern note-cut instead.
-    flags_byte = GLOBAL_FLAGS_LINEAR_FREQ | GLOBAL_FLAGS_NO_INTERPOLATION
-
-    song_table = encode_song_entry(
-        song_offset       = song_offset,
-        num_voices        = num_voices,
-        num_patterns      = num_taud_pats,
-        bpm_stored        = bpm_stored,
-        tick_rate         = speed,
-        base_note         = 0xA000,
-        base_freq         = SQUARE_C2SPD,
-        flags_byte        = flags_byte,
-        pat_bin_comp_size = len(pat_comp),
-        cue_sheet_comp_size = len(cue_comp),
-        global_vol        = 0xFF,
-        mixing_vol        = round(180 / num_voices),
-    )
-    assert len(song_table) == TAUD_SONG_ENTRY
+    song_table = bytearray()
+    cur_off = first_song_off
+    for pat_comp, cue_comp, entry_kwargs in song_payloads:
+        entry = encode_song_entry(song_offset=cur_off, **entry_kwargs)
+        assert len(entry) == TAUD_SONG_ENTRY
+        song_table += entry
+        cur_off += len(pat_comp) + len(cue_comp)
 
     # Project Data (optional). Monotone has no title, no user instruments and
     # no per-sample names, but we still emit one identifying entry so the
@@ -391,21 +496,28 @@ def assemble_taud(mon: dict, with_project_data: bool = True) -> bytes:
             sample_names=['', 'PC speaker square'],
         )
         if proj_data:
-            proj_off = TAUD_HEADER_SIZE + comp_size + TAUD_SONG_ENTRY \
-                       + len(pat_comp) + len(cue_comp)
+            proj_off = cur_off
             vprint(f"  project data: {len(proj_data)} bytes @ offset {proj_off}")
 
-    # Header: magic, version, num_songs=1, comp_size of sample+inst, projOff, sig.
+    sig = (SIGNATURE + b' ' * 14)[:14]
     header = (
         TAUD_MAGIC
-        + bytes([TAUD_VERSION, 1])
+        + bytes([TAUD_VERSION, n_songs & 0xFF])
         + struct.pack('<I', comp_size)
         + struct.pack('<I', proj_off)
         + sig
     )
     assert len(header) == TAUD_HEADER_SIZE
 
-    return header + compressed + song_table + pat_comp + cue_comp + proj_data
+    out = bytearray()
+    out += header
+    out += compressed
+    out += song_table
+    for pat_comp, cue_comp, _ in song_payloads:
+        out += pat_comp
+        out += cue_comp
+    out += proj_data
+    return bytes(out)
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────

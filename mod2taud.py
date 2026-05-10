@@ -24,6 +24,7 @@ Effect support:
 """
 
 import argparse
+import copy
 import math
 import struct
 import sys
@@ -40,7 +41,7 @@ from taud_common import (
     J_SEMI_TABLE,
     d_arg_to_col, resample_linear, rescale_offset_effects, encode_cue, deduplicate_patterns,
     encode_song_entry, compress_blob,
-    build_project_data,
+    build_project_data, detect_subsongs,
 )
 
 
@@ -702,99 +703,133 @@ def find_initial_bpm_speed(patterns: list, order_list: list) -> tuple:
     return speed, tempo
 
 
-def assemble_taud(mod: dict, with_project_data: bool = True) -> bytes:
-    samples    = mod['samples']
-    patterns   = mod['patterns']
-    order_list = mod['order_list']
-    n_channels = mod['n_channels']
-    n_patterns = mod['n_patterns']
-
-    if n_channels > NUM_VOICES:
-        vprint(f"  warning: MOD has {n_channels} channels; truncating to {NUM_VOICES}")
-        n_channels = NUM_VOICES
-
-    if n_patterns * n_channels > NUM_PATTERNS_MAX:
-        sys.exit(
-            f"error: {n_patterns} MOD patterns × {n_channels} channels = "
-            f"{n_patterns*n_channels} > {NUM_PATTERNS_MAX} Taud pattern limit.\n"
-            f"  Reduce the MOD to ≤ {NUM_PATTERNS_MAX // max(n_channels,1)} patterns."
-        )
-
-    vprint(f"  channels: {n_channels}, mod patterns: {n_patterns}, "
-           f"taud patterns: {n_patterns * n_channels}")
-
-    # Fold Cxx into row.vol_set so the volume column carries explicit set-volume.
-    # This is done in-place before recall resolution so Cxx with arg 0 still
-    # resolves to vol 0 (silence) rather than recalling another effect's memory.
-    for grid in patterns:
+def _per_pattern_bxx_mod(patterns: list, n_channels: int):
+    """Return callable(pat_idx) → (set_of_bxx_target_orders, kills_fallthrough)
+    for `detect_subsongs`. MOD patterns are 64 rows × n_channels; Bxx is
+    raw effect digit 0xB.
+    """
+    def fn(pat_idx: int):
+        if pat_idx < 0 or pat_idx >= len(patterns):
+            return set(), False
+        grid = patterns[pat_idx]
+        targets = set()
+        last_row_has_b = False
         for ch in range(min(n_channels, len(grid))):
-            for row in grid[ch]:
-                if row.effect == 0xC:
-                    row.vol_set = min(row.effect_arg, 0x3F)
-                    row.effect = 0
-                    row.effect_arg = 0
+            ch_rows = grid[ch]
+            for r in range(min(PATTERN_ROWS, len(ch_rows))):
+                cell = ch_rows[r]
+                if cell.effect == 0xB:
+                    targets.add(cell.effect_arg & 0xFF)
+                    if r == PATTERN_ROWS - 1:
+                        last_row_has_b = True
+        return targets, last_row_has_b
+    return fn
 
-    vprint("  resolving PT per-effect recalls…")
-    resolve_pt_recalls(patterns, order_list, n_channels)
 
-    init_speed, _ = find_initial_bpm_speed(patterns, order_list)
-    relocate_late_note_delays(patterns, order_list, n_channels, init_speed)
+def _build_song_payload_mod(mod: dict, patterns_template: list,
+                            positions: list, sample_ratio: dict,
+                            inst_vols: dict, n_channels: int,
+                            *, song_label: str = 'song') -> tuple:
+    """Build pattern bin + cue sheet + song-entry kwargs for one MOD subsong.
 
-    vprint("  building sample/instrument bin…")
-    sampleinst_raw, _offsets, sample_ratio = build_sample_inst_bin(samples)
-    assert len(sampleinst_raw) == SAMPLEINST_SIZE
+    `patterns_template` is deep-copied so per-song stateful transforms
+    (recall resolution, late-note-delay relocation, Bxx remap) don't leak
+    into the next subsong.
+    """
+    patterns = copy.deepcopy(patterns_template)
+    order_list = mod['order_list']
+    virtual_orders = [order_list[pos] for pos in positions]
 
-    compressed = compress_blob(sampleinst_raw, "sample+inst bin")
-    comp_size  = len(compressed)
+    vprint(f"  [{song_label}] resolving PT per-effect recalls…")
+    resolve_pt_recalls(patterns, virtual_orders, n_channels)
 
-    speed, tempo = find_initial_bpm_speed(patterns, order_list)
+    init_speed, _ = find_initial_bpm_speed(patterns, virtual_orders)
+    relocate_late_note_delays(patterns, virtual_orders, n_channels, init_speed)
+
+    speed, tempo = find_initial_bpm_speed(patterns, virtual_orders)
     tempo = max(25, min(280, tempo))
     bpm_stored = (tempo - 25) & 0xFF
-    vprint(f"  initial speed={speed}, tempo(BPM)={tempo}")
+    vprint(f"  [{song_label}] initial speed={speed}, tempo(BPM)={tempo}")
 
-    song_offset = TAUD_HEADER_SIZE + comp_size + TAUD_SONG_ENTRY
+    n_patterns = mod['n_patterns']
 
-    sig = (SIGNATURE + b' ' * 14)[:14]
+    # Cue list and pos→cue mapping, skipping orders that aren't valid pattern refs.
+    cue_list = []
+    pos_to_cue = {}
+    for pos in positions:
+        order = order_list[pos]
+        if order >= n_patterns:
+            continue
+        pos_to_cue[pos] = len(cue_list)
+        cue_list.append(order)
 
-    vprint("  building pattern bin…")
-    inst_vols = {
-        i + 1: min(s.volume, 0x3F)
-        for i, s in enumerate(samples)
-        if s.sample_data
-    }
+    # Densely renumber the patterns this song uses.
+    used_ordered = []
+    seen = set()
+    for src_pat in cue_list:
+        if src_pat not in seen:
+            used_ordered.append(src_pat)
+            seen.add(src_pat)
+    pat_idx_remap = {src: i for i, src in enumerate(used_ordered)}
+    P_used = len(used_ordered)
+
+    if P_used * n_channels > NUM_PATTERNS_MAX:
+        sys.exit(f"error: [{song_label}] {P_used} patterns × {n_channels} channels = "
+                 f"{P_used*n_channels} > {NUM_PATTERNS_MAX} Taud pattern limit.")
+
+    # Bxx remap on the patterns this song actually emits.
+    crossings = 0
+    for src_pat in used_ordered:
+        if src_pat >= len(patterns): continue
+        grid = patterns[src_pat]
+        for ch in range(min(n_channels, len(grid))):
+            for row in grid[ch]:
+                if row.effect == 0xB:
+                    if row.effect_arg in pos_to_cue:
+                        row.effect_arg = pos_to_cue[row.effect_arg] & 0xFF
+                    else:
+                        crossings += 1
+                        row.effect_arg = 0
+    if crossings:
+        vprint(f"  warning: [{song_label}]: {crossings} Bxx target(s) cross "
+               f"subsong boundary; clamped to cue 0")
+
     pat_bin = bytearray()
-    for pi in range(n_patterns):
-        grid = patterns[pi]
+    for src_pat in used_ordered:
+        grid = patterns[src_pat]
         for ch in range(n_channels):
             default_pan = _default_channel_pan(ch)
             pat_bin += build_pattern(grid, ch, default_pan, inst_vols)
-    assert len(pat_bin) == n_patterns * n_channels * PATTERN_BYTES
-
-    # Rescale TOP_O sample-offset args if samples were globally downsampled.
     pat_bin = rescale_offset_effects(bytes(pat_bin), sample_ratio)
 
-    vprint("  deduplicating patterns…")
-    orig_count = n_patterns * n_channels
+    orig_count = P_used * n_channels
     pat_bin, pat_remap, num_taud_pats = deduplicate_patterns(pat_bin, orig_count)
-    vprint(f"  patterns: {orig_count} → {num_taud_pats} unique "
+    vprint(f"  [{song_label}] patterns: {orig_count} → {num_taud_pats} unique "
            f"({orig_count - num_taud_pats} deduplicated)")
 
-    vprint("  building cue sheet…")
-    cue_sheet = build_cue_sheet(order_list, n_patterns, n_channels, pat_remap)
-    assert len(cue_sheet) == NUM_CUES * CUE_SIZE
+    sheet = bytearray(NUM_CUES * CUE_SIZE)
+    for c in range(NUM_CUES):
+        sheet[c*CUE_SIZE:c*CUE_SIZE+CUE_SIZE] = encode_cue([], 0)
 
-    pat_comp = compress_blob(bytes(pat_bin),   "pattern bin")
-    cue_comp = compress_blob(bytes(cue_sheet), "cue sheet")
+    last_active = -1
+    for cue_idx, src_pat in enumerate(cue_list):
+        if cue_idx >= NUM_CUES: break
+        new_pat_idx = pat_idx_remap[src_pat]
+        orig_pats = [new_pat_idx * n_channels + v for v in range(n_channels)]
+        sheet[cue_idx*CUE_SIZE:(cue_idx+1)*CUE_SIZE] = encode_cue(
+            [pat_remap[p] for p in orig_pats], 0)
+        last_active = cue_idx
 
-    # ProTracker is Amiga-period-based by definition, so we set ff=1 (bits 0-1) so
-    # the engine applies coarse pitch slides in period space (recovers PT's
-    # characteristic non-linear pitch character). Pan law is fixed to the
-    # equal-energy engine-wide. PT has no instrument-level fadeout, so every Taud
-    # instrument carries fadeout=0 ("no fade") — notes retire on sample-end or
-    # pattern note-cut instead, which matches PT semantics.
+    if last_active >= 0:
+        sheet[last_active * CUE_SIZE + 30] = 0x01
+    else:
+        sheet[30] = 0x01
+
+    pat_comp = compress_blob(bytes(pat_bin), f"[{song_label}] pattern bin")
+    cue_comp = compress_blob(bytes(sheet),   f"[{song_label}] cue sheet")
+
     flags_byte = GLOBAL_FLAGS_AMIGA_FREQ | GLOBAL_FLAGS_A500_INTP
-    song_table = encode_song_entry(
-        song_offset=song_offset,
+    entry_kwargs = dict(
         num_voices=n_channels,
         num_patterns=num_taud_pats,
         bpm_stored=bpm_stored,
@@ -807,7 +842,82 @@ def assemble_taud(mod: dict, with_project_data: bool = True) -> bytes:
         global_vol=0xFF,
         mixing_vol=180,
     )
-    assert len(song_table) == TAUD_SONG_ENTRY
+    return pat_comp, cue_comp, entry_kwargs
+
+
+def assemble_taud(mod: dict, with_project_data: bool = True) -> bytes:
+    samples    = mod['samples']
+    patterns   = mod['patterns']
+    order_list = mod['order_list']
+    n_channels = mod['n_channels']
+    n_patterns = mod['n_patterns']
+
+    if n_channels > NUM_VOICES:
+        vprint(f"  warning: MOD has {n_channels} channels; truncating to {NUM_VOICES}")
+        n_channels = NUM_VOICES
+    vprint(f"  channels: {n_channels}, mod patterns: {n_patterns}")
+
+    # Fold Cxx into row.vol_set so the volume column carries explicit set-volume.
+    # This is non-stateful (doesn't depend on order list) so it runs once on the
+    # shared template; per-song deepcopies inherit the folded form.
+    for grid in patterns:
+        for ch in range(min(n_channels, len(grid))):
+            for row in grid[ch]:
+                if row.effect == 0xC:
+                    row.vol_set = min(row.effect_arg, 0x3F)
+                    row.effect = 0
+                    row.effect_arg = 0
+
+    vprint("  building sample/instrument bin…")
+    sampleinst_raw, _offsets, sample_ratio = build_sample_inst_bin(samples)
+    assert len(sampleinst_raw) == SAMPLEINST_SIZE
+    compressed = compress_blob(sampleinst_raw, "sample+inst bin")
+    comp_size  = len(compressed)
+
+    inst_vols = {
+        i + 1: min(s.volume, 0x3F)
+        for i, s in enumerate(samples)
+        if s.sample_data
+    }
+
+    # ── Detect subsongs ──────────────────────────────────────────────────────
+    # MOD shares IT/S3M's 0xFF-end / 0xFE-skip convention; orders ≥ n_patterns
+    # are also unplayable and treated as skips by the player (build_cue_sheet).
+    skip_set = set([0xFE]) | set(range(n_patterns, 256))
+    subsongs = detect_subsongs(order_list,
+                               _per_pattern_bxx_mod(patterns, n_channels),
+                               terminators=(0xFF,),
+                               skip_marker=skip_set)
+    if not subsongs:
+        vprint("  warning: no traversable orders in source; emitting empty song")
+        subsongs = [{'entry': 0, 'positions': []}]
+    n_songs = len(subsongs)
+    if n_songs == 1:
+        vprint(f"  detected 1 song ({len(subsongs[0]['positions'])} orders)")
+    else:
+        vprint(f"  detected {n_songs} subsongs:")
+        for i, ss in enumerate(subsongs):
+            vprint(f"    song {i}: entry@{ss['entry']}, {len(ss['positions'])} orders")
+
+    # ── Build per-song payloads ──────────────────────────────────────────────
+    song_payloads = []
+    for i, ss in enumerate(subsongs):
+        label = f"song {i}" if n_songs > 1 else "song"
+        song_payloads.append(_build_song_payload_mod(
+            mod, patterns, ss['positions'], sample_ratio, inst_vols,
+            n_channels, song_label=label))
+
+    # ── Layout offsets and song table ────────────────────────────────────────
+    song_table_off = TAUD_HEADER_SIZE + comp_size
+    first_song_off = song_table_off + TAUD_SONG_ENTRY * n_songs
+
+    song_table = bytearray()
+    cur_off = first_song_off
+    for pat_comp, cue_comp, entry_kwargs in song_payloads:
+        entry = encode_song_entry(song_offset=cur_off, **entry_kwargs)
+        assert len(entry) == TAUD_SONG_ENTRY
+        song_table += entry
+        cur_off += len(pat_comp) + len(cue_comp)
 
     # Project Data (optional). MOD samples *are* its instruments — the names
     # populate both INam and SNam (1-based; slot 0 empty).
@@ -821,20 +931,28 @@ def assemble_taud(mod: dict, with_project_data: bool = True) -> bytes:
             sample_names=names,
         )
         if proj_data:
-            proj_off = TAUD_HEADER_SIZE + comp_size + TAUD_SONG_ENTRY \
-                       + len(pat_comp) + len(cue_comp)
+            proj_off = cur_off
             vprint(f"  project data: {len(proj_data)} bytes @ offset {proj_off}")
 
+    sig = (SIGNATURE + b' ' * 14)[:14]
     header = (
         TAUD_MAGIC +
-        bytes([TAUD_VERSION, 1]) +
+        bytes([TAUD_VERSION, n_songs & 0xFF]) +
         struct.pack('<I', comp_size) +
         struct.pack('<I', proj_off) +
         sig
     )
     assert len(header) == TAUD_HEADER_SIZE
 
-    return header + compressed + song_table + pat_comp + cue_comp + proj_data
+    out = bytearray()
+    out += header
+    out += compressed
+    out += song_table
+    for pat_comp, cue_comp, _ in song_payloads:
+        out += pat_comp
+        out += cue_comp
+    out += proj_data
+    return bytes(out)
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────

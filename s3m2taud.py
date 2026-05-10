@@ -25,6 +25,7 @@ Effect support:
 """
 
 import argparse
+import copy
 import math
 import struct
 import sys
@@ -44,7 +45,7 @@ from taud_common import (
     J_SEMI_TABLE,
     d_arg_to_col, resample_linear, rescale_offset_effects, encode_cue, deduplicate_patterns,
     normalise_sample, encode_song_entry, compress_blob,
-    build_project_data,
+    build_project_data, detect_subsongs,
 )
 
 
@@ -724,101 +725,146 @@ def find_initial_bpm_speed(patterns: list, order_list: list,
     return speed, tempo
 
 
-def assemble_taud(h: S3MHeader, instruments: list, patterns: list,
-                  with_project_data: bool = True) -> bytes:
-    # Determine active channels (bit7 clear = enabled)
-    active_channels = [i for i, cs in enumerate(h.channel_settings)
-                       if i < 32 and not (cs & 0x80)][:NUM_VOICES]
-    C = len(active_channels)
-    P = len(patterns)
+def _per_pattern_bxx_s3m(patterns: list):
+    """Return callable(pat_idx) → (set_of_bxx_target_orders, kills_fallthrough)
+    for `detect_subsongs`. `kills_fallthrough` is True iff the pattern carries
+    a Bxx on its absolute last row (the unconditional terminating-jump idiom).
+    S3M patterns are always 64 rows.
+    """
+    def fn(pat_idx: int):
+        if pat_idx < 0 or pat_idx >= len(patterns):
+            return set(), False
+        grid = patterns[pat_idx]
+        targets = set()
+        last_row_has_b = False
+        for ch in range(min(32, len(grid))):
+            ch_rows = grid[ch]
+            for r in range(min(PATTERN_ROWS, len(ch_rows))):
+                cell = ch_rows[r]
+                if getattr(cell, 'effect', 0) == EFF_B:
+                    targets.add(cell.effect_arg)
+                    if r == PATTERN_ROWS - 1:
+                        last_row_has_b = True
+        return targets, last_row_has_b
+    return fn
 
-    if P * C > NUM_PATTERNS_MAX:
-        sys.exit(
-            f"error: {P} S3M patterns × {C} channels = {P*C} > {NUM_PATTERNS_MAX} Taud pattern limit.\n"
-            f"  Reduce the S3M to ≤ {NUM_PATTERNS_MAX // max(C,1)} patterns, or mute "
-            f"channels to bring active count below {NUM_PATTERNS_MAX // max(P,1) + 1}."
-        )
 
-    vprint(f"  channels: {C}, s3m patterns: {P}, taud patterns: {P*C}")
+def _build_song_payload_s3m(h: S3MHeader, patterns_template: list,
+                            positions: list, sample_ratio: dict,
+                            inst_vols: dict, active_channels: list,
+                            *, song_label: str = 'song') -> tuple:
+    """Build pattern bin + cue sheet + song-entry kwargs for one subsong.
 
-    # Resolve ST3 shared-memory recalls (D/E/F/I/J/K/L/Q/R/S with $00 arg)
-    # before any per-row encoding, so cohort-aware Taud effects see explicit
-    # arguments. Mutates patterns in place.
-    vprint("  resolving ST3 shared-memory recalls…")
-    resolve_st3_recalls(patterns, h.order_list, 32)
-    warn_st3_quirks(patterns, h.order_list, 32)
+    Returns (pat_comp, cue_comp, entry_kwargs). The caller fills in
+    `song_offset` from the global layout. `patterns_template` is deep-copied
+    so per-song stateful walks (recall resolution, late-note-delay
+    relocation, Bxx remap) don't leak into the next subsong.
+    """
+    pats = copy.deepcopy(patterns_template)
+    virtual_orders = [h.order_list[pos] for pos in positions]
 
-    init_speed, _ = find_initial_bpm_speed(patterns, h.order_list,
+    vprint(f"  [{song_label}] resolving ST3 shared-memory recalls…")
+    resolve_st3_recalls(pats, virtual_orders, 32)
+    warn_st3_quirks(pats, virtual_orders, 32)
+
+    init_speed, _ = find_initial_bpm_speed(pats, virtual_orders,
                                            h.initial_speed, h.initial_tempo)
-    relocate_late_note_delays(patterns, h.order_list, 32, init_speed)
+    relocate_late_note_delays(pats, virtual_orders, 32, init_speed)
 
-    # Build sample+instrument bin
-    vprint("  building sample/instrument bin…")
-    sampleinst_raw, _offsets, sample_ratio = build_sample_inst_bin(instruments)
-    assert len(sampleinst_raw) == SAMPLEINST_SIZE
-
-    # Compress
-    compressed = compress_blob(sampleinst_raw, "sample+inst bin")
-    comp_size  = len(compressed)
-
-    # Initial BPM / speed
-    speed, tempo = find_initial_bpm_speed(patterns, h.order_list,
+    speed, tempo = find_initial_bpm_speed(pats, virtual_orders,
                                           h.initial_speed, h.initial_tempo)
     tempo = max(25, min(280, tempo))
     bpm_stored = (tempo - 25) & 0xFF
-    vprint(f"  initial speed={speed}, tempo(BPM)={tempo}")
+    vprint(f"  [{song_label}] initial speed={speed}, tempo(BPM)={tempo}")
 
-    # Song offset = header(32) + compressed + song_table(8)
-    song_offset = TAUD_HEADER_SIZE + comp_size + TAUD_SONG_ENTRY
-    num_taud_pats = P * C
+    # Cue list (source pattern indices) and pos→cue mapping. Skip orders that
+    # already terminate (S3M_ORDER_END) or point past the pattern table.
+    cue_list = []
+    pos_to_cue = {}
+    for pos in positions:
+        order = h.order_list[pos]
+        if order >= S3M_ORDER_END or order >= len(pats):
+            continue
+        pos_to_cue[pos] = len(cue_list)
+        cue_list.append(order)
 
-    sig = (SIGNATURE + b' ' * 14)[:14]
+    # Densely renumber the patterns this song actually emits.
+    used_ordered = []
+    seen = set()
+    for src_pat in cue_list:
+        if src_pat not in seen:
+            used_ordered.append(src_pat)
+            seen.add(src_pat)
+    pat_idx_remap = {src: i for i, src in enumerate(used_ordered)}
+    P_used = len(used_ordered)
 
-    # Pattern bin: for each s3m pattern, for each active channel, 512 bytes
-    vprint("  building pattern bin…")
-    default_pans = [_default_channel_pan(h.channel_settings[ch]) for ch in active_channels]
-    # 1-based inst index → default volume (0..63) for note-trigger vol injection.
-    inst_vols = {
-        i + 1: min(inst.volume, 0x3F)
-        for i, inst in enumerate(instruments)
-        if inst is not None and inst.itype == S3M_TYPE_PCM
-    }
+    C = len(active_channels)
+    if P_used * C > NUM_PATTERNS_MAX:
+        sys.exit(
+            f"error: [{song_label}] {P_used} patterns × {C} channels = "
+            f"{P_used*C} > {NUM_PATTERNS_MAX} Taud pattern limit."
+        )
+
+    # Bxx remap: target source-position → cue-index. Cross-subsong jumps
+    # clamp to cue 0 (loop the subsong rather than jump out of bounds). Walk
+    # only the patterns this song actually emits.
+    crossings = 0
+    for src_pat in used_ordered:
+        if src_pat >= len(pats): continue
+        grid = pats[src_pat]
+        for ch in range(min(32, len(grid))):
+            for row in grid[ch]:
+                if row.effect == EFF_B:
+                    if row.effect_arg in pos_to_cue:
+                        row.effect_arg = pos_to_cue[row.effect_arg] & 0xFF
+                    else:
+                        crossings += 1
+                        row.effect_arg = 0
+    if crossings:
+        vprint(f"  warning: [{song_label}]: {crossings} Bxx target(s) cross "
+               f"subsong boundary; clamped to cue 0")
+
+    # Pattern bin: emit only patterns this song uses (densely indexed).
+    default_pans = [_default_channel_pan(h.channel_settings[ch])
+                    for ch in active_channels]
     pat_bin = bytearray()
-    for pi in range(P):
-        grid = patterns[pi]
+    for src_pat in used_ordered:
+        grid = pats[src_pat]
         for vi, ch in enumerate(active_channels):
-            pat_bin += build_pattern(grid, ch, default_pans[vi], h.linear_slides,
-                                      inst_vols, amiga_mode=not h.linear_slides)
-    assert len(pat_bin) == num_taud_pats * PATTERN_BYTES
+            pat_bin += build_pattern(grid, ch, default_pans[vi],
+                                      h.linear_slides, inst_vols,
+                                      amiga_mode=not h.linear_slides)
 
-    # Rescale TOP_O sample-offset args if samples were globally downsampled.
     pat_bin = rescale_offset_effects(bytes(pat_bin), sample_ratio)
-
-    # Deduplicate identical patterns
-    vprint("  deduplicating patterns…")
-    orig_count = num_taud_pats
+    orig_count = P_used * C
     pat_bin, pat_remap, num_taud_pats = deduplicate_patterns(pat_bin, orig_count)
-    vprint(f"  patterns: {orig_count} → {num_taud_pats} unique ({orig_count - num_taud_pats} deduplicated)")
+    vprint(f"  [{song_label}] patterns: {orig_count} → {num_taud_pats} unique "
+           f"({orig_count - num_taud_pats} deduplicated)")
 
-    # Cue sheet (using remapped pattern indices)
-    vprint("  building cue sheet…")
-    cue_sheet = build_cue_sheet(h.order_list, P, C, pat_remap)
-    assert len(cue_sheet) == NUM_CUES * CUE_SIZE
+    # Cue sheet
+    sheet = bytearray(NUM_CUES * CUE_SIZE)
+    for c in range(NUM_CUES):
+        sheet[c*CUE_SIZE:c*CUE_SIZE+CUE_SIZE] = encode_cue([], 0)
 
-    # Compress pattern bin and cue sheet (per Taud spec)
-    pat_comp = compress_blob(bytes(pat_bin),   "pattern bin")
-    cue_comp = compress_blob(bytes(cue_sheet), "cue sheet")
+    last_active = -1
+    for cue_idx, src_pat in enumerate(cue_list):
+        if cue_idx >= NUM_CUES: break
+        new_pat_idx = pat_idx_remap[src_pat]
+        orig_pats = [new_pat_idx * C + v for v in range(C)]
+        sheet[cue_idx*CUE_SIZE:(cue_idx+1)*CUE_SIZE] = encode_cue(
+            [pat_remap[p] for p in orig_pats], 0)
+        last_active = cue_idx
 
-    # Song table row (32 bytes; see encode_song_entry).
-    # flags byte: bits 0-1 (ff) = tone mode. ff=1 (Amiga period slides) when S3M's
-    # linear_slides flag is clear; ff=0 otherwise. Pan law is fixed engine-wide to
-    # the equal-energy — no `p` bit any more. Bit 2 reserved (was 'm' fadeout-zero
-    # policy; removed). S3M has no instrument-level fadeout, so every Taud instrument
-    # carries fadeout=0 ("no fade") — notes retire on sample-end or pattern note-cut
-    # effects (SCx) instead, which matches ST3 semantics.
+    if last_active >= 0:
+        sheet[last_active * CUE_SIZE + 30] = 0x01
+    else:
+        sheet[30] = 0x01
+
+    pat_comp = compress_blob(bytes(pat_bin), f"[{song_label}] pattern bin")
+    cue_comp = compress_blob(bytes(sheet),   f"[{song_label}] cue sheet")
+
     flags_byte = (0x00 if h.linear_slides else 0x01)
-    song_table = encode_song_entry(
-        song_offset=song_offset,
+    entry_kwargs = dict(
         num_voices=C,
         num_patterns=num_taud_pats,
         bpm_stored=bpm_stored,
@@ -831,10 +877,70 @@ def assemble_taud(h: S3MHeader, instruments: list, patterns: list,
         global_vol=0xFF,
         mixing_vol=180,
     )
-    assert len(song_table) == TAUD_SONG_ENTRY
+    return pat_comp, cue_comp, entry_kwargs
 
-    # Project Data (optional). S3M instruments and samples share the same slot
-    # space, so the names go into both INam and SNam (1-based; slot 0 empty).
+
+def assemble_taud(h: S3MHeader, instruments: list, patterns: list,
+                  with_project_data: bool = True) -> bytes:
+    # Determine active channels (bit7 clear = enabled)
+    active_channels = [i for i, cs in enumerate(h.channel_settings)
+                       if i < 32 and not (cs & 0x80)][:NUM_VOICES]
+    C = len(active_channels)
+    P = len(patterns)
+    vprint(f"  channels: {C}, s3m patterns: {P}")
+
+    # Build sample+instrument bin (shared across subsongs)
+    vprint("  building sample/instrument bin…")
+    sampleinst_raw, _offsets, sample_ratio = build_sample_inst_bin(instruments)
+    assert len(sampleinst_raw) == SAMPLEINST_SIZE
+    compressed = compress_blob(sampleinst_raw, "sample+inst bin")
+    comp_size  = len(compressed)
+
+    # 1-based inst index → default volume (0..63) for note-trigger vol injection.
+    inst_vols = {
+        i + 1: min(inst.volume, 0x3F)
+        for i, inst in enumerate(instruments)
+        if inst is not None and inst.itype == S3M_TYPE_PCM
+    }
+
+    # ── Detect subsongs ──────────────────────────────────────────────────────
+    subsongs = detect_subsongs(h.order_list, _per_pattern_bxx_s3m(patterns),
+                               terminators=(S3M_ORDER_END,),
+                               skip_marker=S3M_ORDER_SKIP)
+    if not subsongs:
+        vprint("  warning: no traversable orders in source; emitting empty song")
+        subsongs = [{'entry': 0, 'positions': []}]
+    n_songs = len(subsongs)
+    if n_songs == 1:
+        vprint(f"  detected 1 song ({len(subsongs[0]['positions'])} orders)")
+    else:
+        vprint(f"  detected {n_songs} subsongs:")
+        for i, ss in enumerate(subsongs):
+            vprint(f"    song {i}: entry@{ss['entry']}, {len(ss['positions'])} orders")
+
+    # ── Build per-song payloads ──────────────────────────────────────────────
+    song_payloads = []
+    for i, ss in enumerate(subsongs):
+        label = f"song {i}" if n_songs > 1 else "song"
+        song_payloads.append(_build_song_payload_s3m(
+            h, patterns, ss['positions'], sample_ratio, inst_vols,
+            active_channels, song_label=label))
+
+    # ── Layout offsets and song table ────────────────────────────────────────
+    song_table_off = TAUD_HEADER_SIZE + comp_size
+    first_song_off = song_table_off + TAUD_SONG_ENTRY * n_songs
+
+    song_table = bytearray()
+    cur_off = first_song_off
+    for pat_comp, cue_comp, entry_kwargs in song_payloads:
+        entry = encode_song_entry(song_offset=cur_off, **entry_kwargs)
+        assert len(entry) == TAUD_SONG_ENTRY
+        song_table += entry
+        cur_off += len(pat_comp) + len(cue_comp)
+
+    # ── Project Data (optional) ──────────────────────────────────────────────
+    # S3M instruments and samples share the same slot space, so the names go
+    # into both INam and SNam (1-based; slot 0 empty).
     proj_data = b''
     proj_off  = 0
     if with_project_data:
@@ -846,21 +952,29 @@ def assemble_taud(h: S3MHeader, instruments: list, patterns: list,
             sample_names=names,
         )
         if proj_data:
-            proj_off = TAUD_HEADER_SIZE + comp_size + TAUD_SONG_ENTRY \
-                       + len(pat_comp) + len(cue_comp)
+            proj_off = cur_off
             vprint(f"  project data: {len(proj_data)} bytes @ offset {proj_off}")
 
-    # Header (32 bytes): magic(8)+ver(1)+numSongs(1)+compSize(4)+projOff(4)+sig(14)
+    # ── Header ───────────────────────────────────────────────────────────────
+    sig = (SIGNATURE + b' ' * 14)[:14]
     header = (
         TAUD_MAGIC +
-        bytes([TAUD_VERSION, 1]) +
+        bytes([TAUD_VERSION, n_songs & 0xFF]) +
         struct.pack('<I', comp_size) +
         struct.pack('<I', proj_off) +
         sig
     )
     assert len(header) == TAUD_HEADER_SIZE
 
-    return header + compressed + song_table + pat_comp + cue_comp + proj_data
+    out = bytearray()
+    out += header
+    out += compressed
+    out += song_table
+    for pat_comp, cue_comp, _ in song_payloads:
+        out += pat_comp
+        out += cue_comp
+    out += proj_data
+    return bytes(out)
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────

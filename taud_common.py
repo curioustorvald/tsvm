@@ -411,6 +411,117 @@ def encode_song_entry(song_offset: int, num_voices: int, num_patterns: int,
     return entry
 
 
+# ── Subsong detection (multi-song .taud emission) ────────────────────────────
+#
+# Modules and trackers don't natively carry a subsong table; subsongs emerge
+# from the order-list flow graph. OpenMPT-style: take the lowest unvisited
+# non-terminator order as the next subsong entry, do forward reachability via
+# fall-through (oi→oi+1) plus pattern-Bxx targets, mark all reached orders
+# visited, repeat until no entries remain.
+#
+# Fall-through is treated as dead when the pattern at oi has a Bxx on its
+# absolute last row — the convention every tracker uses for "song ends here,
+# loop back" — which lets non-looping subsongs separated by Bxx-terminated
+# predecessors be detected even without an explicit 0xFF marker.
+#
+# WHEN.s3m → 4 subsongs (0xFF separators); Insaniq2.it → 8 subsongs (Bxx-row-63
+# terminators, no 0xFF separators). Single-song files collapse to 1 subsong.
+
+def detect_subsongs(orders, pattern_bxx_fn, *,
+                    terminators=(0xFF,), skip_marker=0xFE):
+    """Detect subsongs by repeated forward reachability.
+
+    Args:
+        orders: list of raw order bytes from the source file. Each element is
+            either a pattern index (0..n-1), a skip value (transparently
+            skipped), or a terminator value (ends a path).
+        pattern_bxx_fn: callable(pattern_idx) → (set_of_bxx_target_order_indices,
+            kills_fallthrough). `kills_fallthrough` is True when the pattern's
+            last row carries a Bxx (unconditional terminator); when False,
+            fall-through to oi+1 is kept as a graph edge.
+        terminators: int, or iterable of ints. Order values that end a path
+            (default 0xFF). Pass an empty iterable for formats without a
+            terminator marker (XM).
+        skip_marker: int, or iterable of ints. Order values that are
+            transparently passed during traversal (default 0xFE). XM passes
+            `range(pattern_count, 256)` to skip out-of-range pattern refs.
+
+    Returns:
+        List of subsongs in entry-order. Each subsong is a dict:
+            'entry': original order-list position of the entry (int)
+            'positions': list of original order-list positions belonging to this
+                subsong, in cue-sheet order (entry first, then ascending index
+                wrap-around). Each position's pattern index = orders[pos].
+        For a single-song file the result has one element whose 'positions'
+        covers the whole order list (minus terminators/skips). For files where
+        every order is a terminator/skip, the result is empty.
+    """
+    n = len(orders)
+    term = {terminators} if isinstance(terminators, int) else set(terminators)
+    skips = ({skip_marker} if isinstance(skip_marker, int)
+             else set(skip_marker))
+
+    def _is_traversable(pos: int) -> bool:
+        if pos < 0 or pos >= n:
+            return False
+        v = orders[pos]
+        return v not in term and v not in skips
+
+    visited = set()
+    songs = []
+
+    while True:
+        # Lowest unvisited traversable position = next subsong entry.
+        entry = next((i for i in range(n)
+                      if i not in visited and _is_traversable(i)), None)
+        if entry is None:
+            break
+
+        # Reachability claims orders for this subsong, stopping at orders
+        # already owned by a previous subsong.
+        owned = set()
+        stack = [entry]
+        while stack:
+            oi = stack.pop()
+            if oi in owned or oi in visited:
+                continue
+            if oi < 0 or oi >= n:
+                continue
+            v = orders[oi]
+            if v in term:
+                continue
+            if v in skips:
+                if oi + 1 < n:
+                    stack.append(oi + 1)
+                continue
+            owned.add(oi)
+            tgts, kills = pattern_bxx_fn(v)
+            for t in tgts:
+                if 0 <= t < n:
+                    stack.append(t)
+            if not kills and oi + 1 < n:
+                stack.append(oi + 1)
+
+        if not owned:
+            # Avoid infinite loop on a degenerate entry (shouldn't happen
+            # since _is_traversable already filtered terminators / skips).
+            visited.add(entry)
+            continue
+        visited |= owned
+
+        # Cue-sheet order: ascending index, rotated so entry comes first.
+        # The natural order-list traversal is sequential, so increasing index
+        # matches the play sequence when fall-through is alive; rotation
+        # ensures cue 0 is the entry order.
+        sorted_owned = sorted(owned)
+        rot = sorted_owned.index(entry)
+        positions = sorted_owned[rot:] + sorted_owned[:rot]
+
+        songs.append({'entry': entry, 'positions': positions})
+
+    return songs
+
+
 # ── Project Data section (terranmon.txt:2601+) ───────────────────────────────
 
 PROJECT_DATA_MAGIC = bytes([0x1E, 0x54, 0x61, 0x75, 0x64, 0x50, 0x72, 0x4A])  # \x1ETaudPrJ
