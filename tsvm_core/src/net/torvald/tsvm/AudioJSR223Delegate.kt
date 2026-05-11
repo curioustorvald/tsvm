@@ -91,11 +91,22 @@ class AudioJSR223Delegate(private val vm: VM) {
 
     fun getTrackerRow(playhead: Int) = getPlayhead(playhead)?.trackerState?.rowIndex ?: 0
 
+    /** Mute is now a thin wrapper over the per-voice fader: muting writes 255 (silence),
+     *  unmuting clears the fader back to 0 (unity). Callers that want a partial attenuation
+     *  should use setVoiceFader directly. */
     fun setVoiceMute(playhead: Int, voice: Int, muted: Boolean) {
-        getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19))?.muted = muted
+        getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19))?.fader = if (muted) 255 else 0
     }
     fun getVoiceMute(playhead: Int, voice: Int): Boolean =
-        getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19))?.muted ?: false
+        (getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19))?.fader ?: 0) == 255
+
+    /** Externally-controlled per-voice fader. 0 = unity, 255 = silence; values are masked to 8 bits.
+     *  Mirrors MMIO 4098.. (256 bytes per playhead, first 20 entries map to live voice slots). */
+    fun setVoiceFader(playhead: Int, voice: Int, fader: Int) {
+        getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19))?.fader = fader and 255
+    }
+    fun getVoiceFader(playhead: Int, voice: Int): Int =
+        getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19))?.fader ?: 0
 
     /** Set the starting row for the next play call, resetting per-row timing and silencing active voices. */
     fun setTrackerRow(playhead: Int, row: Int) {

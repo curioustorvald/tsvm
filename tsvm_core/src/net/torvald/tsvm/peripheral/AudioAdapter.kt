@@ -455,6 +455,15 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             in 64..2367 -> mediaDecodedBin[addr - 64]
             in 2368..4095 -> mediaFrameBin[addr - 2368]
             in 4096..4097 -> 0
+            // Per-voice fader (0 = unity, 255 = silence): 256 bytes per playhead, only the first
+            // 20 entries map to live voice slots; the rest read 0.
+            in 4098..5121 -> {
+                val off = adi - 4098
+                val ph = off ushr 8           // playhead index 0..3
+                val v = off and 0xFF          // voice index 0..255
+                if (v < 20) (playheads[ph].trackerState?.voices?.getOrNull(v)?.fader ?: 0).toByte()
+                else 0.toByte()
+            }
             in 32768..65535 -> (adi - 32768).let {
                 cueSheet[it / 32].read(it % 32)
             }
@@ -488,6 +497,16 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             }
             45 -> selectedPcmBin = bi % 4
             46 -> sampleBank = bi and SAMPLE_BANK_MASK
+            // Per-voice fader writes: see mmio_read for layout. Indices 20..255 are accepted
+            // but ignored so software can stride 256 bytes per playhead without bounds-checking.
+            in 4098..5121 -> {
+                val off = adi - 4098
+                val ph = off ushr 8
+                val v = off and 0xFF
+                if (v < 20) {
+                    playheads[ph].trackerState?.voices?.getOrNull(v)?.fader = bi
+                }
+            }
             in 64..2367 -> { mediaDecodedBin[addr - 64] = byte }
             in 2368..4095 -> { mediaFrameBin[addr - 2368] = byte }
             in 32768..65535 -> { (adi - 32768).let {
@@ -2072,7 +2091,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     private fun ghostVoice(src: Voice, channel: Int): Voice {
         val v = Voice()
         v.active = true
-        v.muted = src.muted
+        v.fader = src.fader
         v.instrumentId = src.instrumentId
         v.samplePos = src.samplePos
         v.playbackRate = src.playbackRate
@@ -3072,9 +3091,9 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             val gvol = playhead.globalVolume / 255.0
             val mvol = playhead.mixingVolume / 255.0
             for (voice in ts.voices) {
-                if (!voice.active || voice.muted) {
-                    // Keep the soundscope flat between notes / while muted so the AudioMenu
-                    // does not show stale waveform data once the voice goes silent.
+                if (!voice.active || voice.fader == 255) {
+                    // Keep the soundscope flat between notes / while fully faded (incl. host mute)
+                    // so the AudioMenu does not show stale waveform data once the voice goes silent.
                     voice.scopeBuffer[voice.scopeWritePos] = 0f
                     voice.scopeWritePos = (voice.scopeWritePos + 1) and (SCOPE_BUFFER_SIZE - 1)
                     continue
@@ -3094,10 +3113,13 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 // triggers snap currentMixVolume to target (in triggerNote) so attacks
                 // are passed through unramped.
                 advanceVolumeRamp(voice)
+                // External per-voice fader (0 = unity, 255 = silence). Folded into perVoiceGain
+                // so the soundscope reflects what the user hears after the fader is applied.
+                val faderGain = (255 - voice.fader) / 255.0
                 // Split the gain stack so the soundscope can see the voice amplitude independently
                 // of the playhead-wide faders (master / mixing / global volume).
                 val perVoiceGain = effEnvVol * voice.fadeoutVolume * voice.currentMixVolume *
-                                   swingScale * instGv
+                                   swingScale * instGv * faderGain
                 val globalGain = gvol * mvol * playhead.masterVolume / 255.0
                 val vol = perVoiceGain * globalGain
                 val pan = if (voice.hasPanEnv && voice.panEnvOn) {
@@ -3127,7 +3149,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             // Background (NNA-ghost) voices — same per-sample mixing path as foreground, but
             // they live in a mixer-private pool that no row event can address.
             for (bg in ts.backgroundVoices) {
-                if (!bg.active || bg.muted) continue
+                if (!bg.active || bg.fader == 255) continue
                 val bgInst = instruments[bg.instrumentId]
                 val s = applyTaudVoiceFx(bg, applyVoiceFilter(bg, fetchTrackerSample(bg, bgInst, ts.interpolationMode)))
                 val instGv = bgInst.instGlobalVolume / 255.0
@@ -3138,8 +3160,11 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 // can leave currentMixVolume mid-ramp from the foreground's last change —
                 // keep advancing so the inherited ramp completes cleanly.
                 advanceVolumeRamp(bg)
+                // External fader snapshotted at ghost time (see ghostVoice). Subsequent host
+                // changes to the source slot's fader don't affect already-ghosted voices.
+                val faderGain = (255 - bg.fader) / 255.0
                 val vol = effEnvVol * bg.fadeoutVolume * bg.currentMixVolume *
-                          swingScale * gvol * mvol * instGv * playhead.masterVolume / 255.0
+                          swingScale * gvol * mvol * instGv * faderGain * playhead.masterVolume / 255.0
                 val pan = if (bg.hasPanEnv && bg.panEnvOn) {
                     val envPanRaw = (bg.envPan * 255.0).roundToInt().coerceIn(0, 255)
                     (bg.channelPan + envPanRaw - 128 + bg.randomPanBias).coerceIn(0, 255)
@@ -3376,8 +3401,12 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
     class Voice {
         var active = false
-        var muted = false
-        var instrumentId = 0
+        // Externally-controlled 256-step attenuator (MMIO 4098.., AudioJSR223Delegate.setVoiceFader).
+        // 0 = unity, 255 = silence — and 255 is also the "mute" sentinel that setVoiceMute writes,
+        // so there is only one piece of host-owned per-voice state. Not touched by row events /
+        // tracker effects; survives note triggers because the host owns it. Cleared back to 0 only
+        // by resetParams() (full playhead reset).
+        var fader = 0
         var samplePos = 0.0
         var playbackRate = 1.0
         var forward = true
@@ -3814,7 +3843,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                     it.funkSpeed = 0
                     it.funkAccumulator = 0
                     it.funkWritePos = 0
-                    it.muted = false
+                    it.fader = 0
                     it.nnaOverride = -1
                     it.volEnvOn = true; it.panEnvOn = true; it.pfEnvOn = true
                     it.noteFading = false
