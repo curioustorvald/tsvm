@@ -220,8 +220,8 @@ def build_sample_inst_bin() -> bytes:
     inst_bin[base + 183] = 0xFF                                          # filter resonance off
     inst_bin[base + 186] = 0x01                                          # NNA: cut
     # Monotone has no per-sample default volume concept (only one synth
-    # voice, no V column overrides). Set DNV to full so triggers get the
-    # full 0x3F rowVolume; the IGV above provides the actual attenuation.
+    # voice, no V column overrides). Set DNV to full so triggers seed
+    # noteVolume at 0x3F; the IGV above provides the actual attenuation.
     inst_bin[base + 196] = 0xFF                                          # DNV: full
 
     return bytes(sample_bin) + bytes(inst_bin)

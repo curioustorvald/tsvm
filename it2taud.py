@@ -1360,9 +1360,10 @@ def build_sample_inst_bin_it(samples_or_proxy: list,
         dct = idata.get('dct', 0) & 0x03
         dca = idata.get('dca', 0) & 0x03
         inst_bin[base + 195] = (dca << 2) | dct
-        # Byte 196: default note volume (per-trigger seed for rowVolume when
-        # no V column accompanies a fresh trigger). Replaces the old "fold
-        # sample.vol into IGV" trick — see terranmon byte 196 / TODO §2350.
+        # Byte 196: default note volume (per-trigger seed for the engine's
+        # noteVolume axis when no V column accompanies a fresh trigger).
+        # Replaces the old "fold sample.vol into IGV" trick — see terranmon
+        # byte 196 / TODO §2350.
         inst_bin[base + 196] = default_note_vol & 0xFF
         # Bytes 197..255: reserved (already zeroed).
 
@@ -1450,7 +1451,7 @@ def build_pattern_it(chunk_grid: list, ch_idx: int, default_pan: int,
         # Priority: explicit cell vol (vol-col 0-64) > vol-col slide > main-
         # effect vol override > nop. Per-trigger default volume now lives
         # in byte 196 of the instrument record (DNV); the engine seeds
-        # rowVolume from it when this row has no V column, so the converter
+        # noteVolume from it when this row has no V column, so the converter
         # still doesn't need to emit SEL_SET=Sv on plain trigger rows.
         if cell.volcol >= 0 and cell.volcol <= VC_VOL_HI:
             vol_sel, vol_value = SEL_SET, min(cell.volcol, 0x3F)

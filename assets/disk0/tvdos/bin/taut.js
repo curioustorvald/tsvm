@@ -1800,7 +1800,8 @@ function simulateRowState(ptnDat, uptoRow) {
     ]
 
     let lastNote = 0xFFFF, lastInst = 0
-    let volAbs   = 0x3F                  // 6-bit channel volume
+    let volAbs   = 0x3F                  // 6-bit per-note volume (engine: noteVolume axis;
+                                         // M / N's per-channel axis is not modelled here)
     let panAbs   = 0x80                  // 8-bit channel pan (engine width); centre = $80
     let pitchOff = 0, portaTarget = -1
     let bpm   = audio.getBPM(PLAYHEAD)   // best-effort starting tempo
@@ -1840,15 +1841,16 @@ function simulateRowState(ptnDat, uptoRow) {
         // Note column
         const isGRow = (effop === OP_G)
         const isNoteDelay = (effop === OP_S) && (((effarg >>> 12) & 0xF) === 0xD)
-        // Track whether this row reloads the channel's default volume.  Engine:
+        // Track whether this row reloads the per-note default volume.  Engine:
         // triggerNote() (and the tone-porta-with-inst branch in advanceRow)
-        // seed channelVolume from the instrument's Default Note Volume (byte
-        // 196) — only when the row carries an instrument byte; a note-only
-        // retrigger (inst === 0) inherits the channel's existing volume.
-        // Tone-porta rows follow the same rule (matches schism
-        // csf_instrument_change inst_column branch, effects.c:1302).
-        // The simulator approximates the seed as 0x3F (legacy fallback) — see
-        // the longer note below the reload block for the limitation.
+        // seed noteVolume from the instrument's Default Note Volume (byte 196)
+        // — only when the row carries an instrument byte; a note-only retrigger
+        // (inst === 0) inherits the channel's existing note volume. Tone-porta
+        // rows follow the same rule (matches schism csf_instrument_change
+        // inst_column branch, effects.c:1302). The per-channel axis
+        // (channelVolume, set by Mxx / Nxx) is NOT reset on re-trigger and is
+        // not tracked by this simulator. The simulator approximates the seed
+        // as 0x3F (legacy fallback) — see the longer note below.
         let reloadDefaultVol = false
         if (note !== 0xFFFF && note !== 0xFFFE) {
             if (note === 0x0000) {
@@ -1877,10 +1879,10 @@ function simulateRowState(ptnDat, uptoRow) {
         // panAbs on trigger — this naturally matches the "stay at old value when inst === 0"
         // half of the policy. The engine-side default-pan reload (gated on inst !== 0)
         // is invisible here. Same limitation now applies to default volume: the engine
-        // seeds rowVolume from the instrument's byte-196 "Default Note Volume" since
+        // seeds noteVolume from the instrument's byte-196 "Default Note Volume" since
         // 2026-05-09 (terranmon §171, §196), but the simulator has no instrument-byte
         // access, so it falls back to 0x3F — equivalent to the legacy "DNV unset"
-        // path. Tracker UI displays may therefore show a slightly off row volume on
+        // path. Tracker UI displays may therefore show a slightly off note volume on
         // fresh triggers when the instrument carries a reduced DNV.
         if (reloadDefaultVol) volAbs = 0x3F
 

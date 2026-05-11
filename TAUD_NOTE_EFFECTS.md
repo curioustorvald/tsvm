@@ -45,6 +45,15 @@ mix = sample × note_vol × channel_vol × global_vol >> normalisation_shift
 
 with saturation applied before the 8-bit stereo output.
 
+`note_vol` and `channel_vol` are **two independent multiplicative axes** mirroring IT's `chan->volume` and `chan->global_volume`:
+
+- **`note_vol`** is the per-note axis. It is reset on every note re-trigger to the instrument's Default Note Volume (instrument-record byte 196). It is the target of the volume column (selectors 0 / 1 / 2 / 3), the D / K / L volume slides, and the Q retrigger volume modifier. It survives across rows until the next re-trigger.
+- **`channel_vol`** is the per-channel axis. It is **not** reset by note re-triggers — once set, it persists through any number of fresh notes on that channel. It is the target of M (set) and N (slide) only.
+
+The engine carries a third per-tick value, `row_vol`, which is the mixer-facing volume for the current tick. At every row boundary `row_vol` rebases to `note_vol`; per-tick modulators (tremolo R, tremor I) write `row_vol` only, so their effect dies cleanly at row end. Per-note slides (D, K, L, vol-col) write **both** `note_vol` and `row_vol` so the per-note baseline carries forward.
+
+Because the two axes are independent, an `M $4000` (set channel volume to full) issued after a `0.$02` (vol-col SET = 2) leaves the per-note volume untouched at 2 — the channel keeps playing quietly. Conversely, an `N` slide can fade out a channel's overall level while a vol-col SET on a fresh trigger sets the per-note baseline at full.
+
 ## 4. Rows, ticks, patterns, cues
 
 A pattern is a rectangular grid of rows and channels; each cell holds one note event. Playback divides each row into `speed` ticks (effect A); tempo (effect T) sets the duration of one tick. At 125 BPM and speed 6, one row takes 120 ms and one tick 20 ms. Songs play patterns in a cue sequence; effects B and C navigate this sequence.
@@ -57,6 +66,7 @@ A pattern is a rectangular grid of rows and channels; each cell holds one note e
 | Tempo byte | $64 (125 BPM; see effect T for the $19 offset) |
 | Global volume | $80 (mid-scale) |
 | Channel volume | $3F (full) |
+| Note volume | $3F (full; reseeded from instrument's Default Note Volume on every re-trigger) |
 | Pan (all channels) | $80 (centre) |
 | cue index | $0000 |
 
@@ -115,39 +125,39 @@ Opcodes are single base-36 digits (0-9, then A-Z); arguments are 16-bit hexadeci
 
 ## D $xy00 — Volume slide (multiple forms)
 
-D's 16-bit argument encodes four mutually exclusive modes using the top nibble and the following byte. All forms operate on the channel's current volume and clip to $00..$3F after each step.
+D's 16-bit argument encodes four mutually exclusive modes using the top nibble and the following byte. **All forms operate on `note_vol`** (the per-note axis described in §3, analog of IT `chan->volume`) and clip to $00..$3F after each step. The slid value persists into following rows until the next re-trigger; `channel_vol` is **not** touched by D — for the per-channel axis, use N.
 
 ### D $0y00 — Volume slide down by $y per non-first tick
 
-**Plain.** Each tick after tick 0, volume decreases by $y. A D $0400 at speed 8 reduces volume by $1C over the row.
+**Plain.** Each tick after tick 0, `note_vol` decreases by $y. A D $0400 at speed 8 reduces volume by $1C over the row.
 
 **Compatibility.** ST3 `Dx0` (volume slide down) maps to Taud `D $0x00`. The ST3 volume cap was $40; Taud's is $3F — a very high-volume sample reaching $40 in ST3 will snap to $3F in Taud.
 
-**Implementation.** On ticks > 0, subtract the low nibble of the high byte from `channel_volume`; clamp at $00. Memory is private to D and is keyed on the full original byte (so D $0000 recalls whatever form last ran).
+**Implementation.** On ticks > 0, subtract the low nibble of the high byte from `note_vol`; clamp at $00; mirror `row_vol = note_vol`. Memory is private to D and is keyed on the full original byte (so D $0000 recalls whatever form last ran).
 
 ### D $x000 — Volume slide up by $x per non-first tick
 
-**Plain.** Each tick after tick 0, volume increases by $x. Capped at $3F.
+**Plain.** Each tick after tick 0, `note_vol` increases by $x. Capped at $3F.
 
 **Compatibility.** ST3 `D0y` (volume slide up) maps to Taud `D $y000`.
 
-**Implementation.** On ticks > 0, add the high nibble of the high byte to `channel_volume`; clamp at $3F.
+**Implementation.** On ticks > 0, add the high nibble of the high byte to `note_vol`; clamp at $3F; mirror `row_vol = note_vol`.
 
 ### D $Fy00 — Fine volume slide down by $y on tick 0
 
-**Plain.** Applies a one-shot volume reduction of $y on tick 0 only. Independent of speed. A D $FF00 behaves as a fine slide up by $F (so a request for "down by F" is reinterpreted; see below).
+**Plain.** Applies a one-shot `note_vol` reduction of $y on tick 0 only. Independent of speed. A D $FF00 behaves as a fine slide up by $F (so a request for "down by F" is reinterpreted; see below).
 
 **Compatibility.** ST3 `DFy` maps directly. The $FF edge case is preserved: ST3 treats `DFF` as fine slide up by $F rather than fine slide down by $F, and Taud follows suit.
 
-**Implementation.** On tick 0 only, subtract the low nibble of the high byte from `channel_volume`. If the low nibble is $0, treat as fine-slide-up by $F. If the high byte is $FF, treat as fine-slide-up by $F.
+**Implementation.** On tick 0 only, subtract the low nibble of the high byte from `note_vol`; mirror `row_vol = note_vol`. If the low nibble is $0, treat as fine-slide-up by $F. If the high byte is $FF, treat as fine-slide-up by $F.
 
 ### D $xF00 — Fine volume slide up by $x on tick 0
 
-**Plain.** One-shot volume increase of $x on tick 0 only.
+**Plain.** One-shot `note_vol` increase of $x on tick 0 only.
 
 **Compatibility.** ST3 `DxF` maps directly. Volume cap is $3F, lower than ST3's $40.
 
-**Implementation.** On tick 0 only, add the high nibble to `channel_volume`; clamp at $3F.
+**Implementation.** On tick 0 only, add the high nibble to `note_vol`; clamp at $3F; mirror `row_vol = note_vol`.
 
 ---
 
@@ -346,14 +356,16 @@ on row parse (I):
 
 on every tick:
     if phase == ON:
-        play at full channel volume
+        play at the unmodulated row_vol (no gating)
         tick_in_phase += 1
         if tick_in_phase >= on_time: phase = OFF; tick_in_phase = 0
     else:
-        force output volume to 0 (base volume preserved for later effects)
+        row_vol = 0          # transient gate; note_vol / channel_vol are preserved
         tick_in_phase += 1
         if tick_in_phase >= off_time: phase = ON; tick_in_phase = 0
 ```
+
+The OFF-phase gate writes `row_vol` only; `note_vol` and `channel_vol` are untouched, so the per-row rebase (`row_vol = note_vol` at row start) restores the audible level cleanly when tremor stops.
 
 A zero `$xx` or `$yy` input becomes 1 tick after the `+1`, never zero.
 
@@ -432,11 +444,11 @@ on every tick (including tick 0):
     apply vibrato update with memory_HU.speed / memory_HU.depth (see §H)
 
 on tick > 0:
-    channel_volume = clamp(channel_volume + slide_per_tick, 0, $3F)
-    row_volume     = channel_volume
+    note_vol = clamp(note_vol + slide_per_tick, 0, $3F)
+    row_vol  = note_vol
 ```
 
-K has its own memory slot (private). The slide always uses the per-tick form — `K $FF00` does **not** trigger a fine slide; the argument's `$F` nibbles are interpreted as `$F`-magnitude per-tick slides (down wins), matching ST3's K and IT's K semantics.
+The slide writes the per-note axis (same as D); `channel_vol` is untouched. K has its own memory slot (private). The slide always uses the per-tick form — `K $FF00` does **not** trigger a fine slide; the argument's `$F` nibbles are interpreted as `$F`-magnitude per-tick slides (down wins), matching ST3's K and IT's K semantics.
 
 ---
 
@@ -465,17 +477,17 @@ on row parse (L):
 
 on tick > 0:
     apply tone-portamento step using memory_G.speed (see §G)
-    channel_volume = clamp(channel_volume + slide_per_tick, 0, $3F)
-    row_volume     = channel_volume
+    note_vol = clamp(note_vol + slide_per_tick, 0, $3F)
+    row_vol  = note_vol
 ```
 
-L has its own memory slot (private), separate from K's and from D's.
+The slide writes the per-note axis (same as D); `channel_vol` is untouched. L has its own memory slot (private), separate from K's and from D's.
 
 ---
 
 ## M $xx00 — Set channel volume to $xx
 
-**Plain.** Sets the channel's persistent base volume to `$xx`, in the same 6-bit `$00..$3F` range as a note's default volume. Unlike a volume-column SET (which only writes the *row* volume on a re-triggering row), M overwrites the channel's stored base volume so the change persists across subsequent rows that don't carry an explicit vol-column SET.
+**Plain.** Sets the per-channel volume axis (`channel_vol`, see §3) to `$xx`, in the same 6-bit `$00..$3F` range as a note's default volume. M is the analog of IT's `Mxx`, which writes `chan->global_volume` — it does **not** disturb the per-note volume (`note_vol`) set by the volume column or seeded from the instrument default. A vol-col SET of $02 on a note row followed by an `M $4000` on the next row therefore plays the channel at `2/63 × $3F/63 ≈ 3%` of full, *not* at full — exactly as IT would.
 
 **Compatibility.** IT `Mxx` maps directly: the source byte is taken **verbatim** with a clamp to `$3F` (IT's $40 cap snaps down by one). ST3 has no native M; OpenMPT/Schism's S3M-with-IT-extensions does, and the same verbatim-with-clamp rule applies on import. M has **no memory** — `M $0000` is a literal "set channel volume to silence", not a recall. Source-tracker shared-memory recalls (e.g., ST3's single-slot shared memory) MUST be eagerly resolved by the converter before emit.
 
@@ -485,17 +497,19 @@ L has its own memory slot (private), separate from K's and from D's.
 on row parse (M):
     new_vol = (arg >> 8) & 0xFF
     if new_vol > 0x3F: new_vol = 0x3F
-    channel_volume = new_vol
-    row_volume     = new_vol
+    channel_vol = new_vol
+    # note_vol and row_vol are NOT touched. The mixer multiplies channel_vol
+    # into the per-voice gain via the volume-ramp target, so the change is
+    # heard from this tick onwards without nuking the per-note volume.
 ```
 
-The change takes effect on tick 0 of the row. There is no slide form; for that, use N. The low byte of M's argument is reserved.
+The change takes effect on tick 0 of the row (the next mixer ramp window picks it up). There is no slide form; for that, use N. The low byte of M's argument is reserved.
 
 ---
 
 ## N $xy00 — Channel volume slide
 
-**Plain.** Slides the channel's persistent base volume by `$xy` per non-first tick (or once on tick 0 for fine forms). Encoding is identical to D (see §D), but the slide acts on `channel_volume` rather than the per-row note volume — so the change persists into following rows that don't reissue N. Range and clipping match D: `$00..$3F`.
+**Plain.** Slides the per-channel volume axis (`channel_vol`, see §3 and §M) by `$xy` per non-first tick (or once on tick 0 for fine forms). Encoding is identical to D (see §D), but the slide acts on `channel_vol` — independent of `note_vol`, so vol-col SET / D-slide state on the per-note axis survives across an N. The change persists into following rows that don't reissue N. Range and clipping match D: `$00..$3F`.
 
 **Compatibility.** IT `Nxy` maps directly to Taud `N $xy00` (high byte = source argument byte, verbatim). ST3 has no native N. N's encoding sub-forms mirror D exactly:
 
@@ -506,7 +520,7 @@ The change takes effect on tick 0 of the row. There is no slide form; for that, 
 
 **Memory.** N has its own private slot, separate from D's. `N $0000` recalls the last N argument and re-applies it in its original sub-form (coarse vs fine, up vs down).
 
-**Implementation.** Identical to D, with `channel_volume` substituted for the per-row volume target. After every step the result is clamped to `$00..$3F` and `row_volume` is forced to track `channel_volume` so subsequent ticks' mixing reflects the slid value:
+**Implementation.** Identical to D, with `channel_vol` substituted for `note_vol`. After every step the result is clamped to `$00..$3F`. `note_vol` and `row_vol` are **not** touched — the mixer multiplies `channel_vol` into the per-voice gain via the volume-ramp target, so the change is heard within the row without disturbing the per-note baseline:
 
 ```
 on row parse (N):
@@ -514,7 +528,7 @@ on row parse (N):
     if raw == 0: raw = memory_N
     else: memory_N = raw
     decode raw exactly as D does (FF / F0 / Fy / xF / 0y / x0 → fine-up-F / coarse / fine forms)
-    schedule per-tick (or apply once) on channel_volume; row_volume = channel_volume after each step
+    schedule per-tick (or apply once) on channel_vol — never touch note_vol / row_vol
 ```
 
 ---
@@ -576,7 +590,7 @@ The mixer reads `channel_pan` (8-bit) directly through the same path as `S $80xx
 
 ProTracker `E9x` is equivalent to Taud `Q $0x00` (retrigger only, no volume change).
 
-**Implementation.** A per-channel tick counter advances every tick, including tick 0. When it reaches `$y`, the sample retriggers (keeping current pitch), the counter resets to 0, and the volume modifier `$x` applies. The counter resets only when a row has **no** Q command; successive Q rows share and advance the counter.
+**Implementation.** A per-channel tick counter advances every tick, including tick 0. When it reaches `$y`, the sample retriggers (keeping current pitch), the counter resets to 0, and the volume modifier `$x` applies to `note_vol` (the per-note axis — IT's `chan->volume`). `channel_vol` is untouched. The counter resets only when a row has **no** Q command; successive Q rows share and advance the counter.
 
 The volume modifier table, **computed with arithmetic (no LUT)**, is:
 
@@ -613,9 +627,11 @@ on row parse (R):
 on every tick (including tick 0):
     sine = ModSinusTable[(lfo_pos >> 2) & $3F]
     vol_delta = (sine × memory_R.depth) >> 9
-    applied_vol = clamp(base_vol + vol_delta, 0, $3F)
+    row_vol = clamp(note_vol + vol_delta, 0, $3F)        # modulate around the per-note axis
     lfo_pos = (lfo_pos + memory_R.speed × 4) & $FF
 ```
+
+The LFO bias is added to `note_vol` (per-note axis, mirroring IT's tremolo on `chan->volume`) and the result lands in `row_vol`, never written back into `note_vol` itself — so the row-end rebase reseats `row_vol` cleanly and tremolo dies on the next row without leaving residue. `channel_vol` is unaffected.
 
 Peak at maximum settings: $7F × $FF >> 9 = $3F — the full volume range. Retrigger behaviour tracks the S $4x waveform nibble bit 2: cleared means retrigger on new note, set means preserve LFO position.
 
@@ -1086,16 +1102,16 @@ on sample byte read during loop playback:
 
 # Volume column effects
 
-Each cell carries a 6-bit value field plus a 2-bit selector field for the volume column. The four selectors are:
+Each cell carries a 6-bit value field plus a 2-bit selector field for the volume column. **All four selectors target `note_vol`** — the per-note volume axis (§3, analog of IT's `chan->volume`). The per-channel axis (`channel_vol`) is reachable only via the M / N effects in the main effect column. The four selectors are:
 
-- **`0.$xx` — Set volume** to `$xx` (6-bit, $00..$3F). Equivalent to a note's default volume.
-- **`1.$xx` — Volume slide up** by `$xx` per non-first tick (4-bit). Volume clamps at $3F.
-- **`2.$xx` — Volume slide down** by `$xx` per non-first tick (4-bit). Volume clamps at $00.
-- **`3.$Sx` — Fine volume slide** on tick 0 only. The high bit `$S` of the value selects direction (0 = down, 1 = up); the low 4 bits `$x` ($0..$F) are the magnitude. Equivalent in scale to `D $xF00` / `D $Fy00` but with a 5-bit cap. Fires once per row regardless of speed.
+- **`0.$xx` — Set note_vol** to `$xx` (6-bit, $00..$3F). Equivalent in effect to seeding the note with a different default volume; persists across rows until the next re-trigger.
+- **`1.$xx` — note_vol slide up** by `$xx` per non-first tick (4-bit). Clamps at $3F. The slid value persists into following rows.
+- **`2.$xx` — note_vol slide down** by `$xx` per non-first tick (4-bit). Clamps at $00. The slid value persists into following rows.
+- **`3.$Sx` — Fine note_vol slide** on tick 0 only. The high bit `$S` of the value selects direction (0 = down, 1 = up); the low 4 bits `$x` ($0..$F) are the magnitude. Equivalent in scale to `D $xF00` / `D $Fy00` but with a 5-bit cap. Fires once per row regardless of speed.
 
-Volume-column effects do not consume the main effect slot; a cell can carry both (for instance, a tone portamento in the effect slot and a volume slide in the volume column).
+Volume-column effects do not consume the main effect slot; a cell can carry both (for instance, a tone portamento in the effect slot and a volume slide in the volume column). Because the volume column writes the per-note axis, an `M $xx00` on the same or following row sets the per-channel axis independently — the two multiply at the mixer (see §3 / §M).
 
-When the converter folds an ST3 K, L, M, or N effect into the volume column, the slide-up / slide-down nibbles map to selectors 1 / 2 (clamped to 6 bits — values above $3F clip).
+When the converter folds an ST3 K, L, M, or N effect into the volume column, the slide-up / slide-down nibbles map to selectors 1 / 2 (clamped to 6 bits — values above $3F clip). Note that *converted* M and N still target `note_vol` here (vol-col semantics) — to preserve the original per-channel intent, emit them in the main effect column instead.
 
 NOTE: **`3.00` — is No-op**
 

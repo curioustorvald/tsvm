@@ -2144,8 +2144,9 @@ from source.
         * Continuous multiplier applied on every output sample (matches IT's
           `chan->instrument_volume`, see Schism player/csndfile.c:1317 and
           player/sndmix.c:1171). Independent of the volume column / Mxx /
-          Nxx — those operate on rowVolume/channelVolume, while IGV scales
-          the final mix unconditionally.
+          Nxx — the volume column writes the per-note axis (noteVolume),
+          Mxx/Nxx write the per-channel axis (channelVolume); IGV scales
+          the final mix unconditionally and is orthogonal to both.
         * ImpulseTracker has separate `inst.gv` (0..128) and samplewise
           `sample.gv` (0..64). Since Taud has no samplewise record, fold
           the two factors into a single 0..255 value:
@@ -2282,15 +2283,17 @@ from source.
               spawns inherits that DCA-modified state (e.g. noteFading carries over).
             - The new note then triggers normally on the foreground channel.
 196 Uint8  Default Note Volume (0..255)
-        * Per-trigger default for `channelVolume` / `rowVolume` when the row
-          carries a fresh note + instrument byte but no explicit volume column
-          (matches IT's `chan->volume = psmp->volume` on note-on, Schism
+        * Per-trigger default for the per-note volume axis (`noteVolume` in
+          the engine, analog of IT's `chan->volume`) when the row carries a
+          fresh note + instrument byte but no explicit volume column (matches
+          IT's `chan->volume = psmp->volume` on note-on, Schism
           player/effects.c:1302 and :1432). The 8-bit value rescales to
-          Taud's 0..63 row volume range:
-              row_default = round(default_note_volume * 63 / 255)
-          Any explicit V column on the trigger row OVERRIDES this — i.e.
-          rowVolume = vol_value, exactly mirroring IT's "V column replaces
-          chan->volume" rule.
+          Taud's 0..63 note-volume range:
+              note_default = round(default_note_volume * 63 / 255)
+          Any explicit V column SET on the trigger row OVERRIDES this — i.e.
+          noteVolume = vol_value, exactly mirroring IT's "V column replaces
+          chan->volume" rule. The per-channel axis (`channelVolume`, set by
+          Mxx / Nxx) is independent and is NOT reset on re-trigger.
         * Source-format mapping:
             - IT:  taud_dnv = round(sample.vol * 255 / 64)        # 0..64 → 0..255
             - XM:  taud_dnv = round(sample.volume * 255 / 64)     # 0..64 → 0..255
@@ -2471,6 +2474,11 @@ Audio Adapter MMIO
 64..2367 RW: MP2 Decoded Samples (unsigned 8-bit stereo)
 2368..4095 RW: MP2 Frame to be decoded
 4096..4097 RO: MP2 Frame guard bytes; always return 0 on read
+
+4098..4353 RW: tracker per-voice fader (0: full volume, 255: full silence) for playhead #0
+4354..4609 RW: tracker per-voice fader (0: full volume, 255: full silence) for playhead #1
+4610..4865 RW: tracker per-voice fader (0: full volume, 255: full silence) for playhead #2
+4866..5121 RW: tracker per-voice fader (0: full volume, 255: full silence) for playhead #3
 
 Sound Hardware Info
     - Sampling rate: 32000 Hz

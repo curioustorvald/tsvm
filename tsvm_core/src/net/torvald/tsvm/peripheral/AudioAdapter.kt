@@ -151,11 +151,12 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         const val RAMP_OUT_SAMPLES = 256
         // Volume-change anti-click ramp: voleff/notefx (volume column, D vol-slides,
         // tremor, tremolo, retrig vol-mod, fine slides etc.) mutate Voice.rowVolume
-        // mid-note. The mixer ramps the actual applied gain across [VOL_RAMP_SAMPLES]
-        // output samples to mask the discontinuity. ~2 ms at 32 kHz — short enough
-        // not to smear tremolo at fast speeds, long enough to bury per-tick slide
-        // steps. Bypassed on fresh note triggers (triggerNote snaps currentMixVolume
-        // to target) so attack transients pass through untouched.
+        // and M / N mutate Voice.channelVolume mid-note. The mixer ramps the actual
+        // applied gain (combining both axes) across [VOL_RAMP_SAMPLES] output samples
+        // to mask the discontinuity. ~2 ms at 32 kHz — short enough not to smear
+        // tremolo at fast speeds, long enough to bury per-tick slide steps. Bypassed
+        // on fresh note triggers (triggerNote snaps currentMixVolume to target) so
+        // attack transients pass through untouched.
         const val VOL_RAMP_SAMPLES = 64
 
         // Sample bin: 8 MB total, banked through a 512 K window at peripheral
@@ -1812,15 +1813,18 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
     /**
      * Per-sample volume-ramp tick. Smooths [Voice.currentMixVolume] toward
-     * `rowVolume / 63.0` over [VOL_RAMP_SAMPLES] samples whenever the mixer
-     * detects a discrepancy. Discrepancies arise from voleff/notefx that
-     * mutate rowVolume mid-note (volume column SET / fine slides, D
-     * vol-slide tick, vol-column slide tick, tremor gating, tremolo,
-     * retrig vol-mod, S$80 cuts, etc.). Fresh triggers bypass this by
-     * snapping currentMixVolume in [triggerNote], so attacks are unsmoothed.
+     * `(rowVolume / 63.0) × (channelVolume / 63.0)` over [VOL_RAMP_SAMPLES]
+     * samples whenever the mixer detects a discrepancy. Discrepancies arise
+     * from voleff/notefx that mutate rowVolume mid-note (volume column SET /
+     * fine slides, D vol-slide tick, vol-column slide tick, tremor gating,
+     * tremolo, retrig vol-mod, S$80 cuts, etc.) AND from channel-volume
+     * changes (M / N) — both factors share one ramp so a per-channel slide
+     * during a per-note slide doesn't double-step. Fresh triggers bypass
+     * this by snapping currentMixVolume in [triggerNote], so attacks are
+     * unsmoothed.
      */
     private fun advanceVolumeRamp(voice: Voice) {
-        val target = voice.rowVolume / 63.0
+        val target = (voice.rowVolume / 63.0) * (voice.channelVolume / 63.0)
         // Deferred key-on snap: triggerNote arms this so the first mixer sample after a
         // fresh trigger re-syncs to the post-row rowVolume (already adjusted by any
         // V-column SET / fine slide on the same row). Bypasses the ramp entirely.
@@ -1847,13 +1851,14 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
      * Pulled out so S$Dx (note delay) can defer the same logic to a later tick.
      */
     /**
-     * Trigger-time default rowVolume seed derived from the instrument's
+     * Trigger-time default noteVolume seed derived from the instrument's
      * Default Note Volume (byte 196). Pre-2026-05-09 .taud files left this
      * byte zero; treating 0 as "field not present" and falling back to 0x3F
      * keeps legacy behaviour. Used by both [triggerNote] and the tone-porta
      * + instrument-byte path in [advanceRow] — both must seed identically
      * (Schism player/effects.c:1302 writes `chan->volume = psmp->volume`
-     * unconditionally on inst-column rows, regardless of porta).
+     * unconditionally on inst-column rows, regardless of porta). Sets
+     * noteVolume only — channelVolume (IT chan->global_volume) survives.
      */
     private fun rowVolumeFromDefault(inst: TaudInst): Int {
         val dnv = inst.defaultNoteVolume
@@ -1941,21 +1946,23 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         voice.amigaPeriod = -1.0   // fresh trigger: period state must reseed from the new noteVal
         voice.linearFreq  = -1.0   // ditto for linear-freq mode (toneMode == 2)
         voice.playbackRate = computePlaybackRate(inst, noteVal)
-        // Fresh trigger seeds rowVolume from the per-instrument "default note volume"
+        // Fresh trigger seeds noteVolume from the per-instrument "default note volume"
         // (byte 196) when the row carried an instrument byte but no explicit V column —
         // matching IT's `chan->volume = psmp->volume` rule (Schism player/effects.c:1302
         // and :1432). Pre-2026-05-09 .taud files left byte 196 zero and folded sample.vol
         // into IGV instead; treating 0 as "field not present" and falling back to 0x3F
         // preserves legacy behaviour. A note-only retrigger (instId == 0) inherits the
-        // channel's existing volume so held-volume sustains keep working across retriggers.
+        // channel's existing note volume so held-volume sustains keep working across
+        // retriggers. channelVolume is deliberately NOT reset here — IT keeps
+        // chan->global_volume across sample changes, so M / N writes persist.
         // Continuous per-instrument scaling lives in instGlobalVolume (byte 171), which the
         // mixer applies independently of this seed.
-        voice.channelVolume = when {
+        voice.noteVolume = when {
             volOverride >= 0 -> volOverride.coerceIn(0, 0x3F)
             instId != 0     -> rowVolumeFromDefault(inst)
-            else            -> voice.channelVolume
+            else            -> voice.noteVolume
         }
-        voice.rowVolume = voice.channelVolume
+        voice.rowVolume = voice.noteVolume
         // Defer the anti-click ramp snap to the next mixer sample. applyVolColumn and
         // applyEffectRow run *after* triggerNote in applyTrackerRow and frequently
         // override rowVolume on the same row (e.g., a key-on row carrying a V column
@@ -2070,6 +2077,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         v.samplePos = src.samplePos
         v.playbackRate = src.playbackRate
         v.forward = src.forward
+        v.noteVolume = src.noteVolume
         v.channelVolume = src.channelVolume
         v.rowVolume = src.rowVolume
         v.channelPan = src.channelPan
@@ -2147,17 +2155,21 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     private fun applyVolColumn(voice: Voice, value: Int, sel: Int) {
         // value is the 6-bit cell field; sel is the 2-bit selector. See TAUD_NOTE_EFFECTS.md
         // §"Volume column effects" for the multi-selector encoding.
+        // SET / fine writes to noteVolume (per-note, persistent across rows until re-trigger);
+        // rowVolume is mirrored so the change is audible immediately for this row's mixing.
+        // channelVolume is left alone — vol-col is the per-note volume axis, M / N drive the
+        // independent per-channel axis (TAUD_NOTE_EFFECTS.md §3).
         when (sel) {
-            0 -> { voice.channelVolume = value.coerceIn(0, 0x3F); voice.rowVolume = voice.channelVolume }
+            0 -> { voice.noteVolume = value.coerceIn(0, 0x3F); voice.rowVolume = voice.noteVolume }
             1 -> voice.volColSlideUp = value
             2 -> voice.volColSlideDown = value
             3 -> {
                 if (value == 0) return
 
                 val mag = value and 0x1F
-                voice.rowVolume = if ((value and 0x20) != 0) (voice.rowVolume + mag).coerceAtMost(0x3F)
-                                  else (voice.rowVolume - mag).coerceAtLeast(0)
-                voice.channelVolume = voice.rowVolume
+                voice.noteVolume = if ((value and 0x20) != 0) (voice.noteVolume + mag).coerceAtMost(0x3F)
+                                   else (voice.noteVolume - mag).coerceAtLeast(0)
+                voice.rowVolume = voice.noteVolume
             }
         }
     }
@@ -2211,8 +2223,15 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             voice.wSlideDir = 0
             voice.volColSlideUp = 0; voice.volColSlideDown = 0
             voice.panColSlideRight = 0; voice.panColSlideLeft = 0
+            voice.nSlideDir = 0
             voice.rowEffect = row.effect
             voice.rowEffectArg = row.effectArg
+            // Per-tick modulators (tremolo R, tremor I, per-tick D/N coarse slides, etc.) write
+            // rowVolume directly to take effect within the row. At every row boundary rowVolume
+            // is rebased to the persistent noteVolume so the next row starts from the per-note
+            // baseline — any tremolo dip / tremor gate from the previous tick is forgotten, but
+            // a D-slide's per-tick mutations of noteVolume itself survive (D writes both).
+            voice.rowVolume = voice.noteVolume
 
             // ── Note ──
             // OP_L (combined porta + vol slide) also takes a tone-porta target without retriggering,
@@ -2234,7 +2253,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                     if (row.instrment != 0) {
                         voice.instrumentId = row.instrment
                         val seedVol = rowVolumeFromDefault(instruments[voice.instrumentId])
-                        voice.channelVolume = seedVol
+                        voice.noteVolume = seedVol
                         voice.rowVolume = seedVol
                         voice.keyOff = false
                         voice.noteFading = false
@@ -2269,7 +2288,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                         if (row.instrment != 0) {
                             voice.instrumentId = row.instrment
                             val seedVol = rowVolumeFromDefault(instruments[voice.instrumentId])
-                            voice.channelVolume = seedVol
+                            voice.noteVolume = seedVol
                             voice.rowVolume = seedVol
                             voice.keyOff = false
                             voice.noteFading = false
@@ -2370,14 +2389,17 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 if (ts.pendingRowJump < 0) ts.pendingRowJump = rawArg.coerceIn(0, 63)
             }
             EffectOp.OP_D -> {
+                // D is the per-note volume slide (analog of IT D). Fine forms write noteVolume
+                // immediately; coarse forms arm slideMode for the per-tick handler below, which
+                // walks noteVolume too so the per-note volume persists into following rows.
                 val arg = resolveArg(rawArg, voice.mem.d).also { if (rawArg != 0) voice.mem.d = it }
                 val hi = (arg ushr 8) and 0xFF
                 val lo = hi and 0x0F
                 val hin = (hi ushr 4) and 0x0F
                 when {
-                    hi == 0xFF || hi == 0xF0 -> { voice.rowVolume = (voice.rowVolume + 0xF).coerceAtMost(0x3F); voice.channelVolume = voice.rowVolume }   // $FF00 / $F000 quirk: fine up by F (TAUD_NOTE_EFFECTS.md §D)
-                    hin == 0xF && lo != 0 -> { voice.rowVolume = (voice.rowVolume - lo).coerceAtLeast(0); voice.channelVolume = voice.rowVolume }        // $Fy00 fine down by y
-                    lo == 0xF && hin != 0 -> { voice.rowVolume = (voice.rowVolume + hin).coerceAtMost(0x3F); voice.channelVolume = voice.rowVolume }    // $xF00 fine up by x
+                    hi == 0xFF || hi == 0xF0 -> { voice.noteVolume = (voice.noteVolume + 0xF).coerceAtMost(0x3F); voice.rowVolume = voice.noteVolume }   // $FF00 / $F000 quirk: fine up by F (TAUD_NOTE_EFFECTS.md §D)
+                    hin == 0xF && lo != 0 -> { voice.noteVolume = (voice.noteVolume - lo).coerceAtLeast(0); voice.rowVolume = voice.noteVolume }        // $Fy00 fine down by y
+                    lo == 0xF && hin != 0 -> { voice.noteVolume = (voice.noteVolume + hin).coerceAtMost(0x3F); voice.rowVolume = voice.noteVolume }     // $xF00 fine up by x
                     hin == 0 && lo != 0 -> { voice.slideMode = 5; voice.slideArg = -lo }     // $0y00 coarse down per non-first tick
                     lo == 0 && hin != 0 -> { voice.slideMode = 5; voice.slideArg = hin }     // $x000 coarse up per non-first tick
                 }
@@ -2478,24 +2500,27 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             }
             EffectOp.OP_M -> {
                 // M $xx00 — set channel volume to the high byte (literal, no recall). IT $40 is
-                // clamped to Taud's $3F cap. See TAUD_NOTE_EFFECTS.md §M.
-                val newVol = ((rawArg ushr 8) and 0xFF).coerceAtMost(0x3F)
-                voice.channelVolume = newVol
-                voice.rowVolume = newVol
+                // clamped to Taud's $3F cap. M writes the per-channel volume axis only and does
+                // NOT touch noteVolume / rowVolume — the per-note volume set by vol-col SET (or
+                // seeded from the instrument default on the trigger row) survives across this M.
+                // The mixer multiplies channelVolume into the gain via the volume-ramp target,
+                // so the change is heard immediately on this row. See TAUD_NOTE_EFFECTS.md §M.
+                voice.channelVolume = ((rawArg ushr 8) and 0xFF).coerceAtMost(0x3F)
             }
             EffectOp.OP_N -> {
-                // N $xy00 — channel-volume slide. Same nibble decoding as D but writes the
-                // persistent channelVolume so the change carries past this row.
+                // N $xy00 — channel-volume slide. Same nibble decoding as D but writes only the
+                // persistent channelVolume; noteVolume / rowVolume are untouched so per-note
+                // volume state (vol-col SET, D slides) survives an N.
                 val arg = resolveArg(rawArg, voice.mem.n).also { if (rawArg != 0) voice.mem.n = it }
                 val hi = (arg ushr 8) and 0xFF
                 val lo = hi and 0x0F
                 val hin = (hi ushr 4) and 0x0F
                 when {
-                    hi == 0xFF || hi == 0xF0 -> { voice.channelVolume = (voice.channelVolume + 0xF).coerceAtMost(0x3F); voice.rowVolume = voice.channelVolume }
-                    hin == 0xF && lo != 0 -> { voice.channelVolume = (voice.channelVolume - lo).coerceAtLeast(0); voice.rowVolume = voice.channelVolume }
-                    lo == 0xF && hin != 0 -> { voice.channelVolume = (voice.channelVolume + hin).coerceAtMost(0x3F); voice.rowVolume = voice.channelVolume }
-                    hin == 0 && lo != 0 -> { voice.volColSlideDown = lo }   // coarse down per non-first tick
-                    lo == 0 && hin != 0 -> { voice.volColSlideUp = hin }    // coarse up per non-first tick
+                    hi == 0xFF || hi == 0xF0 -> voice.channelVolume = (voice.channelVolume + 0xF).coerceAtMost(0x3F)
+                    hin == 0xF && lo != 0 -> voice.channelVolume = (voice.channelVolume - lo).coerceAtLeast(0)
+                    lo == 0xF && hin != 0 -> voice.channelVolume = (voice.channelVolume + hin).coerceAtMost(0x3F)
+                    hin == 0 && lo != 0 -> voice.nSlideDir = -lo                            // coarse down per non-first tick
+                    lo == 0 && hin != 0 -> voice.nSlideDir = hin                            // coarse up per non-first tick
                 }
             }
             EffectOp.OP_P -> {
@@ -2689,9 +2714,10 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             if (!voice.active && voice.noteDelayTick < 0) continue
             val inst = instruments[voice.instrumentId]
 
-            // Note cut.
+            // Note cut. Zero noteVolume / rowVolume (silence this note) but leave channelVolume
+            // alone — IT's note cut stops the sample, it doesn't reset chan->global_volume.
             if (voice.cutAtTick == ts.tickInRow) {
-                voice.rowVolume = 0; voice.channelVolume = 0
+                voice.noteVolume = 0; voice.rowVolume = 0
                 voice.noteWasCut = true
             }
 
@@ -2754,19 +2780,24 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 }
             }
 
-            // Volume slides (D coarse on tick > 0).
+            // Volume slides (D coarse on tick > 0). D walks the per-note volume; rowVolume
+            // tracks it so the change is audible this tick and rebases on next row entry.
             if (ts.tickInRow > 0 && voice.slideMode == 5) {
-                voice.rowVolume = (voice.rowVolume + voice.slideArg).coerceIn(0, 0x3F)
-                voice.channelVolume = voice.rowVolume
+                voice.noteVolume = (voice.noteVolume + voice.slideArg).coerceIn(0, 0x3F)
+                voice.rowVolume = voice.noteVolume
             }
 
-            // Volume-column slides (selectors 1/2 — per non-first tick).
+            // Volume-column slides (selectors 1/2 — per non-first tick) and N coarse slide.
+            // Vol-col writes noteVolume; N writes channelVolume — they target independent axes.
             if (ts.tickInRow > 0) {
                 if (voice.volColSlideUp != 0) {
-                    voice.rowVolume = (voice.rowVolume + voice.volColSlideUp).coerceAtMost(0x3F); voice.channelVolume = voice.rowVolume
+                    voice.noteVolume = (voice.noteVolume + voice.volColSlideUp).coerceAtMost(0x3F); voice.rowVolume = voice.noteVolume
                 }
                 if (voice.volColSlideDown != 0) {
-                    voice.rowVolume = (voice.rowVolume - voice.volColSlideDown).coerceAtLeast(0); voice.channelVolume = voice.rowVolume
+                    voice.noteVolume = (voice.noteVolume - voice.volColSlideDown).coerceAtLeast(0); voice.rowVolume = voice.noteVolume
+                }
+                if (voice.nSlideDir != 0) {
+                    voice.channelVolume = (voice.channelVolume + voice.nSlideDir).coerceIn(0, 0x3F)
                 }
                 if (voice.panColSlideRight != 0) {
                     voice.channelPan = (voice.channelPan + voice.panColSlideRight).coerceAtMost(0xFF)
@@ -2801,11 +2832,15 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 pitchToMixer = (semis * 4096 / 12).coerceIn(1, 0xFFFD)
             }
 
-            // Tremolo (R) — modulates output volume around base.
+            // Tremolo (R) — modulates rowVolume around the per-note volume base. IT's tremolo
+            // operates on chan->volume (per-note), not chan->global_volume, so the LFO bias is
+            // added to noteVolume rather than channelVolume. The result lands in rowVolume only,
+            // so noteVolume itself is unaffected and tremolo dies cleanly when the row ends
+            // (per-row rowVolume rebase) — which is what existing IT modules expect.
             if (voice.tremoloActive) {
                 val sine = lfoSample(voice.tremoloLfoPos, voice.tremoloWave)
                 val volDelta = (sine * voice.mem.rDepth) shr 9
-                voice.rowVolume = (voice.channelVolume + volDelta).coerceIn(0, 0x3F)
+                voice.rowVolume = (voice.noteVolume + volDelta).coerceIn(0, 0x3F)
                 voice.tremoloLfoPos = (voice.tremoloLfoPos + voice.mem.rSpeed * 4) and 0xFF
             }
 
@@ -2842,8 +2877,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                     voice.autoVibPhase = 0
                     voice.autoVibTicksSinceTrigger = 0
                     voice.filterY1 = 0.0; voice.filterY2 = 0.0
-                    voice.rowVolume = applyRetrigVolMod(voice.rowVolume, voice.retrigVolMod)
-                    voice.channelVolume = voice.rowVolume
+                    voice.noteVolume = applyRetrigVolMod(voice.noteVolume, voice.retrigVolMod)
+                    voice.rowVolume = voice.noteVolume
                 }
             }
 
@@ -3362,23 +3397,35 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         // also breaks the volume envelope's sustain loop). Both paths feed the same fade decay.
         var noteFading = false
 
-        // Volumes: channel volume is the persistent base; rowVolume tracks per-tick output (set per row from channel volume + volume column).
+        // Two-volume model (TAUD_NOTE_EFFECTS.md §3): mix = sample × note_vol × channel_vol × …
+        //   noteVolume    — per-note volume (analog of IT chan->volume). Reset on note re-trigger
+        //                   from the instrument's Default Note Volume; written by vol-col SET / fine,
+        //                   D / K / L vol slides, vol-col slides, Q retrig vol mod. Persists across
+        //                   rows until the next re-trigger.
+        //   channelVolume — per-channel volume (analog of IT chan->global_volume). Written by M / N.
+        //                   NOT reset by note re-trigger — the channel keeps its base volume across
+        //                   sample changes, mirroring IT's chan->global_volume semantics.
+        //   rowVolume     — per-tick mixer-facing volume. Reset to noteVolume at the start of every
+        //                   row, then modulated by tremolo / tremor / per-tick slides.
+        // Mixer gain ≈ (rowVolume / 63) × (channelVolume / 63).
+        var noteVolume    = 0x3F           // $00..$3F (default full)
         var channelVolume = 0x3F           // $00..$3F (default full)
-        var rowVolume = 63                 // $00..$3F effective output volume after slides
+        var rowVolume     = 63             // $00..$3F effective output volume after slides
         var channelPan = 0x80              // 8-bit; $80 centre. Cell column packs into 6-bit, S$80xx writes the full 8-bit.
         var rowPan = 32                    // 6-bit pan used by mixer, derived from channelPan
 
         // Anti-click volume ramp. The mixer feeds [currentMixVolume] (smoothed copy of
-        // rowVolume/63) into the per-voice gain stack instead of rowVolume directly so
-        // that voleff/notefx-driven steps (vol column, D slides, tremor, tremolo, retrig
-        // vol-mod, fine slides) ramp across [VOL_RAMP_SAMPLES] samples rather than
-        // jumping. triggerNote() arms [snapMixVolume] so the next mixer sample re-syncs
-        // currentMixVolume to rowVolume/63 — bypassing the ramp on key-on attacks.
-        // The snap is deferred (not applied inside triggerNote) because applyVolColumn
-        // and applyEffectRow run *after* triggerNote in applyTrackerRow and may lower
-        // rowVolume on the same row (e.g., a key-on with a low V column value); snapping
-        // immediately in triggerNote would leave currentMixVolume at 1.0 and force a
-        // ramp-down to the new low target, producing an audible transient spike.
+        // (rowVolume/63) × (channelVolume/63)) into the per-voice gain stack so that
+        // voleff/notefx-driven steps (vol column, D slides, tremor, tremolo, retrig
+        // vol-mod, fine slides) AND M / N channel-volume changes ramp across
+        // [VOL_RAMP_SAMPLES] samples rather than jumping. triggerNote() arms
+        // [snapMixVolume] so the next mixer sample re-syncs currentMixVolume to the
+        // post-row target — bypassing the ramp on key-on attacks. The snap is deferred
+        // (not applied inside triggerNote) because applyVolColumn and applyEffectRow
+        // run *after* triggerNote in applyTrackerRow and may lower rowVolume on the
+        // same row (e.g., a key-on with a low V column value); snapping immediately
+        // in triggerNote would leave currentMixVolume at 1.0 and force a ramp-down
+        // to the new low target, producing an audible transient spike.
         var currentMixVolume = 1.0
         var volRampSamples = 0
         var volRampStep = 0.0
@@ -3531,10 +3578,15 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         var wSlideAmount = 0
 
         // Volume / pan column slides (selectors 1/2/3 from TAUD_NOTE_EFFECTS.md §"Volume column effects").
+        // These per-tick slides modify noteVolume (the per-note axis); N has its own accumulator
+        // below because it modifies channelVolume (the per-channel axis) instead.
         var volColSlideUp = 0
         var volColSlideDown = 0
         var panColSlideRight = 0
         var panColSlideLeft = 0
+        // N coarse slide: signed delta applied to channelVolume per non-first tick. Re-armed by
+        // each N row, cleared at row start (along with the other slide accumulators).
+        var nSlideDir = 0
 
         // Bitcrusher (effect 8) and Overdrive (effect 9) — Taud-only voice FX.
         // clipMode is shared between both effects: 0=clamp, 1=fold, 2=wrap. See TAUD_NOTE_EFFECTS.md §8/§9.
@@ -3745,6 +3797,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 ts.amigaLEDStateL.fill(0.0); ts.amigaLEDStateR.fill(0.0)
                 ts.voices.forEach {
                     it.active = false
+                    it.noteVolume = 0x3F
                     it.channelVolume = 0x3F
                     it.rowVolume = 0x3F
                     it.currentMixVolume = 1.0
