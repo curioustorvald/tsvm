@@ -113,6 +113,10 @@ Timeline has two distinct modes: view and edit mode. Two modes are toggled using
 <b>\u00B7${'\u00B8'.repeat(11)}\u00B9</b>
 &demisharp;&nbsp;&sharp;&nbsp;&doublesharp;&nbsp;&triplesharp;&nbsp;&quadsharp;&nbsp;&demiflat;&nbsp;&flat;&nbsp;&doubleflat;&nbsp;&tripleflat;&nbsp;&nbsp;&accuptick;&nbsp;&nbsp;&accupup;&nbsp;&nbsp;&accdntick;&nbsp;&nbsp;&accdndn;
 <b>C&nbsp;&nbsp;c&nbsp;&nbsp;cx&nbsp;x&nbsp;&nbsp;xx&nbsp;B&nbsp;&nbsp;b&nbsp;&nbsp;bb&nbsp;bbb&nbsp;^&nbsp;&nbsp;^^&nbsp;v&nbsp;&nbsp;vv</b>
+
+<b>&nbsp;GLOBAL EDIT</b>
+<b>\u00B7${'\u00B8'.repeat(11)}\u00B9</b>
+&bul;<b>Q</b> : <O>retune current song into different tuning</O>
 `
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

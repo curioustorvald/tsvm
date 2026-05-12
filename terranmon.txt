@@ -2400,7 +2400,7 @@ TODO:
     [x] physical_presence order 0x1F chn 2: note cuts unexpectedly fast — engine fix
     [x] GSLINGER order 0x03 chn 1: L 0100 fades unexpectedly fast? — converter fix
     [x] do not reset tickspeed on pattern view play / add key to modify tick speed ('[' down/']' up)
-    [ ] expose song table on UI (test with `insaniq2.taud`)
+    [x] expose song table on UI (test with `insaniq2.taud`)
 
 TODO - list of demo songs that MUST ship with Microtone:
     * 4THSYM (rename to Fourth Symmetriad) — excellent piece for demonstrating NNAs and filter envelopes
@@ -2694,6 +2694,7 @@ prefixes:
 * PCom. Project author. Encoding: UTF-8
 * PCpr. Project copyright string. Encoding: UTF-8
 * PNam. Project name. Encoding: UTF-8
+* Pmsg. Project message. Encoding: UTF-8
 
 * INam. Instrument name table. Strings separated by 0x1E
 

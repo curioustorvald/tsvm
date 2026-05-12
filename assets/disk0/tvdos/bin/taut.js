@@ -223,10 +223,11 @@ const colEffOp = 220
 const colEffArg = 231
 const colBackPtn = 255
 
-let PITCH_PRESET_IDX = 240 // TODO read from the Project Data section of the .taud
+let PITCH_PRESET_IDX = 120 // TODO read from the Project Data section of the .taud
 let beatDivPrimary = 4 // TODO read from the Project Data section of the .taud
 let beatDivSecondary = 16
 let hasUnsavedChanges = false
+let patternsOutOfSync = false  // in-memory song.patterns has edits not yet pushed to the audio adapter
 
 // pitchSymLut[pitchInOct] = [symString, octaveOffset]
 // octaveOffset is 1 when pitchInOct is closer to the next octave's root (wraps up) than to any table entry.
@@ -253,6 +254,48 @@ function rebuildPitchLut() {
     }
 }
 rebuildPitchLut()
+
+// Remap every note in every pattern of the current song so that the lower
+// 12 bits snap to the nearest entry in `newIdx`'s pitch table, then switch
+// PITCH_PRESET_IDX. Special note values (empty/cut/keyoff) are left alone.
+// Pitches closer to the next octave's root (0x1000) than to any table entry
+// wrap up by one octave (mirrors rebuildPitchLut's octaveOffset logic).
+function retuneAllPatterns(newIdx) {
+    const preset = pitchTablePresets[newIdx]
+    if (!preset) return
+    const table = preset.table
+    if (table.length > 0) {
+        for (let p = 0; p < song.numPats; p++) {
+            const ptn = song.patterns[p]
+            for (let row = 0; row < ROWS_PER_PAT; row++) {
+                const off = 8 * row
+                const note = ptn[off] | (ptn[off+1] << 8)
+                if (note === 0xFFFF || note === 0xFFFE || note === 0x0000) continue
+                let octave = (note >>> 12) & 0xF
+                const pitch = note & 0xFFF
+                let best = 0, bestDist = 0x1000
+                for (let i = 0; i < table.length; i++) {
+                    const d = Math.abs(pitch - table[i])
+                    if (d < bestDist) { bestDist = d; best = i }
+                }
+                let newPitch
+                if ((0x1000 - pitch) < bestDist) {
+                    if (octave < 0xF) { octave += 1; newPitch = 0 }
+                    else              { newPitch = table[table.length - 1] }
+                } else {
+                    newPitch = table[best]
+                }
+                const newNote = ((octave & 0xF) << 12) | (newPitch & 0xFFF)
+                ptn[off]   = newNote & 0xFF
+                ptn[off+1] = (newNote >>> 8) & 0xFF
+            }
+        }
+        hasUnsavedChanges = true
+        patternsOutOfSync = true
+    }
+    PITCH_PRESET_IDX = newIdx
+    rebuildPitchLut()
+}
 
 Number.prototype.hex02 = function() {
     return this.toString(16).toUpperCase().padStart(2,'0')
@@ -1514,6 +1557,7 @@ function switchSong(newIndex) {
     song = loadTaud(fullPathObj.full, newIndex)
 
     taud.uploadTaudFile(fullPathObj.full, newIndex, PLAYHEAD)
+    patternsOutOfSync = false
     audio.setMasterVolume(PLAYHEAD, 255)
     audio.setMasterPan(PLAYHEAD, 128)
     initialTrackerMixerflags = audio.getTrackerMixerFlags(PLAYHEAD)
@@ -2508,7 +2552,7 @@ function drawProjectSongList() {
                         ` BPM${s.bpm.toString().padStart(3,'0')} tk${s.tickRate.dec02()}` +
                         ` g${s.songGlobalVolume.hex02()}`
 
-        con.color_pair(isActive ? colBrand : colVoiceHdr, back)
+        con.color_pair(isActive ? colWHITE : colVoiceHdr, back)
         print(`${marker} ${numStr} ${nameStr} ${meta}`)
     }
 
@@ -2624,6 +2668,20 @@ function restoreFullSongParams() {
     previewActive = false
 }
 
+// Push in-memory song.patterns to the audio adapter if local edits haven't been
+// uploaded yet. Called by every start-play entry point so playback always reflects
+// the current editor state (e.g. after Retune).
+function reuploadPatternsIfNeeded() {
+    if (!patternsOutOfSync) return
+    const patBytes = new Array(PATTERN_SIZE)
+    for (let p = 0; p < song.numPats; p++) {
+        const ptn = song.patterns[p]
+        for (let k = 0; k < PATTERN_SIZE; k++) patBytes[k] = ptn[k] & 0xFF
+        audio.uploadPattern(p, patBytes)
+    }
+    patternsOutOfSync = false
+}
+
 // Adjust the live tick rate by `delta`. The engine still honours 'A' (set speed) effects,
 // which will overwrite this value when their row is hit during playback.
 function nudgeTickRate(delta) {
@@ -2636,6 +2694,7 @@ function nudgeTickRate(delta) {
 
 function startPlaySong() {
     restoreFullSongParams()
+    reuploadPatternsIfNeeded()
     audio.stop(PLAYHEAD)
     audio.setCuePosition(PLAYHEAD, cueIdx)
     audio.setTrackerRow(PLAYHEAD, 0)
@@ -2649,6 +2708,7 @@ function startPlaySong() {
 
 function startPlayCue() {
     restoreFullSongParams()
+    reuploadPatternsIfNeeded()
     audio.stop(PLAYHEAD)
     audio.setCuePosition(PLAYHEAD, cueIdx)
     audio.setTrackerRow(PLAYHEAD, 0)
@@ -2663,6 +2723,7 @@ function startPlayCue() {
 
 function startPlayRow(fromRow, fromCue) {
     restoreFullSongParams()
+    reuploadPatternsIfNeeded()
     if (fromRow === undefined) fromRow = cursorRow
     if (fromCue === undefined) fromCue = cueIdx
     audio.stop(PLAYHEAD)
@@ -2678,6 +2739,7 @@ function startPlayRow(fromRow, fromCue) {
 
 function startPlayPattern() {
     if (song.numPats === 0) return
+    reuploadPatternsIfNeeded()
     audio.stop(PLAYHEAD)
     audio.setBPM(PLAYHEAD, song.bpm)
     audio.uploadCue(PREVIEW_CUE_IDX, buildPreviewCue(patternIdx))
@@ -2693,6 +2755,7 @@ function startPlayPattern() {
 
 function startPlayPatternRow() {
     if (song.numPats === 0) return
+    reuploadPatternsIfNeeded()
     audio.stop(PLAYHEAD)
     audio.setBPM(PLAYHEAD, song.bpm)
     audio.uploadCue(PREVIEW_CUE_IDX, buildPreviewCue(patternIdx))
@@ -2910,7 +2973,6 @@ function openHelpPopup() {
     while (!done) {
         input.withEvent(ev => {
             if (ev[0] !== 'key_down') return
-            //if (1 !== ev[2]) return // allow continuous scroll by key repeat
             if (eventJustReceived) { eventJustReceived = false; return }
             const ks = ev[1]
 
@@ -3081,6 +3143,141 @@ function openGotoPopup() {
     drawAll()
 }
 
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// RETUNE POPUP
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+function openRetunePopup() {
+    const entries = Object.values(pitchTablePresets).sort((a, b) => a.index - b.index)
+    const n = entries.length
+
+    const pw     = 44
+    const listH  = Math.min(n, 12)
+    const ph     = listH + 5
+    const px     = ((SCRW - pw) / 2 | 0) + 1
+    const py     = ((SCRH - ph) / 2 | 0)
+    const listX  = px + 2
+    const listY  = py + 2
+    const listW  = pw - 4
+
+    const popup = new win.WindowObject(px, py, pw, ph, ()=>{}, ()=>{}, 'Retune', popupDrawFrame)
+    popup.isHighlighted = true
+    popup.titleBack = colPopupBack
+
+    let sel = entries.findIndex(p => p.index === PITCH_PRESET_IDX)
+    if (sel < 0) sel = 0
+    let scroll = (sel >= listH) ? Math.min(Math.max(0, n - listH), sel - (listH >>> 1)) : 0
+
+    const repaint = () => {
+        con.color_pair(230, colPopupBack)
+        popup.drawFrame()
+
+        con.move(py + 1, px + 2)
+        con.color_pair(colWHITE, colPopupBack)
+        print('Select new tuning preset:')
+
+        for (let r = 0; r < listH; r++) {
+            const idx = scroll + r
+            con.move(listY + r, listX)
+            if (idx >= n) {
+                con.color_pair(230, colPopupBack)
+                print(' '.repeat(listW))
+                continue
+            }
+            const e = entries[idx]
+            const isSel = (idx === sel)
+            const isCur = (e.index === PITCH_PRESET_IDX)
+            const back  = isSel ? colHighlight : colPopupBack
+            const fore  = isSel ? colWHITE : (isCur ? colWHITE : 230)
+            const marker = isCur ? sym.playhead : ' '
+            let label = `${marker} ${e.index.toString().padStart(5, ' ')}  ${e.name}`
+            if (label.length > listW) label = label.substring(0, listW)
+            else label = label.padEnd(listW)
+            con.color_pair(fore, back)
+            print(label)
+        }
+
+        if (n > listH) {
+            const maxScroll = n - listH
+            const indPos = (maxScroll === 0) ? 0 : ((scroll * (listH - 1) / maxScroll) | 0)
+            con.color_pair(colStatus, colPopupBack)
+            for (let r = 0; r < listH; r++) {
+                con.move(listY + r, px + pw - 2)
+                let trough = (r === 0) ? 0xBA : (r === listH - 1) ? 0xBC : 0xBB
+                print(String.fromCharCode(r === indPos ? (trough + 3) : trough))
+            }
+        }
+
+        con.move(py + ph - 2, px + 2)
+        con.color_pair(colVoiceHdr, colPopupBack)
+        print(`\u008418u `)
+        con.color_pair(colStatus, colPopupBack)
+        print(`Sel `)
+        con.color_pair(colVoiceHdr, colPopupBack)
+        print(`en `)
+        con.color_pair(colStatus, colPopupBack)
+        print(`OK `)
+        con.color_pair(colVoiceHdr, colPopupBack)
+        print(`Q `)
+        con.color_pair(colStatus, colPopupBack)
+        print(`Cancel`)
+
+        con.color_pair(colStatus, 255)
+    }
+
+    repaint()
+
+    let done = false
+    let confirmed = false
+    let eventJustReceived = true
+
+    while (!done) {
+        input.withEvent(ev => {
+            if (ev[0] !== 'key_down') return
+            if (eventJustReceived) { eventJustReceived = false; return }
+            const ks = ev[1]
+
+            if (ks === 'Q') { done = true }
+            else if (ks === '\n') { confirmed = true; done = true }
+            else if (ks === '<UP>') {
+                if (sel > 0) {
+                    sel--
+                    if (sel < scroll) scroll = sel
+                    repaint()
+                }
+            } else if (ks === '<DOWN>') {
+                if (sel < n - 1) {
+                    sel++
+                    if (sel >= scroll + listH) scroll = sel - listH + 1
+                    repaint()
+                }
+            } else if (ks === '<HOME>') {
+                sel = 0; scroll = 0; repaint()
+            } else if (ks === '<END>') {
+                sel = n - 1; scroll = Math.max(0, n - listH); repaint()
+            } else if (ks === '<PAGE_UP>') {
+                sel = Math.max(0, sel - listH)
+                scroll = Math.max(0, scroll - listH)
+                if (sel < scroll) scroll = sel
+                repaint()
+            } else if (ks === '<PAGE_DOWN>') {
+                sel = Math.min(n - 1, sel + listH)
+                if (sel >= scroll + listH) scroll = Math.min(Math.max(0, n - listH), sel - listH + 1)
+                repaint()
+            }
+        })
+    }
+
+    if (confirmed) {
+        const target = entries[sel]
+        if (target && target.index !== PITCH_PRESET_IDX) {
+            retuneAllPatterns(target.index)
+        }
+    }
+
+    drawAll()
+}
+
 clampCursor(); clampVoice(); clampCue(); clampOrdersHoriz(); clampPatternIdx(); clampPatternGrid()
 drawAll()
 
@@ -3109,6 +3306,12 @@ while (!exitFlag) {
         const keysym     = event[1]
         const keyJustHit = (1 == event[2])
         const shiftDown  = (event.includes(59) || event.includes(60))
+
+        if (keyJustHit && shiftDown && event.includes(keys.Q) &&
+                (currentPanel === VIEW_TIMELINE || currentPanel === VIEW_PATTERN_DETAILS)) {
+            openRetunePopup()
+            return
+        }
 
         if (keyJustHit && keysym === "q") {
             if (openConfirmQuit()) exitFlag = true
