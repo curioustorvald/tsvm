@@ -90,6 +90,7 @@ Timeline has two distinct modes: view and edit mode. Two modes are toggled using
 &bul;<b>W</b>&mdot;<b>E</b>&mdot;<b>R</b> : <O>toggle timeline view mode. W-most detailed, R-most abridged</O>
 &bul;<b>n</b> : <O>toggle soloing of the selected voice</O>
 &bul;<b>m</b> : <O>toggle muting of the selected voice</O>
+&bul;<b>[</b>&mdot;<b>]</b> : <O>change tick rate of playhead</O> 
 
 <b>&nbsp;EDIT MODE</b>
 <b>\u00B7${'\u00B8'.repeat(9)}\u00B9</b>

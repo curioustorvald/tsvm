@@ -2399,7 +2399,7 @@ TODO:
         previous "row volume default = 63" behaviour.
     [x] physical_presence order 0x1F chn 2: note cuts unexpectedly fast — engine fix
     [x] GSLINGER order 0x03 chn 1: L 0100 fades unexpectedly fast? — converter fix
-    [ ] do not reset tickspeed on pattern view play / add key to modify tick speed ('[' down/']' up)
+    [x] do not reset tickspeed on pattern view play / add key to modify tick speed ('[' down/']' up)
     [ ] expose song table on UI (test with `insaniq2.taud`)
 
 TODO - list of demo songs that MUST ship with Microtone:

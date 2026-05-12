@@ -1555,6 +1555,8 @@ function timelineInput(wo, event) {
     if (keyJustHit && shiftDown && event.includes(keys.E)) { setTimelineRowStyle(1); return }
     if (keyJustHit && shiftDown && event.includes(keys.R)) { setTimelineRowStyle(2); return }
 
+    if (keyJustHit && (keysym === '[' || keysym === ']')) { nudgeTickRate(keysym === '[' ? -1 : 1); return }
+
     if (playbackMode !== PLAYMODE_NONE) {
         if (keyJustHit && shiftDown && event.includes(keys.Y) || keysym === " ") { stopPlayback(); redrawPanel(); drawAlwaysOnElems() }
         else if (keysym === "<LEFT>" || keysym === "<RIGHT>") {
@@ -2188,6 +2190,8 @@ function patternsInput(wo, event) {
     const shiftDown  = (event.includes(59) || event.includes(60))
     const moveDelta  = shiftDown ? 4 : 1
 
+    if (keyJustHit && (keysym === '[' || keysym === ']')) { nudgeTickRate(keysym === '[' ? -1 : 1); return }
+
     if (playbackMode !== PLAYMODE_NONE) {
         if ((keyJustHit && shiftDown && event.includes(keys.Y)) || keysym === " ") {
             stopPlayback(); simStateKey = ''; drawPatternsContents(wo); drawAlwaysOnElems()
@@ -2346,6 +2350,16 @@ function restoreFullSongParams() {
     previewActive = false
 }
 
+// Adjust the live tick rate by `delta`. The engine still honours 'A' (set speed) effects,
+// which will overwrite this value when their row is hit during playback.
+function nudgeTickRate(delta) {
+    const cur = audio.getTickRate(PLAYHEAD) | 0
+    const next = Math.max(1, Math.min(255, cur + delta))
+    if (next === cur) return
+    audio.setTickRate(PLAYHEAD, next)
+    drawAlwaysOnElems()
+}
+
 function startPlaySong() {
     restoreFullSongParams()
     audio.stop(PLAYHEAD)
@@ -2392,7 +2406,6 @@ function startPlayPattern() {
     if (song.numPats === 0) return
     audio.stop(PLAYHEAD)
     audio.setBPM(PLAYHEAD, song.bpm)
-    audio.setTickRate(PLAYHEAD, song.tickRate)
     audio.uploadCue(PREVIEW_CUE_IDX, buildPreviewCue(patternIdx))
     audio.setCuePosition(PLAYHEAD, PREVIEW_CUE_IDX)
     audio.setTrackerRow(PLAYHEAD, 0)
@@ -2408,7 +2421,6 @@ function startPlayPatternRow() {
     if (song.numPats === 0) return
     audio.stop(PLAYHEAD)
     audio.setBPM(PLAYHEAD, song.bpm)
-    audio.setTickRate(PLAYHEAD, song.tickRate)
     audio.uploadCue(PREVIEW_CUE_IDX, buildPreviewCue(patternIdx))
     audio.setCuePosition(PLAYHEAD, PREVIEW_CUE_IDX)
     audio.setTrackerRow(PLAYHEAD, patternGridRow)

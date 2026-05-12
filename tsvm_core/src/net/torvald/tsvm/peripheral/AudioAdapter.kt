@@ -3410,6 +3410,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         var samplePos = 0.0
         var playbackRate = 1.0
         var forward = true
+        var instrumentId = 0
 
         // -1 for live foreground voices held by TrackerState.voices[]; 0..19 for background
         // (mixer-private) ghosts spawned by NNA on the matching channel index.
