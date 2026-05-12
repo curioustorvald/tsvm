@@ -537,10 +537,125 @@ function loadTaud(filePath, songIndex) {
     sys.free(ptr)
 
     return {
-        filePath, version, numSongs, numVoices, numPats,
+        filePath, songIndex, version, numSongs, numVoices, numPats,
         bpm: bpmStored + 25, tickRate,
         patterns, cues, lastActiveCue
     }
+}
+
+// Read header + song-table + (optional) sMet from a .taud and return a per-song
+// metadata list. Does NOT load patterns / cues / samples — that's loadTaud's job.
+// Returned shape:
+//   { numSongs, projectName, songs: [
+//       { index, numVoices, numPats, bpm, tickRate, songGlobalVolume,
+//         songMixingVolume, mixerflags, name, composer, copyright } ] }
+function loadTaudSongList(filePath) {
+    const fh = files.open(filePath)
+    if (!fh.exists) throw Error(`taut: file not exists: ${filePath}`)
+    const fileSize = fh.size
+    const ptr = sys.malloc(fileSize)
+    fh.pread(ptr, fileSize, 0)
+    fh.close()
+
+    for (let i = 0; i < 8; i++) {
+        if ((sys.peek(ptr + i) & 0xFF) !== TAUD_MAGIC[i]) {
+            sys.free(ptr)
+            throw Error(`taut: bad magic byte at ${i}`)
+        }
+    }
+
+    const numSongs = sys.peek(ptr + 9) & 0xFF
+    const compSize = _peekU32LE(ptr, 10)
+    const projOff  = _peekU32LE(ptr, 14)
+    const songTableOff = TAUD_HEADER_SIZE + compSize
+
+    const songs = new Array(numSongs)
+    for (let i = 0; i < numSongs; i++) {
+        const entryOff = songTableOff + i * TAUD_SONG_ENTRY
+        songs[i] = {
+            index:            i,
+            numVoices:        sys.peek(ptr + entryOff + 4) & 0xFF,
+            numPats:          (sys.peek(ptr + entryOff + 5) & 0xFF) |
+                              ((sys.peek(ptr + entryOff + 6) & 0xFF) << 8),
+            bpm:              ((sys.peek(ptr + entryOff + 7) & 0xFF) + 25),
+            tickRate:         sys.peek(ptr + entryOff + 8) & 0xFF,
+            mixerflags:       sys.peek(ptr + entryOff + 15) & 0xFF,
+            songGlobalVolume: sys.peek(ptr + entryOff + 16) & 0xFF,
+            songMixingVolume: sys.peek(ptr + entryOff + 17) & 0xFF,
+            name: '',
+            composer: '',
+            copyright: '',
+        }
+    }
+
+    let projectName = ''
+
+    // Parse Project Data section (\x1ETaudPrJ) for song names / project name.
+    // See terranmon.txt "Project Data" / "sMet" for the format.
+    if (projOff !== 0 && projOff + 16 <= fileSize) {
+        const projMagic = [0x1E,0x54,0x61,0x75,0x64,0x50,0x72,0x4A] // \x1ETaudPrJ
+        let magicOK = true
+        for (let i = 0; i < 8; i++) {
+            if ((sys.peek(ptr + projOff + i) & 0xFF) !== projMagic[i]) { magicOK = false; break }
+        }
+        if (magicOK) {
+            let p = projOff + 16  // skip magic(8) + reserved(8)
+            while (p + 8 <= fileSize) {
+                const fc0 = sys.peek(ptr + p)     & 0xFF
+                const fc1 = sys.peek(ptr + p + 1) & 0xFF
+                const fc2 = sys.peek(ptr + p + 2) & 0xFF
+                const fc3 = sys.peek(ptr + p + 3) & 0xFF
+                const secLen = _peekU32LE(ptr, p + 4)
+                const payloadStart = p + 8
+                if (payloadStart + secLen > fileSize) break
+
+                // 'PNam' = 0x50,0x4E,0x61,0x6D
+                if (fc0 === 0x50 && fc1 === 0x4E && fc2 === 0x61 && fc3 === 0x6D) {
+                    let s = ''
+                    for (let k = 0; k < secLen; k++) {
+                        const b = sys.peek(ptr + payloadStart + k) & 0xFF
+                        if (b === 0) break
+                        s += String.fromCharCode(b)
+                    }
+                    projectName = s
+                }
+                // 'sMet' = 0x73,0x4D,0x65,0x74
+                else if (fc0 === 0x73 && fc1 === 0x4D && fc2 === 0x65 && fc3 === 0x74) {
+                    let q = payloadStart
+                    const qEnd = payloadStart + secLen
+                    while (q + 5 <= qEnd) {
+                        const idx = sys.peek(ptr + q) & 0xFF
+                        const subLen = _peekU32LE(ptr, q + 1)
+                        const subStart = q + 5
+                        if (subStart + subLen > qEnd) break
+                        // payload: notation(u16) + beat_pri(u8) + beat_sec(u8) + name\0 + composer\0 + copyright\0
+                        let r = subStart + 4   // skip notation(2) + pri(1) + sec(1)
+                        const strs = []
+                        while (strs.length < 3 && r < subStart + subLen) {
+                            let s = ''
+                            while (r < subStart + subLen) {
+                                const b = sys.peek(ptr + r) & 0xFF; r++
+                                if (b === 0) break
+                                s += String.fromCharCode(b)
+                            }
+                            strs.push(s)
+                        }
+                        if (idx < numSongs) {
+                            if (strs[0] !== undefined) songs[idx].name = strs[0]
+                            if (strs[1] !== undefined) songs[idx].composer = strs[1]
+                            if (strs[2] !== undefined) songs[idx].copyright = strs[2]
+                        }
+                        q = subStart + subLen
+                    }
+                }
+
+                p = payloadStart + secLen
+            }
+        }
+    }
+
+    sys.free(ptr)
+    return { numSongs, projectName, songs }
 }
 
 
@@ -1355,7 +1470,10 @@ const buttonTexture = new gl.Texture(2, 28, buttonBytes)
 
 font.setLowRom("A:/tvdos/bin/tautfont_low.chr")
 font.setHighRom("A:/tvdos/bin/tautfont_high.chr")
-const song = loadTaud(fullPathObj.full, 0)
+const songsMeta = loadTaudSongList(fullPathObj.full)
+let currentSongIndex = 0
+let projectSongCursor = 0
+let song = loadTaud(fullPathObj.full, currentSongIndex)
 
 const voiceMutes = new Array(NUM_VOICES).fill(false)
 let timelineMuteSnapshot = null
@@ -1380,6 +1498,47 @@ function applyMuteTransition(toPanel) {
         }
         timelineMuteSnapshot = null
     }
+}
+
+// Switch the active song within the currently-open multi-song .taud file.
+// Re-uploads patterns+cues (and the shared sample/inst bin) to the audio
+// adapter, reloads song metadata, and resets per-song UI / playback state.
+function switchSong(newIndex) {
+    if (newIndex < 0 || newIndex >= songsMeta.numSongs) return
+    if (newIndex === currentSongIndex) return
+
+    stopPlayback()
+    resetAudioDevice()
+
+    currentSongIndex = newIndex
+    song = loadTaud(fullPathObj.full, newIndex)
+
+    taud.uploadTaudFile(fullPathObj.full, newIndex, PLAYHEAD)
+    audio.setMasterVolume(PLAYHEAD, 255)
+    audio.setMasterPan(PLAYHEAD, 128)
+    initialTrackerMixerflags = audio.getTrackerMixerFlags(PLAYHEAD)
+    initialGlobalVolume      = audio.getSongGlobalVolume(PLAYHEAD)
+    initialMixingVolume      = audio.getSongMixingVolume(PLAYHEAD)
+
+    // Reset per-song UI state
+    cueIdx = 0; cursorRow = 0; scrollRow = 0; voiceOff = 0; cursorVox = 0
+    timelineColCursor = 0
+    ordersCursor = 0; ordersScroll = 0; ordersColCursor = 0; ordersVoiceOff = 0
+    patternIdx = 0; patternListScroll = 0
+    patternGridRow = 0; patternGridScroll = 0; patternGridCol = 0
+    simState = null; simStateKey = ''
+
+    for (let i = 0; i < NUM_VOICES; i++) {
+        voiceMutes[i] = false
+        audio.setVoiceMute(PLAYHEAD, i, false)
+    }
+    timelineMuteSnapshot = null
+
+    pbCue = 0; pbRow = 0
+    previewActive = false
+
+    clampCursor(); clampVoice(); clampCue(); clampOrdersHoriz(); clampPatternIdx(); clampPatternGrid()
+    drawAll()
 }
 
 function redrawFull() { drawAll() }
@@ -2270,12 +2429,13 @@ function drawProjectContents(wo) {
 
     let mixerflag = initialTrackerMixerflags
     let toneModeStr = ['Linear pitch','Amiga pitch','Linear freq',''][mixerflag & 3]
-    let intpModeStr = ['Fast Sinc','No intp.','A500 intp.','A1200 intp.'][(mixerflag >>> 2) & 3]
+    let intpModeStr = ['Default','None','A500','A1200','SNES','DPCM','',''][(mixerflag >>> 2) & 7]
     let flagStrSelected = [toneModeStr, intpModeStr]
 
 
     let projMeta = {
         Filename: fullPathObj.string.split('\\').last(),
+        ProjName: songsMeta.projectName || '(unnamed)',
         Patterns: `${song.numPats}/4095 ($${song.numPats.hex03()})`,
         Cues: `${song.lastActiveCue}/1024 ($${song.lastActiveCue.hex03()})`,
         Notation: pitchTablePresets[PITCH_PRESET_IDX].name,
@@ -2291,13 +2451,127 @@ function drawProjectContents(wo) {
         con.color_pair(colVoiceHdr, colBLACK); print(value)
     })
 
+    drawProjectSongList()
+
     con.color_pair(colStatus, 255) // reset colour
 }
+
+const PROJ_SONGLIST_Y = PTNVIEW_OFFSET_Y + 9   // header row of the song list
+const PROJ_SONGLIST_X = 2
+
+function projectSongListRowsVisible() {
+    return Math.max(0, SCRH - PROJ_SONGLIST_Y - 1)
+}
+
+let projectSongScroll = 0
+
+function clampProjectSongCursor() {
+    const n = songsMeta.numSongs
+    if (projectSongCursor < 0) projectSongCursor = 0
+    if (projectSongCursor > n - 1) projectSongCursor = n - 1
+    const rowsVis = projectSongListRowsVisible()
+    if (projectSongCursor < projectSongScroll) projectSongScroll = projectSongCursor
+    else if (projectSongCursor >= projectSongScroll + rowsVis)
+        projectSongScroll = projectSongCursor - rowsVis + 1
+    if (projectSongScroll < 0) projectSongScroll = 0
+}
+
+function drawProjectSongList() {
+    const headerY = PROJ_SONGLIST_Y
+    con.move(headerY, PROJ_SONGLIST_X)
+    con.color_pair(colStatus, 255)
+    print(`Songs: ${songsMeta.numSongs}`)
+
+    const rowsVis = projectSongListRowsVisible()
+    const colW    = SCRW - PROJ_SONGLIST_X - 1
+    for (let row = 0; row < rowsVis; row++) {
+        const idx = projectSongScroll + row
+        const y   = headerY + 1 + row
+        con.move(y, PROJ_SONGLIST_X)
+        if (idx >= songsMeta.numSongs) {
+            con.color_pair(colStatus, colBackPtn)
+            print(' '.repeat(colW))
+            continue
+        }
+        const s        = songsMeta.songs[idx]
+        const isActive = (idx === currentSongIndex)
+        const isSel    = (idx === projectSongCursor)
+        const back     = isSel ? colHighlight : colBackPtn
+
+        const marker  = isActive ? sym.playhead : ' '
+        const numStr  = (idx + 1).toString().padStart(2, '0')
+        const nameRaw = s.name || `(song ${idx + 1})`
+        const META_W = 28
+        const nameW   = Math.max(4, colW - 6 - META_W)
+        const nameStr = nameRaw.length > nameW ? nameRaw.substring(0, nameW) : nameRaw.padEnd(nameW)
+        const meta    = `V${s.numVoices.dec02()} P${s.numPats.toString().padStart(3,'0')}` +
+                        ` BPM${s.bpm.toString().padStart(3,'0')} tk${s.tickRate.dec02()}` +
+                        ` g${s.songGlobalVolume.hex02()}`
+
+        con.color_pair(isActive ? colBrand : colVoiceHdr, back)
+        print(`${marker} ${numStr} ${nameStr} ${meta}`)
+    }
+
+    // scroll indicator on the right edge
+    if (songsMeta.numSongs > rowsVis) {
+        const maxScroll = songsMeta.numSongs - rowsVis
+        const indPos    = (maxScroll === 0) ? 0 : ((projectSongScroll * (rowsVis - 1) / maxScroll) | 0)
+        for (let r = 0; r < rowsVis; r++) {
+            con.move(headerY + 1 + r, SCRW)
+            con.color_pair(colStatus, colBackPtn)
+            print(r === indPos ? sym.ticked : sym.unticked)
+        }
+    }
+}
+
+function projectInput(wo, event) {
+    if (event[0] !== 'key_down') return
+    const keysym     = event[1]
+    const keyJustHit = (1 == event[2])
+    const shiftDown  = (event.includes(59) || event.includes(60))
+    const moveDelta  = shiftDown ? 4 : 1
+
+    if (playbackMode !== PLAYMODE_NONE) {
+        if (keysym === ' ' || (keyJustHit && shiftDown && (event.includes(keys.Y) || event.includes(keys.O)))) {
+            stopPlayback(); drawAlwaysOnElems()
+        }
+        return
+    }
+
+    if (!keyJustHit) return
+
+    if (keysym === '<UP>') {
+        projectSongCursor -= moveDelta; clampProjectSongCursor(); redrawPanel(); return
+    }
+    if (keysym === '<DOWN>') {
+        projectSongCursor += moveDelta; clampProjectSongCursor(); redrawPanel(); return
+    }
+    if (keysym === '<PAGE_UP>') {
+        projectSongCursor -= projectSongListRowsVisible(); clampProjectSongCursor(); redrawPanel(); return
+    }
+    if (keysym === '<PAGE_DOWN>') {
+        projectSongCursor += projectSongListRowsVisible(); clampProjectSongCursor(); redrawPanel(); return
+    }
+    if (keysym === '<HOME>') {
+        projectSongCursor = 0; clampProjectSongCursor(); redrawPanel(); return
+    }
+    if (keysym === '<END>') {
+        projectSongCursor = songsMeta.numSongs - 1; clampProjectSongCursor(); redrawPanel(); return
+    }
+    if (keysym === '\n') {
+        if (projectSongCursor !== currentSongIndex) switchSong(projectSongCursor)
+        return
+    }
+    if (keysym === ' ') {
+        stopPlayback(); drawAlwaysOnElems(); return
+    }
+}
+
 function externalPanelInput(wo, event) {}
 
 const panelSamples  = new win.WindowObject(1, PTNVIEW_OFFSET_Y, SCRW, PTNVIEW_HEIGHT, externalPanelInput, makeExternalPanelDraw('taut_sampleedit'), undefined, ()=>{})
 const panelInstrmnt = new win.WindowObject(1, PTNVIEW_OFFSET_Y, SCRW, PTNVIEW_HEIGHT, externalPanelInput, makeExternalPanelDraw('taut_instredit'),  undefined, ()=>{})
-const panelProject  = new win.WindowObject(1, PTNVIEW_OFFSET_Y, SCRW, PTNVIEW_HEIGHT, externalPanelInput, drawProjectContents,                       undefined, ()=>{})
+const panelProject  = new win.WindowObject(1, PTNVIEW_OFFSET_Y, SCRW, PTNVIEW_HEIGHT, projectInput,       drawProjectContents,                       undefined, ()=>{})
 const panelFile     = new win.WindowObject(1, PTNVIEW_OFFSET_Y, SCRW, PTNVIEW_HEIGHT, externalPanelInput, makeExternalPanelDraw('taut_fileop'),       undefined, ()=>{})
 
 const panels = [panelTimeline, panelOrders, panelPatterns, panelSamples, panelInstrmnt, panelProject, panelFile]
@@ -2811,12 +3085,12 @@ clampCursor(); clampVoice(); clampCue(); clampOrdersHoriz(); clampPatternIdx(); 
 drawAll()
 
 resetAudioDevice()
-taud.uploadTaudFile(fullPathObj.full, 0, PLAYHEAD)
+taud.uploadTaudFile(fullPathObj.full, currentSongIndex, PLAYHEAD)
 audio.setMasterVolume(PLAYHEAD, 255)
 audio.setMasterPan(PLAYHEAD, 128)
-const initialTrackerMixerflags = audio.getTrackerMixerFlags(PLAYHEAD)
-const initialGlobalVolume = audio.getSongGlobalVolume(PLAYHEAD)
-const initialMixingVolume = audio.getSongMixingVolume(PLAYHEAD)
+let initialTrackerMixerflags = audio.getTrackerMixerFlags(PLAYHEAD)
+let initialGlobalVolume = audio.getSongGlobalVolume(PLAYHEAD)
+let initialMixingVolume = audio.getSongMixingVolume(PLAYHEAD)
 
 function isExternalPanel(p) {
     return p === VIEW_SAMPLES || p === VIEW_INSTRMNT || p === VIEW_FILE

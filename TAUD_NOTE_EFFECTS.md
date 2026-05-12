@@ -256,7 +256,7 @@ The unit of `$xxxx` depends on the song-table tone mode (effect `1`, bits 0-1):
 - `ff = 0` (linear) and `ff = 1` (Amiga): 4096-TET pitch units per tick. Amiga sources should be converted to linear units on G, since the original PT G slide already operated semi-linearly within a small range and the shared-memory pitfall of E/F does not apply here.
 - `ff = 2` (linear-frequency): Hz/tick. The engine walks the channel's *frequency* toward the target note's frequency by `±$xxxx` Hz each non-first tick. This is MONOTONE's `3xx` behaviour verbatim (MTSRC/MT_PLAY.PAS:620-630).
 
-**Compatibility.** ST3 `Gxx` uses an 8-bit value in period-table units; convert to Taud using the same `round(× 64/3)` scale as E/F coarse (1/16 semitone per ST3 slide unit). ST3 linear mode is the expected import source; Amiga-mode G sources should be treated as linear. MONOTONE `3xx` → Taud `G $00xx` verbatim under ff=2. G has its **own** memory slot in both ST3 and Taud, so conversion is straightforward and does not suffer the shared-memory problem of E/F.
+**Compatibility.** ST3 `Gxx` uses an 8-bit value in period-table units; convert to Taud using the same `round(× 64/3)` scale as E/F coarse (1/16 semitone per ST3 slide unit). Amiga-mode G sources should be treated as linear. MONOTONE `3xx` → Taud `G $00xx` verbatim under ff=2. G has its **own** memory slot in both ST3 and Taud, so conversion is straightforward and does not suffer the shared-memory problem of E/F.
 
 **Implementation.**
 
@@ -1140,8 +1140,8 @@ Effects in this section modifies the behaviour of the mixer. Primary intention o
 
     0b 000 rrr ff
 
-- ff = 0: Linear tone mode. Pitch shift will behave like MIDI/ImpulseTracker/ScreamTracker linear mode. **Coarse and fine E/F arguments are stored as 4096-TET pitch units** and subtracted/added directly from the stored pitch.
-- ff = 1: Amiga (cycle-based) tone mode. Pitch shift will behave like ProTracker/ScreamTracker default mode. **Coarse and fine E/F arguments are stored as raw tracker period units** (the unscaled byte/nibble from the source PT/S3M/IT file) and applied in Amiga period space. Tone portamento (G) remains linear regardless of mode.
+- ff = 0: Linear tone mode. Pitch shift will behave like MIDI/ImpulseTracker. **Coarse and fine E/F arguments are stored as 4096-TET pitch units** and subtracted/added directly from the stored pitch.
+- ff = 1: Amiga (cycle-based) tone mode. Pitch shift will behave like ProTracker/ScreamTracker. **Coarse and fine E/F arguments are stored as raw tracker period units** (the unscaled byte/nibble from the source PT/S3M/IT file) and applied in Amiga period space. Tone portamento (G) remains linear regardless of mode.
 - ff = 2: Linear-frequency tone mode (MONOTONE compat). **E, F, and G arguments are stored as Hz/tick** (a signed change in audible frequency per song tick), and the engine converts the channel's stored 4096-TET pitch back to a frequency, adds/subtracts the argument, then converts back to 4096-TET. Reference is fixed at 12-TET A4 = 440 Hz / C4 ≈ 261.6256 Hz, which matches MONOTONE's MT_PLAY.PAS `notesHz` table (A0 = 27.5 Hz, equal-temperament). Unlike Amiga mode, *all three* slide effects use the new arithmetic — Monotone's `1xx`, `2xx`, and `3xx` are all in Hz/tick (see MTSRC/MT_PLAY.PAS:606-630).
 
 - rrr = 0: Yes interpolation. Actual interpolation algorithm is implementation-dependent, but recommended to use either Fast Sinc or Linear.
@@ -1277,10 +1277,9 @@ These quirks of ST3 are worth preserving or flagging when importing S3M files in
 
 **Global volume scale.** ST3's 0..$40 maps to Taud's 0..$FF with a ×4 scale on import, truncated ÷4 on export.
 
-**Linear pitch slides.** ST3's slide arithmetic is period-based (Amiga) or linear-table-indexed; Taud carries both interpretations and selects between them via the song-table `f` flag. Conversion rules:
+**Linear pitch slides.** ST3's slide arithmetic is period-based; Taud supports both linear and period-based and selects between them via the song-table `f` flag. Conversion rules:
 
-- **ST3 linear mode** (`linear_slides` set in S3M flags): coarse forms (Exx/Fxx) use `round(× 64/3)` (1/16 semitone per ST3 unit); fine/extra-fine (EFx/EEx/FFx/FEx) use `round(× 16/3)` (1/64 semitone per ST3 unit). Taud `f` flag is **clear**; the engine subtracts the stored 4096-TET argument directly from the channel pitch.
-- **ST3 Amiga mode** (`linear_slides` clear): both coarse (Exx/Fxx) and fine/extra-fine (EFx/EEx/FFx/FEx) are stored **verbatim** as raw ST3 period units — coarse as `E/F $00xx`, fine as `E/F $F00x` — with no scaling. Taud `f` flag is **set**; the engine applies both forms in Amiga period space at playback, exactly recovering the source's period-step count and the non-linear pitch character.
+- Clear `linear_slides`. Both coarse (Exx/Fxx) and fine/extra-fine (EFx/EEx/FFx/FEx) are stored **verbatim** as raw ST3 period units — coarse as `E/F $00xx`, fine as `E/F $F00x` — with no scaling. Taud `f` flag is **set**; the engine applies both forms in Amiga period space at playback, exactly recovering the source's period-step count and the non-linear pitch character.
 - G (tone portamento) is always converted with `round(× 64/3)` and treated as linear, regardless of mode.
 
 **Default tempo byte.** Taud's default $64 equals 125 BPM under the $19 offset; this is not the same as ST3's `$7D` default, which maps to Taud `$64` after subtracting $19. Converters must remap on both import and export.
