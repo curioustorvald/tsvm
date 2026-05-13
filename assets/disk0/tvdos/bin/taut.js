@@ -255,39 +255,84 @@ function rebuildPitchLut() {
 }
 rebuildPitchLut()
 
-// Remap every note in every pattern of the current song so that the lower
-// 12 bits snap to the nearest entry in `newIdx`'s pitch table, then switch
-// PITCH_PRESET_IDX. Special note values (empty/cut/keyoff) are left alone.
-// Pitches closer to the next octave's root (0x1000) than to any table entry
-// wrap up by one octave (mirrors rebuildPitchLut's octaveOffset logic).
-function retuneAllPatterns(newIdx) {
+// Remap every note in every pattern of the current song to `newIdx`'s pitch
+// table, then switch PITCH_PRESET_IDX. Special note values (empty/cut/keyoff)
+// are left alone.
+//
+// Two mapping methods are supported:
+//   'pitch' (nearest-note) — each note's lower 12 bits snap to the closest
+//       entry in the new table. Pitches closer to the next octave's root
+//       (0x1000) than to any table entry wrap up by one octave (mirrors
+//       rebuildPitchLut's octaveOffset logic).
+//   'delta' (nearest-delta) — per pattern, the first non-empty note uses the
+//       nearest-pitch rule; each subsequent note is chosen so that the
+//       interval from the previously mapped note is closest to the interval
+//       between the corresponding original notes. Candidates are drawn from
+//       the table across adjacent octaves so the mapping can cross octave
+//       boundaries naturally.
+function retuneAllPatterns(newIdx, method) {
+    method = (method === 'delta') ? 'delta' : 'pitch'
     const preset = pitchTablePresets[newIdx]
     if (!preset) return
     const table = preset.table
     if (table.length > 0) {
         for (let p = 0; p < song.numPats; p++) {
             const ptn = song.patterns[p]
+            let prevOrigAbs = -1
+            let prevMappedAbs = 0
             for (let row = 0; row < ROWS_PER_PAT; row++) {
                 const off = 8 * row
                 const note = ptn[off] | (ptn[off+1] << 8)
                 if (note === 0xFFFF || note === 0xFFFE || note === 0x0000) continue
                 let octave = (note >>> 12) & 0xF
                 const pitch = note & 0xFFF
-                let best = 0, bestDist = 0x1000
-                for (let i = 0; i < table.length; i++) {
-                    const d = Math.abs(pitch - table[i])
-                    if (d < bestDist) { bestDist = d; best = i }
-                }
-                let newPitch
-                if ((0x1000 - pitch) < bestDist) {
-                    if (octave < 0xF) { octave += 1; newPitch = 0 }
-                    else              { newPitch = table[table.length - 1] }
+                const origAbs = (octave << 12) | pitch
+                let newAbs
+                if (method === 'delta' && prevOrigAbs >= 0) {
+                    const targetAbs = prevMappedAbs + (origAbs - prevOrigAbs)
+                    const baseOc = (targetAbs >> 12)
+                    let bestAbs = 0, bestDist = Infinity
+                    for (let dOc = -1; dOc <= 1; dOc++) {
+                        const oc = baseOc + dOc
+                        if (oc < 0 || oc > 0xF) continue
+                        const ocAbs = oc << 12
+                        for (let i = 0; i < table.length; i++) {
+                            const cand = ocAbs + table[i]
+                            const d = Math.abs(cand - targetAbs)
+                            if (d < bestDist) { bestDist = d; bestAbs = cand }
+                        }
+                        // Also consider the next octave's root (0x1000 above
+                        // this octave's base) so an interval that lands just
+                        // past the top entry can snap up to the octave.
+                        if (oc < 0xF) {
+                            const cand = ocAbs + 0x1000
+                            const d = Math.abs(cand - targetAbs)
+                            if (d < bestDist) { bestDist = d; bestAbs = cand }
+                        }
+                    }
+                    newAbs = bestAbs
                 } else {
-                    newPitch = table[best]
+                    let best = 0, bestDist = 0x1000
+                    for (let i = 0; i < table.length; i++) {
+                        const d = Math.abs(pitch - table[i])
+                        if (d < bestDist) { bestDist = d; best = i }
+                    }
+                    let newPitch, newOctave = octave
+                    if ((0x1000 - pitch) < bestDist) {
+                        if (newOctave < 0xF) { newOctave += 1; newPitch = 0 }
+                        else                 { newPitch = table[table.length - 1] }
+                    } else {
+                        newPitch = table[best]
+                    }
+                    newAbs = (newOctave << 12) | newPitch
                 }
-                const newNote = ((octave & 0xF) << 12) | (newPitch & 0xFFF)
+                if (newAbs < 0) newAbs = 0
+                if (newAbs > 0xFFFF) newAbs = 0xFFFF
+                const newNote = newAbs & 0xFFFF
                 ptn[off]   = newNote & 0xFF
                 ptn[off+1] = (newNote >>> 8) & 0xFF
+                prevOrigAbs = origAbs
+                prevMappedAbs = newAbs
             }
         }
         hasUnsavedChanges = true
@@ -3151,13 +3196,16 @@ function openRetunePopup() {
     const entries = Object.values(pitchTablePresets).sort((a, b) => a.index - b.index)
     const n = entries.length
 
+    const methodLabels = { pitch: 'Nearest-note', delta: 'Nearest-delta' }
+    let method = 'pitch'
+
     const pw     = 44
     const listH  = Math.min(n, 12)
-    const ph     = listH + 5
+    const ph     = listH + 6
     const px     = ((SCRW - pw) / 2 | 0) + 1
     const py     = ((SCRH - ph) / 2 | 0)
     const listX  = px + 2
-    const listY  = py + 2
+    const listY  = py + 3
     const listW  = pw - 4
 
     const popup = new win.WindowObject(px, py, pw, ph, ()=>{}, ()=>{}, 'Retune', popupDrawFrame)
@@ -3175,6 +3223,13 @@ function openRetunePopup() {
         con.move(py + 1, px + 2)
         con.color_pair(colWHITE, colPopupBack)
         print('Select new tuning preset:')
+
+        con.move(py + 2, px + 2)
+        con.color_pair(colStatus, colPopupBack)
+        print('Method: ')
+        con.color_pair(colWHITE, colPopupBack)
+        const mLabel = methodLabels[method]
+        print(mLabel.padEnd(listW - 8))
 
         for (let r = 0; r < listH; r++) {
             const idx = scroll + r
@@ -3214,11 +3269,15 @@ function openRetunePopup() {
         con.color_pair(colStatus, colPopupBack)
         print(`Sel `)
         con.color_pair(colVoiceHdr, colPopupBack)
-        print(`en `)
+        print(`ent `)
         con.color_pair(colStatus, colPopupBack)
         print(`OK `)
         con.color_pair(colVoiceHdr, colPopupBack)
-        print(`Q `)
+        print(`m `)
+        con.color_pair(colStatus, colPopupBack)
+        print(`Method `)
+        con.color_pair(colVoiceHdr, colPopupBack)
+        print(`q `)
         con.color_pair(colStatus, colPopupBack)
         print(`Cancel`)
 
@@ -3239,6 +3298,10 @@ function openRetunePopup() {
 
             if (ks === 'Q') { done = true }
             else if (ks === '\n') { confirmed = true; done = true }
+            else if (ks === 'M' || ks === 'm') {
+                method = (method === 'pitch') ? 'delta' : 'pitch'
+                repaint()
+            }
             else if (ks === '<UP>') {
                 if (sel > 0) {
                     sel--
@@ -3271,7 +3334,7 @@ function openRetunePopup() {
     if (confirmed) {
         const target = entries[sel]
         if (target && target.index !== PITCH_PRESET_IDX) {
-            retuneAllPatterns(target.index)
+            retuneAllPatterns(target.index, method)
         }
     }
 
