@@ -2726,8 +2726,9 @@ prefixes:
     * Repetition of:
     Uint8   Notation index (starting from zero) used by songs
     Uint32  Size of this notation following this field
-    Uint16   Reserved for flags
-    Float32 Interval size (octave system = 2.0f). If you are not using an interval system (which means you are responsible for defining every note expressible), this must be NaN. 0f and Infinity are considered illegal
+    Uint16  Reserved for flags
+    Uint16  Interval size in 4096-TET lattice (octave = 0x1000, tritave = 0x195C). If you are not using an interval system (which means you are responsible for defining every note expressible), this must be 0.
+    Uint16  Reserved
     Uint16  Notes between interval MINUS ONE (or octave); 12-TET will have value 11
     Byte[8] Reserved
     Byte[*]     Name, null terminated. Encoding: UTF-8
