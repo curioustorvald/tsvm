@@ -255,11 +255,48 @@ function rebuildPitchLut() {
 }
 rebuildPitchLut()
 
+// Tonal-tension function used by the 'cadence' retune method. Implements
+// the tonal-distance term D_tonic from cadential_motion.md §3-§4 by locating
+// each pitch in fifth-circle space relative to `tonic`. The abstract 3:2
+// fifth (0x95A in 0x1000-per-octave units, ≈ 702 cents) is used as the
+// fifth-circle generator, which is tuning-agnostic — the same landscape
+// applies whether the candidate sits in 5-TET, 12-TET, 22-TET, etc.
+//
+// For each integer k in [-6, 6], target_k = (k * 0x95A) mod 0x1000 is the
+// k-th fifth-stack position above the tonic (in pitch-class space). Tension
+// = |k|*0x100 + |d - target_k|_cyclic, so well-tuned fifth-circle positions
+// get low values: tonic 0, P5/P4 ≈ 0x105, M2/m7 ≈ 0x209, M6/m3 ≈ 0x30E,
+// M3/m6 ≈ 0x413, M7/m2 ≈ 0x517, tritone ≈ 0x61C. Pitches that don't sit on
+// any fifth-stack position degrade gracefully via the residual term.
+//
+// The k=0 path is gated to a narrow tonic neighbourhood (TONIC_TOL ≈ 30c).
+// Otherwise a leading tone would score as "very close to tonic in pitch-
+// class space" and pick up an artificially low tension via k=0, masking the
+// real musical fact that it's at fifth-circle distance 5 from tonic and
+// hence highly tense (cf. Krumhansl's tonal hierarchy: B is the least
+// stable diatonic note in C, despite sitting a semitone below C).
+function _cadTension(p, tonic) {
+    const FIFTH_PC  = 0x95A
+    const TONIC_TOL = 0x40
+    const d = ((p - tonic) % 0x1000 + 0x1000) % 0x1000
+    const cyclic = (d <= 0x800) ? d : (0x1000 - d)
+    let bestT = (cyclic <= TONIC_TOL) ? cyclic : Infinity
+    for (let k = -6; k <= 6; k++) {
+        if (k === 0) continue
+        const target = ((k * FIFTH_PC) % 0x1000 + 0x1000) % 0x1000
+        let dist = Math.abs(d - target)
+        if (dist > 0x800) dist = 0x1000 - dist
+        const candT = Math.abs(k) * 0x100 + dist
+        if (candT < bestT) bestT = candT
+    }
+    return bestT
+}
+
 // Remap every note in every pattern of the current song to `newIdx`'s pitch
 // table, then switch PITCH_PRESET_IDX. Special note values (empty/cut/keyoff)
 // are left alone.
 //
-// Two mapping methods are supported:
+// Three mapping methods are supported:
 //   'pitch' (nearest-note) — each note's lower 12 bits snap to the closest
 //       entry in the new table. Pitches closer to the next octave's root
 //       (0x1000) than to any table entry wrap up by one octave (mirrors
@@ -270,8 +307,18 @@ rebuildPitchLut()
 //       between the corresponding original notes. Candidates are drawn from
 //       the table across adjacent octaves so the mapping can cross octave
 //       boundaries naturally.
+//   'cadence' (nearest-cadence) — per pattern, the first non-empty note's
+//       pitch class is taken as the tonic and the first note uses the
+//       nearest-pitch rule. Each subsequent note is chosen so that the
+//       change in tonal tension (see _cadTension) from the previously
+//       mapped note matches the change in the original sequence, with raw
+//       pitch displacement as a tiebreaker. This preserves cadential
+//       trajectories — V→I-style descents stay V→I-style — rather than
+//       absolute pitch positions or raw intervals, mirroring the framing in
+//       cadential_motion.md §2 (motion along -∇T) and §9 (trajectories
+//       carry cadentiality better than coordinates).
 function retuneAllPatterns(newIdx, method) {
-    method = (method === 'delta') ? 'delta' : 'pitch'
+    method = (method === 'delta' || method === 'cadence') ? method : 'pitch'
     const preset = pitchTablePresets[newIdx]
     if (!preset) return
     const table = preset.table
@@ -280,6 +327,16 @@ function retuneAllPatterns(newIdx, method) {
             const ptn = song.patterns[p]
             let prevOrigAbs = -1
             let prevMappedAbs = 0
+            let tonic = 0
+            if (method === 'cadence') {
+                for (let row = 0; row < ROWS_PER_PAT; row++) {
+                    const off = 8 * row
+                    const note = ptn[off] | (ptn[off+1] << 8)
+                    if (note === 0xFFFF || note === 0xFFFE || note === 0x0000) continue
+                    tonic = note & 0xFFF
+                    break
+                }
+            }
             for (let row = 0; row < ROWS_PER_PAT; row++) {
                 const off = 8 * row
                 const note = ptn[off] | (ptn[off+1] << 8)
@@ -288,26 +345,41 @@ function retuneAllPatterns(newIdx, method) {
                 const pitch = note & 0xFFF
                 const origAbs = (octave << 12) | pitch
                 let newAbs
-                if (method === 'delta' && prevOrigAbs >= 0) {
+                if ((method === 'delta' || method === 'cadence') && prevOrigAbs >= 0) {
                     const targetAbs = prevMappedAbs + (origAbs - prevOrigAbs)
                     const baseOc = (targetAbs >> 12)
-                    let bestAbs = 0, bestDist = Infinity
+                    let targetDeltaT = 0, tMappedPrev = 0
+                    if (method === 'cadence') {
+                        targetDeltaT = _cadTension(origAbs, tonic) - _cadTension(prevOrigAbs, tonic)
+                        tMappedPrev  = _cadTension(prevMappedAbs, tonic)
+                    }
+                    let bestAbs = 0, bestScore = Infinity
                     for (let dOc = -1; dOc <= 1; dOc++) {
                         const oc = baseOc + dOc
                         if (oc < 0 || oc > 0xF) continue
                         const ocAbs = oc << 12
                         for (let i = 0; i < table.length; i++) {
                             const cand = ocAbs + table[i]
-                            const d = Math.abs(cand - targetAbs)
-                            if (d < bestDist) { bestDist = d; bestAbs = cand }
+                            const pitchErr = Math.abs(cand - targetAbs)
+                            let score = pitchErr
+                            if (method === 'cadence') {
+                                const candDeltaT = _cadTension(cand, tonic) - tMappedPrev
+                                score = Math.abs(candDeltaT - targetDeltaT) * 2 + pitchErr
+                            }
+                            if (score < bestScore) { bestScore = score; bestAbs = cand }
                         }
                         // Also consider the next octave's root (0x1000 above
                         // this octave's base) so an interval that lands just
                         // past the top entry can snap up to the octave.
                         if (oc < 0xF) {
                             const cand = ocAbs + 0x1000
-                            const d = Math.abs(cand - targetAbs)
-                            if (d < bestDist) { bestDist = d; bestAbs = cand }
+                            const pitchErr = Math.abs(cand - targetAbs)
+                            let score = pitchErr
+                            if (method === 'cadence') {
+                                const candDeltaT = _cadTension(cand, tonic) - tMappedPrev
+                                score = Math.abs(candDeltaT - targetDeltaT) * 2 + pitchErr
+                            }
+                            if (score < bestScore) { bestScore = score; bestAbs = cand }
                         }
                     }
                     newAbs = bestAbs
@@ -3196,7 +3268,8 @@ function openRetunePopup() {
     const entries = Object.values(pitchTablePresets).sort((a, b) => a.index - b.index)
     const n = entries.length
 
-    const methodLabels = { pitch: 'Nearest-note', delta: 'Nearest-delta' }
+    const methodLabels = { pitch: 'Nearest-note', delta: 'Nearest-delta', cadence: 'Nearest-cadence' }
+    const methodCycle  = ['pitch', 'delta', 'cadence']
     let method = 'pitch'
 
     const pw     = 44
@@ -3299,7 +3372,7 @@ function openRetunePopup() {
             if (ks === 'Q') { done = true }
             else if (ks === '\n') { confirmed = true; done = true }
             else if (ks === 'M' || ks === 'm') {
-                method = (method === 'pitch') ? 'delta' : 'pitch'
+                method = methodCycle[(methodCycle.indexOf(method) + 1) % methodCycle.length]
                 repaint()
             }
             else if (ks === '<UP>') {
