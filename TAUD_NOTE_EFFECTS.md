@@ -735,6 +735,87 @@ Peak at maximum settings: $7F × $FF >> 9 = $3F — the full panning range. Retr
 
 ---
 
+## 7 $xxyy — Pattern Ditto
+
+**Plain.** A per-channel "fill the rest from above" marker: the engine copies the **$xx rows immediately preceding this cell on the same channel** and pastes them $yy times starting on this row. The destination block therefore covers `$xx × $yy` rows beginning at the ditto row inclusive. Any field (note, instrument, vol-column, pan-column, effect) that the composer has explicitly written into a destination row stays put and patches the corresponding field of the copied source cell — empty fields fall through to the source. The ditto opcode itself is consumed by the marker on its arming row; the rest of that row's columns are patched from the source as usual, so an empty arming row plays back identically to the first row of the source block.
+
+For example, with `7 $1003` on row 16, rows 16..63 replay the contents of rows 0..15 three times. A `D $0400` punched onto row 22 simply overrides the effect column on that destination row; its note/vol/pan still come from the source row 6 (since (22 − 16) mod 16 = 6, and 0 + 6 = source row 6).
+
+Boundary rules:
+
+- The block stops at the end of the pattern: a ditto whose nominal span would overflow the pattern's row count clips silently at the final row.
+- `$xx = $00`, `$yy = $00`, and any `$xx` greater than the row index on which the ditto sits are all treated as no-ops — there is nothing valid to copy from.
+- A `7` cell appearing inside a source block is **not** recursively expanded: when that source row is pasted into a destination, its effect column is treated as empty. This keeps expansion single-pass and prevents unbounded nesting.
+- Flow-control effects (B, C, S$Bx, S$Ex) that fall inside a source block still fire when their copy lands on a destination row, since the engine sees them as ordinary effect cells after expansion. Composers and converters should avoid placing S$Bx loop bounds wholly inside a ditto'd range — the loop counter is per-voice and the same destination row would be revisited twice with the same state.
+
+**Compatibility.** Unique to Taud — no ST3/IT/PT equivalent. The effect has no memory.
+
+**Implementation.** Per-voice state, all reset on pattern change alongside the existing pattern-loop / fine-pattern-delay clears:
+
+- `dittoActive: bool`
+- `dittoSourceStart: int` — first row of the source block (inclusive)
+- `dittoLength: int` — $xx, the block size
+- `dittoEndRow: int` — last destination row (inclusive)
+
+At the very top of `applyTrackerRow`, before the per-voice reset of row-scope state, build an effective cell view for each voice:
+
+```
+raw = patternRows[V.pattern][N]                            # stored cell on row N for voice V
+isArmer = (raw.effect == 0x7 and raw.effectArg != 0)
+
+if isArmer:
+    length  = (raw.effectArg >> 8) & 0xFF
+    repeats =  raw.effectArg       & 0xFF
+    if length > 0 and repeats > 0 and length <= N:
+        V.dittoSourceStart = N - length
+        V.dittoLength      = length
+        V.dittoEndRow      = min(N + length * repeats - 1, patternLength - 1)
+        V.dittoActive      = true
+    # else: malformed argument — fall through with dittoActive unchanged
+
+armRow = V.dittoSourceStart + V.dittoLength    # always equals the row that armed this ditto
+
+if V.dittoActive and armRow <= N <= V.dittoEndRow:
+    srcRow = V.dittoSourceStart + ((N - V.dittoSourceStart) mod V.dittoLength)
+    src    = patternRows[V.pattern][srcRow]
+
+    cell.note       = (raw.note != 0xFFFF) ? raw.note       : src.note
+    cell.instrument = (raw.instrument != 0) ? raw.instrument : src.instrument
+
+    # SEL_FINE / 0 is the canonical no-op encoding for the vol- and pan-columns;
+    # any other (selector, value) pair is a write and patches the source.
+    cell.vol, cell.volEff = (raw.volEff, raw.vol) != (SEL_FINE, 0)
+                            ? (raw.vol, raw.volEff)
+                            : (src.vol, src.volEff)
+    cell.pan, cell.panEff = (raw.panEff, raw.pan) != (SEL_FINE, 0)
+                            ? (raw.pan, raw.panEff)
+                            : (src.pan, src.panEff)
+
+    # On the armer row, the 7-opcode is consumed by the marker, so for effect-column
+    # patching purposes the destination is treated as empty. Source 7-opcodes never
+    # propagate (no recursive expansion).
+    destOp, destArg = isArmer ? (0, 0) : (raw.effect, raw.effectArg)
+    if destOp != 0:
+        cell.effect, cell.effectArg = destOp, destArg
+    elif src.effect != 0x7:
+        cell.effect, cell.effectArg = src.effect, src.effectArg
+    else:
+        cell.effect, cell.effectArg = 0, 0
+
+else:
+    cell = raw
+```
+
+The four ditto fields are not cleared at the natural end of the destination range; they simply stop matching the gating condition once `N` advances past `dittoEndRow`, and a later armer cell in the same pattern overwrites them in place. Explicit clears happen only on cue advance (B / C / natural pattern end) and full playhead reset, alongside the existing pattern-loop counters in `resetPatternLoopState` / `resetParams`.
+
+The rest of `applyTrackerRow` then dispatches on `cell` exactly as for an undittoed row — note triggering, vol/pan column application, and effect handling are unchanged. The expansion mutates the in-memory cell view only; the stored pattern data is never rewritten.
+
+Pattern-delay (S$Ex) re-runs `applyTrackerRow` on the same `N` — the ditto bookkeeping is idempotent across those re-entries because `dittoActive`, `dittoSourceStart`, `dittoLength`, and `dittoEndRow` already encode the destination range, and the armer guard `length <= N` makes repeated arming on the same row a no-op (the new state is identical to the old). The `armRow <= N` half of the gating condition is what protects against an S$Bx pattern-loop that jumps back to a row sitting strictly before the armer: rather than synthesising from a phantom source slot, the engine falls through to the raw cell.
+
+Effect dispatch sees the synthesised effect, never the literal `7` opcode of the armer cell — `OP_7` therefore exists in the engine's opcode table only as an explicit no-op for the rare malformed-armer fallthrough (`length == 0`, `repeats == 0`, or `length > N`).
+
+---
+
 ## 8 $xyzz — Bitcrusher
 
 **Plain.** Applies a bitcrusher to the current voice. The crusher has two independent stages — a sample-rate reducer (`zz`, sample-and-hold) and a bit-depth quantiser (`y`) — and shares its clipping mode (`x`) with effect 9 (Overdrive). The two stages are orthogonal: enabling either is sufficient to engage the effect, and either can be active alone.

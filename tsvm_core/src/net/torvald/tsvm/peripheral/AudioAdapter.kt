@@ -1279,6 +1279,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     private object EffectOp {
         const val OP_NONE = 0x00
         const val OP_1 = 0x01
+        const val OP_7 = 0x07
         const val OP_8 = 0x08
         const val OP_9 = 0x09
         const val OP_A = 0x0A
@@ -2224,8 +2225,68 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             val patNum = cue.patterns[vi]
             if (patNum == 0xFFF) continue
             val patIdx = patNum.coerceIn(0, 4095)
-            val row = playdata[patIdx][ts.rowIndex]
+            val rawRow = playdata[patIdx][ts.rowIndex]
             val voice = ts.voices[vi]
+
+            // ── Pattern Ditto (effect 7) row-time expansion ──
+            // See TAUD_NOTE_EFFECTS.md §7. Arm the destination range when this row
+            // carries a 7-opcode with a valid argument; then, if the current row
+            // sits inside an active destination block, synthesise an effective cell
+            // that combines the source-block cell with any explicit fields the
+            // composer punched into the destination row.
+            val n = ts.rowIndex
+            val isArmer = (rawRow.effect == EffectOp.OP_7 && rawRow.effectArg != 0)
+            if (isArmer) {
+                val length = (rawRow.effectArg ushr 8) and 0xFF
+                val repeats = rawRow.effectArg and 0xFF
+                if (length > 0 && repeats > 0 && length <= n) {
+                    val patLen = (cue.instruction as? PlayInstPatLen)?.rows ?: 64
+                    voice.dittoSourceStart = n - length
+                    voice.dittoLength = length
+                    voice.dittoEndRow = minOf(n + length * repeats - 1, patLen - 1)
+                    voice.dittoActive = true
+                }
+                // else: malformed — leave any previously-armed ditto state alone.
+            }
+
+            val dittoArmRow = voice.dittoSourceStart + voice.dittoLength
+            val row: TaudPlayData =
+                if (voice.dittoActive && n in dittoArmRow..voice.dittoEndRow) {
+                    val rel = (n - voice.dittoSourceStart) % voice.dittoLength
+                    val srcRow = voice.dittoSourceStart + rel
+                    val src = playdata[patIdx][srcRow]
+
+                    // Vol- / pan-column "no-op" sentinel is SEL_FINE (3) with value 0.
+                    val volIsSet = !(rawRow.volumeEff == 3 && rawRow.volume == 0)
+                    val panIsSet = !(rawRow.panEff == 3 && rawRow.pan == 0)
+
+                    // On the armer row, the 7-opcode is consumed by the marker, so
+                    // for effect-column patching purposes the destination is treated
+                    // as empty. Source 7-opcodes never propagate (no recursive
+                    // expansion).
+                    val destOp = if (isArmer) 0 else rawRow.effect
+                    val destArg = if (isArmer) 0 else rawRow.effectArg
+                    val effOp: Int
+                    val effArg: Int
+                    when {
+                        destOp != 0 -> { effOp = destOp; effArg = destArg }
+                        src.effect != EffectOp.OP_7 -> { effOp = src.effect; effArg = src.effectArg }
+                        else -> { effOp = 0; effArg = 0 }
+                    }
+
+                    TaudPlayData(
+                        note      = if (rawRow.note != 0xFFFF) rawRow.note else src.note,
+                        instrment = if (rawRow.instrment != 0) rawRow.instrment else src.instrment,
+                        volume    = if (volIsSet) rawRow.volume else src.volume,
+                        volumeEff = if (volIsSet) rawRow.volumeEff else src.volumeEff,
+                        pan       = if (panIsSet) rawRow.pan else src.pan,
+                        panEff    = if (panIsSet) rawRow.panEff else src.panEff,
+                        effect    = effOp,
+                        effectArg = effArg,
+                    )
+                } else {
+                    rawRow
+                }
 
             // Reset per-row transient state.
             voice.cutAtTick = -1
@@ -2347,6 +2408,16 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     private fun applyEffectRow(ts: TrackerState, playhead: Playhead, voice: Voice, vi: Int, op: Int, rawArg: Int) {
         when (op) {
             EffectOp.OP_NONE -> {}
+            EffectOp.OP_7 -> {
+                // 7 $xxyy — Pattern Ditto.  See TAUD_NOTE_EFFECTS.md §7.
+                // The opcode is a marker only; the row-time expansion in
+                // [applyTrackerRow] consumes the armer cell and substitutes the
+                // effective row from the source block, so by the time dispatch
+                // reaches here either (a) the cell was an armer and we already
+                // overwrote the synthesised row's effect to 0 / source effect,
+                // or (b) we hit a malformed 7-cell (length == 0 or repeats == 0
+                // or length > N) — both cases are no-ops at dispatch time.
+            }
             EffectOp.OP_1 -> {
                 // 1 $xx00 — Global behaviour flags byte in the high byte (see TAUD_NOTE_EFFECTS.md §1).
                 // bits 0-1 (ff): 0=linear pitch, 1=Amiga period, 2=linear frequency (Hz/tick),
@@ -3054,11 +3125,18 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         playhead.position = ts.cuePos
     }
 
-    // Per TAUD_NOTE_EFFECTS.md §S$Bx00: on pattern change reset loop_start_row and loop_count.
+    // Per-pattern voice state reset, called on every cue advance (B / C / natural end).
+    //   - S$Bx pattern-loop counters (TAUD_NOTE_EFFECTS.md §S$Bx00).
+    //   - Pattern-ditto (effect 7) destination range — the source block lives in the
+    //     pattern we are leaving and must not bleed into the next one (§7).
     private fun resetPatternLoopState(ts: TrackerState) {
         for (voice in ts.voices) {
             voice.loopStartRow = 0
             voice.loopCount = 0
+            voice.dittoActive = false
+            voice.dittoSourceStart = 0
+            voice.dittoLength = 0
+            voice.dittoEndRow = 0
         }
     }
 
@@ -3599,6 +3677,17 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         var loopStartRow = 0
         var loopCount = 0
 
+        // Pattern ditto (effect 7) — per-channel state. See TAUD_NOTE_EFFECTS.md §7.
+        // dittoActive is the master gate; while true, rows in
+        // [dittoSourceStart + dittoLength .. dittoEndRow] are expanded by copying
+        // the cells from the source block (dittoSourceStart .. dittoSourceStart +
+        // dittoLength − 1) and patching in any non-empty fields from the raw
+        // destination cell. All four reset on cue advance (B / C / natural end).
+        var dittoActive = false
+        var dittoSourceStart = 0
+        var dittoLength = 0
+        var dittoEndRow = 0
+
         // Tempo slide (T $00xy) — per-channel because T is a per-channel effect, but we apply globally via playhead.
         var tempoSlideDir = 0              // 0 = none, -1 = down, +1 = up
         var tempoSlideAmount = 0
@@ -3841,6 +3930,10 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                     it.glissandoOn = false
                     it.loopStartRow = 0
                     it.loopCount = 0
+                    it.dittoActive = false
+                    it.dittoSourceStart = 0
+                    it.dittoLength = 0
+                    it.dittoEndRow = 0
                     it.funkSpeed = 0
                     it.funkAccumulator = 0
                     it.funkWritePos = 0
