@@ -292,11 +292,40 @@ function _cadTension(p, tonic) {
     return bestT
 }
 
+// Just-intonation reference ratios (in 0x1000-per-octave units) and pull
+// weights used as the harmonic attractor field A(P) for the 'harmonic'
+// retune method (see cadence_aware_nearest_harmonic.md §4A). Lower weight
+// = simpler ratio = stronger pull. Cost of a candidate is the minimum
+// weight*distance across all references.
+const _HARM_REFS = [
+    [0,     1.0],  // 1:1 unison / 2:1 octave
+    [0x1D2, 4.0],  // 9:8 major tone
+    [0x435, 3.0],  // 6:5 minor third
+    [0x527, 3.0],  // 5:4 major third
+    [0x6A4, 2.0],  // 4:3 perfect fourth
+    [0x95B, 2.0],  // 3:2 perfect fifth
+    [0xAB7, 3.0],  // 8:5 minor sixth
+    [0xBCB, 3.0],  // 5:3 major sixth
+    [0xD3D, 4.0],  // 9:5 minor seventh
+]
+function _harmonicCost(p, tonic) {
+    const d = ((p - tonic) % 0x1000 + 0x1000) % 0x1000
+    let best = Infinity
+    for (let i = 0; i < _HARM_REFS.length; i++) {
+        const ref = _HARM_REFS[i]
+        let dist = Math.abs(d - ref[0])
+        if (dist > 0x800) dist = 0x1000 - dist
+        const cost = ref[1] * dist
+        if (cost < best) best = cost
+    }
+    return best
+}
+
 // Remap every note in every pattern of the current song to `newIdx`'s pitch
 // table, then switch PITCH_PRESET_IDX. Special note values (empty/cut/keyoff)
 // are left alone.
 //
-// Three mapping methods are supported:
+// Four mapping methods are supported:
 //   'pitch' (nearest-note) — each note's lower 12 bits snap to the closest
 //       entry in the new table. Pitches closer to the next octave's root
 //       (0x1000) than to any table entry wrap up by one octave (mirrors
@@ -317,8 +346,18 @@ function _cadTension(p, tonic) {
 //       absolute pitch positions or raw intervals, mirroring the framing in
 //       cadential_motion.md §2 (motion along -∇T) and §9 (trajectories
 //       carry cadentiality better than coordinates).
+//   'harmonic' (cadence-aware nearest-harmonic) — implements
+//       P_n = P_{n-1} + Q(Δ_n) + λ_n A(P_n) from
+//       cadence_aware_nearest_harmonic.md §1. Per pattern, the first
+//       non-empty note's pitch class is taken as the tonic. Each subsequent
+//       note is scored as pitchErr + λ_n * harmonicCost where λ_n
+//       = 1 − exp(−(duration−1)/4), with duration measured in rows until
+//       the next event in the (still-original) row sequence. Short notes
+//       get λ ≈ 0 and behave like nearest-delta — "freedom during travel"
+//       (§10) — while sustained / pattern-end notes approach λ → 1 and lock
+//       onto the JI attractor field — "precision during landing".
 function retuneAllPatterns(newIdx, method) {
-    method = (method === 'delta' || method === 'cadence') ? method : 'pitch'
+    if (method !== 'delta' && method !== 'cadence' && method !== 'harmonic') method = 'pitch'
     const preset = pitchTablePresets[newIdx]
     if (!preset) return
     const table = preset.table
@@ -328,7 +367,7 @@ function retuneAllPatterns(newIdx, method) {
             let prevOrigAbs = -1
             let prevMappedAbs = 0
             let tonic = 0
-            if (method === 'cadence') {
+            if (method === 'cadence' || method === 'harmonic') {
                 for (let row = 0; row < ROWS_PER_PAT; row++) {
                     const off = 8 * row
                     const note = ptn[off] | (ptn[off+1] << 8)
@@ -345,42 +384,44 @@ function retuneAllPatterns(newIdx, method) {
                 const pitch = note & 0xFFF
                 const origAbs = (octave << 12) | pitch
                 let newAbs
-                if ((method === 'delta' || method === 'cadence') && prevOrigAbs >= 0) {
+                if ((method === 'delta' || method === 'cadence' || method === 'harmonic') && prevOrigAbs >= 0) {
                     const targetAbs = prevMappedAbs + (origAbs - prevOrigAbs)
                     const baseOc = (targetAbs >> 12)
-                    let targetDeltaT = 0, tMappedPrev = 0
+                    let targetDeltaT = 0, tMappedPrev = 0, lambda = 0
                     if (method === 'cadence') {
                         targetDeltaT = _cadTension(origAbs, tonic) - _cadTension(prevOrigAbs, tonic)
                         tMappedPrev  = _cadTension(prevMappedAbs, tonic)
+                    } else if (method === 'harmonic') {
+                        let duration = 1
+                        for (let r = row + 1; r < ROWS_PER_PAT; r++) {
+                            const noff = 8 * r
+                            const n = ptn[noff] | (ptn[noff+1] << 8)
+                            if (n !== 0x0000) break
+                            duration++
+                        }
+                        lambda = 1 - Math.exp(-(duration - 1) / 4)
                     }
                     let bestAbs = 0, bestScore = Infinity
+                    const tryCand = (cand) => {
+                        const pitchErr = Math.abs(cand - targetAbs)
+                        let score = pitchErr
+                        if (method === 'cadence') {
+                            const candDeltaT = _cadTension(cand, tonic) - tMappedPrev
+                            score = Math.abs(candDeltaT - targetDeltaT) * 2 + pitchErr
+                        } else if (method === 'harmonic') {
+                            score = pitchErr + lambda * _harmonicCost(cand, tonic)
+                        }
+                        if (score < bestScore) { bestScore = score; bestAbs = cand }
+                    }
                     for (let dOc = -1; dOc <= 1; dOc++) {
                         const oc = baseOc + dOc
                         if (oc < 0 || oc > 0xF) continue
                         const ocAbs = oc << 12
-                        for (let i = 0; i < table.length; i++) {
-                            const cand = ocAbs + table[i]
-                            const pitchErr = Math.abs(cand - targetAbs)
-                            let score = pitchErr
-                            if (method === 'cadence') {
-                                const candDeltaT = _cadTension(cand, tonic) - tMappedPrev
-                                score = Math.abs(candDeltaT - targetDeltaT) * 2 + pitchErr
-                            }
-                            if (score < bestScore) { bestScore = score; bestAbs = cand }
-                        }
+                        for (let i = 0; i < table.length; i++) tryCand(ocAbs + table[i])
                         // Also consider the next octave's root (0x1000 above
                         // this octave's base) so an interval that lands just
                         // past the top entry can snap up to the octave.
-                        if (oc < 0xF) {
-                            const cand = ocAbs + 0x1000
-                            const pitchErr = Math.abs(cand - targetAbs)
-                            let score = pitchErr
-                            if (method === 'cadence') {
-                                const candDeltaT = _cadTension(cand, tonic) - tMappedPrev
-                                score = Math.abs(candDeltaT - targetDeltaT) * 2 + pitchErr
-                            }
-                            if (score < bestScore) { bestScore = score; bestAbs = cand }
-                        }
+                        if (oc < 0xF) tryCand(ocAbs + 0x1000)
                     }
                     newAbs = bestAbs
                 } else {
@@ -3268,8 +3309,13 @@ function openRetunePopup() {
     const entries = Object.values(pitchTablePresets).sort((a, b) => a.index - b.index)
     const n = entries.length
 
-    const methodLabels = { pitch: 'Nearest-note', delta: 'Nearest-delta', cadence: 'Nearest-cadence' }
-    const methodCycle  = ['pitch', 'delta', 'cadence']
+    const methodLabels = {
+        pitch:    'Nearest-note',
+        delta:    'Nearest-delta',
+        cadence:  'Nearest-cadence',
+        harmonic: 'Nearest-harmonic', // this thing is cadence-aware (hopefully)
+    }
+    const methodCycle = ['pitch', 'delta', 'harmonic', 'cadence']
     let method = 'pitch'
 
     const pw     = 44
