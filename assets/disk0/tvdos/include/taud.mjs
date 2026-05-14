@@ -118,7 +118,7 @@ function uploadTaudFile(inFile, songIndex, playhead) {
     let patBinCompSize   = _peekU32LE(filePtr, entryOff + 18)
     let cueSheetCompSize = _peekU32LE(filePtr, entryOff + 22)
 
-    let bpm        = bpmStored + 24
+    let bpm        = bpmStored + 25
     let patsToLoad = numPatsLo | (numPatsHi << 8)
 
     // -- 6. Decompress + upload patterns --------------------------------------
@@ -210,7 +210,7 @@ function captureTrackerDataToFile(outFile) {
     // -- 3. BPM / tick-rate / volumes from playhead 0 -------------------------
     let bpm      = audio.getBPM(0)      || 125
     let tickRate = audio.getTickRate(0) || 6
-    let bpmStored = (bpm - 24) & 0xFF
+    let bpmStored = (bpm - 25) & 0xFF
     let songGlobalVolume = audio.getSongGlobalVolume(0)
     let songMixingVolume = audio.getSongMixingVolume(0)
     if (songGlobalVolume === undefined || songGlobalVolume === null) songGlobalVolume = 0x80
@@ -272,7 +272,7 @@ function captureTrackerDataToFile(outFile) {
         (songOffset >>> 24) & 0xFF,
         20,                                    // numVoices
         numPats & 0xFF, (numPats >>> 8) & 0xFF, // numPatterns Uint16 LE
-        bpmStored,                             // BPM with −24 bias
+        bpmStored,                             // BPM with −25 bias
         tickRate,                              // initial tick-rate
         0x00,0xA0,                             // basenote (0xA000 -- C9)
         0x00,0xAC,0x02,0x46,                   // basefreq (8363 Hz)
