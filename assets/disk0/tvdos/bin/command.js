@@ -577,6 +577,59 @@ shell.coreutils = {
     ver: function(args) {
         println(welcome_text)
     },
+    which: function(args) {
+        if (args[1] === undefined) {
+            printerrln(`Usage: ${args[0].toUpperCase()} program_name`)
+            return 1
+        }
+        let cmd = args[1]
+
+        if (shell.coreutils[cmd.toLowerCase()] !== undefined) {
+            println(`${cmd}: shell built-in command`)
+            return 0
+        }
+
+        var fileExists = false
+        var searchFile
+        var searchPath = ""
+
+        if (shell.isValidDriveLetter(cmd[0]) && cmd[1] == ':') {
+            searchFile = files.open(cmd)
+            searchPath = trimStartRevSlash(searchFile.path)
+            fileExists = searchFile.exists
+        }
+        else {
+            var searchDir = (cmd.startsWith("/")) ? [""] : ["/"+shell_pwd.join("/")].concat(_TVDOS.getPath())
+
+            var pathExt = []
+            if (cmd.split(".")[1] === undefined)
+                _TVDOS.variables.PATHEXT.split(';').forEach(function(it) { pathExt.push(it); pathExt.push(it.toUpperCase()); })
+            else
+                pathExt.push("")
+
+            searchLoop:
+            for (var i = 0; i < searchDir.length; i++) {
+                for (var j = 0; j < pathExt.length; j++) {
+                    let search = searchDir[i]; if (!search.endsWith('\\')) search += '\\'
+                    searchPath = trimStartRevSlash(search + cmd + pathExt[j])
+
+                    searchFile = files.open(`${CURRENT_DRIVE}:\\${searchPath}`)
+                    if (searchFile.exists) {
+                        fileExists = true
+                        break searchLoop
+                    }
+                }
+            }
+        }
+
+        if (!fileExists) {
+            printerrln(`${cmd}: not found`)
+            return 1
+        }
+
+        println(searchFile.fullPath)
+        return 0
+    },
     panic: function(args) {
         throw Error("Panicking command.js")
     }
@@ -590,6 +643,7 @@ shell.coreutils.ls = shell.coreutils.dir
 shell.coreutils.time = shell.coreutils.date
 shell.coreutils.md = shell.coreutils.mkdir
 shell.coreutils.move = shell.coreutils.mv
+shell.coreutils.where = shell.coreutils.which
 // end of command aliases
 Object.freeze(shell.coreutils)
 shell.stdio = {
