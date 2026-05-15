@@ -169,61 +169,63 @@ const volFxNames = {
 
 const pitchTablePresets = {
 // index: pitch table number to be recorded on .taudproj file
-0:{index:0,name:"Raw format",table:[],interval:0x1000,sym:[]}, // when null is specified, hex numbers will be displayed instead
+// t: type of the tuning. M - Macrotonal, m - microtonal, d - 12-tone
+    
+0:{index:0,name:"Raw format",table:[],interval:0x1000,t:'',sym:[]}, // when null is specified, hex numbers will be displayed instead
 /* Xenharmonic, equal temperament */
-10:{index:10,name:"Octave only", table:[0x0],interval:0x1000,
+10:{index:10,name:"Octave only",table:[0x0],interval:0x1000,t:'M',
 sym:[`C${sym.accnull}`]},
-20:{index:20,name:"2-TET", table:[0x0,0x800],interval:0x1000,
+20:{index:20,name:"2-TET",table:[0x0,0x800],interval:0x1000,t:'M',
 sym:[`C${sym.accnull}`,`F${sym.sharp}`]},
-30:{index:30,name:"3-TET", table:[0x0,0x555,0xAAB],interval:0x1000,
+30:{index:30,name:"3-TET",table:[0x0,0x555,0xAAB],interval:0x1000,t:'M',
 sym:[`C${sym.accnull}`,`E${sym.accnull}`,`G${sym.sharp}`]},
-40:{index:40,name:"4-TET", table:[0x0,0x400,0x800,0xC00],interval:0x1000,
+40:{index:40,name:"4-TET",table:[0x0,0x400,0x800,0xC00],interval:0x1000,t:'M',
 sym:[`C${sym.accnull}`,`D${sym.sharp}`,`F${sym.sharp}`,`A${sym.accnull}`]},
-50:{index:50,name:"5-TET", table:[0x0,0x333,0x666,0x99A,0xCCD],interval:0x1000,
+50:{index:50,name:"5-TET",table:[0x0,0x333,0x666,0x99A,0xCCD],interval:0x1000,t:'M',
 sym:[`C${sym.accnull}`,`D${sym.accnull}`,`E${sym.accnull}`,`G${sym.accnull}`,`A${sym.accnull}`]},
-60:{index:60,name:"6-TET", table:[0x0,0x2AB,0x555,0x800,0xAAB,0xD55],interval:0x1000,
+60:{index:60,name:"6-TET",table:[0x0,0x2AB,0x555,0x800,0xAAB,0xD55],interval:0x1000,t:'M',
 sym:[`C${sym.accnull}`,`D${sym.accnull}`,`E${sym.accnull}`,`F${sym.sharp}`,`G${sym.sharp}`,`A${sym.sharp}`]},
-70:{index:70,name:"7-TET", table:[0x0,0x249,0x492,0x6DB,0x925,0xB6E,0xDB7],interval:0x1000,
+70:{index:70,name:"7-TET",table:[0x0,0x249,0x492,0x6DB,0x925,0xB6E,0xDB7],interval:0x1000,t:'M',
 sym:[`C${sym.accnull}`,`D${sym.accnull}`,`E${sym.accnull}`,`F${sym.accnull}`,`G${sym.accnull}`,`A${sym.accnull}`,`B${sym.accnull}`]},
-80:{index:80,name:"8-TET", table:[0x0,0x200,0x400,0x600,0x800,0xA00,0xC00,0xE00],interval:0x1000,
+80:{index:80,name:"8-TET",table:[0x0,0x200,0x400,0x600,0x800,0xA00,0xC00,0xE00],interval:0x1000,t:'M',
 sym:[`C${sym.accnull}`,`D${sym.accnull}`,`E${sym.accnull}`,`F${sym.accnull}`,`F${sym.sharp}`,`G${sym.sharp}`,`A${sym.accnull}`,`B${sym.accnull}`]},
-90:{index:90,name:"9-TET", table:[0x0,0x1C7,0x38E,0x555,0x71C,0x8E4,0xAAB,0xC72,0xE39],interval:0x1000,
+90:{index:90,name:"9-TET",table:[0x0,0x1C7,0x38E,0x555,0x71C,0x8E4,0xAAB,0xC72,0xE39],interval:0x1000,t:'M',
 sym:[`C${sym.accnull}`,`D${sym.accnull}`,`E${sym.accnull}`,`E${sym.sharp}`,`F${sym.accnull}`,`G${sym.accnull}`,`A${sym.accnull}`,`B${sym.accnull}`,`B${sym.sharp}`]},
-100:{index:100,name:"10-TET", table:[0x0,0x19A,0x333,0x4CD,0x666,0x800,0x99A,0xB33,0xCCD,0xE66],interval:0x1000,
+100:{index:100,name:"10-TET",table:[0x0,0x19A,0x333,0x4CD,0x666,0x800,0x99A,0xB33,0xCCD,0xE66],interval:0x1000,t:'M',
 sym:[`C${sym.accnull}`,`D${sym.flat}`,`D${sym.accnull}`,`E${sym.flat}`,`E${sym.accnull}`,`E${sym.sharp}`,`G${sym.accnull}`,`G${sym.sharp}`,`A${sym.accnull}`,`A${sym.sharp}`]},
-150:{index:150,name:"15-TET", table:[0x0,0x111,0x222,0x333,0x444,0x555,0x666,0x777,0x889,0x99A,0xAAB,0xBBC,0xCCD,0xDDE,0xEEF],interval:0x1000,
+150:{index:150,name:"15-TET",table:[0x0,0x111,0x222,0x333,0x444,0x555,0x666,0x777,0x889,0x99A,0xAAB,0xBBC,0xCCD,0xDDE,0xEEF],interval:0x1000,t:'m',
 sym:[`C${sym.accnull}`,`C${sym.sharp}`,`D${sym.accnull}`,`D${sym.sharp}`,`E${sym.flat}`,`E${sym.accnull}`,`E${sym.sharp}`,`F${sym.sharp}`,`G${sym.accnull}`,`G${sym.sharp}`,`A${sym.flat}`,`A${sym.accnull}`,`A${sym.sharp}`,`B${sym.flat}`,`B${sym.accnull}`]},
-160:{index:160,name:"16-TET", table:[0x0,0x100,0x200,0x300,0x400,0x500,0x600,0x700,0x800,0x900,0xA00,0xB00,0xC00,0xD00,0xE00,0xF00],interval:0x1000,
+160:{index:160,name:"16-TET",table:[0x0,0x100,0x200,0x300,0x400,0x500,0x600,0x700,0x800,0x900,0xA00,0xB00,0xC00,0xD00,0xE00,0xF00],interval:0x1000,t:'m',
 sym:[`C${sym.accnull}`,`C${sym.sharp}`,`D${sym.accnull}`,`D${sym.sharp}`,`E${sym.accnull}`,`E${sym.sharp}`,`F${sym.flat}`,`F${sym.accnull}`,`F${sym.sharp}`,`G${sym.accnull}`,`G${sym.sharp}`,`A${sym.accnull}`,`A${sym.sharp}`,`B${sym.accnull}`,`B${sym.sharp}`,`C${sym.flat}`]},
-170:{index:170,name:"17-TET", table:[0x0,0xF1,0x1E2,0x2D3,0x3C4,0x4B5,0x5A6,0x697,0x788,0x878,0x969,0xA5A,0xB4B,0xC3C,0xD2D,0xE1E,0xF0F],interval:0x1000,
+170:{index:170,name:"17-TET",table:[0x0,0xF1,0x1E2,0x2D3,0x3C4,0x4B5,0x5A6,0x697,0x788,0x878,0x969,0xA5A,0xB4B,0xC3C,0xD2D,0xE1E,0xF0F],interval:0x1000,t:'m',
 sym:[`C${sym.accnull}`,`D${sym.flat}`,`C${sym.sharp}`,`D${sym.accnull}`,`E${sym.flat}`,`D${sym.sharp}`,`E${sym.accnull}`,`F${sym.accnull}`,`G${sym.flat}`,`F${sym.sharp}`,`G${sym.accnull}`,`A${sym.flat}`,`G${sym.sharp}`,`A${sym.accnull}`,`B${sym.flat}`,`A${sym.sharp}`,`B${sym.accnull}`]},
-190:{index:190,name:"19-TET", table:[0x0,0xD8,0x1AF,0x287,0x35E,0x436,0x50D,0x5E5,0x6BD,0x794,0x86C,0x943,0xA1B,0xAF3,0xBCA,0xCA2,0xD79,0xE51,0xF28],interval:0x1000,
+190:{index:190,name:"19-TET",table:[0x0,0xD8,0x1AF,0x287,0x35E,0x436,0x50D,0x5E5,0x6BD,0x794,0x86C,0x943,0xA1B,0xAF3,0xBCA,0xCA2,0xD79,0xE51,0xF28],interval:0x1000,t:'m',
 sym:[`C${sym.accnull}`,`C${sym.sharp}`,`D${sym.flat}`,`D${sym.accnull}`,`D${sym.sharp}`,`E${sym.flat}`,`E${sym.accnull}`,`E${sym.sharp}`,`F${sym.accnull}`,`F${sym.sharp}`,`G${sym.flat}`,`G${sym.accnull}`,`G${sym.sharp}`,`A${sym.flat}`,`A${sym.accnull}`,`A${sym.sharp}`,`B${sym.flat}`,`B${sym.accnull}`,`B${sym.sharp}`]},
-220:{index:220,name:"22-TET", table:[0x0,0xBA,0x174,0x22F,0x2E9,0x3A3,0x45D,0x517,0x5D1,0x68C,0x746,0x800,0x8BA,0x974,0xA2F,0xAE9,0xBA3,0xC5D,0xD17,0xDD1,0xE8C,0xF46],interval:0x1000,
+220:{index:220,name:"22-TET",table:[0x0,0xBA,0x174,0x22F,0x2E9,0x3A3,0x45D,0x517,0x5D1,0x68C,0x746,0x800,0x8BA,0x974,0xA2F,0xAE9,0xBA3,0xC5D,0xD17,0xDD1,0xE8C,0xF46],interval:0x1000,t:'m',
 sym:[`C${sym.accnull}`,`C${sym.demisharp}`,`C${sym.sharp}`,`D${sym.demiflat}`,`D${sym.accnull}`,`D${sym.demisharp}`,`D${sym.sharp}`,`E${sym.demiflat}`,`E${sym.accnull}`,`F${sym.accnull}`,`F${sym.demisharp}`,`F${sym.sharp}`,`G${sym.demiflat}`,`G${sym.accnull}`,`G${sym.demisharp}`,`G${sym.sharp}`,`A${sym.demiflat}`,`A${sym.accnull}`,`A${sym.demisharp}`,`A${sym.sharp}`,`B${sym.demiflat}`,`B${sym.accnull}`]},
-240:{index:240,name:"24-TET", table:[0x0,0xAB,0x155,0x200,0x2AB,0x355,0x400,0x4AB,0x555,0x600,0x6AB,0x755,0x800,0x8AB,0x955,0xA00,0xAAB,0xB55,0xC00,0xCAB,0xD55,0xE00,0xEAB,0xF55],interval:0x1000,
+240:{index:240,name:"24-TET",table:[0x0,0xAB,0x155,0x200,0x2AB,0x355,0x400,0x4AB,0x555,0x600,0x6AB,0x755,0x800,0x8AB,0x955,0xA00,0xAAB,0xB55,0xC00,0xCAB,0xD55,0xE00,0xEAB,0xF55],interval:0x1000,t:'m',
 sym:[`C${sym.accnull}`,`C${sym.demisharp}`,`C${sym.sharp}`,`D${sym.demiflat}`,`D${sym.accnull}`,`D${sym.demisharp}`,`D${sym.sharp}`,`E${sym.demiflat}`,`E${sym.accnull}`,`E${sym.demisharp}`,`F${sym.accnull}`,`F${sym.demisharp}`,`F${sym.sharp}`,`G${sym.demiflat}`,`G${sym.accnull}`,`G${sym.demisharp}`,`G${sym.sharp}`,`A${sym.demiflat}`,`A${sym.accnull}`,`A${sym.demisharp}`,`A${sym.sharp}`,`B${sym.demiflat}`,`B${sym.accnull}`,`B${sym.demisharp}`]},
-310:{index:310,name:"31-TET", table:[0x0,0x84,0x108,0x18C,0x211,0x295,0x319,0x39D,0x421,0x4A5,0x529,0x5AD,0x632,0x6B6,0x73A,0x7BE,0x842,0x8C6,0x94A,0x9CE,0xA53,0xAD7,0xB5B,0xBDF,0xC63,0xCE7,0xD6B,0xDEF,0xE74,0xEF8,0xF7C],interval:0x1000,
+310:{index:310,name:"31-TET",table:[0x0,0x84,0x108,0x18C,0x211,0x295,0x319,0x39D,0x421,0x4A5,0x529,0x5AD,0x632,0x6B6,0x73A,0x7BE,0x842,0x8C6,0x94A,0x9CE,0xA53,0xAD7,0xB5B,0xBDF,0xC63,0xCE7,0xD6B,0xDEF,0xE74,0xEF8,0xF7C],interval:0x1000,t:'m',
 sym:[`C${sym.accnull}`,`C${sym.demisharp}`,`C${sym.sharp}`,`D${sym.flat}`,`D${sym.demiflat}`,`D${sym.accnull}`,`D${sym.demisharp}`,`D${sym.sharp}`,`E${sym.flat}`,`E${sym.demiflat}`,`E${sym.accnull}`,`E${sym.demisharp}`,`F${sym.demiflat}`,`F${sym.accnull}`,`F${sym.demisharp}`,`F${sym.sharp}`,`G${sym.flat}`,`G${sym.demiflat}`,`G${sym.accnull}`,`G${sym.demisharp}`,`G${sym.sharp}`,`A${sym.flat}`,`A${sym.demiflat}`,`A${sym.accnull}`,`A${sym.demisharp}`,`A${sym.sharp}`,`B${sym.flat}`,`B${sym.demiflat}`,`B${sym.accnull}`,`B${sym.demisharp}`,`C${sym.demiflat}`]},
-410:{index:410,name:"41-TET (Kite)", table:[0x0,0x64,0xC8,0x12C,0x190,0x1F4,0x257,0x2BB,0x31F,0x383,0x3E7,0x44B,0x4AF,0x513,0x577,0x5DB,0x63E,0x6A2,0x706,0x76A,0x7CE,0x832,0x896,0x8FA,0x95E,0x9C2,0xA25,0xA89,0xAED,0xB51,0xBB5,0xC19,0xC7D,0xCE1,0xD45,0xDA9,0xE0C,0xE70,0xED4,0xF38,0xF9C],interval:0x1000,
+410:{index:410,name:"41-TET (Kite)",table:[0x0,0x64,0xC8,0x12C,0x190,0x1F4,0x257,0x2BB,0x31F,0x383,0x3E7,0x44B,0x4AF,0x513,0x577,0x5DB,0x63E,0x6A2,0x706,0x76A,0x7CE,0x832,0x896,0x8FA,0x95E,0x9C2,0xA25,0xA89,0xAED,0xB51,0xBB5,0xC19,0xC7D,0xCE1,0xD45,0xDA9,0xE0C,0xE70,0xED4,0xF38,0xF9C],interval:0x1000,t:'m',
 sym:[`${BIGDOT}C-`,`${sym.uptick}C-`,`${sym.doubledntick}C${sym.csharp}`,`${sym.dntick}C${sym.csharp}`,`${BIGDOT}C${sym.csharp}`,`${sym.uptick}C${sym.csharp}`,`${sym.dntick}D-`,`${BIGDOT}D-`,`${sym.uptick}D-`,`${sym.doubledntick}D${sym.csharp}`,`${sym.dntick}D${sym.csharp}`,`${BIGDOT}D${sym.csharp}`,`${sym.uptick}D${sym.csharp}`,`${sym.dntick}E-`,`${BIGDOT}E-`,`${sym.uptick}E-`,`${sym.doubleuptick}E-`,`${BIGDOT}F-`,`${sym.uptick}F-`,`${sym.doubledntick}F${sym.csharp}`,`${sym.dntick}F${sym.csharp}`,`${BIGDOT}F${sym.csharp}`,`${sym.uptick}F${sym.csharp}`,`${sym.dntick}G-`,`${BIGDOT}G-`,`${sym.uptick}G-`,`${sym.doubledntick}G${sym.csharp}`,`${sym.dntick}G${sym.csharp}`,`${BIGDOT}G${sym.csharp}`,`${sym.uptick}G${sym.csharp}`,`${sym.dntick}A-`,`${BIGDOT}A-`,`${sym.uptick}A-`,`${sym.doubledntick}A${sym.csharp}`,`${sym.dntick}A${sym.csharp}`,`${BIGDOT}A${sym.csharp}`,`${sym.uptick}A${sym.csharp}`,`${sym.dntick}B-`,`${BIGDOT}B-`,`${sym.uptick}B-`,`${sym.doubleuptick}B-`]},
-530:{index:530,name:"53-TET (Kite)", table:[0x0,0x4D,0x9B,0xE8,0x135,0x182,0x1D0,0x21D,0x26A,0x2B8,0x305,0x352,0x39F,0x3ED,0x43A,0x487,0x4D5,0x522,0x56F,0x5BC,0x60A,0x657,0x6A4,0x6F2,0x73F,0x78C,0x7D9,0x827,0x874,0x8C1,0x90E,0x95C,0x9A9,0x9F6,0xA44,0xA91,0xADE,0xB2B,0xB79,0xBC6,0xC13,0xC61,0xCAE,0xCFB,0xD48,0xD96,0xDE3,0xE30,0xE7E,0xECB,0xF18,0xF65,0xFB3],interval:0x1000,
+530:{index:530,name:"53-TET (Kite)",table:[0x0,0x4D,0x9B,0xE8,0x135,0x182,0x1D0,0x21D,0x26A,0x2B8,0x305,0x352,0x39F,0x3ED,0x43A,0x487,0x4D5,0x522,0x56F,0x5BC,0x60A,0x657,0x6A4,0x6F2,0x73F,0x78C,0x7D9,0x827,0x874,0x8C1,0x90E,0x95C,0x9A9,0x9F6,0xA44,0xA91,0xADE,0xB2B,0xB79,0xBC6,0xC13,0xC61,0xCAE,0xCFB,0xD48,0xD96,0xDE3,0xE30,0xE7E,0xECB,0xF18,0xF65,0xFB3],interval:0x1000,t:'m',
 sym:[`${BIGDOT}C-`,`${sym.uptick}C-`,`${sym.doubleuptick}C-`,`${sym.doubledntick}C${sym.csharp}`,`${sym.dntick}C${sym.csharp}`,`${BIGDOT}C${sym.csharp}`,`${sym.uptick}C${sym.csharp}`,`${sym.doubledntick}D-`,`${sym.dntick}D-`,`${BIGDOT}D-`,`${sym.uptick}D-`,`${sym.doubleuptick}D-`,`${sym.doubledntick}D${sym.csharp}`,`${sym.dntick}D${sym.csharp}`,`${BIGDOT}D${sym.csharp}`,`${sym.uptick}D${sym.csharp}`,`${sym.doubledntick}E-`,`${sym.dntick}E-`,`${BIGDOT}E-`,`${sym.uptick}E-`,`${sym.doubleuptick}E-`,`${sym.dntick}F-`,`${BIGDOT}F-`,`${sym.uptick}F-`,`${sym.doubleuptick}F-`,`${sym.doubledntick}F${sym.csharp}`,`${sym.dntick}F${sym.csharp}`,`${BIGDOT}F${sym.csharp}`,`${sym.uptick}F${sym.csharp}`,`${sym.doubledntick}G-`,`${sym.dntick}G-`,`${BIGDOT}G-`,`${sym.uptick}G-`,`${sym.doubleuptick}G-`,`${sym.doubledntick}G${sym.csharp}`,`${sym.dntick}G${sym.csharp}`,`${BIGDOT}G${sym.csharp}`,`${sym.uptick}G${sym.csharp}`,`${sym.doubledntick}A-`,`${sym.dntick}A-`,`${BIGDOT}A-`,`${sym.uptick}A-`,`${sym.doubleuptick}A-`,`${sym.doubledntick}A${sym.csharp}`,`${sym.dntick}A${sym.csharp}`,`${BIGDOT}A${sym.csharp}`,`${sym.uptick}A${sym.csharp}`,`${sym.doubledntick}B-`,`${sym.dntick}B-`,`${BIGDOT}B-`,`${sym.uptick}B-`,`${sym.doubleuptick}B-`,`${sym.dntick}C-`]},
-531:{index:531,name:"53-TET (Pythagorean)", table:[0x0,0x4D,0x9B,0xE8,0x135,0x182,0x1D0,0x21D,0x26A,0x2B8,0x305,0x352,0x39F,0x3ED,0x43A,0x487,0x4D5,0x522,0x56F,0x5BC,0x60A,0x657,0x6A4,0x6F2,0x73F,0x78C,0x7D9,0x827,0x874,0x8C1,0x90E,0x95C,0x9A9,0x9F6,0xA44,0xA91,0xADE,0xB2B,0xB79,0xBC6,0xC13,0xC61,0xCAE,0xCFB,0xD48,0xD96,0xDE3,0xE30,0xE7E,0xECB,0xF18,0xF65,0xFB3],interval:0x1000,
+531:{index:531,name:"53-TET (Pythagorean)",table:[0x0,0x4D,0x9B,0xE8,0x135,0x182,0x1D0,0x21D,0x26A,0x2B8,0x305,0x352,0x39F,0x3ED,0x43A,0x487,0x4D5,0x522,0x56F,0x5BC,0x60A,0x657,0x6A4,0x6F2,0x73F,0x78C,0x7D9,0x827,0x874,0x8C1,0x90E,0x95C,0x9A9,0x9F6,0xA44,0xA91,0xADE,0xB2B,0xB79,0xBC6,0xC13,0xC61,0xCAE,0xCFB,0xD48,0xD96,0xDE3,0xE30,0xE7E,0xECB,0xF18,0xF65,0xFB3],interval:0x1000,t:'m',
 sym:[`C${sym.accnull}`,`B${sym.sharp}`,`A${sym.triplesharp}`,`E${sym.tripleflat}`,`D${sym.flat}`,`C${sym.sharp}`,`B${sym.doublesharp}`,`F${sym.tripleflat}`,`E${sym.doubleflat}`,`D${sym.accnull}`,`C${sym.doublesharp}`,`B${sym.triplesharp}`,`F${sym.doubleflat}`,`E${sym.flat}`,`D${sym.sharp}`,`C${sym.triplesharp}`,`G${sym.tripleflat}`,`F${sym.flat}`,`E${sym.accnull}`,`D${sym.doublesharp}`,`C${sym.quadsharp}`,`G${sym.doubleflat}`,`F${sym.accnull}`,`E${sym.sharp}`,`D${sym.triplesharp}`,`A${sym.tripleflat}`,`G${sym.flat}`,`F${sym.sharp}`,`E${sym.doublesharp}`,`D${sym.quadsharp}`,`A${sym.doubleflat}`,`G${sym.accnull}`,`F${sym.doublesharp}`,`E${sym.triplesharp}`,`B${sym.tripleflat}`,`A${sym.flat}`,`G${sym.sharp}`,`F${sym.triplesharp}`,`C${sym.tripleflat}`,`B${sym.doubleflat}`,`A${sym.accnull}`,`G${sym.doublesharp}`,`F${sym.quadsharp}`,`C${sym.doubleflat}`,`B${sym.flat}`,`A${sym.sharp}`,`G${sym.triplesharp}`,`D${sym.tripleflat}`,`C${sym.flat}`,`B${sym.accnull}`,`A${sym.doublesharp}`,`G${sym.quadsharp}`,`D${sym.doubleflat}`]},
-960:{index:960,name:"96-TET (Kite)", table:[0x0,0x2B,0x55,0x80,0xAB,0xD5,0x100,0x12B,0x155,0x180,0x1AB,0x1D5,0x200,0x22B,0x255,0x280,0x2AB,0x2D5,0x300,0x32B,0x355,0x380,0x3AB,0x3D5,0x400,0x42B,0x455,0x480,0x4AB,0x4D5,0x500,0x52B,0x555,0x580,0x5AB,0x5D5,0x600,0x62B,0x655,0x680,0x6AB,0x6D5,0x700,0x72B,0x755,0x780,0x7AB,0x7D5,0x800,0x82B,0x855,0x880,0x8AB,0x8D5,0x900,0x92B,0x955,0x980,0x9AB,0x9D5,0xA00,0xA2B,0xA55,0xA80,0xAAB,0xAD5,0xB00,0xB2B,0xB55,0xB80,0xBAB,0xBD5,0xC00,0xC2B,0xC55,0xC80,0xCAB,0xCD5,0xD00,0xD2B,0xD55,0xD80,0xDAB,0xDD5,0xE00,0xE2B,0xE55,0xE80,0xEAB,0xED5,0xF00,0xF2B,0xF55,0xF80,0xFAB,0xFD5],interval:0x1000,
+960:{index:960,name:"96-TET (Kite)",table:[0x0,0x2B,0x55,0x80,0xAB,0xD5,0x100,0x12B,0x155,0x180,0x1AB,0x1D5,0x200,0x22B,0x255,0x280,0x2AB,0x2D5,0x300,0x32B,0x355,0x380,0x3AB,0x3D5,0x400,0x42B,0x455,0x480,0x4AB,0x4D5,0x500,0x52B,0x555,0x580,0x5AB,0x5D5,0x600,0x62B,0x655,0x680,0x6AB,0x6D5,0x700,0x72B,0x755,0x780,0x7AB,0x7D5,0x800,0x82B,0x855,0x880,0x8AB,0x8D5,0x900,0x92B,0x955,0x980,0x9AB,0x9D5,0xA00,0xA2B,0xA55,0xA80,0xAAB,0xAD5,0xB00,0xB2B,0xB55,0xB80,0xBAB,0xBD5,0xC00,0xC2B,0xC55,0xC80,0xCAB,0xCD5,0xD00,0xD2B,0xD55,0xD80,0xDAB,0xDD5,0xE00,0xE2B,0xE55,0xE80,0xEAB,0xED5,0xF00,0xF2B,0xF55,0xF80,0xFAB,0xFD5],interval:0x1000,t:'m',
 sym:[`${BIGDOT}C-`,`${sym.uptick}C-`,`${sym.doubleuptick}C-`,`${sym.dntick}C${sym.cdemisharp}`,`${BIGDOT}C${sym.cdemisharp}`,`${sym.uptick}C${sym.cdemisharp}`,`${sym.doubleuptick}C${sym.cdemisharp}`,`${sym.dntick}C${sym.csharp}`,`${BIGDOT}C${sym.csharp}`,`${sym.uptick}C${sym.csharp}`,`${sym.doubleuptick}C${sym.csharp}`,`${sym.dntick}D${sym.cdemiflat}`,`${BIGDOT}D${sym.cdemiflat}`,`${sym.uptick}D${sym.cdemiflat}`,`${sym.doubleuptick}D${sym.cdemiflat}`,`${sym.dntick}D-`,`${BIGDOT}D-`,`${sym.uptick}D-`,`${sym.doubleuptick}D-`,`${sym.dntick}D${sym.cdemisharp}`,`${BIGDOT}D${sym.cdemisharp}`,`${sym.uptick}D${sym.cdemisharp}`,`${sym.doubleuptick}D${sym.cdemisharp}`,`${sym.dntick}D${sym.csharp}`,`${BIGDOT}D${sym.csharp}`,`${sym.uptick}D${sym.csharp}`,`${sym.doubleuptick}D${sym.csharp}`,`${sym.dntick}E${sym.cdemiflat}`,`${BIGDOT}E${sym.cdemiflat}`,`${sym.uptick}E${sym.cdemiflat}`,`${sym.doubleuptick}E${sym.cdemiflat}`,`${sym.dntick}E-`,`${BIGDOT}E-`,`${sym.uptick}E-`,`${sym.doubleuptick}E-`,`${sym.dntick}E${sym.cdemisharp}`,`${BIGDOT}E${sym.cdemisharp}`,`${sym.uptick}E${sym.cdemisharp}`,`${sym.doubleuptick}E${sym.cdemisharp}`,`${sym.dntick}F-`,`${BIGDOT}F-`,`${sym.uptick}F-`,`${sym.doubleuptick}F-`,`${sym.dntick}F${sym.cdemisharp}`,`${BIGDOT}F${sym.cdemisharp}`,`${sym.uptick}F${sym.cdemisharp}`,`${sym.doubleuptick}F${sym.cdemisharp}`,`${sym.dntick}F${sym.csharp}`,`${BIGDOT}F${sym.csharp}`,`${sym.uptick}F${sym.csharp}`,`${sym.doubleuptick}F${sym.csharp}`,`${sym.dntick}G${sym.cdemiflat}`,`${BIGDOT}G${sym.cdemiflat}`,`${sym.uptick}G${sym.cdemiflat}`,`${sym.doubleuptick}G${sym.cdemiflat}`,`${sym.dntick}G-`,`${BIGDOT}G-`,`${sym.uptick}G-`,`${sym.doubleuptick}G-`,`${sym.dntick}G${sym.cdemisharp}`,`${BIGDOT}G${sym.cdemisharp}`,`${sym.uptick}G${sym.cdemisharp}`,`${sym.doubleuptick}G${sym.cdemisharp}`,`${sym.dntick}G${sym.csharp}`,`${BIGDOT}G${sym.csharp}`,`${sym.uptick}G${sym.csharp}`,`${sym.doubleuptick}G${sym.csharp}`,`${sym.dntick}A${sym.cdemiflat}`,`${BIGDOT}A${sym.cdemiflat}`,`${sym.uptick}A${sym.cdemiflat}`,`${sym.doubleuptick}A${sym.cdemiflat}`,`${sym.dntick}A-`,`${BIGDOT}A-`,`${sym.uptick}A-`,`${sym.doubleuptick}A-`,`${sym.dntick}A${sym.cdemisharp}`,`${BIGDOT}A${sym.cdemisharp}`,`${sym.uptick}A${sym.cdemisharp}`,`${sym.doubleuptick}A${sym.cdemisharp}`,`${sym.dntick}A${sym.csharp}`,`${BIGDOT}A${sym.csharp}`,`${sym.uptick}A${sym.csharp}`,`${sym.doubleuptick}A${sym.csharp}`,`${sym.dntick}B${sym.cdemiflat}`,`${BIGDOT}B${sym.cdemiflat}`,`${sym.uptick}B${sym.cdemiflat}`,`${sym.doubleuptick}B${sym.cdemiflat}`,`${sym.dntick}B-`,`${BIGDOT}B-`,`${sym.uptick}B-`,`${sym.doubleuptick}B-`,`${sym.dntick}B${sym.cdemisharp}`,`${BIGDOT}B${sym.cdemisharp}`,`${sym.uptick}B${sym.cdemisharp}`,`${sym.doubleuptick}B${sym.cdemisharp}`,`${sym.dntick}C-`]},
 /* 12-TET variations */
-120:{index:120,name:"12-TET",                         table:[0x0,0x155,0x2AB,0x400,0x555,0x6AB,0x800,0x955,0xAAB,0xC00,0xD55,0xEAB],interval:0x1000,
+120:{index:120,name:"12-TET",table:[0x0,0x155,0x2AB,0x400,0x555,0x6AB,0x800,0x955,0xAAB,0xC00,0xD55,0xEAB],interval:0x1000,t:'d',
 sym:[`C${sym.accnull}`,`C${sym.sharp}`,`D${sym.accnull}`,`D${sym.sharp}`,`E${sym.accnull}`,`F${sym.accnull}`,`F${sym.sharp}`,`G${sym.accnull}`,`G${sym.sharp}`,`A${sym.accnull}`,`A${sym.sharp}`,`B${sym.accnull}`]},
-10121:{index:10121,name:"Pythagorean dim. 5th", table:[0x0,0x134,0x2B8,0x3EC,0x570,0x6A4,0x7D8,0x95C,0xA90,0xC14,0xD48,0xECC],interval:0x1000,
+10121:{index:10121,name:"Pythagorean dim. 5th",table:[0x0,0x134,0x2B8,0x3EC,0x570,0x6A4,0x7D8,0x95C,0xA90,0xC14,0xD48,0xECC],interval:0x1000,t:'d',
 sym:[`C${sym.accnull}`,`C${sym.sharp}`,`D${sym.accnull}`,`D${sym.sharp}`,`E${sym.accnull}`,`F${sym.accnull}`,`F${sym.sharp}`,`G${sym.accnull}`,`G${sym.sharp}`,`A${sym.accnull}`,`A${sym.sharp}`,`B${sym.accnull}`]},
-10122:{index:10122,name:"Pythagorean aug. 4th", table:[0x0,0x134,0x2B8,0x3EC,0x570,0x6A4,0x828,0x95C,0xA90,0xC14,0xD48,0xECC],interval:0x1000,
+10122:{index:10122,name:"Pythagorean aug. 4th",table:[0x0,0x134,0x2B8,0x3EC,0x570,0x6A4,0x828,0x95C,0xA90,0xC14,0xD48,0xECC],interval:0x1000,t:'d',
 sym:[`C${sym.accnull}`,`C${sym.sharp}`,`D${sym.accnull}`,`D${sym.sharp}`,`E${sym.accnull}`,`F${sym.accnull}`,`F${sym.sharp}`,`G${sym.accnull}`,`G${sym.sharp}`,`A${sym.accnull}`,`A${sym.sharp}`,`B${sym.accnull}`]},
-10123:{index:10123,name:"\u00FC\u00FD\u00FE (shi'er lu)",         table:[0x0,0x184,0x2B8,0x43C,0x570,0x6F4,0x828,0x95C,0xAE0,0xC14,0xD98,0xECC],interval:0x1000,
+10123:{index:10123,name:"\u00FC\u00FD\u00FE (shi'er lu)",         table:[0x0,0x184,0x2B8,0x43C,0x570,0x6F4,0x828,0x95C,0xAE0,0xC14,0xD98,0xECC],interval:0x1000,t:'d',
 sym:[` \u00E0\u00E1`,` \u00E2\u00E3`,` \u00E4\u00E5`,` \u00E6\u00E7`,` \u00E8\u00E9`,` \u00EA\u00EB`,` \u00EC\u00ED`,` \u00EE\u00EF`,` \u00F0\u00F1`,` \u00F2\u00F3`,` \u00F4\u00F5`,` \u00F6\u00F7`]},
 /* non-octave */
-35130:{index:35130,name:"Equal-Tempered Bohlen-Pierce", table:[0x0,0x1F3,0x3E7,0x5DA,0x7CE,0x9C1,0xBB4,0xDA8,0xF9B,0x118E,0x1382,0x1575,0x1769],interval:0x195C,
+35130:{index:35130,name:"Equal-Tempered Bohlen-Pierce",table:[0x0,0x1F3,0x3E7,0x5DA,0x7CE,0x9C1,0xBB4,0xDA8,0xF9B,0x118E,0x1382,0x1575,0x1769],interval:0x195C,t:'M',
 sym:[`C${sym.accnull}`,`C${sym.sharp}`,`D${sym.accnull}`,`E${sym.accnull}`,`F${sym.accnull}`,`F${sym.sharp}`,`G${sym.accnull}`,`H${sym.accnull}`,`H${sym.sharp}`,`J${sym.accnull}`,`A${sym.accnull}`,`A${sym.sharp}`,`B${sym.accnull}`]},
 
 
@@ -267,7 +269,8 @@ const colEffOp = 220
 const colEffArg = 231
 const colBackPtn = 255
 
-let PITCH_PRESET_IDX = 120 // TODO read from the Project Data section of the .taud
+const PITCH_PRESET_IDX_DEFAULT = 120
+let PITCH_PRESET_IDX = PITCH_PRESET_IDX_DEFAULT // TODO read from the Project Data section of the .taud
 let beatDivPrimary = 4 // TODO read from the Project Data section of the .taud
 let beatDivSecondary = 16
 let hasUnsavedChanges = false
@@ -864,6 +867,7 @@ function loadTaudSongList(filePath) {
             name: '',
             composer: '',
             copyright: '',
+            pitchPresetIdx: null,
         }
     }
 
@@ -908,6 +912,8 @@ function loadTaudSongList(filePath) {
                         const subStart = q + 5
                         if (subStart + subLen > qEnd) break
                         // payload: notation(u16) + beat_pri(u8) + beat_sec(u8) + name\0 + composer\0 + copyright\0
+                        const notation = (sys.peek(ptr + subStart) & 0xFF) |
+                                         ((sys.peek(ptr + subStart + 1) & 0xFF) << 8)
                         let r = subStart + 4   // skip notation(2) + pri(1) + sec(1)
                         const strs = []
                         while (strs.length < 3 && r < subStart + subLen) {
@@ -920,6 +926,7 @@ function loadTaudSongList(filePath) {
                             strs.push(s)
                         }
                         if (idx < numSongs) {
+                            songs[idx].pitchPresetIdx = notation
                             if (strs[0] !== undefined) songs[idx].name = strs[0]
                             if (strs[1] !== undefined) songs[idx].composer = strs[1]
                             if (strs[2] !== undefined) songs[idx].copyright = strs[2]
@@ -1792,6 +1799,12 @@ function switchSong(newIndex) {
     currentSongIndex = newIndex
     song = loadTaud(fullPathObj.full, newIndex)
 
+    const newPitchIdx = songsMeta.songs[newIndex].pitchPresetIdx
+    PITCH_PRESET_IDX = (newPitchIdx != null && pitchTablePresets[newPitchIdx])
+        ? newPitchIdx
+        : PITCH_PRESET_IDX_DEFAULT
+    rebuildPitchLut()
+
     taud.uploadTaudFile(fullPathObj.full, newIndex, PLAYHEAD)
     patternsOutOfSync = false
     audio.setMasterVolume(PLAYHEAD, 255)
@@ -2172,42 +2185,31 @@ function visWidth(s) {
     return w
 }
 
+// Centre-anchored scroll: keep `sel` at the middle row of a `vis`-row viewport,
+// clamped at the list's top and bottom. Returns the new scroll offset.
+function centerScroll(sel, scroll, vis, total) {
+    if (sel < scroll) scroll = sel
+    if (sel < scroll + (vis >>> 1) && scroll > 0) scroll = sel - (vis >>> 1)
+    if (sel >= scroll + ((vis + 1) >>> 1)) scroll = sel - ((vis + 1) >>> 1) + 1
+    if (scroll < 0) scroll = 0
+    if (scroll + vis > total) scroll = Math.max(0, total - vis)
+    return scroll
+}
+
 function clampPatternIdx() {
     if (song.numPats === 0) { patternIdx = 0; patternListScroll = 0; return }
     if (patternIdx < 0) patternIdx = 0
     if (patternIdx >= song.numPats) patternIdx = song.numPats - 1
-    if (patternIdx < patternListScroll) patternListScroll = patternIdx
-    if (patternIdx < patternListScroll + (PTNVIEW_HEIGHT >>> 1) && patternListScroll > 0)
-        patternListScroll = patternIdx - (PTNVIEW_HEIGHT >>> 1)
-    if (patternIdx >= patternListScroll + ((PTNVIEW_HEIGHT + 1) >>> 1))
-        patternListScroll = patternIdx - ((PTNVIEW_HEIGHT + 1) >>> 1) + 1
-    if (patternListScroll < 0) patternListScroll = 0
-    if (patternListScroll + PTNVIEW_HEIGHT > song.numPats)
-        patternListScroll = Math.max(0, song.numPats - PTNVIEW_HEIGHT)
+    patternListScroll = centerScroll(patternIdx, patternListScroll, PTNVIEW_HEIGHT, song.numPats)
 }
 
 function scrollPatternGridTo(row) {
-    if (row < patternGridScroll) patternGridScroll = row
-    if (row < patternGridScroll + (PTNVIEW_HEIGHT >>> 1) && patternGridScroll > 0)
-        patternGridScroll = row - (PTNVIEW_HEIGHT >>> 1)
-    if (row >= patternGridScroll + ((PTNVIEW_HEIGHT + 1) >>> 1))
-        patternGridScroll = row - ((PTNVIEW_HEIGHT + 1) >>> 1) + 1
-    if (patternGridScroll < 0) patternGridScroll = 0
-    if (patternGridScroll + PTNVIEW_HEIGHT > ROWS_PER_PAT)
-        patternGridScroll = Math.max(0, ROWS_PER_PAT - PTNVIEW_HEIGHT)
+    patternGridScroll = centerScroll(row, patternGridScroll, PTNVIEW_HEIGHT, ROWS_PER_PAT)
 }
 
 function scrollOrdersTo(ci) {
     const maxCue = song.lastActiveCue < 0 ? 0 : song.lastActiveCue
-    const total  = maxCue + 1
-    if (ci < ordersScroll) ordersScroll = ci
-    if (ci < ordersScroll + (PTNVIEW_HEIGHT >>> 1) && ordersScroll > 0)
-        ordersScroll = ci - (PTNVIEW_HEIGHT >>> 1)
-    if (ci >= ordersScroll + ((PTNVIEW_HEIGHT + 1) >>> 1))
-        ordersScroll = ci - ((PTNVIEW_HEIGHT + 1) >>> 1) + 1
-    if (ordersScroll < 0) ordersScroll = 0
-    if (ordersScroll + PTNVIEW_HEIGHT > total)
-        ordersScroll = Math.max(0, total - PTNVIEW_HEIGHT)
+    ordersScroll = centerScroll(ci, ordersScroll, PTNVIEW_HEIGHT, maxCue + 1)
 }
 
 function clampPatternGrid() {
@@ -2818,7 +2820,7 @@ function projectInput(wo, event) {
         return
     }
 
-    if (!keyJustHit) return
+    // if (!keyJustHit) return
 
     if (keysym === '<UP>') {
         projectSongCursor -= moveDelta; clampProjectSongCursor(); redrawPanel(); return
@@ -3100,13 +3102,7 @@ function updatePlayback() {
 function clampCursor() {
     if (cursorRow < 0) cursorRow = 0
     if (cursorRow >= ROWS_PER_PAT) cursorRow = ROWS_PER_PAT - 1
-    if (cursorRow < scrollRow) scrollRow = cursorRow
-    // these two IF statements will keep the cursor at the centre until viewpoint scroll edge has reached
-    if (cursorRow < scrollRow + (PTNVIEW_HEIGHT>>>1) && scrollRow > 0) scrollRow = cursorRow - (PTNVIEW_HEIGHT>>>1)
-    if (cursorRow >= scrollRow + ((PTNVIEW_HEIGHT+1)>>>1)) scrollRow = cursorRow - ((PTNVIEW_HEIGHT+1)>>>1) + 1
-    if (scrollRow < 0) scrollRow = 0
-    if (scrollRow + PTNVIEW_HEIGHT > ROWS_PER_PAT)
-        scrollRow = Math.max(0, ROWS_PER_PAT - PTNVIEW_HEIGHT)
+    scrollRow = centerScroll(cursorRow, scrollRow, PTNVIEW_HEIGHT, ROWS_PER_PAT)
 }
 
 function clampVoice() {
@@ -3387,6 +3383,10 @@ function openRetunePopup() {
     const entries = Object.values(pitchTablePresets).sort((a, b) => a.index - b.index)
     const n = entries.length
 
+    // Foreground colour by tuning type (preset.t):
+    //   'd' = 12-tone family, 'M' = Macrotonal, 'm' = microtonal, '' = Raw.
+    const tuningTypeColour = { d: 230, M: colPan, m: colInst, '': colStatus }
+
     const methodLabels = {
         pitch:    'Nearest-note',
         delta:    'Nearest-delta',
@@ -3411,7 +3411,7 @@ function openRetunePopup() {
 
     let sel = entries.findIndex(p => p.index === PITCH_PRESET_IDX)
     if (sel < 0) sel = 0
-    let scroll = (sel >= listH) ? Math.min(Math.max(0, n - listH), sel - (listH >>> 1)) : 0
+    let scroll = centerScroll(sel, 0, listH, n)
 
     const repaint = () => {
         con.color_pair(230, colPopupBack)
@@ -3440,7 +3440,7 @@ function openRetunePopup() {
             const isSel = (idx === sel)
             const isCur = (e.index === PITCH_PRESET_IDX)
             const back  = isSel ? colHighlight : colPopupBack
-            const fore  = isSel ? colWHITE : (isCur ? colWHITE : 230)
+            const fore  = (e.t in tuningTypeColour) ? tuningTypeColour[e.t] : 230
             const marker = isCur ? sym.playhead : ' '
             let label = `${marker} ${e.index.toString().padStart(5, ' ')}  ${e.name}`
             if (label.length > listW) label = label.substring(0, listW)
@@ -3500,30 +3500,17 @@ function openRetunePopup() {
                 repaint()
             }
             else if (ks === '<UP>') {
-                if (sel > 0) {
-                    sel--
-                    if (sel < scroll) scroll = sel
-                    repaint()
-                }
+                if (sel > 0) { sel--; scroll = centerScroll(sel, scroll, listH, n); repaint() }
             } else if (ks === '<DOWN>') {
-                if (sel < n - 1) {
-                    sel++
-                    if (sel >= scroll + listH) scroll = sel - listH + 1
-                    repaint()
-                }
+                if (sel < n - 1) { sel++; scroll = centerScroll(sel, scroll, listH, n); repaint() }
             } else if (ks === '<HOME>') {
-                sel = 0; scroll = 0; repaint()
+                sel = 0; scroll = centerScroll(sel, scroll, listH, n); repaint()
             } else if (ks === '<END>') {
-                sel = n - 1; scroll = Math.max(0, n - listH); repaint()
+                sel = n - 1; scroll = centerScroll(sel, scroll, listH, n); repaint()
             } else if (ks === '<PAGE_UP>') {
-                sel = Math.max(0, sel - listH)
-                scroll = Math.max(0, scroll - listH)
-                if (sel < scroll) scroll = sel
-                repaint()
+                sel = Math.max(0, sel - listH); scroll = centerScroll(sel, scroll, listH, n); repaint()
             } else if (ks === '<PAGE_DOWN>') {
-                sel = Math.min(n - 1, sel + listH)
-                if (sel >= scroll + listH) scroll = Math.min(Math.max(0, n - listH), sel - listH + 1)
-                repaint()
+                sel = Math.min(n - 1, sel + listH); scroll = centerScroll(sel, scroll, listH, n); repaint()
             }
         })
     }
