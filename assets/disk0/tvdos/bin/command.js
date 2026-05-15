@@ -668,9 +668,21 @@ require = function(path) {
     if (path[1] == ":") return shell.require(path)
     else {
         // if the path starts with ".", look for the current directory
-        // if the path starts with [A-Za-z0-9], look for the DOSDIR/includes
+        // if the path starts with [A-Za-z0-9], search through INCLPATH
         if (path[0] == '.') return shell.require(shell.resolvePathInput(path).full + ".mjs")
-        else return shell.require(`A:${_TVDOS.variables.DOSDIR}/include/${path}.mjs`)
+        else {
+            let inclDirs = (_TVDOS.variables.INCLPATH || "").split(';').filter(function(it) { return it.length > 0 })
+            for (let i = 0; i < inclDirs.length; i++) {
+                let dir = inclDirs[i]
+                if (!dir.endsWith('\\') && !dir.endsWith('/')) dir += '\\'
+                let candidate = `${CURRENT_DRIVE}:${dir}${path}.mjs`
+                if (files.open(candidate).exists) return shell.require(candidate)
+            }
+            // no match found; defer to shell.require with the first entry so the error mentions a sensible path
+            let firstDir = inclDirs[0] || `${_TVDOS.variables.DOSDIR}\\include`
+            if (!firstDir.endsWith('\\') && !firstDir.endsWith('/')) firstDir += '\\'
+            return shell.require(`${CURRENT_DRIVE}:${firstDir}${path}.mjs`)
+        }
     }
 }
 

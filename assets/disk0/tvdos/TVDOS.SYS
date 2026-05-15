@@ -147,6 +147,7 @@ _TVDOS.variables = {
     LANG: "EN",
     KEYBOARD: "us_qwerty",
     PATH: "\\tvdos\\bin;\\home",
+    INCLPATH: "\\tvdos\\include;\\home",
     PATHEXT: ".com;.bat;.app;.js;.alias",
     HELPPATH: "\\tvdos\\help",
     OS_NAME: "TSVM Disk Operating System",
