@@ -32,7 +32,7 @@ if (exec_args !== undefined && exec_args[1] !== undefined && exec_args[1].starts
     return 0
 }
 
-const THEVERSION = "1.2.1"
+const THEVERSION = "1.2.2"
 
 const PROD = true
 let INDEX_BASE = 0
@@ -4197,7 +4197,7 @@ bF.load = function(args) { // LOAD function
     if (args[1] === undefined) throw lang.missingOperand
     var fileOpened = fs.open(args[1], "R")
 
-
+    serial.printerr('load '+args[1])
     if (replUsrConfirmed || cmdbuf.length == 0) {
         if (!fileOpened) {
             fileOpened = fs.open(args[1]+".BAS", "R")
@@ -4241,7 +4241,7 @@ bF.yes = function() {
     }
 }
 bF.catalog = function(args) { // CATALOG function
-    if (args[1] === undefined) args[1] = "\\"
+    if (args[1] === undefined) args[1] = BASIC_HOME_PATH
     var pathOpened = fs.open(args[1], 'R')
     if (!pathOpened) {
         throw lang.noSuchFile
@@ -4250,6 +4250,57 @@ bF.catalog = function(args) { // CATALOG function
     var port = _BIOS.FIRST_BOOTABLE_PORT[0]
     com.sendMessage(port, "LIST")
     println(com.pullMessage(port))
+}
+// Load a file by absolute disk path (bypasses BASIC_HOME_PATH).
+// Used by COMPILE to fetch /tbas/compile.js.
+bF._slurpAbsolute = function(path) {
+    var port = _BIOS.FIRST_BOOTABLE_PORT
+    com.sendMessage(port[0], "FLUSH")
+    com.sendMessage(port[0], "CLOSE")
+    com.sendMessage(port[0], 'OPENR"' + path + '",' + port[1])
+    if (com.getStatusCode(port[0]) != 0) return undefined
+    com.sendMessage(port[0], "READ")
+    if (com.getStatusCode(port[0]) >= 128) return undefined
+    var s = com.pullMessage(port[0])
+    com.sendMessage(port[0], "FLUSH"); com.sendMessage(port[0], "CLOSE")
+    return s
+}
+bF.compile = function(args) { // COMPILE "OUT.JS" -- transpile cmdbuf to JS
+    if (args[1] === undefined) {
+        println("Usage: COMPILE \"out.js\""); return
+    }
+    if (cmdbuf.length === 0) {
+        println("No program loaded"); return
+    }
+    if (bS._compileImpl === undefined) {
+        // Lazy-load compile.js from /tbas/compile.js
+        var src = bF._slurpAbsolute("/tbas/compile.js")
+        if (src === undefined) {
+            println("Cannot load /tbas/compile.js")
+            return
+        }
+        try { eval(src) } catch (e) {
+            println("Failed to load compiler: " + e); return
+        }
+        if (bS._compileImpl === undefined) {
+            println("compile.js loaded but did not define bS._compileImpl"); return
+        }
+    }
+    var outpath = args[1]
+    // Strip surrounding quotes if any
+    if ((outpath.charAt(0) === '"' || outpath.charAt(0) === "'") &&
+        outpath.charAt(outpath.length - 1) === outpath.charAt(0)) {
+        outpath = outpath.substring(1, outpath.length - 1)
+    }
+    // Default to .js extension if missing
+    if (!/\.[A-Za-z0-9]+$/.test(outpath)) outpath += ".js"
+    try {
+        var n = bS._compileImpl(outpath)
+        println("Wrote " + n + " bytes to " + outpath)
+    } catch (e) {
+        serial.printerr(e + "\n" + (e.stack || ""))
+        println("Compile error: " + e)
+    }
 }
 Object.freeze(bF)
 
