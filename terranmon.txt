@@ -2255,7 +2255,7 @@ from source.
         * Semantics (matches IT/Schism player/effects.c:1664-1764 csf_check_nna):
             - Fires on every fresh foreground note trigger on a channel, BEFORE the
               NNA-spawn step that would ghost the existing voice. Does NOT fire on
-              tone portamento, on note-off (0x0000), on note-cut (0xFFFE), or on
+              tone portamento, on note-off (0x0001), on note-cut (0x0002), or on
               empty cells.
             - The DCT/DCA values consulted belong to the EXISTING voice's instrument
               (i.e. the OLD note's instrument, not the incoming note's). Different
@@ -2401,6 +2401,8 @@ TODO:
     [x] GSLINGER order 0x03 chn 1: L 0100 fades unexpectedly fast? — converter fix
     [x] do not reset tickspeed on pattern view play / add key to modify tick speed ('[' down/']' up)
     [x] expose song table on UI (test with `insaniq2.taud`)
+    [x] 0x0000 - no-op; 0x0001 - key-off; 0x0002 - note-cut 0x0010..0x001F - INT0..INTF
+        [ ] establish hooks for the interrupts
 
 TODO - list of demo songs that MUST ship with Microtone:
     * 4THSYM (rename to Fourth Symmetriad) — excellent piece for demonstrating NNAs and filter envelopes
@@ -2421,13 +2423,14 @@ Play Data: play data are series of tracker-like instructions, visualised as:
 rr||NOTE|Ins|E.Vol|E.Pan|EE.ff|
 63||FFFF|255|3 63|3 63|FF FFFF| (8 bytes per line, 512 bytes per pattern, 128 patterns on 64 kB bank, 32 banks available (pattern 0xFFF -- bank 31, pattern 127 is a sentinel value for no-pattern))
 
-notes are tuned as 4096 Tone-Equal Temperament. Tuning is set per-sample using their Sampling rate value.
+notes are tuned as 4096 Tone-Equal Temperament. Tuning is set per-sample using their Sampling rate value. 0x1000: C at zeroth octave; 0xF000: C at 14th octave; 0xFFFF: ~C at 15th octave; 0x0000..0x001F: reserved for sentinels (valid playable note range is 0x0020..0xFFFF)
 
 Special values:
 
-note 0xFFFF: no-op
-note 0xFFFE: note cut
-note 0x0000: key-off
+note 0x0000: no-op
+note 0x0001: key-off
+note 0x0002: note cut
+note 0x0010..0x001F: Interrupt 0..F (notation: Int0..IntF) — reserved interrupt slots; engine has no default handler.
 
 inst 0: no instrument change
 

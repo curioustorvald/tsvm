@@ -387,7 +387,7 @@ def encode_note_xm(xm_note: int) -> int:
     if 1 <= xm_note <= 96:
         semis = xm_note - XM_RELNOTE_C4
         val = round(TAUD_C4 + semis * 4096 / 12)
-        return max(1, min(0xFFFD, val))
+        return max(0x20, min(0xFFFF, val))
     return NOTE_NOP
 
 

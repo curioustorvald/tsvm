@@ -96,9 +96,9 @@ NUM_VOICES       = 20
 SAMPLE_LEN_LIMIT = 65535
 
 # Note word sentinels
-NOTE_NOP    = 0xFFFF
-NOTE_KEYOFF = 0x0000
-NOTE_CUT    = 0xFFFE
+NOTE_NOP    = 0x0000
+NOTE_KEYOFF = 0x0001
+NOTE_CUT    = 0x0002
 TAUD_C4     = 0x5000   # The audio engine's Middle C
 
 # Cue sheet instruction byte (cue offset 30; offset 31 = arg byte for 2-byte forms).

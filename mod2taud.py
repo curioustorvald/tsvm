@@ -250,7 +250,7 @@ def period_to_taud_note(period: int) -> int:
     if period <= 0:
         return NOTE_NOP
     val = round(TAUD_C4 + 4096.0 * math.log2(PT_REFERENCE_PERIOD / period))
-    return max(1, min(0xFFFD, val))
+    return max(0x20, min(0xFFFF, val))
 
 
 # ── PT effect → Taud effect ──────────────────────────────────────────────────

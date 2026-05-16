@@ -779,7 +779,7 @@ if V.dittoActive and armRow <= N <= V.dittoEndRow:
     srcRow = V.dittoSourceStart + ((N - V.dittoSourceStart) mod V.dittoLength)
     src    = patternRows[V.pattern][srcRow]
 
-    cell.note       = (raw.note != 0xFFFF) ? raw.note       : src.note
+    cell.note       = (raw.note != 0x0000) ? raw.note       : src.note
     cell.instrument = (raw.instrument != 0) ? raw.instrument : src.instrument
 
     # SEL_FINE / 0 is the canonical no-op encoding for the vol- and pan-columns;

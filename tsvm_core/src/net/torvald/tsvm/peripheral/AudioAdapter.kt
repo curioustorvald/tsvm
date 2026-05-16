@@ -243,7 +243,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     internal val sampleBin = UnsafeHelper.allocate(SAMPLE_BIN_TOTAL, this)
     @Volatile var sampleBank: Int = 0  // 0..15, controls the 0..524287 window
     internal val instruments = Array(256) { TaudInst(it) }
-    internal val playdata = Array(4096) { Array(64) { TaudPlayData(0xFFFF, 0, 0, 0, 32, 0, 0, 0) } }
+    internal val playdata = Array(4096) { Array(64) { TaudPlayData(0x0000, 0, 0, 0, 32, 0, 0, 0) } }
     internal val playheads: Array<Playhead>
     internal val cueSheet = Array(1024) { PlayCue() }
     internal val pcmBin = arrayOf(
@@ -2275,7 +2275,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                     }
 
                     TaudPlayData(
-                        note      = if (rawRow.note != 0xFFFF) rawRow.note else src.note,
+                        note      = if (rawRow.note != 0x0000) rawRow.note else src.note,
                         instrment = if (rawRow.instrment != 0) rawRow.instrment else src.instrment,
                         volume    = if (volIsSet) rawRow.volume else src.volume,
                         volumeEff = if (volIsSet) rawRow.volumeEff else src.volumeEff,
@@ -2329,7 +2329,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 // physical_presence ord 0x1F ch2: every row carries `... 1E A0F/A09/A02`)
                 // silences after the first row because the slide saturates at 0 and there's
                 // nothing to lift the volume back up before the next slide starts.
-                0xFFFF -> {
+                0x0000 -> {
                     if (row.instrment != 0) {
                         voice.instrumentId = row.instrment
                         val seedVol = rowVolumeFromDefault(instruments[voice.instrumentId])
@@ -2345,8 +2345,10 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 // fadeoutVolume reaches 0, or immediately if FT2-mode fadeStep == 0. Setting
                 // voice.active = false here would defeat both — instruments with sustain points
                 // and non-zero fadeout (FT2 sustain-then-fade idiom) would be cut on the spot.
-                0x0000 -> { voice.keyOff = true }
-                0xFFFE -> voice.active = false                  // note cut (immediate)
+                0x0001 -> { voice.keyOff = true }
+                0x0002 -> voice.active = false                  // note cut (immediate)
+                in 0x0003..0x000F -> { /* reserved sentinel range, no engine handler */ }
+                in 0x0010..0x001F -> { /* Int0..IntF: reserved interrupt slots, no engine handler yet */ }
                 else -> {
                     if (toneG && voice.active) {
                         // Tone porta: target the note, do not retrigger sample.
@@ -2502,7 +2504,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                         1    -> amigaSlideOnce(voice.noteVal, -mag)         // Amiga: subtract from pitch ⇒ adds period
                         2    -> linearFreqSlideOnce(voice.noteVal, -mag)    // Hz/tick: pitch down ⇒ -Hz
                         else -> voice.noteVal - mag                          // linear 4096-TET
-                    }.coerceIn(1, 0xFFFD)
+                    }.coerceIn(0x20, 0xFFFF)
                     voice.basePitch = voice.noteVal
                     voice.amigaPeriod = -1.0   // reseed on next per-tick slide
                     voice.linearFreq  = -1.0
@@ -2521,7 +2523,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                         1    -> amigaSlideOnce(voice.noteVal, mag)
                         2    -> linearFreqSlideOnce(voice.noteVal, mag)
                         else -> voice.noteVal + mag
-                    }.coerceIn(1, 0xFFFD)
+                    }.coerceIn(0x20, 0xFFFF)
                     voice.basePitch = voice.noteVal
                     voice.amigaPeriod = -1.0
                     voice.linearFreq  = -1.0
@@ -2730,7 +2732,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             }
             0x1 -> voice.glissandoOn = (x != 0)
             0x2 -> {
-                voice.noteVal = (voice.noteVal + FINETUNE_OFFSET[x]).coerceIn(1, 0xFFFD)
+                voice.noteVal = (voice.noteVal + FINETUNE_OFFSET[x]).coerceIn(0x20, 0xFFFF)
                 voice.basePitch = voice.noteVal
                 voice.amigaPeriod = -1.0
                 voice.linearFreq  = -1.0
@@ -2832,7 +2834,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                     1    -> amigaSlideTick(voice, voice.slideArg)
                     2    -> linearFreqSlideTick(voice, voice.slideArg)
                     else -> voice.noteVal + voice.slideArg
-                }.coerceIn(1, 0xFFFD)
+                }.coerceIn(0x20, 0xFFFF)
                 voice.basePitch = voice.noteVal
             }
 
@@ -2854,7 +2856,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                         voice.noteVal = target
                         voice.tonePortaTarget = -1
                     } else {
-                        voice.noteVal = freqHzToNoteVal(voice.linearFreq).coerceIn(1, 0xFFFD)
+                        voice.noteVal = freqHzToNoteVal(voice.linearFreq).coerceIn(0x20, 0xFFFF)
                     }
                     voice.basePitch = voice.noteVal
                     voice.amigaPeriod = -1.0
@@ -2912,14 +2914,14 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             if (voice.vibratoActive) {
                 val sine = lfoSample(voice.vibratoLfoPos, voice.vibratoWave)
                 val pitchDelta = (sine * voice.mem.huDepth) shr voice.vibratoFineShift
-                pitchToMixer = (voice.noteVal + pitchDelta).coerceIn(1, 0xFFFD)
+                pitchToMixer = (voice.noteVal + pitchDelta).coerceIn(0x20, 0xFFFF)
                 voice.vibratoLfoPos = (voice.vibratoLfoPos + voice.mem.huSpeed * 4) and 0xFF
             }
 
             // Glissando (S$1x) — snap pitchToMixer to nearest semitone but leave noteVal smooth.
             if (voice.glissandoOn) {
                 val semis = ((pitchToMixer * 12 + 2048) / 4096)
-                pitchToMixer = (semis * 4096 / 12).coerceIn(1, 0xFFFD)
+                pitchToMixer = (semis * 4096 / 12).coerceIn(0x20, 0xFFFF)
             }
 
             // Tremolo (R) — modulates rowVolume around the per-note volume base. IT's tremolo
@@ -2946,7 +2948,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             if (voice.arpActive) {
                 val voiceIdx = ts.tickInRow % 3
                 val arpDelta = when (voiceIdx) { 1 -> voice.arpOff1 shl 8; 2 -> voice.arpOff2 shl 8; else -> 0 }
-                pitchToMixer = (voice.basePitch + arpDelta).coerceIn(1, 0xFFFD)
+                pitchToMixer = (voice.basePitch + arpDelta).coerceIn(0x20, 0xFFFF)
                 voice.lastArpVoice = voiceIdx
             }
 
@@ -2983,7 +2985,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 ((voice.envPfValue - 0.5) * 2.0 * 16.0 * 4096.0 / 12.0).toInt()
             else 0
 
-            val finalPitch = (pitchToMixer + autoVibDelta + pitchEnvDelta).coerceIn(1, 0xFFFD)
+            val finalPitch = (pitchToMixer + autoVibDelta + pitchEnvDelta).coerceIn(0x20, 0xFFFF)
             voice.playbackRate = computePlaybackRate(inst, finalPitch)
 
             // Filter envelope (filter mode): scale baseCut by envValue (0..1, 0.5 = unity).
@@ -3087,7 +3089,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             val pitchEnvDelta = if (bg.hasPfEnv && bg.pfEnvOn && !bg.envPfIsFilter)
                 ((bg.envPfValue - 0.5) * 2.0 * 16.0 * 4096.0 / 12.0).toInt()
             else 0
-            val finalPitch = (bg.noteVal + autoVibDelta + pitchEnvDelta).coerceIn(1, 0xFFFD)
+            val finalPitch = (bg.noteVal + autoVibDelta + pitchEnvDelta).coerceIn(0x20, 0xFFFF)
             bg.playbackRate = computePlaybackRate(inst, finalPitch)
             // Filter-mode pf envelope: same scaling rule as foreground.
             if (bg.hasPfEnv && bg.pfEnvOn && bg.envPfIsFilter) {
@@ -3603,7 +3605,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         var randomPanBias = 0              // signed
 
         // Pitch state (4096-TET units, signed when slid).
-        var noteVal = 0xFFFF               // The currently sounding base note (no per-row vibrato/arp added)
+        var noteVal = 0x0000               // The currently sounding base note (no per-row vibrato/arp added); 0 = none yet
         var basePitch = 0x4000             // Saved pre-effect pitch for vibrato/arp/glissando overlay
         // Amiga-mode period state, persisted across ticks so multi-tick E/F slides don't lose
         // sub-noteVal precision through repeated round-trip rounding (see amigaSlideTick).
@@ -3965,7 +3967,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                     it.hasPfEnv = false; it.envPfIsFilter = false
                     it.fadeoutVolume = 1.0
                     it.rampOutSamples = 0; it.rampOutGain = 0.0; it.rampOutStep = 0.0
-                    it.noteVal = 0xFFFF; it.basePitch = 0x4000
+                    it.noteVal = 0x0000; it.basePitch = 0x4000
                     it.amigaPeriod = -1.0; it.linearFreq = -1.0
                     it.tonePortaTarget = -1; it.tonePortaSpeed = 0
                     it.filterY1 = 0.0; it.filterY2 = 0.0

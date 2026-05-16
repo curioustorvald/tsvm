@@ -19,9 +19,9 @@ var Note = (function() {
             if (flats[s] !== names[s]) t[flats[s] + oct] = n(oct, s);
         }
     }
-    t.OFF = 0x0000;   // key-off
-    t.CUT = 0xFFFE;   // note cut (immediate)
-    t.NOP = 0xFFFF;   // no-op (empty row)
+    t.NOP = 0x0000;   // no-op (empty row)
+    t.OFF = 0x0001;   // key-off
+    t.CUT = 0x0002;   // note cut (immediate)
     return t;
 }());
 

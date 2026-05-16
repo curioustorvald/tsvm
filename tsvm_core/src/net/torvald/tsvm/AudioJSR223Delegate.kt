@@ -23,7 +23,9 @@ import net.torvald.tsvm.peripheral.MP2Env
  * 8. Call `setCuePosition(playhead, 0)` then `play(playhead)`.
  *
  * Note values: 0x4000 = C3 (sample's native pitch), 4096 steps per octave.
- * Empty row: note = 0xFFFF (no trigger). All 256 instrument slots (0-255) are valid.
+ * Empty row: note = 0x0000 (no trigger). Note sentinels (0x0000..0x001F): 0x0000 = no-op,
+ * 0x0001 = key-off, 0x0002 = note cut, 0x0010..0x001F = Int0..IntF (reserved interrupts).
+ * Valid playable notes are 0x0020..0xFFFF. All 256 instrument slots (0-255) are valid.
  *
  * ## How to upload PCM audio into a playhead
  *

@@ -698,7 +698,7 @@ def encode_note_it(it_note: int) -> int:
         # IT C-5 anchors to Taud C-4, so offset = it_note - 60.
         semis = it_note - 60
         val = round(TAUD_C4 + semis * 4096 / 12)
-        return max(1, min(0xFFFD, val))
+        return max(0x20, min(0xFFFF, val))
     return NOTE_NOP
 
 

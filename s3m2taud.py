@@ -234,7 +234,7 @@ def encode_note(s3m_note: int) -> int:
         return NOTE_NOP
     semitones = (octave - 4) * 12 + pitch
     val = round(TAUD_C4 + semitones * 4096 / 12)
-    return max(1, min(0xFFFD, val))
+    return max(0x20, min(0xFFFF, val))
 
 
 def encode_effect(cmd: int, arg: int, ch: int = 0, row: int = 0,

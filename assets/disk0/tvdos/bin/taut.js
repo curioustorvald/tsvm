@@ -466,7 +466,7 @@ function retuneAllPatterns(newIdx, method) {
                 for (let row = 0; row < ROWS_PER_PAT; row++) {
                     const off = 8 * row
                     const note = ptn[off] | (ptn[off+1] << 8)
-                    if (note === 0xFFFF || note === 0xFFFE || note === 0x0000) continue
+                    if (note === 0x0000 || note === 0x0001 || note === 0x0002 || (note >= 0x0010 && note <= 0x001F)) continue
                     // Use the full absolute pitch as tonic; the modular ops
                     // in _cadTension / _harmonicCost normalise it.
                     tonic = note
@@ -476,7 +476,7 @@ function retuneAllPatterns(newIdx, method) {
             for (let row = 0; row < ROWS_PER_PAT; row++) {
                 const off = 8 * row
                 const note = ptn[off] | (ptn[off+1] << 8)
-                if (note === 0xFFFF || note === 0xFFFE || note === 0x0000) continue
+                if (note === 0x0000 || note === 0x0001 || note === 0x0002 || (note >= 0x0010 && note <= 0x001F)) continue
                 const origAbs = note
                 let newAbs
                 if ((method === 'delta' || method === 'cadence' || method === 'harmonic') && prevOrigAbs >= 0) {
@@ -490,7 +490,7 @@ function retuneAllPatterns(newIdx, method) {
                         for (let r = row + 1; r < ROWS_PER_PAT; r++) {
                             const noff = 8 * r
                             const n = ptn[noff] | (ptn[noff+1] << 8)
-                            if (n !== 0x0000) break
+                            if (n !== 0x0001) break
                             duration++
                         }
                         lambda = 1 - Math.exp(-(duration - 1) / 4)
@@ -558,9 +558,10 @@ Number.prototype.decD2 = function() {
 
 
 function noteToStr(note) {
-    if (note === 0xFFFF) return sym.middot.repeat(4)
-    if (note === 0xFFFE) return sym.notecut
-    if (note === 0x0000) return sym.keyoff
+    if (note === 0x0000) return sym.middot.repeat(4)
+    if (note === 0x0001) return sym.keyoff
+    if (note === 0x0002) return sym.notecut
+    if (note >= 0x0010 && note <= 0x001F) return ('Int' + (note & 0xF).toString(16).toUpperCase()).padEnd(4)
     const preset = pitchTablePresets[PITCH_PRESET_IDX]
     if (preset.table.length === 0) return note.hex04()
     const [period, offset] = decomposeNote(note, preset.interval)
@@ -656,7 +657,7 @@ const EMPTY_CELL = {
     sPanArg: sym.middot.repeat(2),
     sEffOp:  sym.middot,
     sEffArg: sym.middot.repeat(4),
-    _note: 0xFFFF, _effop: 0, _effarg: 0, _voleff: 0, _paneff: 0
+    _note: 0x0000, _effop: 0, _effarg: 0, _voleff: 0, _paneff: 0
 }
 
 function drawCellAt(y, x, cell, back) {
@@ -692,7 +693,7 @@ function drawCellAtStyled(y, x, cell, back, style) {
         return
     }
     // Styles 1 and 2: note-or-fx field (5 chars) starts on the border column [+ vol-or-pan (2 chars)]
-    const noteEmpty = (cell._note === 0xFFFF)
+    const noteEmpty = (cell._note === 0x0000)
     const fxEmpty   = (cell._effop === 0 && cell._effarg === 0)
     const volEmpty  = (cell._voleff === 0)
     const panEmpty  = (cell._paneff === 0)
@@ -1537,8 +1538,8 @@ function drawVoiceDetail(isVerticalLayout = false, ptn = null, activeRow = -1, c
         if (cumState !== null && lowerH > 0) {
             const _apo  = Math.abs(cumState.pitchOff)
             const _psgn = cumState.pitchOff > 0 ? '+' : cumState.pitchOff < 0 ? '-' : ' '
-            const _absN = (cumState.lastNote !== 0xFFFF && cumState.pitchOff !== 0)
-                ? noteToStr(Math.max(0, Math.min(0xFFFE, cumState.lastNote + cumState.pitchOff))) + ' '
+            const _absN = (cumState.lastNote !== 0x0000 && cumState.pitchOff !== 0)
+                ? noteToStr(Math.max(0x20, Math.min(0xFFFF, cumState.lastNote + cumState.pitchOff))) + ' '
                 : ''
             const _clipNm = ['clamp','fold','wrap','wrap'][cumState.clipMode]
             const _bcStr  = (cumState.bitcrushDepth === 0 && cumState.bitcrushSkip === 0)
@@ -2242,7 +2243,7 @@ function simulateRowState(ptnDat, uptoRow) {
          0x0000,  0x0023,  0x0046,  0x0074,  0x0098,  0x00C8,  0x00F9,  0x0110
     ]
 
-    let lastNote = 0xFFFF, lastInst = 0
+    let lastNote = 0x0000, lastInst = 0
     let volAbs   = 0x3F                  // 6-bit per-note volume (engine: noteVolume axis;
                                          // M / N's per-channel axis is not modelled here)
     let panAbs   = 0x80                  // 8-bit channel pan (engine width); centre = $80
@@ -2295,8 +2296,8 @@ function simulateRowState(ptnDat, uptoRow) {
         // not tracked by this simulator. The simulator approximates the seed
         // as 0x3F (legacy fallback) — see the longer note below.
         let reloadDefaultVol = false
-        if (note !== 0xFFFF && note !== 0xFFFE) {
-            if (note === 0x0000) {
+        if (note !== 0x0000 && note !== 0x0002 && !(note >= 0x0010 && note <= 0x001F)) {
+            if (note === 0x0001) {
                 // key-off; sample stays referenced
             } else if (isGRow) {
                 portaTarget = note
@@ -2419,7 +2420,7 @@ function simulateRowState(ptnDat, uptoRow) {
             }
             else if (effop === OP_G) {
                 if (effarg !== 0) memG = effarg
-                if (portaTarget !== -1 && memG !== 0 && lastNote !== 0xFFFF) {
+                if (portaTarget !== -1 && memG !== 0 && lastNote !== 0x0000) {
                     const curPitch = lastNote + pitchOff
                     const diff     = portaTarget - curPitch
                     if (diff !== 0) {

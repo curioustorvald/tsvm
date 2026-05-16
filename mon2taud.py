@@ -139,7 +139,7 @@ def mon_note_to_taud(mon_note: int) -> int:
     if mon_note == 0x7F:
         return NOTE_CUT
     val = TAUD_C4 + round((mon_note - MON_NOTE_C4) * 4096.0 / 12.0)
-    return max(1, min(0xFFFD, val))
+    return max(0x20, min(0xFFFF, val))
 
 
 # ── Effect mapping (Monotone 3-bit code + 6-bit data → Taud) ─────────────────
