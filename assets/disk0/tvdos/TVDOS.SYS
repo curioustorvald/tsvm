@@ -1406,9 +1406,6 @@ let requireFromMemory = (ptr) => {
 }*/
 
 
-var GL = require("A:/tvdos/include/gl.mjs")
-
-
 // @param cmdsrc JS source code
 // @param args arguments for the program, must be Array, and args[0] is always the name of the program, e.g.
 //        for command line 'echo foo bar', args[0] must be 'echo'
@@ -1421,7 +1418,7 @@ var execApp = (cmdsrc, args, appname) => {
 `var ${appname}=function(exec_args){${injectIntChk(cmdsrc, intchkFunName)}\n};` +
 `${appname}`); // making 'exec_args' a app-level global
 
-        execAppPrg(args);
+        return execAppPrg(args);
 }
 
 

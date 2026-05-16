@@ -116,7 +116,8 @@ Timeline has two distinct modes: view and edit mode. Two modes are toggled using
 
 <b>&nbsp;GLOBAL EDIT</b>
 <b>\u00B7${'\u00B8'.repeat(11)}\u00B9</b>
-&bul;<b>Q</b> : <O>retune current song into different tuning</O>
+&bul;<b>Q</b> : <O>retune current song into different tuning and strategy</O>
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<O>In general, nearest-note works best for macrotonals, nearest-harmonic and nearest-delta works best for highly microtonals (31+); 17- and 19-TET takes nearest-harmonic pretty well, while 22-TET seem to only benefit from the nearest-note</O>
 `
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

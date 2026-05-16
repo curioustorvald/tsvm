@@ -561,7 +561,10 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
                 statusCode.set(STATE_CODE_STANDBY)
             }
             else if (inputString.startsWith("USAGE")) {
-                recipient?.writeout(composePositiveAns("USED123456/TOTAL654321"))
+                val used = rootPath.walkTopDown().filter { it.isFile }.map { it.length() }.sum()
+                    .coerceIn(0L, Int.MAX_VALUE.toLong())
+                val total = rootPath.totalSpace.coerceIn(0L, Int.MAX_VALUE.toLong())
+                recipient?.writeout(composePositiveAns("USED$used/TOTAL$total"))
                 statusCode.set(STATE_CODE_STANDBY)
             }
             else

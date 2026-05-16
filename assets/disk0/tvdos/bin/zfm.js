@@ -66,7 +66,7 @@ const EXEC_FUNS = {
     "txt": (f) => _G.shell.execute(`less "${f}"`),
     "md": (f) => _G.shell.execute(`less "${f}"`),
     "log": (f) => _G.shell.execute(`less "${f}"`),
-    "taud": (f) => _G.shell.execute(`taut "${f}"`),
+    "taud": (f) => _G.shell.execute(`microtone "${f}"`),
 }
 
 let windowMode = 0 // 0 == left, 1 == right

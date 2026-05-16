@@ -686,7 +686,7 @@ require = function(path) {
     }
 }
 
-shell.execute = function(line) {
+shell.execute = function(line, nameOverride) {
     if (0 == line.size) return
     let parsedTokens = shell.parse(line) // echo, "hai", |, less
     let statements = [] // [[echo, "hai"], [less]]
@@ -835,7 +835,7 @@ shell.execute = function(line) {
                         // replace $0
                         newLine = newLine.replaceAll('$0', tokens.slice(1).join(' '))
 
-                        shell.execute(newLine)
+                        shell.execute(newLine, cmd)
                     })
                 }
                 else if ("APP" == extension) {
@@ -852,6 +852,10 @@ shell.execute = function(line) {
                         errorlevel = 0 // reset the number
 
                         if (_G.shellProgramTitles === undefined) _G.shellProgramTitles = []
+                        if (nameOverride !== undefined) {
+                            tokens[0] = (''+nameOverride)
+                            cmd = tokens[0]
+                        }
                         _G.shellProgramTitles.push(cmd.toUpperCase())
                         sendLcdMsg(_G.shellProgramTitles[_G.shellProgramTitles.length - 1])
                         //serial.println(_G.shellProgramTitles)
