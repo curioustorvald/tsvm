@@ -1745,18 +1745,18 @@ if (fullPathObj === undefined) {
     return 1
 }
 
-const logofile = files.open("A:/tvdos/bin/tauthdr.r8")
+const logofile = files.open("A:"+_TVDOS.variables.DOSDIR+"/bin/tauthdr.r8")
 const logoBytes = logofile.bread(); logofile.close()
 const logoTexture = new gl.Texture(92, 14, logoBytes)
-const buttonfile = files.open("A:/tvdos/bin/tautbtn.r8")
+const buttonfile = files.open("A:"+_TVDOS.variables.DOSDIR+"/bin/tautbtn.r8")
 const buttonBytes = buttonfile.bread(); buttonfile.close()
 const buttonTexture = new gl.Texture(2, 28, buttonBytes)
-//const buttonNullfile = files.open("A:/tvdos/bin/tautbtn0.r8")
+//const buttonNullfile = files.open("A:"+_TVDOS.variables.DOSDIR+"/bin/tautbtn0.r8")
 //const buttonNullBytes = buttonNullfile.bread(); buttonNullfile.close()
 //const buttonNullTexture = new gl.Texture(35, 28, buttonNullBytes)
 
-font.setLowRom("A:/tvdos/bin/tautfont_low.chr")
-font.setHighRom("A:/tvdos/bin/tautfont_high.chr")
+font.setLowRom("A:"+_TVDOS.variables.DOSDIR+"/bin/tautfont_low.chr")
+font.setHighRom("A:"+_TVDOS.variables.DOSDIR+"/bin/tautfont_high.chr")
 const songsMeta = loadTaudSongList(fullPathObj.full)
 let currentSongIndex = 0
 let projectSongCursor = 0

@@ -151,7 +151,8 @@ _TVDOS.variables = {
     PATHEXT: ".com;.bat;.app;.js;.alias",
     HELPPATH: "\\tvdos\\help",
     OS_NAME: "TSVM Disk Operating System",
-    OS_VERSION: _TVDOS.VERSION
+    OS_VERSION: _TVDOS.VERSION,
+    USERCONFIGPATH: "\\home\\config",
 };
 Object.freeze(_TVDOS);
 

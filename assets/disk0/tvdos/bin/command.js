@@ -823,17 +823,26 @@ shell.execute = function(line, nameOverride) {
                     // parse alias
                     // $0: all arguments
                     // $1..9: specific arguments
+                    // Tokens that contain whitespace or shell metacharacters must be re-quoted
+                    // before re-execution, otherwise the re-parse splits them on spaces.
+                    var quoteAliasArg = function(s) {
+                        if (s === undefined || s === null) return ""
+                        s = ''+s
+                        if (s.length === 0) return ""
+                        if (/[\s"|><&]/.test(s)) return '"' + s.replaceAll('"', '^"') + '"'
+                        return s
+                    }
                     var lines = programCode.split('\n').filter(function(it) { return it.length > 0 }) // this return is not shell's return!
                     lines.forEach(function(line) {
                         var newLine = line
 
                         // replace $1..$9
-                        for (let j = 1; j < 9; j++) {
-                            newLine = newLine.replaceAll('$'+j, tokens[j])
+                        for (let j = 1; j <= 9; j++) {
+                            newLine = newLine.replaceAll('$'+j, quoteAliasArg(tokens[j]))
                         }
 
                         // replace $0
-                        newLine = newLine.replaceAll('$0', tokens.slice(1).join(' '))
+                        newLine = newLine.replaceAll('$0', tokens.slice(1).map(quoteAliasArg).join(' '))
 
                         shell.execute(newLine, cmd)
                     })
@@ -954,6 +963,18 @@ Object.freeze(shell)
 _G.shell = shell
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// ensure USERCONFIGPATH directory exists
+try {
+    let userConfigPath = `${CURRENT_DRIVE}:${_TVDOS.variables.USERCONFIGPATH}`
+    let userConfigDir = files.open(userConfigPath)
+    if (!userConfigDir.exists) {
+        debugprintln(`command.js > creating USERCONFIGPATH at ${userConfigPath}`)
+        userConfigDir.mkDir()
+    }
+} catch (e) {
+    debugprintln("command.js > USERCONFIGPATH creation failed: " + e.message)
+}
 
 if (exec_args[1] !== undefined) {
     // only meaningful switches would be either -c or -k anyway

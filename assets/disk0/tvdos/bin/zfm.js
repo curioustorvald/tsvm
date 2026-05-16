@@ -69,6 +69,55 @@ const EXEC_FUNS = {
     "taud": (f) => _G.shell.execute(`microtone "${f}"`),
 }
 
+function makeExecFun(template) {
+    return (f) => _G.shell.execute(template.replaceAll("{0}", `"${f}"`))
+}
+
+function loadZfmrc() {
+    try {
+        let zfmrcPath = `A:${_TVDOS.variables.USERCONFIGPATH}\\zfmrc`
+        let zfmrcFile = files.open(zfmrcPath)
+        if (!zfmrcFile.exists) return
+
+        let content = zfmrcFile.sread()
+        let lines = content.split(/\r?\n/)
+        let currentSection = null
+
+        for (let i = 0; i < lines.length; i++) {
+            let line = lines[i].trim()
+            if (line.length === 0 || line.startsWith("#") || line.startsWith(";")) continue
+
+            if (line.startsWith("[") && line.endsWith("]")) {
+                currentSection = line.substring(1, line.length - 1).toUpperCase()
+                continue
+            }
+
+            if (currentSection === "EXEC_FUNS") {
+                let commaIdx = line.indexOf(",")
+                if (commaIdx < 0) continue
+                let ext = line.substring(0, commaIdx).trim().toLowerCase()
+                let template = line.substring(commaIdx + 1).trim()
+                if (ext.length === 0 || template.length === 0) continue
+                EXEC_FUNS[ext] = makeExecFun(template)
+            }
+            else if (currentSection === "COL_HL_EXT") {
+                let commaIdx = line.indexOf(",")
+                if (commaIdx < 0) continue
+                let ext = line.substring(0, commaIdx).trim().toLowerCase()
+                let colStr = line.substring(commaIdx + 1).trim()
+                if (ext.length === 0 || colStr.length === 0) continue
+                let col = parseInt(colStr, 10)
+                if (isNaN(col)) continue
+                COL_HL_EXT[ext] = col
+            }
+        }
+    } catch (e) {
+        serial.println("zfm: failed to load zfmrc: " + e.message)
+    }
+}
+
+loadZfmrc()
+
 let windowMode = 0 // 0 == left, 1 == right
 let windowFocus = [0] // is a stack; 0: files window, 1: palette window, 2: popup window
 
@@ -82,6 +131,7 @@ let cursor = [0, 0] // absolute position!
 
 function bytesToReadable(i) {
     return ''+ (
+       (i > 999999999999) ? (((i / 10000000000)|0)/100 + "T") :
        (i > 999999999) ? (((i / 10000000)|0)/100 + "G") :
        (i > 999999) ? (((i / 10000)|0)/100 + "M") :
        (i > 9999) ? (((i / 100)|0)/10 + "K") :
@@ -677,11 +727,11 @@ while (!exit) {
         let keysym = event[1]
         let keyJustHit = (1 == event[2])
 
-        if (keyJustHit && event[3] != keys.ENTER) { // release the latch right away if the key is not Return
+        if (keyJustHit && event[3] != keys.ENTER && keysym != "q") { // release the latch right away if the key is neither Return nor 'q'
             firstRunLatch = false
         }
 
-        if (keyJustHit && firstRunLatch) { // filter out the initial ENTER key as they would cause unwanted behaviours
+        if (keyJustHit && firstRunLatch) { // filter out the initial ENTER/'q' key as they would cause unwanted behaviours
             firstRunLatch = false
         }
         else {

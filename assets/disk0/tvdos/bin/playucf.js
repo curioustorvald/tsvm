@@ -307,7 +307,7 @@ for (let i = 0; i < cueElements.length; i++) {
             // Execute the player with modified environment
             exec_args[1] = targetPath
             if (playerFile) {
-                let playerPath = `A:\\tvdos\\bin\\${playerFile}.js`
+                let playerPath = `A:${_TVDOS.variables.DOSDIR}/bin/${playerFile}.js`
                 if (files.open(playerPath).exists) {
                     eval(files.readText(playerPath))
                 } else {
@@ -334,7 +334,7 @@ for (let i = 0; i < cueElements.length; i++) {
     }
 
     // Execute the appropriate player
-    let playerPath = `A:\\tvdos\\bin\\${playerFile}.js`
+    let playerPath = `A:${_TVDOS.variables.DOSDIR}/bin/${playerFile}.js`
     if (!files.open(playerPath).exists) {
         serial.println(`Warning: Player script not found: ${playerPath}`)
         continue
