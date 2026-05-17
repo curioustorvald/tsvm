@@ -1380,7 +1380,15 @@ function drawControlHint() {
     ]
 
     const hintElemExternal = [['Tab','Panel'],['sep'],['!','Help']]
-    let hintElems = [hintElemTimeline, hintElemOrders, hintElemPatterns, hintElemExternal, hintElemExternal, hintElemExternal, hintElemExternal]
+    const hintElemProject  = [
+        [`\u008428u\u008429u`,'Nav'],
+        [`ent`,'Edit/Switch'],
+    ['sep'],
+        ['tab','Panel'],
+    ['sep'],
+        ['!','Help'],
+    ]
+    let hintElems = [hintElemTimeline, hintElemOrders, hintElemPatterns, hintElemExternal, hintElemExternal, hintElemProject, hintElemExternal]
     let hintElemPat = [hintElemEditNoteValue, hintElemEditInstValue, hintElemEditVolEff, hintElemEditPanEff, hintElemEditFxSym, hintElemEditFxVal]
 
     // erase current line
@@ -1759,7 +1767,13 @@ font.setLowRom("A:"+_TVDOS.variables.DOSDIR+"/bin/tautfont_low.chr")
 font.setHighRom("A:"+_TVDOS.variables.DOSDIR+"/bin/tautfont_high.chr")
 const songsMeta = loadTaudSongList(fullPathObj.full)
 let currentSongIndex = 0
-let projectSongCursor = 0
+// Unified cursor: 0..PROJ_META_ROWS_COUNT-1 = editable meta rows (Flags / GVol / MVol);
+//                 >= PROJ_META_ROWS_COUNT   = song list, songIdx = projectCursor - PROJ_META_ROWS_COUNT
+let projectCursor = 0
+const PROJ_META_ROWS_COUNT = 3
+const PROJ_META_FLAGS = 0
+const PROJ_META_GVOL  = 1
+const PROJ_META_MVOL  = 2
 let song = loadTaud(fullPathObj.full, currentSongIndex)
 
 const voiceMutes = new Array(NUM_VOICES).fill(false)
@@ -2706,6 +2720,12 @@ function makeExternalPanelDraw(progName) {
     }
 }
 
+// Row offsets (within the meta block at the top of the Project panel) of the editable rows.
+const PROJ_META_ROW_FLAGS = 5
+const PROJ_META_ROW_GVOL  = 6
+const PROJ_META_ROW_MVOL  = 7
+const PROJ_META_VALUE_X   = 12
+
 function drawProjectContents(wo) {
     fillLine(PTNVIEW_OFFSET_Y - 1, colVoiceHdr, 255)
     for (let y = PTNVIEW_OFFSET_Y; y < SCRH; y++) fillLine(y, colBackPtn, 255)
@@ -2723,15 +2743,29 @@ function drawProjectContents(wo) {
         Cues: `${song.lastActiveCue}/1024 ($${song.lastActiveCue.hex03()})`,
         Notation: pitchTablePresets[PITCH_PRESET_IDX].name,
         Flags: `${flagStrSelected.join(', ')} ($${mixerflag.hex02()})`,
-        GlobalVol: initialGlobalVolume,
-        MixingVol: initialMixingVolume
+        GlobalVol: `$${initialGlobalVolume.hex02()}`,
+        MixingVol: `$${initialMixingVolume.hex02()}`
+    }
+
+    const editableMap = {
+        [PROJ_META_ROW_FLAGS]: PROJ_META_FLAGS,
+        [PROJ_META_ROW_GVOL] : PROJ_META_GVOL,
+        [PROJ_META_ROW_MVOL] : PROJ_META_MVOL,
     }
 
     Object.entries(projMeta).forEach(([key, value], index) => {
         con.move(PTNVIEW_OFFSET_Y + index, 2)
         con.color_pair(colStatus, 255); print(key)
-        con.move(PTNVIEW_OFFSET_Y + index, 12)
-        con.color_pair(colVoiceHdr, colBLACK); print(value)
+        con.move(PTNVIEW_OFFSET_Y + index, PROJ_META_VALUE_X)
+        const isEditable = (index in editableMap)
+        const isSelected = isEditable && projectCursor === editableMap[index]
+        if (isSelected) {
+            con.color_pair(colWHITE, colHighlight); print(' ' + value + ' ')
+        } else if (isEditable) {
+            con.color_pair(colVoiceHdr, colBackPtn); print(' ' + value + ' ')
+        } else {
+            con.color_pair(colVoiceHdr, colBLACK); print(value)
+        }
     })
 
     drawProjectSongList()
@@ -2748,14 +2782,18 @@ function projectSongListRowsVisible() {
 
 let projectSongScroll = 0
 
-function clampProjectSongCursor() {
+function clampProjectCursor() {
     const n = songsMeta.numSongs
-    if (projectSongCursor < 0) projectSongCursor = 0
-    if (projectSongCursor > n - 1) projectSongCursor = n - 1
+    const maxCur = PROJ_META_ROWS_COUNT + Math.max(0, n - 1)
+    if (projectCursor < 0) projectCursor = 0
+    if (projectCursor > maxCur) projectCursor = maxCur
     const rowsVis = projectSongListRowsVisible()
-    if (projectSongCursor < projectSongScroll) projectSongScroll = projectSongCursor
-    else if (projectSongCursor >= projectSongScroll + rowsVis)
-        projectSongScroll = projectSongCursor - rowsVis + 1
+    if (projectCursor >= PROJ_META_ROWS_COUNT) {
+        const songIdx = projectCursor - PROJ_META_ROWS_COUNT
+        if (songIdx < projectSongScroll) projectSongScroll = songIdx
+        else if (songIdx >= projectSongScroll + rowsVis)
+            projectSongScroll = songIdx - rowsVis + 1
+    }
     if (projectSongScroll < 0) projectSongScroll = 0
 }
 
@@ -2778,7 +2816,8 @@ function drawProjectSongList() {
         }
         const s        = songsMeta.songs[idx]
         const isActive = (idx === currentSongIndex)
-        const isSel    = (idx === projectSongCursor)
+        const isSel    = (projectCursor >= PROJ_META_ROWS_COUNT) &&
+                         (idx === projectCursor - PROJ_META_ROWS_COUNT)
         const back     = isSel ? colHighlight : colBackPtn
 
         const marker  = isActive ? sym.playhead : ' '
@@ -2824,25 +2863,47 @@ function projectInput(wo, event) {
     // if (!keyJustHit) return
 
     if (keysym === '<UP>') {
-        projectSongCursor -= moveDelta; clampProjectSongCursor(); redrawPanel(); return
+        projectCursor -= moveDelta; clampProjectCursor(); redrawPanel(); return
     }
     if (keysym === '<DOWN>') {
-        projectSongCursor += moveDelta; clampProjectSongCursor(); redrawPanel(); return
+        projectCursor += moveDelta; clampProjectCursor(); redrawPanel(); return
     }
     if (keysym === '<PAGE_UP>') {
-        projectSongCursor -= projectSongListRowsVisible(); clampProjectSongCursor(); redrawPanel(); return
+        projectCursor -= projectSongListRowsVisible(); clampProjectCursor(); redrawPanel(); return
     }
     if (keysym === '<PAGE_DOWN>') {
-        projectSongCursor += projectSongListRowsVisible(); clampProjectSongCursor(); redrawPanel(); return
+        projectCursor += projectSongListRowsVisible(); clampProjectCursor(); redrawPanel(); return
     }
     if (keysym === '<HOME>') {
-        projectSongCursor = 0; clampProjectSongCursor(); redrawPanel(); return
+        projectCursor = 0; clampProjectCursor(); redrawPanel(); return
     }
     if (keysym === '<END>') {
-        projectSongCursor = songsMeta.numSongs - 1; clampProjectSongCursor(); redrawPanel(); return
+        projectCursor = PROJ_META_ROWS_COUNT + Math.max(0, songsMeta.numSongs - 1)
+        clampProjectCursor(); redrawPanel(); return
     }
     if (keysym === '\n') {
-        if (projectSongCursor !== currentSongIndex) switchSong(projectSongCursor)
+        if (projectCursor === PROJ_META_FLAGS) {
+            openFlagsPopup()
+        } else if (projectCursor === PROJ_META_GVOL) {
+            const v = openInlineHexEdit(PTNVIEW_OFFSET_Y + PROJ_META_ROW_GVOL, PROJ_META_VALUE_X, 2, initialGlobalVolume)
+            if (v !== null) {
+                initialGlobalVolume = v & 0xFF
+                audio.setSongGlobalVolume(PLAYHEAD, initialGlobalVolume)
+                hasUnsavedChanges = true
+            }
+            redrawPanel()
+        } else if (projectCursor === PROJ_META_MVOL) {
+            const v = openInlineHexEdit(PTNVIEW_OFFSET_Y + PROJ_META_ROW_MVOL, PROJ_META_VALUE_X, 2, initialMixingVolume)
+            if (v !== null) {
+                initialMixingVolume = v & 0xFF
+                audio.setSongMixingVolume(PLAYHEAD, initialMixingVolume)
+                hasUnsavedChanges = true
+            }
+            redrawPanel()
+        } else {
+            const songIdx = projectCursor - PROJ_META_ROWS_COUNT
+            if (songIdx !== currentSongIndex) switchSong(songIdx)
+        }
         return
     }
     if (keysym === ' ') {
@@ -3524,6 +3585,169 @@ function openRetunePopup() {
     }
 
     drawAll()
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// MIXER FLAGS POPUP
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+function openFlagsPopup() {
+    const toneNames = ['Linear pitch', 'Amiga pitch', 'Linear freq']
+    const intpNames = ['Default', 'None', 'A500', 'A1200', 'SNES', 'DPCM']
+
+    let toneMode = initialTrackerMixerflags & 3
+    let intpMode = (initialTrackerMixerflags >>> 2) & 7
+    if (toneMode >= toneNames.length) toneMode = 0
+    if (intpMode >= intpNames.length) intpMode = 0
+
+    // Build list rows: headers + selectable radio options.
+    // items[].kind: undefined = header, 'tone' | 'intp' = selectable.
+    const items = []
+    items.push({ label: 'Tone Mode:' })
+    toneNames.forEach((n, i) => items.push({ kind: 'tone', idx: i, label: n }))
+    items.push({ label: '' })
+    items.push({ label: 'Interpolation:' })
+    intpNames.forEach((n, i) => items.push({ kind: 'intp', idx: i, label: n }))
+
+    const selectables = []
+    items.forEach((it, i) => { if (it.kind) selectables.push(i) })
+    let sel = 0
+
+    const pw = 28
+    const ph = items.length + 4
+    const px = ((SCRW - pw) / 2 | 0) + 1
+    const py = ((SCRH - ph) / 2 | 0)
+
+    const popup = new win.WindowObject(px, py, pw, ph, ()=>{}, ()=>{}, 'Mixer Flags', popupDrawFrame)
+    popup.isHighlighted = true
+    popup.titleBack = colPopupBack
+
+    const repaint = () => {
+        con.color_pair(230, colPopupBack)
+        popup.drawFrame()
+
+        for (let i = 0; i < items.length; i++) {
+            const it = items[i]
+            con.move(py + 1 + i, px + 2)
+            if (!it.kind) {
+                con.color_pair(colStatus, colPopupBack)
+                print(it.label.padEnd(pw - 4))
+            } else {
+                const isSel    = (selectables[sel] === i)
+                const isChecked = (it.kind === 'tone')
+                    ? (toneMode === it.idx)
+                    : (intpMode === it.idx)
+                const back = isSel ? colHighlight : colPopupBack
+                const fore = isChecked ? colVoiceHdr : colWHITE
+                con.color_pair(fore, back)
+                const line = ' ' + (isChecked ? sym.ticked : sym.unticked) + ' ' + it.label
+                print(line.padEnd(pw - 4))
+            }
+        }
+
+        con.move(py + ph - 2, px + 2)
+        con.color_pair(colVoiceHdr, colPopupBack); print(`\u008418u `)
+        con.color_pair(colStatus,   colPopupBack); print('Sel ')
+        con.color_pair(colVoiceHdr, colPopupBack); print('sp ')
+        con.color_pair(colStatus,   colPopupBack); print('Tick ')
+        con.color_pair(colVoiceHdr, colPopupBack); print('ent ')
+        con.color_pair(colStatus,   colPopupBack); print('OK ')
+        con.color_pair(colVoiceHdr, colPopupBack); print('Q ')
+        con.color_pair(colStatus,   colPopupBack); print('X')
+
+        con.color_pair(colStatus, 255)
+    }
+
+    repaint()
+
+    let done = false
+    let confirmed = false
+    let eventJustReceived = true
+    while (!done) {
+        input.withEvent(ev => {
+            if (ev[0] !== 'key_down') return
+            if (1 !== ev[2]) return
+            const ks = ev[1]
+            if (eventJustReceived) { eventJustReceived = false; return }
+
+            if (ks === '<ESC>' || ks === 'q' || ks === 'Q') { done = true; return }
+            if (ks === '\n') { confirmed = true; done = true; return }
+            if (ks === '<UP>'   && sel > 0)                    { sel--; repaint(); return }
+            if (ks === '<DOWN>' && sel < selectables.length-1) { sel++; repaint(); return }
+            if (ks === ' ') {
+                const it = items[selectables[sel]]
+                if (it.kind === 'tone') toneMode = it.idx
+                else if (it.kind === 'intp') intpMode = it.idx
+                repaint()
+                return
+            }
+        })
+    }
+
+    if (confirmed) {
+        const newFlags = (initialTrackerMixerflags & ~0x1F) |
+                         (toneMode & 3) | ((intpMode & 7) << 2)
+        if (newFlags !== initialTrackerMixerflags) {
+            initialTrackerMixerflags = newFlags
+            audio.setTrackerMixerFlags(PLAYHEAD, newFlags)
+            hasUnsavedChanges = true
+        }
+    }
+
+    drawAll()
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// INLINE HEX EDITOR
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// Overlay an editable hex field at (y, x) with `digits` digits, pre-filled from `initialValue`.
+// Returns the new integer on commit, or null on cancel. Reusable for pattern-grid edits.
+function openInlineHexEdit(y, x, digits, initialValue) {
+    let buf = (initialValue >>> 0).toString(16).toUpperCase()
+    if (buf.length > digits) buf = buf.substring(buf.length - digits)
+    buf = buf.padStart(digits, '0')
+
+    let cur = 0
+    let cancelled = false
+    let done = false
+
+    const repaint = () => {
+        con.move(y, x)
+        con.color_pair(colWHITE, colHighlight)
+        print(' $' + buf + ' ')
+        con.move(y, x + 2 + cur)
+        con.color_pair(colBLACK, colWHITE)
+        print(buf[cur])
+        con.color_pair(colStatus, 255)
+    }
+
+    repaint()
+    let eventJustReceived = true
+    while (!done) {
+        input.withEvent(ev => {
+            if (ev[0] !== 'key_down') return
+            if (1 !== ev[2]) return
+            const ks = ev[1]
+            if (eventJustReceived) { eventJustReceived = false; return }
+
+            if (ks === '<ESC>') { cancelled = true; done = true; return }
+            if (ks === '\n')    { done = true; return }
+            if (ks === '<LEFT>'  && cur > 0)          { cur--; repaint(); return }
+            if (ks === '<RIGHT>' && cur < digits - 1) { cur++; repaint(); return }
+            if (ks === '<HOME>')                      { cur = 0; repaint(); return }
+            if (ks === '<END>')                       { cur = digits - 1; repaint(); return }
+            if (ks.length === 1 && '0123456789abcdefABCDEF'.includes(ks)) {
+                buf = buf.substring(0, cur) + ks.toUpperCase() + buf.substring(cur + 1)
+                if (cur < digits - 1) cur++
+                else done = true
+                repaint()
+                return
+            }
+        })
+    }
+
+    return cancelled ? null : parseInt(buf, 16)
 }
 
 clampCursor(); clampVoice(); clampCue(); clampOrdersHoriz(); clampPatternIdx(); clampPatternGrid()
