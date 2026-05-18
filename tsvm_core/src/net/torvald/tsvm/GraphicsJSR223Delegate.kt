@@ -149,6 +149,42 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
     }
 
+    fun plotRect(x: Int, y: Int, w: Int, h: Int, colour: Int) {
+        val xs = min(x, x+w).toLong()
+        val xe = max(x, x+w).toLong()
+        val ys = min(y, y+h).toLong()
+        val ye = max(y, y+h).toLong()
+
+        getFirstGPU()?.let {
+            for (py in ys until ye) {
+                for (px in xs until xe) {
+                    if (px in 0 until it.config.width && py in 0 until it.config.height) {
+                        it.poke(py * it.config.width + px, colour.toByte())
+                    }
+                }
+            }
+            it.applyDelay()
+        }
+    }
+
+    fun plotRect2(x: Int, y: Int, w: Int, h: Int, colour: Int) {
+        val xs = min(x, x+w).toLong()
+        val xe = max(x, x+w).toLong()
+        val ys = min(y, y+h).toLong()
+        val ye = max(y, y+h).toLong()
+
+        getFirstGPU()?.let {
+            for (py in ys until ye) {
+                for (px in xs until xe) {
+                    if (px in 0 until it.config.width && py in 0 until it.config.height) {
+                        it.poke(262144 + py * it.config.width + px, colour.toByte())
+                    }
+                }
+            }
+            it.applyDelay()
+        }
+    }
+
     fun plotPixelMode1(x: Int, y: Int, colour: Int, plane: Int) {
         getFirstGPU()?.let {
             val planesize = it.config.width * it.config.height / 4
@@ -156,6 +192,27 @@ class GraphicsJSR223Delegate(private val vm: VM) {
                 it.poke(y.toLong() * it.config.width/2 + x + planesize * plane, colour.toByte())
                 it.applyDelay()
             }
+        }
+    }
+
+    fun plotRectMode1(x: Int, y: Int, w: Int, h: Int, colour: Int, plane: Int) {
+        val xs = min(x, x+w).toLong()
+        val xe = max(x, x+w).toLong()
+        val ys = min(y, y+h).toLong()
+        val ye = max(y, y+h).toLong()
+
+        getFirstGPU()?.let {
+            val halfW = it.config.width / 2
+            val halfH = it.config.height / 2
+            val planesize = it.config.width * it.config.height / 4
+            for (py in ys until ye) {
+                for (px in xs until xe) {
+                    if (px in 0 until halfW && py in 0 until halfH) {
+                        it.poke(py * halfW + px + planesize * plane, colour.toByte())
+                    }
+                }
+            }
+            it.applyDelay()
         }
     }
 

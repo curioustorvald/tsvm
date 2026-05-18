@@ -984,6 +984,8 @@ const colRowNumEmph1 = 225
 const colRowNumEmph2 = 155
 const colStatus    = 253
 const colVoiceHdr  = 230
+const colVoiceHdrMuted = 249
+const colVoiceHdrMutedCursorUp = 180
 const colSep       = 252
 const colPushBtnBack = 143
 const colTabBarBack = 187
@@ -1001,10 +1003,11 @@ const colBLACK = 240
 // Voice-header playback meters (volume bar grows from centre out; pan bar = centre tick + dot).
 // Pixels are drawn beneath text — only the glyph foregrounds occlude the bars, so the bars sit
 // on rows 0 and (cellH - 1) where the 7×14 glyph has the least foreground.
-const METER_VOL_COL      = 41       // colHighlight
-const METER_PAN_TICK_COL = 6        // colColumnSep
-const METER_PAN_DOT_COL  = 239      // colWHITE
-const METER_BAR_PAD      = 2        // px gap from cell edges (each side)
+const METER_VOL_COL = colVol
+const METER_PAN_COL = 214
+const METER_VOL_TICK_COL = 127
+const METER_PAN_TICK_COL = 198
+const METER_BAR_PAD = 0        // px gap from cell edges (each side)
 const METER_TRANSPARENT  = 255
 
 let separatorStyle = 0
@@ -1184,20 +1187,22 @@ function drawSeparators(style) {
     }
 }
 
+const voiceHdrColByFlags = [colStatus, colVoiceHdr, colVoiceHdrMuted, colVoiceHdrMutedCursorUp] // default, cursorUp, muted, cursorUp+muted
+
 function drawVoiceHeaders() {
-    fillLine(PTNVIEW_OFFSET_Y - 1, colVoiceHdr, 255)
+    fillLine(PTNVIEW_OFFSET_Y - 1, colStatus, 255)
     const cue = song.cues[cueIdx]
     for (let c = 0; c < VOCSIZE_TIMELINE_FULL; c++) {
         const voice = voiceOff + c
         const x = PTNVIEW_OFFSET_X + COLSIZE_TIMELINE_FULL * c
         con.move(PTNVIEW_OFFSET_Y - 1, x)
         if (voice >= song.numVoices) {
-            con.color_pair(colVoiceHdr, 255)
+            con.color_pair(colStatus, 255)
             print(`                     `.substring(0, COLSIZE_TIMELINE_FULL))
         } else {
             const isCursor = (voice === cursorVox)
             const isMuted  = voiceMutes[voice]
-            con.color_pair(isMuted ? 249 : colVoiceHdr, isCursor ? colHighlight : 255)
+            con.color_pair(voiceHdrColByFlags[isMuted*2 + isCursor], 255)
             const ptnIdx = cue.ptns[voice]
             const vlabel = `V${(voice+1).dec02()}`
             const plabel = (ptnIdx === CUE_EMPTY) ? '---' : ptnIdx.hex03()
@@ -1220,6 +1225,7 @@ function drawVoiceHeaders() {
 // Per-slot cache of last-drawn meter state: { voice, vol, pan } or null when slot is clear.
 // Indexed by slot index 0..VOCSIZE_TIMELINE_FULL-1 (never grows beyond 20 slots in practice).
 const meterPrevSlot = new Array(20).fill(null)
+const meterThickness = 2
 
 function invalidateVoiceMeters() {
     for (let i = 0; i < meterPrevSlot.length; i++) meterPrevSlot[i] = null
@@ -1228,12 +1234,10 @@ function invalidateVoiceMeters() {
 // Wipe the pixel strip used by the voice-header meters back to transparent (255).
 // Called when leaving the Timeline panel or when playback stops.
 function clearVoiceMeters() {
-    const yTop = (PTNVIEW_OFFSET_Y - 2) * CELL_PH
-    const yBot = (PTNVIEW_OFFSET_Y - 1) * CELL_PH - 1
-    for (let x = 0; x < SCRPW; x++) {
-        graphics.plotPixel(x, yTop, METER_TRANSPARENT)
-        graphics.plotPixel(x, yBot, METER_TRANSPARENT)
-    }
+    const yPan = (PTNVIEW_OFFSET_Y - 2) * CELL_PH
+    const yVol = (PTNVIEW_OFFSET_Y - 1) * CELL_PH - meterThickness
+    graphics.plotRect(0, yPan, SCRPW, meterThickness, METER_TRANSPARENT)
+    graphics.plotRect(0, yVol, SCRPW, meterThickness, METER_TRANSPARENT)
     invalidateVoiceMeters()
 }
 
@@ -1241,31 +1245,35 @@ function clearVoiceMeters() {
  * Repaint the per-voice volume and pan indicators in the voice-header row.
  * Volume: horizontal bar growing from the cell centre outward, length ∝ effective tracker
  * volume (after envelopes, fadeout, vol-column/D/tremolo ramps, per-voice fader). Drawn on
- * the cell's bottom pixel row.
- * Pan: centre tick + a single dot offset by (pan-128)/128 × halfWidth. Drawn on the cell's
- * top pixel row.
+ * the bottom strip of the header row.
+ * Pan: horizontal bar stemming from the cell centre, signed length ∝ (pan-128)/128. Drawn
+ * on the top strip of the header row.
+ * Both strips get a centre tick drawn on top of the bar.
  * Only redraws slots whose (voice, volPix, panPix) tuple has changed since the last call,
  * so the work per frame stays bounded by actual movement.
  */
 function drawVoiceMeters() {
     if (playbackMode === PLAYMODE_NONE || currentPanel !== VIEW_TIMELINE) return
-    const yPan = (PTNVIEW_OFFSET_Y - 2) * CELL_PH                  // top pixel of header row
-    const yVol = (PTNVIEW_OFFSET_Y - 1) * CELL_PH - 1              // bottom pixel of header row
+    const yPan = (PTNVIEW_OFFSET_Y - 2) * CELL_PH                  // top edge of pan strip
+    const yVol = (PTNVIEW_OFFSET_Y - 1) * CELL_PH - meterThickness // top edge of vol strip
     const slotPW = COLSIZE_TIMELINE_FULL * CELL_PW
-    const halfW  = (slotPW >>> 1) - METER_BAR_PAD
+    // Skip the leftmost cell of every slot — it's a text-mode separator whose background
+    // colour paints on top of the framebuffer and would clip any meter pixels there.
+    const drawW  = slotPW - CELL_PW
+    const halfW  = (drawW >>> 1) - METER_BAR_PAD
+    const stripW = drawW - 2 * METER_BAR_PAD + 1
 
     for (let c = 0; c < VOCSIZE_TIMELINE_FULL; c++) {
         const voice = voiceOff + c
-        const slotX0 = (PTNVIEW_OFFSET_X + COLSIZE_TIMELINE_FULL * c - 1) * CELL_PW
-        const xCenter = slotX0 + (slotPW >>> 1)
+        const slotX0 = (PTNVIEW_OFFSET_X + COLSIZE_TIMELINE_FULL * c) * CELL_PW
+        const xCenter = slotX0 + (drawW >>> 1)
+        const xStrip = slotX0 + METER_BAR_PAD
         const prev = meterPrevSlot[c]
 
         if (voice >= song.numVoices) {
             if (prev !== null) {
-                for (let x = slotX0 + METER_BAR_PAD; x < slotX0 + slotPW - METER_BAR_PAD; x++) {
-                    graphics.plotPixel(x, yPan, METER_TRANSPARENT)
-                    graphics.plotPixel(x, yVol, METER_TRANSPARENT)
-                }
+                graphics.plotRect(xStrip, yPan, stripW, meterThickness, METER_TRANSPARENT)
+                graphics.plotRect(xStrip, yVol, stripW, meterThickness, METER_TRANSPARENT)
                 meterPrevSlot[c] = null
             }
             continue
@@ -1282,19 +1290,20 @@ function drawVoiceMeters() {
         if (prev !== null && prev.voice === voice && prev.vol === volPix && prev.pan === panPix) continue
 
         // Clear both bar strips in this slot before redrawing.
-        for (let x = slotX0 + METER_BAR_PAD; x < slotX0 + slotPW - METER_BAR_PAD; x++) {
-            graphics.plotPixel(x, yPan, METER_TRANSPARENT)
-            graphics.plotPixel(x, yVol, METER_TRANSPARENT)
-        }
+        graphics.plotRect(xStrip, yPan, stripW, meterThickness, METER_TRANSPARENT)
+        graphics.plotRect(xStrip, yVol, stripW, meterThickness, METER_TRANSPARENT)
         // Volume bar (grows from centre out). Silent voices show no bar.
         if (volPix > 0) {
-            for (let dx = -volPix; dx <= volPix; dx++) {
-                graphics.plotPixel(xCenter + dx, yVol, METER_VOL_COL)
-            }
+            graphics.plotRect(xCenter - volPix, yVol, 2 * volPix + 1, meterThickness, METER_VOL_COL)
         }
-        // Pan bar: faint centre tick, bright dot at pan position.
-        graphics.plotPixel(xCenter, yPan, METER_PAN_TICK_COL)
-        graphics.plotPixel(xCenter + panPix, yPan, METER_PAN_DOT_COL)
+        // Pan bar (stems from centre, direction = sign of panPix). Centred pan shows no bar.
+        if (panPix !== 0) {
+            const px0 = (panPix > 0) ? xCenter : xCenter + panPix
+            graphics.plotRect(px0, yPan, Math.abs(panPix) + 1, meterThickness, METER_PAN_COL)
+        }
+        // Centre ticks, drawn on top of the bars.
+        graphics.plotRect(xCenter-1, yPan, 3, meterThickness, METER_PAN_TICK_COL)
+        graphics.plotRect(xCenter-1, yVol, 3, meterThickness, METER_VOL_TICK_COL)
 
         meterPrevSlot[c] = { voice: voice, vol: volPix, pan: panPix }
     }
