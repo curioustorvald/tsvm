@@ -110,6 +110,30 @@ class AudioJSR223Delegate(private val vm: VM) {
     fun getVoiceFader(playhead: Int, voice: Int): Int =
         getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19))?.fader ?: 0
 
+    /** Effective per-voice tracker volume (0.0..1.0) — what the mixer applies right now after the
+     *  envelope, fadeout, vol-column / D-slide / tremolo ramp, and the host-owned per-voice fader,
+     *  but BEFORE master/mixing/global volumes. Returns 0.0 for inactive voices. Mirrors the
+     *  perVoiceGain assembled in the per-sample mix loop (AudioAdapter.kt:3201). */
+    fun getVoiceEffectiveVolume(playhead: Int, voice: Int): Double {
+        val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19)) ?: return 0.0
+        if (!v.active) return 0.0
+        val effEnvVol = if (v.volEnvOn) v.envVolMix else 1.0
+        val faderGain = (255 - v.fader) / 255.0
+        return (effEnvVol * v.fadeoutVolume * v.currentMixVolume * faderGain).coerceIn(0.0, 1.0)
+    }
+
+    /** Effective per-voice tracker pan (0..255, 128 = centre) — channelPan modulated by the pan
+     *  envelope when it is active. Returns 128 (centre) for inactive voices. Mirrors the pan
+     *  selection in the per-sample mix loop (AudioAdapter.kt:3205). */
+    fun getVoiceEffectivePan(playhead: Int, voice: Int): Int {
+        val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19)) ?: return 128
+        if (!v.active) return 128
+        return if (v.hasPanEnv && v.panEnvOn) {
+            val envPanRaw = (v.envPan * 255.0).toInt().coerceIn(0, 255)
+            (v.channelPan + envPanRaw - 128).coerceIn(0, 255)
+        } else v.channelPan.coerceIn(0, 255)
+    }
+
     /** Set the starting row for the next play call, resetting per-row timing and silencing active voices. */
     fun setTrackerRow(playhead: Int, row: Int) {
         getPlayhead(playhead)?.trackerState?.let { ts ->

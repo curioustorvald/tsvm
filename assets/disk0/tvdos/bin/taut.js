@@ -952,6 +952,8 @@ function loadTaudSongList(filePath) {
 
 const [SCRH, SCRW] = con.getmaxyx()
 const [SCRPW, SCRPH] = graphics.getPixelDimension()
+const CELL_PW = (SCRPW / SCRW) | 0       // px per character column
+const CELL_PH = (SCRPH / SCRH) | 0       // px per character row
 const PTNVIEW_OFFSET_X = 3
 const PTNVIEW_OFFSET_Y = 5
 const PTNVIEW_HEIGHT = SCRH - PTNVIEW_OFFSET_Y
@@ -995,6 +997,15 @@ const colTabInactive = 45
 // protip: avoid using colour zero
 const colWHITE = 239
 const colBLACK = 240
+
+// Voice-header playback meters (volume bar grows from centre out; pan bar = centre tick + dot).
+// Pixels are drawn beneath text — only the glyph foregrounds occlude the bars, so the bars sit
+// on rows 0 and (cellH - 1) where the 7×14 glyph has the least foreground.
+const METER_VOL_COL      = 41       // colHighlight
+const METER_PAN_TICK_COL = 6        // colColumnSep
+const METER_PAN_DOT_COL  = 239      // colWHITE
+const METER_BAR_PAD      = 2        // px gap from cell edges (each side)
+const METER_TRANSPARENT  = 255
 
 let separatorStyle = 0
 
@@ -1199,6 +1210,94 @@ function drawVoiceHeaders() {
     }
 
     drawSeparators(separatorStyle)
+    // Voice headers were just repainted with bg=255 (transparent), so any meter pixels
+    // beneath them survived the redraw — but the cached per-slot state may still match,
+    // which would skip the redraw on the next updatePlayback. Force a redraw by clearing
+    // the cache; the next updatePlayback re-emits any active bars.
+    invalidateVoiceMeters()
+}
+
+// Per-slot cache of last-drawn meter state: { voice, vol, pan } or null when slot is clear.
+// Indexed by slot index 0..VOCSIZE_TIMELINE_FULL-1 (never grows beyond 20 slots in practice).
+const meterPrevSlot = new Array(20).fill(null)
+
+function invalidateVoiceMeters() {
+    for (let i = 0; i < meterPrevSlot.length; i++) meterPrevSlot[i] = null
+}
+
+// Wipe the pixel strip used by the voice-header meters back to transparent (255).
+// Called when leaving the Timeline panel or when playback stops.
+function clearVoiceMeters() {
+    const yTop = (PTNVIEW_OFFSET_Y - 2) * CELL_PH
+    const yBot = (PTNVIEW_OFFSET_Y - 1) * CELL_PH - 1
+    for (let x = 0; x < SCRPW; x++) {
+        graphics.plotPixel(x, yTop, METER_TRANSPARENT)
+        graphics.plotPixel(x, yBot, METER_TRANSPARENT)
+    }
+    invalidateVoiceMeters()
+}
+
+/**
+ * Repaint the per-voice volume and pan indicators in the voice-header row.
+ * Volume: horizontal bar growing from the cell centre outward, length ∝ effective tracker
+ * volume (after envelopes, fadeout, vol-column/D/tremolo ramps, per-voice fader). Drawn on
+ * the cell's bottom pixel row.
+ * Pan: centre tick + a single dot offset by (pan-128)/128 × halfWidth. Drawn on the cell's
+ * top pixel row.
+ * Only redraws slots whose (voice, volPix, panPix) tuple has changed since the last call,
+ * so the work per frame stays bounded by actual movement.
+ */
+function drawVoiceMeters() {
+    if (playbackMode === PLAYMODE_NONE || currentPanel !== VIEW_TIMELINE) return
+    const yPan = (PTNVIEW_OFFSET_Y - 2) * CELL_PH                  // top pixel of header row
+    const yVol = (PTNVIEW_OFFSET_Y - 1) * CELL_PH - 1              // bottom pixel of header row
+    const slotPW = COLSIZE_TIMELINE_FULL * CELL_PW
+    const halfW  = (slotPW >>> 1) - METER_BAR_PAD
+
+    for (let c = 0; c < VOCSIZE_TIMELINE_FULL; c++) {
+        const voice = voiceOff + c
+        const slotX0 = (PTNVIEW_OFFSET_X + COLSIZE_TIMELINE_FULL * c - 1) * CELL_PW
+        const xCenter = slotX0 + (slotPW >>> 1)
+        const prev = meterPrevSlot[c]
+
+        if (voice >= song.numVoices) {
+            if (prev !== null) {
+                for (let x = slotX0 + METER_BAR_PAD; x < slotX0 + slotPW - METER_BAR_PAD; x++) {
+                    graphics.plotPixel(x, yPan, METER_TRANSPARENT)
+                    graphics.plotPixel(x, yVol, METER_TRANSPARENT)
+                }
+                meterPrevSlot[c] = null
+            }
+            continue
+        }
+
+        const volRaw = audio.getVoiceEffectiveVolume(PLAYHEAD, voice) || 0
+        const panRaw = audio.getVoiceEffectivePan(PLAYHEAD, voice)
+        const volPix = Math.max(0, Math.min(halfW, Math.round(volRaw * halfW)))
+        // Pan range 0..255, centre 128 → map to ±halfW.
+        let panPix = Math.round((panRaw - 128) / 128 * halfW)
+        if (panPix < -halfW) panPix = -halfW
+        else if (panPix > halfW) panPix = halfW
+
+        if (prev !== null && prev.voice === voice && prev.vol === volPix && prev.pan === panPix) continue
+
+        // Clear both bar strips in this slot before redrawing.
+        for (let x = slotX0 + METER_BAR_PAD; x < slotX0 + slotPW - METER_BAR_PAD; x++) {
+            graphics.plotPixel(x, yPan, METER_TRANSPARENT)
+            graphics.plotPixel(x, yVol, METER_TRANSPARENT)
+        }
+        // Volume bar (grows from centre out). Silent voices show no bar.
+        if (volPix > 0) {
+            for (let dx = -volPix; dx <= volPix; dx++) {
+                graphics.plotPixel(xCenter + dx, yVol, METER_VOL_COL)
+            }
+        }
+        // Pan bar: faint centre tick, bright dot at pan position.
+        graphics.plotPixel(xCenter, yPan, METER_PAN_TICK_COL)
+        graphics.plotPixel(xCenter + panPix, yPan, METER_PAN_DOT_COL)
+
+        meterPrevSlot[c] = { voice: voice, vol: volPix, pan: panPix }
+    }
 }
 
 // Sub-field layout for style-0 cells (shared by drawPatternRowAt and drawVoiceColumnAt)
@@ -1710,6 +1809,9 @@ function setTimelineRowStyle(style) {
     COLSIZE_TIMELINE_FULL = TIMELINE_COLSIZES[style]
     VOCSIZE_TIMELINE_FULL = Math.floor((SCRW - 3) / COLSIZE_TIMELINE_FULL)
     SALVAGE_HORIZ_LEN     = (VOCSIZE_TIMELINE_FULL - 1) * COLSIZE_TIMELINE_FULL
+    // Slot widths and per-slot voice mapping are about to change; wipe meter pixels so the
+    // narrower/wider layout doesn't leave stale bar fragments from the old slot widths.
+    clearVoiceMeters()
     clampVoice()
     drawAll()
 }
@@ -3074,6 +3176,7 @@ function stopPlayback() {
     audio.stop(PLAYHEAD)
     playbackMode = PLAYMODE_NONE
     clampPatternGrid()
+    clearVoiceMeters()
 }
 
 function updatePlayback() {
@@ -3085,8 +3188,11 @@ function updatePlayback() {
             drawPatternRowAt(cursorRow - scrollRow)
         else if (currentPanel === VIEW_PATTERN_DETAILS && song.numPats > 0) { simStateKey = ''; redrawPanel() }
         drawAlwaysOnElems()
+        clearVoiceMeters()
         return
     }
+
+    drawVoiceMeters()
 
     const nowCue = audio.getCuePosition(PLAYHEAD)
     const nowRow = audio.getTrackerRow(PLAYHEAD)
@@ -3791,10 +3897,12 @@ while (!exitFlag) {
         }
 
         if (keyJustHit && keysym === "<TAB>") {
+            const wasTimeline = (currentPanel === VIEW_TIMELINE)
             currentPanel = (currentPanel + (shiftDown ? -1 : 1))
             if (currentPanel < 0) currentPanel += panels.length
             currentPanel = currentPanel % panels.length
             applyMuteTransition(currentPanel)
+            if (wasTimeline && currentPanel !== VIEW_TIMELINE) clearVoiceMeters()
             if (isExternalPanel(currentPanel)) {
                 // Redraw header now so the tab highlight is visible immediately,
                 // but defer the actual sub-program launch to after withEvent returns.
@@ -3825,9 +3933,11 @@ while (!exitFlag) {
         pendingExternalDraw = false
         redrawPanel()
         while (_G.TAUT.UI.NEXTPANEL !== undefined && _G.TAUT.UI.NEXTPANEL !== null) {
+            const wasTimeline = (currentPanel === VIEW_TIMELINE)
             currentPanel = _G.TAUT.UI.NEXTPANEL
             _G.TAUT.UI.NEXTPANEL = undefined
             applyMuteTransition(currentPanel)
+            if (wasTimeline && currentPanel !== VIEW_TIMELINE) clearVoiceMeters()
             if (isExternalPanel(currentPanel)) {
                 con.clear(); drawAlwaysOnElems(); drawControlHint()
                 redrawPanel()

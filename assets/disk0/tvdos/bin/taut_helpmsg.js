@@ -67,13 +67,13 @@ a&nbsp;s&nbsp;d&nbsp;f&nbsp;g&nbsp;h&nbsp;j&nbsp;k
 let helpCommon = `<c>COMMON CONTROLS</c>
 <c>\u00B7${'\u00B8'.repeat(15)}\u00B9</c>
 &bul;<b>!</b> : <O>show this help message</O>
-&bul;<b>Y</b> : <O>play the entire song from the current cue</O>
-&bul;<b>U</b> : <O>play the current cue then stop</O>
-&bul;<b>I</b> : <O>play the current row</O>
-&bul;<b>O</b> : <O>stop the playback</O>
-&bul;<b>tab</b> : <O>switch forward a tab</O>
-&bul;<b>TAB</b> : <O>switch backward a tab</O>
-&bul;<b>q</b> : <O>close &microtone;</O>
+&bul;<b>Y</b> : <O>plays the entire song from the current cue</O>
+&bul;<b>U</b> : <O>plays the current cue then stop</O>
+&bul;<b>I</b> : <O>plays the current row</O>
+&bul;<b>O</b> : <O>stops the playback</O>
+&bul;<b>tab</b> : <O>switchs forward a tab</O>
+&bul;<b>TAB</b> : <O>switchs backward a tab</O>
+&bul;<b>q</b> : <O>closes &microtone;</O>
 `
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -85,29 +85,29 @@ Timeline has two distinct modes: view and edit mode. Two modes are toggled using
 <b>&nbsp;VIEW MODE</b>
 <b>\u00B7${'\u00B8'.repeat(9)}\u00B9</b>
 &bul;Note jamming : <O>plays the note</O>
-&bul;<b>&udlr;</b> : <O>move the viewing cursor by voices and rows</O>
-&bul;<b>pg&updn;</b> : <O>go to previous/next cue</O>
-&bul;<b>W</b>&mdot;<b>E</b>&mdot;<b>R</b> : <O>toggle timeline view mode. W-most detailed, R-most abridged</O>
-&bul;<b>n</b> : <O>toggle soloing of the selected voice</O>
-&bul;<b>m</b> : <O>toggle muting of the selected voice</O>
-&bul;<b>[</b>&mdot;<b>]</b> : <O>change tick rate of playhead</O> 
+&bul;<b>&udlr;</b> : <O>moves the viewing cursor by voices and rows</O>
+&bul;<b>pg&updn;</b> : <O>goes to previous/next cue</O>
+&bul;<b>W</b>&mdot;<b>E</b>&mdot;<b>R</b> : <O>toggles timeline view mode. W-most detailed, R-most abridged</O>
+&bul;<b>n</b> : <O>toggles soloing of the selected voice</O>
+&bul;<b>m</b> : <O>toggles muting of the selected voice</O>
+&bul;<b>[</b>&mdot;<b>]</b> : <O>changes tick rate of playhead</O> 
 
 <b>&nbsp;EDIT MODE</b>
 <b>\u00B7${'\u00B8'.repeat(9)}\u00B9</b>
 &bul;Note jamming : <O>(note column) inserts the note</O>
-&bul;<b>{</b>&mdot;<b>}</b> : <O>(note column) lower/raise a note by one octave (or period)</O>
-&bul;<b>[</b>&mdot;<b>]</b> : <O>(note column) lower/raise a note by one unit</O>
-&bul;<b>z</b> : <O>(note column) insert a key-off &keyoffsym;</O>
-&bul;<b>x</b> : <O>(note column) insert a note-cut &notecutsym;</O>
-&bul;<b>.</b> : <O>clear fields</O>
-&bul;<b>bksp</b> : <O>delete one character on the selected column</O>
+&bul;<b>{</b>&mdot;<b>}</b> : <O>(note column) lowers/raises a note by one octave (or period)</O>
+&bul;<b>[</b>&mdot;<b>]</b> : <O>(note column) lowers/raises a note by one unit</O>
+&bul;<b>z</b> : <O>(note column) inserts a key-off &keyoffsym;</O>
+&bul;<b>x</b> : <O>(note column) inserts a note-cut &notecutsym;</O>
+&bul;<b>.</b> : <O>clears fields</O>
+&bul;<b>bksp</b> : <O>deletes one character on the selected column</O>
 &bul;<b>0</b>&ddot;<b>9</b> <b>a</b>&ddot;<b>f</b> : <O>inserts a (hexa)decimal number</O>
 &bul;<b>0</b>&ddot;<b>9</b> <b>a</b>&ddot;<b>z</b> : <O>(fx column) inserts an effect</O>
 &bul;<b>^</b>&mdot;<b>v</b> : <O>(volume column) slide up/down</O>
 &bul;<b>&lt;</b>&mdot;<b>&gt;</b>: <O>(panning column) slide left/right</O>
 &bul;<b>-</b>&mdot;<b>=</b> : <O>(vol/pan col) fine slide down/up</O>
-&bul;<b>&udlr;</b> : <O>move the viewing cursor by columns and rows</O>
-&bul;<b>pg&updn;</b> : <O>go to previous/next cue</O>
+&bul;<b>&udlr;</b> : <O>moves the viewing cursor by columns and rows</O>
+&bul;<b>pg&updn;</b> : <O>goes to previous/next cue</O>
 
 <b>&nbsp;ACCIDENTALS</b>
 <b>\u00B7${'\u00B8'.repeat(11)}\u00B9</b>
@@ -116,8 +116,27 @@ Timeline has two distinct modes: view and edit mode. Two modes are toggled using
 
 <b>&nbsp;GLOBAL EDIT</b>
 <b>\u00B7${'\u00B8'.repeat(11)}\u00B9</b>
-&bul;<b>Q</b> : <O>retune current song into different tuning and strategy</O>
-&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;<O>In general, nearest-note works best for macrotonals, nearest-harmonic and nearest-delta works best for highly microtonals (31+); 17- and 19-TET takes nearest-harmonic pretty well, while 22-TET seem to only benefit from the nearest-note</O>
+&bul;<b>Q</b> : <O>retunes current song into different tuning and strategy. In general, nearest-note works best for macrotonals, nearest-harmonic and nearest-delta works best for highly microtonals (31+); 17- and 19-TET takes nearest-harmonic pretty well, while 22-TET seem to only benefit from the nearest-note</O>
+`
+
+let helpProjectFlags = `<c>MIXER FLAGS</c>
+<c>\u00B7${'\u00B8'.repeat(11)}\u00B9</c>
+Mixer flags define how should the mixer behave.
+
+<b>&nbsp;TONE MODE</b>
+<b>\u00B7${'\u00B8'.repeat(9)}\u00B9</b>
+&bul;Linear pitch : <O>pitch shift effects operate on linear pitch scale. The default and recommended setting for a new project</O>
+&bul;Amiga pitch : <O>pitch shift effects operate on Amiga period scale. Backwards compatible setting for MOD/S3M/XM/IT formats</O>
+&bul;Linear freq : <O>pitch shift effects operate on linear frequency scale. Backwards compatible setting for MONOTONE format</O>
+
+<b>&nbsp;INTERPOLATION</b>
+<b>\u00B7${'\u00B8'.repeat(13)}\u00B9</b>
+&bul;Default : <O>three-tap fast sinc interpolation. The default and recommended setting for a new project</O>
+&bul;None : <O>zeroth-order hold</O>
+&bul;A500 : <O>emulates what Paula chip of Amiga 500 does. <b>S 0x00</b> effects only work with this and Amiga 1200 mode</O>
+&bul;A1200 : <O>emulates what Paula chip of Amiga 1200 does</O>
+&bul;SNES : <O>four-tap gaussian interpolation used by SNES</O>
+&bul;DPCM : <O>simulates Differential Pulse Code Modulation used by NES</O>
 `
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -380,13 +399,13 @@ function typeset(text, customWidth) {
 }
 
 let helpMessages = [ // index: taut.js PANEL_NAMES
-    [helpJam, helpTimeline, helpCommon, helpNotation].join(HRULE),
-    [helpCommon, helpNotation].join(HRULE), // placeholder
-    [helpCommon, helpNotation].join(HRULE), // placeholder
-    [helpCommon, helpNotation].join(HRULE), // placeholder
-    [helpCommon, helpNotation].join(HRULE), // placeholder
-    [helpCommon, helpNotation].join(HRULE), // placeholder
-    [helpCommon, helpNotation].join(HRULE), // placeholder
+    /* Timeline */[helpJam, helpTimeline, helpCommon, helpNotation].join(HRULE),
+    /* Cues */[helpCommon, helpNotation].join(HRULE), // placeholder
+    /* Patterns */[helpCommon, helpNotation].join(HRULE), // placeholder
+    /* Samples */[helpCommon, helpNotation].join(HRULE), // placeholder
+    /* Instruments */[helpCommon, helpNotation].join(HRULE), // placeholder
+    /* Project */[helpProjectFlags, helpCommon, helpNotation].join(HRULE), // placeholder
+    /* File */[helpCommon, helpNotation].join(HRULE), // placeholder
 ]
 
 help.MSG_BY_TABS = helpMessages.map(it => typeset(it))
