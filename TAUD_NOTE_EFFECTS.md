@@ -1,8 +1,54 @@
 # Taud Tracker Effect Command Reference
 
-Taud is a tracker-style music format derived from ScreamTracker 3's pattern command set, extended to 16-bit effect arguments and a 4096-tone equal-temperament pitch grid. This document defines every effect command a Taud engine must implement. Each command entry has three parts: a plain explanation for composers, compatibility notes for converting patterns from ScreamTracker 3 (ST3), ImpulseTracker (IT) or ProTracker (PT), and implementation details for engine writers.
+Taud is a tracker-style music format derived from ScreamTracker 3's pattern command set, extended to 16-bit effect arguments and a 4096-tone equal-temperament pitch grid. This document defines every effect command a Taud engine must implement. Each command entry has three parts: a plain explanation for composers, compatibility notes for converting patterns from ScreamTracker 3 (ST3), ImpulseTracker (IT), FastTracker 2 (FT2) or ProTracker (PT), and implementation details for engine writers.
 
 ---
+
+## 0. Tracker Terminologies
+
+This manual extensively uses "tracker lingo" that may not sound intuitive to the modern DAW users. This section covers some of the tracker lingo to get the concepts better understood for those who have never used trackers.
+
+* **Pattern.** A rectangular block of rows × channels, conceptually similar to a MIDI clip in a DAW but on a strict grid: at most one note event per row per channel. Patterns have a fixed row count (typically 64), and the entire song is assembled by sequencing patterns rather than by placing clips on a continuous timeline.
+
+* **Cue list** (also called *order list* in other trackers). The song-level playlist of pattern indices that defines playback order. The same pattern can appear in many cue slots — editing the pattern updates every occurrence. There is no continuous timeline; the song's runtime is whatever the cue list yields, navigated by effects B (jump) and C (break). Some trackers use one cue slot that spans the entire channels; Taud uses per-channel cues.
+
+* **Channel / Voice.** A vertical column within every pattern, fixed in count for the whole song (closer in spirit to a mixer channel than a DAW track). Each channel plays at most one note at a time; chords need multiple channels. Channels persist their state — volume, pan, vibrato phase, filter — across pattern boundaries.
+
+* **Row.** One horizontal slot within a pattern, at most one note event per channel. A row's duration is `speed × tick_duration` — see Speed and Tempo below.
+
+* **Ticks.** A row spans several ticks dictated by a "tick rate". All note effects happen on those ticks while playing. Some effects (notably sliding effects, excluding fine slides) require more than one ticks for operation, and **they will not get applied when tick rate is set to 1.**
+
+* **Speed vs. Tempo.** Two independent timing knobs. **Speed** (effect A) is the number of ticks per row; **tempo** (effect T) sets the duration of one tick, conventionally expressed as BPM. To slow the song globally without changing how often per-tick effects update, lower the tempo. To give per-tick effects more iterations per row (denser vibrato, longer slides per row), raise the speed. The default is speed 6, tempo $64 → 125 BPM → 50 Hz tick rate → 120 ms per row.
+
+* **Effect column.** Each cell can carry one effect command (opcode + 16-bit argument) that fires on its row. Unlike a DAW automation lane, effects are inline with the notes — there is no continuous curve, only discrete per-row events that compose with the engine's tick loop.
+
+* **Volume column / panning column.** Two extra mini-lanes per cell, each carrying its own 6-bit value + 2-bit selector (set / slide-up / slide-down / fine-slide). They run alongside the main effect column, so a single cell can carry both a main effect *and* a volume-column slide.
+
+* **Effect memory / recall.** Most effects remember their last non-zero argument; re-issuing the same effect with `$0000` recalls and re-applies it. This is how trackers express "continue that slide" without re-typing the rate every row. Each effect has either a private memory slot or shares one with a small cohort of related effects (see §6).
+
+* **Fine slides** are basically "relatively set something" operations. They apply delta on the first tick of the row only.
+
+* **Instruments vs. samples.** Notes don't reference a sample directly — they reference an **instrument**, which wraps a sample with envelopes (volume / pan / pitch), a default note volume, an NNA (New Note Action; see below), and a fadeout setting. The same sample can be wrapped by several instruments with different envelopes, much like a sampler patch in a DAW.
+
+* **Sample loops.** Held notes don't work the way a DAW sustain pedal does. The sample itself contains a loop region (loop_start..loop_end) that the playhead replays endlessly until the note is released or cut — "sustain" comes from the sample data, not from a held key.
+
+* **Note off, note cut, note fade.** Three distinct ways a note ends. **Note cut** (`^^^` or S$Cx) silences instantly. **Note off** (`===` or an NNA = NoteOff) releases the sustain loop and lets the volume envelope's release segment play out, then fades. **Note fade** keeps the sustain loop running but begins the fadeout decay — for soft tail-offs that still sound sustained.
+
+* **NNA — New Note Action.** What happens to a still-playing note when a fresh note arrives on the same channel. Options are Cut (drop the old voice), Continue (let it ring through), Note Off (release it), or Note Fade (begin fadeout). The displaced voice becomes a background **ghost** voice — still audible but no longer addressable from the pattern. This is the tracker's substitute for polyphony across DAW MIDI clips.
+
+* **Portamento.** Automatic pitch glide toward a target note (effect G). A row carrying both a note *and* a G does **not** re-trigger the sample; instead the note becomes the target and the already-sounding sample slides into it. Distinct from generic pitch slides (E/F), which move pitch by a fixed amount per tick with no target.
+
+* **Vibrato / tremolo / panbrello.** Per-channel LFOs applied to pitch (H, U), volume (R), and panning (Y) respectively. Each has independent speed, depth, and waveform. These are not DAW automation envelopes — they're cyclic modulators, more like a synth's LFO knob.
+
+* **Arpeggio.** A chip tune staple: rapidly cycle one channel between three pitches across consecutive ticks to fake a chord on a single voice (effect J). At the default 50 Hz tick rate the cycle is fast enough to perceive as a chord rather than three separate notes.
+
+* **Sample offset.** Start sample playback partway into the sample data rather than at byte 0 (effect O). Common uses: trigger a long sample mid-attack to skip a slow onset, or pick a different drum hit from a multi-sample bank.
+
+* **Pattern jump / break / loop.** Three flow-control tools without a direct DAW analog. **B** jumps to a cue index; **C** breaks out of the current pattern into a specific row of the *next* one in the cue list; **S$Bx** sets a per-channel loop point and repeats the bracketed range a fixed number of times. They operate on the cue list, not on a timeline. This pattern-wise flow control (including delays. see below) applies to the entire channels; there will be no divergence where one channel loops but other channels don't.
+
+* **Pattern delay / fine pattern delay.** **S$Ex** repeats the current row N additional times (notes don't re-trigger across repetitions, but tick-0 events do); **S$6x** extends the current row by N additional ticks without repeating it. Together they let composers stretch row timing locally without touching global speed or tempo.
+
+* **Volume fadeout.** A linear per-tick volume decay applied after key-off (or NNA Note-Fade). For sustained instruments whose volume envelope holds non-zero forever, the fadeout is the *only* mechanism that eventually retires the voice — without a stored fadeout, key-off lets such voices ring indefinitely.
 
 ## 1. Sound device
 
@@ -927,12 +973,13 @@ S is a multiplexing opcode; the **high nibble of the high byte** selects the sub
 
 # S $0x00 — Amiga LPF/LED Switch
 
-**Plain.** `$0100` turns filter off; `$0000` turns it on. The parameter of the filter is somewhat dependent on the current interpolation mode: follows Amiga 1200 LPF on 1200 mode, Amiga 500 LPF on 500 mode. For other interpolation modes, this command is no-op. (see § Effects That Modifies Global Behaviour)
+**Plain.** `$0100` turns filter off; `$0000` turns it on. The parameter of the filter is dependent on the current interpolation mode: follows Amiga 1200 LPF on 1200 mode, Amiga 500 LPF on 500 mode. For other interpolation modes, this command is no-op. (see § Effects that modifies global behaviour)
 
 **Compatibility.** ST3/IT `S00`/`S01` and PT `E00`/`E01` maps directly. To actually hear the effect, the interpolation mode must be set to one of the two Amiga modes.
 
 **Implementation.** Per-playhead boolean `ledFilterOn` (default off). Writes from row are gated on `interpolationMode ∈ {Amiga 500, Amiga 1200}`; in linear / no-interp / default modes the filter chain is bypassed entirely so the toggle is a silent no-op. The post-mix LPF chain runs on the stereo bus (left/right state per playhead) before dithering: in Amiga 500 mode a 1-pole RC LPF (R = 360 Ω, C = 0.1 µF, fc ≈ 4421 Hz) is always applied; in Amiga 1200 mode that LPF is bypassed (cutoff ~34 kHz, well above 32 kHz Nyquist — matches `pt2_paula.c`). When the LED toggle is on, an additional 2-pole Sallen-Key LPF (R1=R2=10 kΩ, C1=6800 pF, C2=3900 pF, fc ≈ 3091 Hz, Q ≈ 0.660) is run after the mode LPF. Coefficients precomputed once at SAMPLING_RATE; recurrence follows musicdsp.org #38 with `pt2_rcfilters.c` parameter mapping.
 
+---
 
 ## S $1x00 — PT/ST3/IT Glissando control
 
@@ -1151,7 +1198,7 @@ Q retrigger counters do **not** reset between SEx repetitions.
 
 ---
 
-## S $Fxxx — Funk repeat with speed $xxx (non-destructive)
+## S $Fxxx — Funk repeat (Invert loop) with speed $xxx (non-destructive)
 
 **Plain.** Produces a hiss-like progressive inversion of the sample loop, toggling individual bytes over time for a gritty textural effect. Setting `$x = 0` turns the effect off; higher `$x` advances the inversion faster.
 
@@ -1211,7 +1258,7 @@ NOTE: **`3.00` — is No-op**. When Set Pan and S $80xx are both present, S-comm
 
 ---
 
-# Effects That Modifies Global Behaviour
+# Effects that modifies global behaviour
 
 Effects in this section modifies the behaviour of the mixer. Primary intention of the commands is to provide switches for legacy tracker and modern DAW behaviours.
 
@@ -1229,69 +1276,8 @@ Effects in this section modifies the behaviour of the mixer. Primary intention o
 - rrr = 1: No interpolation.
 - rrr = 2: Amiga 500 interpolation.
 - rrr = 3: Amiga 1200 interpolation.
-- rrr = 4: SNES 4-tap Gaussian
-- rrr = 5: Preserve delta modulation (linear intp.)
-
-### Volume Fadeout
-
-Taud's volume fadeout is a single linear decay applied per song tick after key-off (or NNA Note-Fade). It is **the only retirement mechanism** for sustained voices when the volume envelope holds non-zero or has no terminating zero node — without a non-zero stored fadeout, such voices play forever.
-
-The 12-bit stored fadeout lives at instrument-record bytes 172 (low 8 bits) and 173 (low nibble = high 4 bits; high nibble reserved). Range 0..4095. The engine maintains a per-voice `fadeoutVolume ∈ [0, 1]` initialised to 1.0 on note-on, and once per song tick while the voice is keyed off:
-
-```
-fadeoutVolume -= storedFadeout / 1024.0
-clamp fadeoutVolume to [0, 1]
-if fadeoutVolume == 0: voice deactivates
-```
-
-Boundary semantics:
-
-| `storedFadeout` | Behaviour |
-| --- | --- |
-| `0` | No fade. Voice plays at envelope-driven volume indefinitely. |
-| `1..1023` | Graduated fade — completes in `1024 / storedFadeout` ticks. |
-| `1024` | Exact 1-tick cut. The canonical "kill on key-off" value. |
-| `1025..4095` | Also a 1-tick cut (clamped at 0). Headroom for converter robustness. |
-
-There is no separate "use fadeout" flag — both extremes share the same field, exactly as in the IT and XM file formats.
-
-**Tick-rate worked example** (default 50 Hz, BPM 125, speed 6):
-
-- `storedFadeout = 1` → fade ≈ 20.5 s
-- `storedFadeout = 32` → fade ≈ 640 ms
-- `storedFadeout = 1024` → ~20 ms (one tick)
-
-**Converter unit conversion.** Source trackers each expose fadeout in their own unit; converters scale the source value into Taud's 0..4095 field.
-
-- **IT** (`it2taud.py`): IT files store fadeout as a 16-bit field at instrument-record offset `0x14`, range 0..1024 per ITTECH (some loaders accept up to 2048). Schism's per-tick decrement is `stored / 1024` — identical to Taud's unit. **Pass-through with clamp:**
-  ```python
-  taud_fadeout = min(it_fadeout & 0xFFFF, 0x0FFF)
-  ```
-- **FT2 / XM** (`xm2taud.py`): XM files store fadeout as a 16-bit field. Spec range 0..0xFFF; MilkyTracker writes up to 32767 to encode the "cut" UI slider position (`SectionInstruments.cpp:499-500`). FT2's per-tick decrement is `stored / 32768` — to match Taud's `stored / 1024` rate, **divide source by 32 (round-to-nearest):**
-  ```python
-  taud_fadeout = min((xm_fadeout + 16) // 32, 0x0FFF)
-  ```
-  XM stored 1..15 round to Taud 0; the originals were >11 min at 50 Hz — effectively no-fade anyway. Stored 32 → Taud 1 (~20 s). Stored 32767 (Milky cut sentinel) → Taud 1024 (1-tick cut).
-- **MOD / S3M / MON**: source has no instrument-level fadeout. Converter writes Taud `0`. Notes retire on sample-end or pattern note-cut.
-
-**Implementation.**
-- Panning (equal-energy):
-  - L_gain = cos(πx / 512.0)
-  - R_gain = sin(πx / 512.0)
-- Amiga tone (both coarse and fine E/F pitch slides). The `slideArg` is a **raw tracker period-unit count** (no scaling), with sign matching linear mode (negative for E, positive for F). Coarse slides apply on every non-first tick; fine slides apply once on tick 0 — the per-step arithmetic is identical:
-  - AMIGA_BASE_PERIOD = 428.0  (period at the Taud reference pitch C4 for a standard 8363 Hz instrument, NTSC clock — identical to PT "C-2" period 428)
-  - period = AMIGA_BASE_PERIOD × 2^(−(noteVal − C4) / 4096)
-  - period_new = period − slideArg                     (E subtracts pitch ⇒ adds period; F adds pitch ⇒ subtracts period)
-  - noteVal_new = C4 + 4096 × log2(AMIGA_BASE_PERIOD / period_new)
-- Linear-frequency tone (E / F / G in Hz/tick). The `slideArg` is a **signed Hz delta per tick** at the audible reference 12-TET A4 = 440 Hz / C4 ≈ 261.6256 Hz, identical to the value MONOTONE stores in its 1xx/2xx/3xx commands. Sign convention matches linear/Amiga modes (negative for E, positive for F):
-  - LINEAR_FREQ_C4_HZ = 261.625565...  (12-TET, so A4 = 440 Hz exactly)
-  - freq = LINEAR_FREQ_C4_HZ × 2^((noteVal − C4) / 4096)
-  - freq_new = max(freq + slideArg, 1.0)
-  - noteVal_new = C4 + 4096 × log2(freq_new / LINEAR_FREQ_C4_HZ)
-  - For tone portamento (G), `tonePortaSpeed` is also in Hz/tick: each tick walks `freq` toward `noteValToFreq(target)` by `±tonePortaSpeed` until the target frequency is reached.
-  - Like Amiga mode, the per-voice intermediate frequency is cached across ticks (no round-trip rounding) and reseeded on note trigger, S$2x finetune, fine slides, and the start of a fresh multi-tick coarse slide.
-
-**Initialisation from the song table.** The same flags byte is stored in the song-table entry (see file format §Song Table). A Taud player should write this byte to MMIO playhead register 7 before starting playback; the mixer then applies it as the initial state on every reset, and subsequent in-pattern `1` effects may override it.
+- rrr = 4: SNES 4-tap gaussian.
+- rrr = 5: NES DPCM simulation.
 
 ---
 
@@ -1364,6 +1350,73 @@ These quirks of ST3 are worth preserving or flagging when importing S3M files in
 - G (tone portamento) is always converted with `round(× 64/3)` and treated as linear, regardless of mode.
 
 **Default tempo byte.** Taud's default $64 equals 125 BPM under the $19 offset; this is not the same as ST3's `$7D` default, which maps to Taud `$64` after subtracting $19. Converters must remap on both import and export.
+
+---
+
+# Miscellaneous implementation details
+
+This section documents important implementation details that are not covered by sections above.
+
+## Volume fadeout
+
+Taud's volume fadeout is a single linear decay applied per song tick after key-off (or NNA Note-Fade). It is **the only retirement mechanism** for sustained voices when the volume envelope holds non-zero or has no terminating zero node — without a non-zero stored fadeout, such voices play forever.
+
+The 12-bit stored fadeout lives at instrument-record bytes 172 (low 8 bits) and 173 (low nibble = high 4 bits; high nibble reserved). Range 0..4095. The engine maintains a per-voice `fadeoutVolume ∈ [0, 1]` initialised to 1.0 on note-on, and once per song tick while the voice is keyed off:
+
+```
+fadeoutVolume -= storedFadeout / 1024.0
+clamp fadeoutVolume to [0, 1]
+if fadeoutVolume == 0: voice deactivates
+```
+
+Boundary semantics:
+
+| `storedFadeout` | Behaviour |
+| --- | --- |
+| `0` | No fade. Voice plays at envelope-driven volume indefinitely. |
+| `1..1023` | Graduated fade — completes in `1024 / storedFadeout` ticks. |
+| `1024` | Exact 1-tick cut. The canonical "kill on key-off" value. |
+| `1025..4095` | Also a 1-tick cut (clamped at 0). Headroom for converter robustness. |
+
+There is no separate "use fadeout" flag — both extremes share the same field, exactly as in the IT and XM file formats.
+
+**Tick-rate worked example** (default 50 Hz, BPM 125, speed 6):
+
+- `storedFadeout = 1` → fade ≈ 20.5 s
+- `storedFadeout = 32` → fade ≈ 640 ms
+- `storedFadeout = 1024` → ~20 ms (one tick)
+
+**Converter unit conversion.** Source trackers each expose fadeout in their own unit; converters scale the source value into Taud's 0..4095 field.
+
+- **IT** (`it2taud.py`): IT files store fadeout as a 16-bit field at instrument-record offset `0x14`, range 0..1024 per ITTECH (some loaders accept up to 2048). Schism's per-tick decrement is `stored / 1024` — identical to Taud's unit. **Pass-through with clamp:**
+  ```python
+  taud_fadeout = min(it_fadeout & 0xFFFF, 0x0FFF)
+  ```
+- **FT2 / XM** (`xm2taud.py`): XM files store fadeout as a 16-bit field. Spec range 0..0xFFF; MilkyTracker writes up to 32767 to encode the "cut" UI slider position (`SectionInstruments.cpp:499-500`). FT2's per-tick decrement is `stored / 32768` — to match Taud's `stored / 1024` rate, **divide source by 32 (round-to-nearest):**
+  ```python
+  taud_fadeout = min((xm_fadeout + 16) // 32, 0x0FFF)
+  ```
+  XM stored 1..15 round to Taud 0; the originals were >11 min at 50 Hz — effectively no-fade anyway. Stored 32 → Taud 1 (~20 s). Stored 32767 (Milky cut sentinel) → Taud 1024 (1-tick cut).
+- **MOD / S3M / MON**: source has no instrument-level fadeout. Converter writes Taud `0`. Notes retire on sample-end or pattern note-cut.
+
+**Implementation.**
+- Panning (equal-energy):
+  - L_gain = cos(πx / 512.0)
+  - R_gain = sin(πx / 512.0)
+- Amiga tone (both coarse and fine E/F pitch slides). The `slideArg` is a **raw tracker period-unit count** (no scaling), with sign matching linear mode (negative for E, positive for F). Coarse slides apply on every non-first tick; fine slides apply once on tick 0 — the per-step arithmetic is identical:
+  - AMIGA_BASE_PERIOD = 428.0  (period at the Taud reference pitch C4 for a standard 8363 Hz instrument, NTSC clock — identical to PT "C-2" period 428)
+  - period = AMIGA_BASE_PERIOD × 2^(−(noteVal − C4) / 4096)
+  - period_new = period − slideArg                     (E subtracts pitch ⇒ adds period; F adds pitch ⇒ subtracts period)
+  - noteVal_new = C4 + 4096 × log2(AMIGA_BASE_PERIOD / period_new)
+- Linear-frequency tone (E / F / G in Hz/tick). The `slideArg` is a **signed Hz delta per tick** at the audible reference 12-TET A4 = 440 Hz / C4 ≈ 261.6256 Hz, identical to the value MONOTONE stores in its 1xx/2xx/3xx commands. Sign convention matches linear/Amiga modes (negative for E, positive for F):
+  - LINEAR_FREQ_C4_HZ = 261.625565...  (12-TET, so A4 = 440 Hz exactly)
+  - freq = LINEAR_FREQ_C4_HZ × 2^((noteVal − C4) / 4096)
+  - freq_new = max(freq + slideArg, 1.0)
+  - noteVal_new = C4 + 4096 × log2(freq_new / LINEAR_FREQ_C4_HZ)
+  - For tone portamento (G), `tonePortaSpeed` is also in Hz/tick: each tick walks `freq` toward `noteValToFreq(target)` by `±tonePortaSpeed` until the target frequency is reached.
+  - Like Amiga mode, the per-voice intermediate frequency is cached across ticks (no round-trip rounding) and reseeded on note trigger, S$2x finetune, fine slides, and the start of a fresh multi-tick coarse slide.
+
+**Initialisation from the song table.** The same flags byte is stored in the song-table entry (see file format §Song Table). A Taud player should write this byte to MMIO playhead register 7 before starting playback; the mixer then applies it as the initial state on every reset, and subsequent in-pattern `1` effects may override it.
 
 ---
 
