@@ -294,11 +294,11 @@ def _it214_decompress_block(payload: bytes, num_samples: int,
 
     return out
 
-def it214_decompress(blob: bytes, smp_offset: int, num_samples: int,
-                     is_16bit: bool, is_it215: bool) -> bytes:
-    """Decode IT2.14/IT2.15 compressed sample data. Returns raw PCM bytes (signed)."""
+def _it214_decompress_channel(blob: bytes, pos: int, num_samples: int,
+                              is_16bit: bool, is_it215: bool) -> tuple:
+    """Decode one channel of IT2.14/IT2.15 compressed data. Returns
+    (raw PCM bytes, next position after consumed blocks)."""
     block_size = 0x4000 if is_16bit else 0x8000
-    pos = smp_offset
     out_samples = []
 
     while len(out_samples) < num_samples:
@@ -318,9 +318,24 @@ def it214_decompress(blob: bytes, smp_offset: int, num_samples: int,
         result = bytearray(len(out_samples) * 2)
         for i, s in enumerate(out_samples):
             struct.pack_into('<h', result, i * 2, max(-32768, min(32767, s)))
-        return bytes(result)
+        return bytes(result), pos
     else:
-        return bytes(s & 0xFF for s in out_samples)
+        return bytes(s & 0xFF for s in out_samples), pos
+
+
+def it214_decompress(blob: bytes, smp_offset: int, num_samples: int,
+                     is_16bit: bool, is_it215: bool,
+                     is_stereo: bool = False) -> bytes:
+    """Decode IT2.14/IT2.15 compressed sample data. Returns raw PCM bytes
+    (signed). For stereo samples, returns the left channel block followed
+    by the right channel block (matching IT's on-disk SF_SS layout)."""
+    left, pos = _it214_decompress_channel(blob, smp_offset, num_samples,
+                                           is_16bit, is_it215)
+    if not is_stereo:
+        return left
+    right, _ = _it214_decompress_channel(blob, pos, num_samples,
+                                          is_16bit, is_it215)
+    return left + right
 
 
 # ── IT sample parser ──────────────────────────────────────────────────────────
@@ -384,7 +399,7 @@ def parse_samples(data: bytes, h: ITHeader, decompress: bool) -> list:
                     try:
                         is_it215 = bool(s.cvt & 0x04)
                         raw = it214_decompress(data, s.smp_point, s.length,
-                                               s.is_16bit, is_it215)
+                                               s.is_16bit, is_it215, s.is_stereo)
                         s.sample_data = normalise_sample(raw, True,
                                                           s.is_16bit, s.is_stereo, s.name)
                         s.length = len(s.sample_data)

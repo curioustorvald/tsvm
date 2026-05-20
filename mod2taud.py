@@ -592,7 +592,7 @@ def build_sample_inst_bin(samples: list) -> tuple:
 # PT hard-pans channels in LRRL order: 0=L 1=R 2=R 3=L (and tile for >4).
 def _default_channel_pan(ch_idx: int) -> int:
     side = (ch_idx % 4)
-    return 16 if side in (0, 3) else 47
+    return 8 if side in (0, 3) else 55
 
 
 def build_pattern(grid: list, ch_idx: int, default_pan: int,

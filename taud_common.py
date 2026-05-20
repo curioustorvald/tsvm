@@ -614,31 +614,44 @@ def build_project_data(*, project_name: str = '',
 
 def normalise_sample(raw: bytes, signed: bool, is_16bit: bool,
                      is_stereo: bool, name: str) -> bytes:
-    """Return unsigned 8-bit mono sample bytes, downmixing/depthing as needed."""
+    """Return unsigned 8-bit mono sample bytes, downmixing/depthing as needed.
+
+    Stereo samples are stored as a split (non-interleaved) layout — the full
+    left channel block followed by the full right channel block — matching the
+    on-disk format used by IT, S3M, and XM (Schism's SF_SS).
+    """
     out = []
-    stride = (2 if is_16bit else 1) * (2 if is_stereo else 1)
-    i = 0
-    while i + stride <= len(raw):
+    bps     = 2 if is_16bit else 1
+    chans   = 2 if is_stereo else 1
+    n_frames = len(raw) // (bps * chans)
+    chan_bytes = n_frames * bps
+
+    for i in range(n_frames):
         if is_16bit:
             if is_stereo:
-                l16 = struct.unpack_from('<h', raw, i)[0]
-                r16 = struct.unpack_from('<h', raw, i+2)[0]
+                l16 = struct.unpack_from('<h', raw, i*2)[0]
+                r16 = struct.unpack_from('<h', raw, chan_bytes + i*2)[0]
                 s = (l16 + r16) >> 1
             else:
-                s = struct.unpack_from('<h', raw, i)[0]
+                s = struct.unpack_from('<h', raw, i*2)[0]
             v = (s >> 8) + 128
         else:
             if is_stereo:
-                l8 = raw[i]; r8 = raw[i+1]
-                raw_s = (l8 + r8) // 2
+                l8 = raw[i]
+                r8 = raw[chan_bytes + i]
+                if signed:
+                    l_s = l8 - 256 if l8 >= 0x80 else l8
+                    r_s = r8 - 256 if r8 >= 0x80 else r8
+                    v = ((l_s + r_s) >> 1) + 128
+                else:
+                    v = (l8 + r8) >> 1
             else:
                 raw_s = raw[i]
-            if signed:
-                v = (raw_s ^ 0x80) & 0xFF
-            else:
-                v = raw_s
+                if signed:
+                    v = (raw_s ^ 0x80) & 0xFF
+                else:
+                    v = raw_s
         out.append(v & 0xFF)
-        i += stride
     if is_16bit or is_stereo:
         vprint(f"  info: '{name}' converted to unsigned 8-bit mono ({len(out)} samples)")
     return bytes(out)
