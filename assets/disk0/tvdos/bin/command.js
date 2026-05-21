@@ -77,56 +77,31 @@ function printmotd() {
     let motd = motdFile.sread().trim()
     let width = con.getmaxyx()[1]
 
+    let ts = require("typesetter")
 
     if (goFancy) {
         let margin = 4
         let internalWidth = width - 2*margin
+        let textWidth = internalWidth - 2  // one space of padding inside each ribbon edge
 
-        con.color_pair(255,253) // white text, transparent back (initial ribbon)
-
-        let [cy, cx] = con.getyx()
-
-        con.mvaddch(cy, 4, 16);con.curs_right();print(' ')
-
-        const PCX_INIT = margin - 2
-        let tcnt = 0
-        let pcx = PCX_INIT
-        con.color_pair(240,253) // black text, white back (first line of text)
-        while (tcnt <= motd.length) {
-            let char = motd.charAt(tcnt)
-
-            if (char != '\n') {
-                // prevent the line starting from ' '
-                if (pcx != PCX_INIT || char != ' ') {
-                    print(motd.charAt(tcnt))
-                }
-                pcx += 1
-            }
-
-            if ('\n' == char || pcx % internalWidth == 0 && pcx != 0 || tcnt == motd.length) {
-                // current line ending
-                let [_, ncx] = con.getyx()
-                for (let k = 0; k < width - margin - ncx + 1; k++) print(' ')
-                con.color_pair(255,253) // white text, transparent back
-                con.addch(17);println()
-
-                if (tcnt == motd.length) break
-
-                // next line header
-                let [ncy, __] = con.getyx()
-                con.color_pair(255,253) // white text, transparent back
-                con.mvaddch(ncy, 4, 16);con.curs_right();print(' ');con.color_pair(240,253) // black text, white back (subsequent lines of the text)
-                pcx = PCX_INIT
-            }
-
-            tcnt += 1
-        }
-
+        let lines = ts.typeset(motd, textWidth)
+        lines.forEach(line => {
+            let [cy, _cx] = con.getyx()
+            con.color_pair(255,253) // ribbon edge: white text, transparent back
+            con.mvaddch(cy, margin, 16); con.curs_right()
+            print(' ')
+            con.color_pair(240,253) // body: black text, white back
+            print(line)
+            con.color_pair(255,253)
+            print(' ')
+            con.addch(17); println()
+        })
         con.reset_graphics()
     }
     else {
         println()
-        println(motd)
+        let lines = ts.typeset(motd, width)
+        lines.forEach(line => println(line))
     }
 
     println()

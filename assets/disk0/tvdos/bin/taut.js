@@ -2297,7 +2297,7 @@ function ordersInput(wo, event) {
 // PATTERN EDITOR PANEL
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-// Returns the visual width of a TSVM string (handles Nnu escape sequences)
+// Returns the visual width of a TSVM string (handles \u0084Nnu escape sequences)
 function visWidth(s) {
     let w = 0, i = 0
     while (i < s.length) {

@@ -116,6 +116,16 @@ Use the build scripts in `buildapp/`:
 - `My_BASIC_Programs/`: Example BASIC programs for testing
 - TVDOS filesystem uses custom format with specialised drivers
 
+### TSVM JavaScript Source Encoding
+
+**Do not normalise `\uXXXX` or `\xXX` escapes in .js / .mjs files that run inside
+TSVM.** TSVM's character set is not Unicode, and the JS string literal parser
+behaves differently for raw bytes vs. escape sequences. Both forms appear in
+existing code intentionally — leave each one as-is. When writing new content,
+prefer raw UTF-8 characters in string literals (e.g. write the character `ù`
+directly, rather than a `\uXXXX`-style escape) unless you are matching a
+pattern already established in the surrounding code.
+
 ## Videotron2K
 
 The Videotron2K is a specialised video display controller with:
