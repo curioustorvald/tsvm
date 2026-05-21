@@ -3781,7 +3781,6 @@ function openFlagsPopup() {
     while (!done) {
         input.withEvent(ev => {
             if (ev[0] !== 'key_down') return
-            if (1 !== ev[2]) return
             const ks = ev[1]
             if (eventJustReceived) { eventJustReceived = false; return }
 
