@@ -66,7 +66,7 @@ const EXEC_FUNS = {
     "txt": (f) => _G.shell.execute(`less "${f}"`),
     "md": (f) => _G.shell.execute(`less "${f}"`),
     "log": (f) => _G.shell.execute(`less "${f}"`),
-    "taud": (f) => _G.shell.execute(`microtone "${f}"`),
+    "taud": (f) => _G.shell.execute(`playtaud "${f}"`),
 }
 
 function makeExecFun(template) {

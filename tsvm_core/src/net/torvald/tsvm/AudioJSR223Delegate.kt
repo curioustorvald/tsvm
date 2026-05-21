@@ -134,6 +134,28 @@ class AudioJSR223Delegate(private val vm: VM) {
         } else v.channelPan.coerceIn(0, 255)
     }
 
+    /** Whether the voice slot is currently sounding (i.e. owns an active sample). Mirrors
+     *  `Voice.active` which is the source of truth for "is this voice contributing to the mix
+     *  right now". Visualisers should treat this as the authoritative on/off bit. */
+    fun getVoiceActive(playhead: Int, voice: Int): Boolean =
+        getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19))?.active == true
+
+    /** Live noteVal (0..65535, 4096-TET) of the foreground voice — the value the mixer is using
+     *  *right now* including any in-flight vibrato / arpeggio / portamento delta. Returns 0 for
+     *  inactive voices. */
+    fun getVoiceNote(playhead: Int, voice: Int): Int {
+        val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19)) ?: return 0
+        if (!v.active) return 0
+        return v.noteVal and 0xFFFF
+    }
+
+    /** Instrument id (0..255) currently bound to the voice slot, or 0 if the voice is inactive. */
+    fun getVoiceInstrument(playhead: Int, voice: Int): Int {
+        val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19)) ?: return 0
+        if (!v.active) return 0
+        return v.instrumentId and 0xFF
+    }
+
     /** Set the starting row for the next play call, resetting per-row timing and silencing active voices. */
     fun setTrackerRow(playhead: Int, row: Int) {
         getPlayhead(playhead)?.trackerState?.let { ts ->
