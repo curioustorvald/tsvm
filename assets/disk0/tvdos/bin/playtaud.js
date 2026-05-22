@@ -390,11 +390,11 @@ const NAME_RULES = [
         'kick','snare','hat','drum','perc','clap','cymb','tom','ride',
         'crash','rim','clave','cowbell','shaker','tamb','conga','bongo',
         'snr','kik','bdrum','sdrum','kit','break','909','707','606',
-        ' bd',' sd',' hh',' bd1',' bd2',' sd1',' sd2'
+        ' bd',' sd',' hh',' bd1',' bd2',' sd1',' sd2',' sn',' tst',' tsk'
     ]},
     { arch: ARCH_METAL, words: [
         'metal','ring mod','ringmod','noise','glass','chime','clang',
-        'sweep','riser','blip','zap','laser','bitcrush','crush','fm '
+        'sweep','riser','blip','zap','laser','bitcrush','crush','fm ','xwav'
     ]},
     { arch: ARCH_BASS, words: [
         'bass','sub','808','b-line','bassline','b.s.'
@@ -457,16 +457,7 @@ function classifyInstrument(slot) {
     const c4Rate    = readInstU16(slot, 6)
     if (sampleLen === 0) return null   // empty slot
 
-    // Acoustic override: an unambiguously percussive sample (short one-shot,
-    // no loop) is treated as DRUM even when the name says otherwise.  Modules
-    // sometimes label kicks "Bass" or label individual percussion hits with
-    // genre tags — the acoustic shape is the more reliable signal there.
-    const flags    = readInstByte(slot, 14)
-    const loopMode = flags & 0x03
-    const looped   = (loopMode === 1 || loopMode === 2)
-    if (sampleLen < 4096 && !looped) return ARCH_DRUM
-
-    // Name-based prior next — a kick called "Kick" is a kick even if its
+    // Name-based prior first — a kick called "Kick" is a kick even if its
     // envelope/spectrum could read as something else.  Falls back to the
     // acoustic heuristic when name has no keyword hits.
     const nameHit = classifyByName(song.instNames[slot] + ' ' + song.sampleNames[slot])
@@ -934,17 +925,21 @@ function drawStereo() {
     const bins = new Float32Array(W)
     for (let v = 0; v < song.numVoices; v++) {
         if (!audio.getVoiceActive(0, v)) continue
-        const vol = audio.getVoiceEffectiveVolume(0, v) || 0
+        const vol = Math.pow(audio.getVoiceEffectiveVolume(0, v) || 0, 0.125)
         if (vol <= 0) continue
         const pan = audio.getVoiceEffectivePan(0, v)
         let col = Math.round((pan / 255) * (W - 1))
         if (col < 0) col = 0
         if (col >= W) col = W - 1
-        // Gaussian-ish 3-cell spread so individual voices don't read as single
+        // Gaussian-ish 7-cell spread so individual voices don't read as single
         // spikes — the eye reads bars best with some neighbouring mass.
         bins[col] += vol
-        if (col > 0) bins[col - 1] += vol * 0.5
-        if (col < W - 1) bins[col + 1] += vol * 0.5
+        if (col >= 3) bins[col - 3] += vol * 0.05
+        if (col >= 2) bins[col - 2] += vol * 0.3
+        if (col >= 1) bins[col - 1] += vol * 0.75
+        if (col < W - 1) bins[col + 1] += vol * 0.75
+        if (col < W - 2) bins[col + 2] += vol * 0.3
+        if (col < W - 3) bins[col + 3] += vol * 0.05
     }
     const stairs = [0x20, 0xB0, 0xB1, 0xB2, 0xDB]   // space ░ ▒ ▓ █
     for (let i = 0; i < W; i++) {
@@ -1007,9 +1002,7 @@ let errorlevel = 0
 // clock.
 
 let ticksPerRow = Math.max(1, song.tickRate)
-const frameIntervalMs = 33
-let synthTick = 0      // tick within current row, 0..ticksPerRow-1
-
+let synthTick = 0 // tick within current row, 0..ticksPerRow-1
 try {
     while (audio.isPlaying(0) && !stopReq) {
         // Backspace polling (mirrors playtad).
@@ -1046,7 +1039,7 @@ try {
         drawStereo()
         drawTickLights(synthTick, ticksPerRow)
 
-        sys.sleep(frameIntervalMs)
+        sys.sleep((2500 / audio.getBPM(0))|0) // one visual frame = one tick
     }
 }
 catch (e) {
