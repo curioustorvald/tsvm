@@ -5,6 +5,9 @@
 
 const SYSTEM_PACKEAGE_DEF_DIR = "A:/tvdos/hopper"
 const MANIFEST_EXT = "hop.per"
+const MIRROR_LIST_PATH = `${SYSTEM_PACKEAGE_DEF_DIR}/mirrors.list`
+
+const net = require("A:/tvdos/include/net.mjs")
 
 // SYNOPSIS
 // hopper {search,se} [--provides, --requires, --description, --author] query
@@ -168,16 +171,54 @@ function parseRequires(s) {
     return out
 }
 
+// HopperProvides entries are "<name>" or "<name> <version>". A bare name
+// falls back to the package's own HopperPackageVersion — the same idea
+// as RPM's `Provides: aalib = 1.2.0` (where the package's real name and
+// version may differ from the virtual identity it exposes).
+function parseProvides(s, fallbackVersion) {
+    const out = []
+    splitList(s || "").forEach(entry => {
+        const idx = entry.search(/\s+/)
+        if (idx < 0) {
+            out.push({ name: entry, version: fallbackVersion })
+        } else {
+            const v = entry.substring(idx + 1).trim()
+            out.push({ name: entry.substring(0, idx), version: v || fallbackVersion })
+        }
+    })
+    return out
+}
+
+// Look up the version a candidate exposes for `name`. If `name` matches
+// the package's own name (or isn't declared in HopperProvides at all),
+// returns the package's own version.
+function providedVersionOf(candidate, name) {
+    if (candidate.provides) {
+        for (let i = 0; i < candidate.provides.length; i++) {
+            if (candidate.provides[i].name === name) return candidate.provides[i].version
+        }
+    }
+    return candidate.version
+}
+
 // ============================================================
 // Candidate index (installed + upstream)
 // ============================================================
 
 function _manifestToCandidate(m, source) {
+    const name    = m.HopperPackageName || ""
+    const version = m.HopperPackageVersion || "0.0.0"
+    const provides = parseProvides(m.HopperProvides || "", version)
+    // Every package implicitly provides itself at its own version. Only
+    // synthesise this when the manifest didn't declare it explicitly.
+    if (name && !provides.some(p => p.name === name)) {
+        provides.unshift({ name: name, version: version })
+    }
     return {
-        name:     m.HopperPackageName || "",
-        version:  m.HopperPackageVersion || "0.0.0",
+        name:     name,
+        version:  version,
         requires: parseRequires(m.HopperRequires || ""),
-        provides: splitList(m.HopperProvides || ""),
+        provides: provides,
         source:   source, // "installed" | "upstream"
         manifest: m
     }
@@ -200,18 +241,24 @@ function buildCandidateIndex() {
     return idx
 }
 
-// Anything that satisfies a requirement on `name`: package whose own name is
-// `name`, OR whose HopperProvides includes `name`.
+// Anything that satisfies a requirement on `name`: a package whose own
+// HopperPackageName matches OR whose HopperProvides declares `name`.
+// Each candidate now carries `provides` as {name, version} pairs; the
+// package's own (name, version) is always present (see
+// _manifestToCandidate), so a single pass over `provides` is enough.
 function findProviders(idx, name) {
-    const direct = idx.get(name) ? idx.get(name).slice() : []
-    const indirect = []
+    const out = []
+    const seen = new Set()
     idx.forEach(candidates => {
         candidates.forEach(c => {
-            if (c.name === name) return // already in `direct`
-            if (c.provides.indexOf(name) >= 0) indirect.push(c)
+            if (seen.has(c)) return
+            if (c.provides.some(p => p.name === name)) {
+                out.push(c)
+                seen.add(c)
+            }
         })
     })
-    return direct.concat(indirect)
+    return out
 }
 
 // Sort: installed first (no churn), then highest version, then upstream order.
@@ -251,18 +298,22 @@ function resolveAll(idx, requirements) {
     function _resolve(reqName, constraint, trail) {
         const existing = chosen.get(reqName)
         if (existing !== undefined) {
-            return satisfies(existing.version, constraint)
+            const v = providedVersionOf(existing, reqName)
+            return satisfies(v, constraint)
                 ? { ok: true }
-                : { ok: false, reason: `${reqName} pinned to ${existing.version}, but ${trail.join(" -> ")} requires ${constraint}` }
+                : { ok: false, reason: `${reqName} pinned to ${v}, but ${trail.join(" -> ")} requires ${constraint}` }
         }
 
         const providers = findProviders(idx, reqName)
         if (providers.length === 0) {
             return { ok: false, reason: `no package provides "${reqName}" (required by ${trail.join(" -> ") || "<root>"})` }
         }
-        const matching = sortCandidates(providers.filter(c => satisfies(c.version, constraint)))
+        // Satisfaction checks the virtual version the candidate exposes
+        // for `reqName` (HopperProvides), not necessarily the package's
+        // own HopperPackageVersion.
+        const matching = sortCandidates(providers.filter(c => satisfies(providedVersionOf(c, reqName), constraint)))
         if (matching.length === 0) {
-            const versions = providers.map(p => `${p.version}[${p.source}]`).join(", ")
+            const versions = providers.map(p => `${providedVersionOf(p, reqName)}[${p.source}]`).join(", ")
             return { ok: false, reason: `no version of "${reqName}" satisfies ${constraint} (available: ${versions})` }
         }
 
@@ -340,100 +391,103 @@ function printPlan(actions, target) {
 }
 
 // ============================================================
+// Remote mirrors
+// ============================================================
+//
+// `mirrors.list` lives next to the installed package manifests.
+// Each non-empty, non-`#` line is the URL prefix of a Hopper mirror.
+// The mirror MUST expose `<prefix>mirror_manifest` (key:value pairs
+// describing the mirror) and `<prefix>filelist` (CSV with rows of
+// `packagename,version,hoppermanifest-filename`).
+//
+// Trailing slash on the prefix is optional and will be added if missing.
+
+function loadMirrorList() {
+    const f = files.open(MIRROR_LIST_PATH)
+    if (!f.exists || f.isDirectory) return []
+    return f.sread().split("\n")
+        .map(line => line.replace(/\r$/, "").trim())
+        .filter(line => line.length > 0 && line[0] !== "#")
+        .map(line => line.endsWith("/") ? line : (line + "/"))
+}
+
+function parseFileList(text) {
+    const out = []
+    text.split("\n").forEach(raw => {
+        const line = raw.replace(/\r$/, "").trim()
+        if (line.length === 0 || line[0] === "#") return
+        const parts = line.split(",")
+        if (parts.length < 3) return
+        out.push({
+            name:    parts[0].trim(),
+            version: parts[1].trim(),
+            file:    parts[2].trim(),
+        })
+    })
+    return out
+}
+
+function fetchManifestsFromMirror(prefix) {
+    const mfText = net.fetchText(prefix + "mirror_manifest")
+    if (mfText === null) {
+        printerrln(`  ! could not reach mirror: ${prefix}`)
+        return []
+    }
+    const mirror = parseManifest(mfText)
+    const mirrorName = mirror.HopperMirrorName || prefix
+
+    const flText = net.fetchText(prefix + "filelist")
+    if (flText === null) {
+        printerrln(`  ! mirror "${mirrorName}" has no filelist`)
+        return []
+    }
+
+    const out = []
+    parseFileList(flText).forEach(entry => {
+        const manifestText = net.fetchText(prefix + entry.file)
+        if (manifestText === null) {
+            printerrln(`  ! mirror "${mirrorName}" missing ${entry.file}`)
+            return
+        }
+        const m = parseManifest(manifestText)
+        m._mirrorName   = mirrorName
+        m._mirrorPrefix = prefix
+        m._manifestUrl  = prefix + entry.file
+        out.push(m)
+    })
+    return out
+}
+
+// Per-invocation memoisation. Search and install both pull the same
+// data; we only want to hit the network once per `hopper ...` call.
+let _remoteCache = null
+
+function fetchRemoteCandidates() {
+    if (_remoteCache !== null) return _remoteCache
+
+    const mirrors = loadMirrorList()
+    if (mirrors.length === 0) {
+        _remoteCache = []
+        return _remoteCache
+    }
+
+    if (!net.isAvailable()) {
+        printerrln("Warning: no HTTP modem attached; remote mirrors will be skipped.")
+        _remoteCache = []
+        return _remoteCache
+    }
+
+    const out = []
+    mirrors.forEach(prefix => {
+        fetchManifestsFromMirror(prefix).forEach(m => out.push(m))
+    })
+    _remoteCache = out
+    return _remoteCache
+}
+
+// ============================================================
 // Search
 // ============================================================
-
-// Dummy "remote" repository -- pretends to be a network query result.
-// Multiple entries per HopperPackageName represent multiple available
-// versions; the resolver picks among them.
-const FAKE_REMOTE_PACKAGES = [
-    // doomster: single version, needs libgl 1.*
-    {
-        HopperPackageName: "doomster", HopperPackageVersion: "0.9.3",
-        ProperName: "Doomster", ProperAuthor: "id Sortware",
-        ProperDescription: "First-person shooter game for TSVM",
-        HopperProvides: "doomster;", HopperRequires: "tvdos 1.*;libgl 1.*"
-    },
-
-    // libfft: three versions
-    {
-        HopperPackageName: "libfft", HopperPackageVersion: "0.1.0",
-        ProperName: "LibFFT", ProperAuthor: "Soraya Vaughn",
-        ProperDescription: "Fast Fourier Transform library for TSVM",
-        HopperProvides: "libfft;", HopperRequires: "tvdos 1.*"
-    },
-    {
-        HopperPackageName: "libfft", HopperPackageVersion: "0.2.0",
-        ProperName: "LibFFT", ProperAuthor: "Soraya Vaughn",
-        ProperDescription: "Fast Fourier Transform library for TSVM",
-        HopperProvides: "libfft;", HopperRequires: "tvdos 1.*"
-    },
-    {
-        HopperPackageName: "libfft", HopperPackageVersion: "1.0.0",
-        ProperName: "LibFFT", ProperAuthor: "Soraya Vaughn",
-        ProperDescription: "Fast Fourier Transform library for TSVM",
-        HopperProvides: "libfft;", HopperRequires: "tvdos 1.*"
-    },
-
-    // chatlite: 2.1.5 fits installed wintex 1.*; 3.0.0 demands wintex 2.*
-    {
-        HopperPackageName: "chatlite", HopperPackageVersion: "2.1.5",
-        ProperName: "ChatLite", ProperAuthor: "TerraNetworks Co.",
-        ProperDescription: "Lightweight IRC-style chat client",
-        HopperProvides: "chatlite;", HopperRequires: "tvdos 1.*;wintex 1.*"
-    },
-    {
-        HopperPackageName: "chatlite", HopperPackageVersion: "3.0.0",
-        ProperName: "ChatLite", ProperAuthor: "TerraNetworks Co.",
-        ProperDescription: "Lightweight IRC-style chat client",
-        HopperProvides: "chatlite;", HopperRequires: "tvdos 1.*;wintex 2.*"
-    },
-
-    // snakey
-    {
-        HopperPackageName: "snakey", HopperPackageVersion: "1.4.0",
-        ProperName: "Snakey", ProperAuthor: "Iben Holst",
-        ProperDescription: "Classic snake game with TerranBASIC scripting",
-        HopperProvides: "snakey;", HopperRequires: "tvdos 1.*;libterranbasic 1.*"
-    },
-
-    // libgl future version (lets superchef pull in an upgrade)
-    {
-        HopperPackageName: "libgl", HopperPackageVersion: "2.0.0",
-        ProperName: "LibGL", ProperAuthor: "CuriousTorvald",
-        ProperDescription: "TVDOS Graphics Library, next-generation",
-        HopperProvides: "libgl;", HopperRequires: ""
-    },
-
-    // superchef: requires libgl 2.* -- triggers an upgrade of installed libgl
-    {
-        HopperPackageName: "superchef", HopperPackageVersion: "1.0.0",
-        ProperName: "SuperChef", ProperAuthor: "Pavlo Kvasnik",
-        ProperDescription: "Recipe-driven build automation",
-        HopperProvides: "superchef;", HopperRequires: "tvdos 1.*;libgl 2.*"
-    },
-
-    // phantomedit: needs something that does not exist -> unresolvable
-    {
-        HopperPackageName: "phantomedit", HopperPackageVersion: "0.1.0",
-        ProperName: "PhantomEdit", ProperAuthor: "anonymous",
-        ProperDescription: "Editor for non-existent files",
-        HopperProvides: "phantomedit;", HopperRequires: "libquantum 1.*"
-    },
-
-    // fake updated version of Microtone
-    {
-        HopperPackageName: "microtone", HopperPackageVersion: "1.3.0",
-        ProperName: "Microtone", ProperAuthor: "CuriousTorvald",
-        ProperDescription: "Fake updated version of Microtone",
-        HopperProvides: "microtone;", HopperRequires: "tvdos 1.*;libgl 2.*"
-    },
-]
-
-// Indirection point: in the future this should hit a real upstream.
-function fetchRemoteCandidates() {
-    return FAKE_REMOTE_PACKAGES
-}
 
 function fieldCandidates(manifest, field) {
     switch (field) {
@@ -480,10 +534,16 @@ function cmdSearch(args) {
     else sysHits.forEach(m => printSearchResult(m, "installed"))
 
     println("")
-    println("Searching remote repository ...")
-    const netHits = FAKE_REMOTE_PACKAGES.filter(m => matchesQuery(m, field, query))
-    if (netHits.length === 0) println("  (no matches)")
-    else netHits.forEach(m => printSearchResult(m, "remote"))
+    println("Searching remote mirrors ...")
+    const remote = fetchRemoteCandidates()
+    if (remote.length === 0) {
+        println("  (no mirrors configured or reachable)")
+    }
+    else {
+        const netHits = remote.filter(m => matchesQuery(m, field, query))
+        if (netHits.length === 0) println("  (no matches)")
+        else netHits.forEach(m => printSearchResult(m, m._mirrorName || "remote"))
+    }
 
     return 0
 }

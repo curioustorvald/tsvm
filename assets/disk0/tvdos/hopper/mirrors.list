@@ -1,0 +1,17 @@
+# Hopper Mirror List
+#
+# One mirror per non-empty, non-comment line.
+# Each entry is the remote URL prefix from which Hopper can fetch
+#     <prefix>mirror_manifest
+#     <prefix>filelist
+#     <prefix><package>.hop.per   (one per row of filelist)
+#
+# `mirror_manifest` declares HopperMirrorName, HopperMirrorMaintainer
+# and HopperMirrorRemotePrefix; `filelist` is CSV of
+#     packagename,version,hoppermanifest-filename
+#
+# Lines starting with `#` and empty lines are ignored.
+# A trailing slash on the prefix is optional; Hopper will add one
+# if missing.
+
+https://raw.githubusercontent.com/curioustorvald/hopper-mirror/refs/heads/master/

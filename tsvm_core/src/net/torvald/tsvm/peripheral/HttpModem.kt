@@ -22,7 +22,7 @@ import java.net.URL
  */
 class HttpModem(private val vm: VM, private val artificialDelayBlockSize: Int = 1024, private val artificialDelayWaitTime: Int = -1) : BlockTransferInterface(false, true) {
 
-    private val DBGPRN = true
+    private val DBGPRN = falsehopp
 
     private fun printdbg(msg: Any) {
         if (DBGPRN) println("[WgetModem] $msg")
