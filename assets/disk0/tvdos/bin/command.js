@@ -178,6 +178,19 @@ shell.replaceVarCall = function(value) {
 shell.getPwd = function() { return shell_pwd; }
 shell.getPwdString = function() { return "\\" + (shell_pwd.concat([""])).join("\\"); }
 shell.getCurrentDrive = function() { return CURRENT_DRIVE; }
+shell.runningScriptPaths = []
+shell.getFilePath = function() {
+    return shell.runningScriptPaths[shell.runningScriptPaths.length - 1]
+}
+shell.getFileDir = function() {
+    let p = shell.runningScriptPaths[shell.runningScriptPaths.length - 1]
+    if (p === undefined) return undefined
+    let lastSlash = Math.max(p.lastIndexOf('\\'), p.lastIndexOf('/'))
+    if (lastSlash < 0) return p
+    // root of a drive (e.g. "A:\foo.js" -> "A:\")
+    if (lastSlash === 2 && p[1] === ':') return p.substring(0, 3)
+    return p.substring(0, lastSlash)
+}
 // example input: echo "the string" > subdir\test.txt
 shell.parse = function(input) {
     let tokens = []
@@ -787,6 +800,8 @@ shell.execute = function(line, nameOverride) {
                 let programCode = searchFile.sread()
                 let extension = searchFile.extension.toUpperCase()
 
+                shell.runningScriptPaths.push(searchFile.fullPath)
+                try {
                 if ("BAT" == extension) {
                     // parse and run as batch file
                     var lines = programCode.split('\n').filter(function(it) { return it.length > 0 }) // this return is not shell's return!
@@ -878,6 +893,9 @@ shell.execute = function(line, nameOverride) {
                         retValue = errorlevel
                         continue
                     }
+                }
+                } finally {
+                    shell.runningScriptPaths.pop()
                 }
             }
         }
