@@ -11,7 +11,7 @@ const USER_PACKAGE_INCLUDE_DIR = `${USER_BASE_DIR}/include`
 const MANIFEST_EXT = "hop.per"
 const MIRROR_LIST_PATH = `${SYSTEM_PACKEAGE_DEF_DIR}/mirrors.list`
 
-const net = require("A:/tvdos/include/net.mjs")
+const net = require("net")
 
 // SYNOPSIS
 // hopper {search,se} [--provides, --requires, --description, --author] query
