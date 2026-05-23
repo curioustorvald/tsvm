@@ -2649,7 +2649,7 @@ Endianness: Little
     Uint8   Flags for Global Behaviour (effect symbol '1')
         0b 000 rrr ff
             ff: tone mode          (0: linear pitch slides, 1: Amiga period slides, 2: linear-frequency slides, 3: reserved)
-            rrr: interpolation mode (0: default, 1: none, 2: Amiga 500, 3: Amiga 1200, 4: SNES 4-tap Gaussian, 5: preserve delta modulation)
+            rrr: interpolation mode (0: default, 1: none, 2: Amiga 500, 3: Amiga 1200, 4: SNES 4-tap Gaussian, 5: NES DPCM simulation)
     Uint8   Song global volume
         * ImpulseTracker has range of 0..128; multiply by (255/128) then round to int
     Uint8   Song mixing volume
