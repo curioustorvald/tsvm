@@ -55,10 +55,12 @@ class PmemFSfile {
         // string representation (preferable)
         if (typeof bytes === 'string' || bytes instanceof String) {
             this.data = bytes
+            this.length = bytes.length
         }
         // Javascript array OR JVM byte[]
         else if (Array.isArray(bytes) || bytes.toString().startsWith("[B")) {
-            this.bdata = bytes[i]
+            this.bdata = bytes
+            this.length = bytes.length
         }
         else {
             throw Error("Invalid type for directory")
@@ -76,10 +78,10 @@ class PmemFSfile {
 
     dataAsBytes() {
         if (this.bdata !== undefined) return this.bdata
-        this.bdata = new Int8Array(this.data.length)
+        this.bdata = new Uint8Array(this.data.length)
         for (let i = 0; i < this.data.length; i++) {
             let p = this.data.charCodeAt(i)
-            this.bdata[i] = (p > 127) ? p - 255 : p
+            this.bdata[i] = p
         }
         return this.bdata
     }
@@ -164,16 +166,16 @@ class TVDOSFileDescriptor {
 
     constructor(path0, driverID) {
         if (path0.startsWith("$")) {
-            let path1 = path0.substring(3)
-            let slashPos = path1.indexOf("/")
+            let path1 = path0.replaceAll("/", "\\").substring(3)
+            let slashPos = path1.indexOf("\\")
             let devName = path1.substring(0, (slashPos < 0) ? path1.length : slashPos)
 
             if (!files.reservedNames.includes(devName)) {
                 throw Error(`${devName} is not a valid device file`)
             }
 
-            this._driveLetter = undefined
-            this._path = path0
+            this._driveLetter = '$'
+            this._path = '\\' + path1
             this._driverID = `DEV${devName}`
             this._driver = _TVDOS.DRV.FS[`DEV${devName}`] // can't just put `driverID` here
         }
@@ -939,8 +941,9 @@ _TVDOS.DRV.FS.DEVTMP.bread = (fd) => {
 _TVDOS.DRV.FS.DEVTMP.pread = (fd, ptr, count, offset) => {
     if (_TVDOS.TMPFS[fd.path] === undefined) throw Error(`No such file: ${fd.fullPath}`)
     let str = _TVDOS.TMPFS[fd.path].dataAsString()
-    for (let i = 0; i < count - (offset || 0); i++) {
-        sys.poke(ptr + i, String.charCodeAt(i + (offset || 0)))
+    let off = offset || 0
+    for (let i = 0; i < count; i++) {
+        sys.poke(ptr + i, str.charCodeAt(off + i))
     }
 }
 
@@ -988,6 +991,7 @@ _TVDOS.DRV.FS.DEVTMP.remove = (fd) => {
     return true
 }
 _TVDOS.DRV.FS.DEVTMP.exists = (fd) => (_TVDOS.TMPFS[fd.path] !== undefined)
+_TVDOS.DRV.FS.DEVTMP.getFileLen = (fd) => (_TVDOS.TMPFS[fd.path].length)
 
 Object.freeze(_TVDOS.DRV.FS.DEVTMP)
 

@@ -305,7 +305,6 @@ class VMJSR223Delegate(private val vm: VM) {
     fun sleep(time: Long) {
         vm.isIdle.set(true)
         Thread.sleep(time)
-        Thread.sleep(4L)
     }
 
     fun waitForMemChg(addr: Int, andMask: Int, xorMask: Int) {

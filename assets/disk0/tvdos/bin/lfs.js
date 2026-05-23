@@ -15,7 +15,10 @@ Uint16  Encoding
     10 00 : UTF-8
     10 01 : UTF-16BE
     10 02 : UTF-16LE
-Byte[5] Padding
+Byte    Flags
+    0b 0000 000r
+        r: path is relative
+Bytes[4] Reserved
 
 # FileBlocks
 Uint8    File type (only 1 is used)
@@ -28,26 +31,35 @@ instead of compressing individual files)
 
 function printUsage() {
     println(`Collects files under a directory into a single archive.
-Usage: lfs [-c/-x/-t] dest.lfs path\\to\\source
+Usage: lfs [-c/-x/-t] [-r] dest.lfs path\\to\\source
 To collect a directory into myarchive.lfs:
        lfs -c myarchive.lfs path\\to\\directory
+To collect a directory into myarchive.lfs, using relative path:
+       lfs -c -r myarchive.lfs path\\to\\directory
 To extract an archive to path\\to\\my\\files:
        lfs -x myarchive.lfs path\\to\\my\\files
 To list the collected files:
        lfs -t myarchive.lfs`)
 }
 
-let option = exec_args[1]
-const lfsPath = exec_args[2]
-const dirPath = exec_args[3]
+let option = undefined
+let useRelative = false
+const positional = []
+for (let i = 1; i < exec_args.length; i++) {
+    const a = exec_args[i]
+    if (a === undefined) continue
+    const au = a.toUpperCase()
+    if (au === "-C" || au === "-X" || au === "-T") option = au
+    else if (au === "-R") useRelative = true
+    else positional.push(a)
+}
+const lfsPath = positional[0]
+const dirPath = positional[1]
 
-
-if (option === undefined || lfsPath === undefined || option.toUpperCase() != "-T" && dirPath === undefined) {
+if (option === undefined || lfsPath === undefined || (option != "-T" && dirPath === undefined)) {
     printUsage()
     return 0
 }
-
-option = option.toUpperCase()
 
 
 function recurseDir(file, action) {
@@ -76,13 +88,14 @@ if ("-C" == option) {
         return 1
     }
 
-    let out = "TVDOSLFS\x01\x00\x00\x00\x00\x00\x00\x00"
+    const flagsByte = useRelative ? 0x01 : 0x00
+    let out = "TVDOSLFS\x01\x00\x00" + String.fromCharCode(flagsByte) + "\x00\x00\x00\x00"
     const rootDirPathLen = rootDir.fullPath.length
 
     recurseDir(rootDir, file=>{
         let f = files.open(file.fullPath)
         let flen = f.size
-        let fname = file.fullPath.substring(rootDirPathLen + 1)
+        let fname = useRelative ? file.fullPath.substring(rootDirPathLen + 1) : file.fullPath
         let plen = fname.length
 
         out += "\x01" + String.fromCharCode(
@@ -116,6 +129,8 @@ else if ("-T" == option || "-X" == option) {
         return 2
     }
 
+    const archiveRelative = (bytes.charCodeAt(11) & 0x01) !== 0
+
     if ("-X" == option && !rootDir.exists) {
         rootDir.mkDir()
     }
@@ -132,9 +147,12 @@ else if ("-T" == option || "-X" == option) {
 
         if ("-X" == option) {
             let filebytes = bytes.substring(curs, curs + filelen)
-            let outfile = files.open(`${rootDir.fullPath}\\${path}`)
+            // Fully qualified paths (e.g. "A:\foo\bar.txt") get their drive prefix
+            // stripped so the archive contents re-root under the destination dir.
+            let subPath = archiveRelative ? path : path.replace(/^[A-Za-z]:[\\\/]?/, "")
+            let outfile = files.open(`${rootDir.fullPath}\\${subPath}`)
 
-            mkDirs(files.open(`${rootDir.driveLetter}:${files.open(`${rootDir.fullPath}\\${path}`).parentPath}`))
+            mkDirs(files.open(`${outfile.driveLetter}:${outfile.parentPath}`))
             outfile.mkFile()
             outfile.swrite(filebytes)
         }
