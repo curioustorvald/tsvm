@@ -3,7 +3,11 @@
  * Created by CuriousTorvald on 2026-04-16
  */
 
-const SYSTEM_PACKEAGE_DEF_DIR = "A:/tvdos/hopper"
+const SYSTEM_PACKEAGE_DEF_DIR  = "A:/tvdos/hopper"
+const USER_BASE_DIR            = "A:/hopper"
+const USER_PACKAGE_DEF_DIR     = `${USER_BASE_DIR}/manifests`
+const USER_PACKAGE_BIN_DIR     = `${USER_BASE_DIR}/bin`
+const USER_PACKAGE_INCLUDE_DIR = `${USER_BASE_DIR}/include`
 const MANIFEST_EXT = "hop.per"
 const MIRROR_LIST_PATH = `${SYSTEM_PACKEAGE_DEF_DIR}/mirrors.list`
 
@@ -46,32 +50,48 @@ function readManifestFile(path) {
     return m
 }
 
-function listInstalledManifests() {
-    const dir = files.open(SYSTEM_PACKEAGE_DEF_DIR)
+function _listManifestsFrom(dirPath, origin) {
+    const dir = files.open(dirPath)
     if (!dir.exists || !dir.isDirectory) return []
     const out = []
     dir.list().forEach(entry => {
         if (entry.isDirectory) return
         if (!entry.name.toLowerCase().endsWith(MANIFEST_EXT)) return
         const m = readManifestFile(entry.fullPath)
-        if (m !== undefined) out.push(m)
+        if (m !== undefined) {
+            m._origin = origin
+            out.push(m)
+        }
     })
     return out
 }
 
+// System packages (shipped with TVDOS) live in SYSTEM_PACKAGE_DEF_DIR
+// and are read-only as far as hopper is concerned. User packages,
+// installed by `hopper install`, live under USER_PACKAGE_DEF_DIR. The
+// resolver treats both as "installed", but the install/remove paths
+// refuse to modify anything tagged `_origin === "system"`.
+function listInstalledManifests() {
+    return _listManifestsFrom(SYSTEM_PACKEAGE_DEF_DIR, "system")
+        .concat(_listManifestsFrom(USER_PACKAGE_DEF_DIR, "user"))
+}
+
 function findInstalledManifest(name) {
-    const direct = `${SYSTEM_PACKEAGE_DEF_DIR}/${name}${MANIFEST_EXT}`
-    const m = readManifestFile(direct)
-    if (m !== undefined) return m
+    // Prefer user-installed copy when a system package with the same name
+    // also exists -- but that combination is normally refused at install.
+    const userDirect = `${USER_PACKAGE_DEF_DIR}/${name}.${MANIFEST_EXT}`
+    let m = readManifestFile(userDirect)
+    if (m !== undefined) { m._origin = "user"; return m }
+
+    const sysDirect = `${SYSTEM_PACKEAGE_DEF_DIR}/${name}.${MANIFEST_EXT}`
+    m = readManifestFile(sysDirect)
+    if (m !== undefined) { m._origin = "system"; return m }
+
     const all = listInstalledManifests()
     for (let i = 0; i < all.length; i++) {
         if ((all[i].HopperPackageName || "") === name) return all[i]
     }
     return undefined
-}
-
-function isSystemPackage(manifest) {
-    return !!(manifest.SystemPackagePath) // true if the field is truthy (not undefined, not empty string, not string '0', etc.)
 }
 
 // Yes/no prompt. Empty input falls back to `defaultYes`.
@@ -81,6 +101,97 @@ function confirm(prompt, defaultYes) {
     const ans = (read() || "").trim().toLowerCase()
     if (ans === "") return !!defaultYes
     return ans === "y" || ans === "yes"
+}
+
+// ============================================================
+// Install layout helpers
+// ============================================================
+//
+// User-installed packages live under `A:/hopper/`. Files are routed
+// by extension: `.mjs` includes go under `include/`, everything else
+// (`.js`, `.alias`, `.lfs`, data blobs, ...) lands in `bin/`. The
+// downloaded manifest is saved under `manifests/` with a
+// `SystemPackagePath` field appended that lists the resulting paths.
+
+// Strip query/fragment and take the last `/`-separated component of `url`.
+function urlBasename(url) {
+    let s = String(url || "")
+    const qm = s.indexOf("?");   if (qm   >= 0) s = s.substring(0, qm)
+    const hash = s.indexOf("#"); if (hash >= 0) s = s.substring(0, hash)
+    const slash = s.lastIndexOf("/")
+    return (slash < 0) ? s : s.substring(slash + 1)
+}
+
+function routeForBasename(name) {
+    return (String(name || "").toLowerCase().endsWith(".mjs"))
+        ? USER_PACKAGE_INCLUDE_DIR
+        : USER_PACKAGE_BIN_DIR
+}
+
+// Convert a USER_BASE_DIR-relative absolute path ("A:/hopper/bin/foo.js")
+// into its declarable form ("/hopper/bin/foo.js"), matching the
+// `SystemPackagePath` convention used by the system manifests.
+function declarablePath(absPath) {
+    let p = String(absPath || "").replace(/\\/g, "/")
+    if (/^[A-Za-z]:/.test(p)) p = p.substring(2)
+    return p
+}
+
+// Parse PackageFileList (semicolon-separated full URLs) into a list of
+// download descriptors: { url, basename, localPath }.
+function parsePackageFileList(s) {
+    const out = []
+    splitList(s || "").forEach(url => {
+        const base = urlBasename(url)
+        if (base.length === 0) return
+        const dir  = routeForBasename(base)
+        out.push({ url: url, basename: base, localPath: `${dir}/${base}` })
+    })
+    return out
+}
+
+function ensureUserDirs() {
+    [USER_BASE_DIR, USER_PACKAGE_BIN_DIR, USER_PACKAGE_INCLUDE_DIR, USER_PACKAGE_DEF_DIR].forEach(p => {
+        const d = files.open(p)
+        if (!d.exists) d.mkDir()
+    })
+}
+
+// Re-emit a parsed manifest, preserving insertion order, dropping
+// internal `_*` keys, and replacing any pre-existing SystemPackagePath
+// with the locally-computed one so the field always reflects what is
+// actually on disk.
+function serializeManifest(manifestObj, installedPathStr) {
+    const lines = []
+    Object.keys(manifestObj).forEach(k => {
+        if (k.length > 0 && k[0] === "_") return
+        if (k === "SystemPackagePath") return
+        lines.push(`${k}:${manifestObj[k]}`)
+    })
+    lines.push(`SystemPackagePath:${installedPathStr}`)
+    return lines.join("\n") + "\n"
+}
+
+// Delete every file declared in `manifest.SystemPackagePath` plus the
+// manifest file itself. Wildcards are expanded via `expandSystemPath`.
+function deleteInstalledFiles(manifest) {
+    const removed = []
+    splitList(manifest.SystemPackagePath || "").forEach(p => {
+        expandSystemPath(p).forEach(abs => {
+            const fd = files.open(abs)
+            if (!fd.exists) return
+            try { fd.remove(); removed.push(abs) }
+            catch (e) { printerrln(`  ! failed to remove ${abs}: ${e}`) }
+        })
+    })
+    if (manifest._manifestPath) {
+        const mfd = files.open(manifest._manifestPath)
+        if (mfd.exists) {
+            try { mfd.remove(); removed.push(manifest._manifestPath) }
+            catch (e) { printerrln(`  ! failed to remove ${manifest._manifestPath}: ${e}`) }
+        }
+    }
+    return removed
 }
 
 // ============================================================
@@ -549,8 +660,73 @@ function cmdSearch(args) {
 }
 
 // ============================================================
-// Install (pure dummy)
+// Install
 // ============================================================
+//
+// Each upstream manifest declares its payload via `PackageFileList`,
+// a semicolon-separated list of full URLs. Hopper fetches each URL and
+// drops the result in /hopper/bin (default) or /hopper/include (.mjs).
+// The locally-saved manifest gets a `SystemPackagePath` field appended
+// listing the resulting absolute paths, which is what `cmdRemove` later
+// walks to clean up.
+
+function _installOne(action, candidate) {
+    const m = candidate.manifest
+    const files_ = parsePackageFileList(m.PackageFileList)
+    if (files_.length === 0) {
+        printerrln(`  ! ${candidate.name}: upstream manifest has no PackageFileList; cannot install`)
+        return false
+    }
+
+    // Fetch first, write second: a single 404 should not leave a
+    // half-installed package behind.
+    const fetched = []
+    for (let i = 0; i < files_.length; i++) {
+        const f = files_[i]
+        println(`  fetch  ${f.url}`)
+        const body = net.fetchText(f.url)
+        if (body === null || body === undefined) {
+            printerrln(`  ! failed to fetch ${f.url}`)
+            return false
+        }
+        fetched.push({ entry: f, body: body })
+    }
+
+    // If we are replacing an existing user-installed copy, remove its
+    // old files first so a renamed payload doesn't leave orphans.
+    if (action !== "install") {
+        const oldManifestPath = `${USER_PACKAGE_DEF_DIR}/${candidate.name}.${MANIFEST_EXT}`
+        const old = readManifestFile(oldManifestPath)
+        if (old !== undefined) {
+            splitList(old.SystemPackagePath || "").forEach(p => {
+                expandSystemPath(p).forEach(abs => {
+                    const fd = files.open(abs)
+                    if (fd.exists) {
+                        try { fd.remove() }
+                        catch (e) { printerrln(`  ! could not remove old ${abs}: ${e}`) }
+                    }
+                })
+            })
+        }
+    }
+
+    // Write payload files.
+    fetched.forEach(item => {
+        const fd = files.open(item.entry.localPath)
+        if (!fd.exists) fd.mkFile()
+        fd.swrite(item.body)
+        println(`  write  ${item.entry.localPath}`)
+    })
+
+    // Save the manifest with SystemPackagePath appended.
+    const sysPath = fetched.map(item => declarablePath(item.entry.localPath)).join(";")
+    const manifestPath = `${USER_PACKAGE_DEF_DIR}/${candidate.name}.${MANIFEST_EXT}`
+    const mfd = files.open(manifestPath)
+    if (!mfd.exists) mfd.mkFile()
+    mfd.swrite(serializeManifest(m, sysPath))
+    println(`  write  ${manifestPath}`)
+    return true
+}
 
 function cmdInstall(args) {
     let query = undefined
@@ -603,28 +779,64 @@ function cmdInstall(args) {
     const changing = plan.filter(a => a.action !== "keep")
     if (changing.length === 0) return 0
 
+    // Pre-flight: refuse to clobber system packages, and require every
+    // upstream candidate to actually carry a payload list.
+    const blockers = []
+    changing.forEach(a => {
+        const cand = chosen.get(a.name)
+        const inst = findInstalledManifest(a.name)
+        if (inst && inst._origin === "system") {
+            blockers.push(`${a.name}: cannot ${a.action} -- a system package with that name is already installed`)
+        }
+        if (cand && cand.source === "upstream" && !(cand.manifest.PackageFileList && cand.manifest.PackageFileList.length > 0)) {
+            blockers.push(`${a.name}: upstream manifest declares no PackageFileList`)
+        }
+    })
+    if (blockers.length > 0) {
+        printerrln("Cannot proceed:")
+        blockers.forEach(b => printerrln(`  - ${b}`))
+        return 5
+    }
+
+    if (!net.isAvailable()) {
+        printerrln("No HTTP modem attached; cannot fetch package files.")
+        return 6
+    }
+
     println("")
     if (!confirm("Proceed with installation?", true)) {
         println("Aborted.")
         return 0
     }
 
-    println("Fetching manifests from remote ...")
-    println("Downloading package payloads ...")
-    println("Verifying integrity ...")
-    changing.forEach(a => {
+    ensureUserDirs()
+
+    let failed = 0
+    for (let i = 0; i < changing.length; i++) {
+        const a = changing[i]
+        const cand = chosen.get(a.name)
         if (a.action === "install" || a.action === "reinstall") {
-            println(`  ${a.action} ${a.name} ${a.version}`)
+            println(`${a.action} ${a.name} ${a.version}`)
         } else {
-            println(`  ${a.action} ${a.name} ${a.from} -> ${a.to}`)
+            println(`${a.action} ${a.name} ${a.from} -> ${a.to}`)
         }
-    })
-    println("(dummy install: no files were actually created)")
+        if (!_installOne(a.action, cand)) {
+            failed++
+            printerrln(`  ! ${a.name}: aborted`)
+            break
+        }
+    }
+    if (failed > 0) {
+        printerrln(`${failed} package(s) failed to install.`)
+        return 7
+    }
+
+    println("Done.")
     return 0
 }
 
 // ============================================================
-// Remove (dry-run; resolves file list from manifest)
+// Remove
 // ============================================================
 
 // Convert a SystemPackagePath entry (e.g. "/tvdos/bin/taut*") into a
@@ -669,6 +881,10 @@ function cmdRemove(args) {
         printerrln(`Package not installed: ${query}`)
         return 2
     }
+    if (m._origin === "system") {
+        printerrln(`Cannot remove ${query}: it is a system package.`)
+        return 6
+    }
 
     const name = m.ProperName || m.HopperPackageName || query
     const ver  = m.HopperPackageVersion || "?"
@@ -676,7 +892,7 @@ function cmdRemove(args) {
 
     const paths = splitList(m.SystemPackagePath || "")
     println("")
-    println("The following files would be deleted:")
+    println("The following files will be deleted:")
     if (paths.length === 0) {
         println("  (manifest declares no files)")
     }
@@ -697,7 +913,9 @@ function cmdRemove(args) {
         return 0
     }
 
-    println("(dry-run: no files were actually deleted)")
+    const removed = deleteInstalledFiles(m)
+    removed.forEach(p => println(`  removed ${p}`))
+    if (removed.length === 0) println("  (nothing was removed)")
     return 0
 }
 

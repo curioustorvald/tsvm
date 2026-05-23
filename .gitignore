@@ -62,12 +62,15 @@ tsvmman.pdf
 *.ilg
 *.ind
 
+assets/disk0/tvdos/bin/tautfont.png
+
+video_encoder/*
+
+.idea/vcs.xml
+
+# in-dev stuffs
 assets/disk0/home/basic/*
 assets/disk0/movtestimg/*.jpg
 assets/disk0/*.mov
 assets/diskMediabin/*
-
-video_encoder/*
-
-assets/disk0/tvdos/bin/tautfont.png
-.idea/vcs.xml
+assets/disk0/hopper/*
