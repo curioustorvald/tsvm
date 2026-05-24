@@ -665,6 +665,7 @@ function clearScr() {
     graphics.setBackground(34,51,68)
     graphics.clearPixels(255)
     graphics.setGraphicsMode(0)
+    con.color_pair(COL_TEXT, COL_BACK)
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
