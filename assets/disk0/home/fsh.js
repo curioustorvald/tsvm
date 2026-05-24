@@ -49,13 +49,6 @@ _fsh.QA_CMD_WIDTH = 60        // command path field width in dialog
 _fsh.HL_FG = 230
 _fsh.HL_BG = 255
 
-// Dialog colour pair. Background MUST be opaque (bg 255 is transparent
-// in TSVM and lets the pixel-layer wallpaper bleed through dialog cells).
-_fsh.DIALOG_FG = 254
-_fsh.DIALOG_BG = 242
-_fsh.FIELD_BG = 240
-_fsh.DIALOG_DIM_FG = 249
-
 // Default Quick Access entries when fshrc is missing or empty
 _fsh.DEFAULT_QA = [
     ["Files",     "/tvdos/bin/zsh.js"],
@@ -158,232 +151,6 @@ _fsh.saveConfig = function() {
     }
 }
 
-// Draw the bordered popup background. (row, col) is the top-left, (h, w)
-// the size. Paints an opaque interior first (otherwise the wallpaper bleeds
-// through cells with bg 255), then delegates frame drawing to wintex so the
-// corner/edge glyphs always connect correctly.
-_fsh.drawDialogFrame = function(row, col, h, w, title) {
-    con.color_pair(_fsh.DIALOG_FG, _fsh.DIALOG_BG)
-    for (let y = 0; y < h; y++) {
-        con.move(row + y, col)
-        print(' '.repeat(w))
-    }
-    let wo = new win.WindowObject(col, row, w, h, function(){}, function(){}, title)
-    wo.isHighlighted = true
-    wo.titleBack = _fsh.DIALOG_BG
-    wo.drawFrame()
-    con.color_pair(_fsh.DIALOG_FG, _fsh.DIALOG_BG)
-}
-
-// Slide the visible window so the caret stays inside (cursor at the
-// rightmost column once it passes the field width).
-_fsh.fieldScroll = function(cursor, width) {
-    return cursor < width ? 0 : cursor - width + 1
-}
-
-// Draw a single-line bordered input field at (row, col) with given width.
-// content is the current text; cursor is the caret offset within content
-// focused brightens the border colour.
-_fsh.drawDialogField = function(row, col, width, content, cursor, focused) {
-    let frameFg = focused ? _fsh.DIALOG_FG : _fsh.DIALOG_DIM_FG
-    // Clear the field area (3 rows × width+2 cols) with FIELD_BG first so any
-    // stale chars from a previous render are wiped before we draw on top.
-    con.color_pair(_fsh.DIALOG_FG, _fsh.FIELD_BG)
-    con.move(row + 1, col + 1)
-    print(' '.repeat(width))
-    // Top border
-    con.color_pair(frameFg, _fsh.DIALOG_BG)
-    con.move(row, col)
-    print('\u00DA')                                  // ┌
-    print('\u00C4'.repeat(width))                    // ─
-    print('\u00BF')                                  // ┐
-    // Vertical borders + content
-    con.move(row + 1, col)
-    print('\u00B3')                                  // │
-    con.color_pair(_fsh.DIALOG_FG, _fsh.DIALOG_BG)
-    let scroll = _fsh.fieldScroll(cursor, width)
-    let visible = content.substring(scroll, scroll + width)
-    print(visible)
-    con.color_pair(frameFg, _fsh.DIALOG_BG)
-    con.move(row + 1, col + width + 1)
-    print('\u00B3')                                  // │
-    // Bottom border
-    con.move(row + 2, col)
-    print('\u00C0')                                  // └
-    print('\u00C4'.repeat(width))                    // ─
-    print('\u00D9')                                  // ┘
-    con.color_pair(_fsh.DIALOG_FG, _fsh.DIALOG_BG)
-}
-
-// Draw a button as "[ Label ]" at the given position; highlights when focused.
-_fsh.drawDialogButton = function(row, col, label, focused) {
-    if (focused) con.color_pair(_fsh.HL_FG, _fsh.DIALOG_BG)
-    else con.color_pair(_fsh.DIALOG_FG, _fsh.DIALOG_BG)
-    con.move(row, col)
-    print("[ " + label + " ]")
-    con.color_pair(_fsh.DIALOG_FG, _fsh.DIALOG_BG)
-}
-
-// Modal dialog. opts = {
-//   title: string,
-//   fields: [{label, initial, width}, ...],
-//   allowDelete: bool,
-// }
-// Returns {action: "ok"|"cancel"|"delete", values: [string, ...]}.
-_fsh.showDialog = function(opts) {
-    let fields = opts.fields
-    let values = fields.map(function(f) { return f.initial || "" })
-    // Caret position per field. Start at end of any pre-filled initial text.
-    let cursors = values.map(function(v) { return v.length })
-
-    // Layout
-    let maxFieldW = fields.reduce(function(m, f) { return Math.max(m, f.width) }, 16)
-    let titleW = (opts.title ? opts.title.length : 0) + 4
-    let w = Math.max(maxFieldW + 6, titleW + 4, 24)
-    let buttonsRow = 2 + fields.length * 4 + 1  // 1 label + 3 field rows per field
-    let h = buttonsRow + 2
-    let screen = con.getmaxyx()
-    let row = Math.max(2, Math.floor((screen[0] - h) / 2))
-    let col = Math.max(2, Math.floor((screen[1] - w) / 2))
-
-    // Buttons list: indices follow Tab order after the last field
-    let buttons = [{label: "OK", action: "ok"}, {label: "Cancel", action: "cancel"}]
-    if (opts.allowDelete) buttons.splice(1, 0, {label: "Delete", action: "delete"})
-
-    let focusIdx = 0            // 0..fields.length-1 = field; then buttons
-    let totalFocus = fields.length + buttons.length
-    let done = null             // {action, values} when set
-
-    function render() {
-        _fsh.drawDialogFrame(row, col, h, w, opts.title)
-        // Fields
-        for (let i = 0; i < fields.length; i++) {
-            let labelRow = row + 1 + i * 4
-            let fieldRow = labelRow + 1
-            con.color_pair(_fsh.DIALOG_FG, _fsh.DIALOG_BG)
-            con.move(labelRow, col + 2)
-            print(fields[i].label + ":")
-            _fsh.drawDialogField(fieldRow, col + 2, fields[i].width,
-                values[i], cursors[i], i === focusIdx)
-        }
-        // Buttons centred on buttonsRow
-        let totalBtnW = buttons.reduce(function(s, b) { return s + b.label.length + 5 }, 0) - 1
-        let bx = col + Math.floor((w - totalBtnW) / 2)
-        for (let i = 0; i < buttons.length; i++) {
-            let bIdx = fields.length + i
-            _fsh.drawDialogButton(row + buttonsRow, bx, buttons[i].label, bIdx === focusIdx)
-            bx += buttons[i].label.length + 5
-        }
-        // Position the visible caret. Inside a field: place it on the content
-        // row at the cursor offset (corrected for horizontal scroll). On a
-        // button: hide the caret entirely.
-        if (focusIdx < fields.length) {
-            let fldWidth = fields[focusIdx].width
-            let scroll = _fsh.fieldScroll(cursors[focusIdx], fldWidth)
-            let contentRow = row + 1 + focusIdx * 4 + 2
-            let contentCol = col + 2 + 1 + (cursors[focusIdx] - scroll)
-            con.move(contentRow, contentCol)
-            con.curs_set(1)
-        } else {
-            con.curs_set(0)
-        }
-    }
-
-    render()
-
-    // Note: con.getch() returns TSVM scancodes (defined in JS_INIT.js as
-    // con.KEY_UP=200, KEY_DOWN=208, KEY_LEFT=203, KEY_RIGHT=205,
-    // con.KEY_BACKSPACE=8, KEY_TAB=9, KEY_RETURN=10). Esc isn't in JS_INIT's
-    // map — it arrives as ASCII 27 via keyTyped().
-    while (done === null) {
-        let k = con.getch()
-
-        if (k === 27) {  // Esc
-            done = {action: "cancel", values: values}
-            break
-        }
-        if (k === con.KEY_TAB) {
-            focusIdx = (focusIdx + 1) % totalFocus
-            render()
-            continue
-        }
-        // Up/Down always cycles focus across fields/buttons.
-        if (k === con.KEY_UP) {
-            focusIdx = (focusIdx - 1 + totalFocus) % totalFocus
-            render()
-            continue
-        }
-        if (k === con.KEY_DOWN) {
-            focusIdx = (focusIdx + 1) % totalFocus
-            render()
-            continue
-        }
-        // Left/Right moves the caret inside a field; on a button it cycles.
-        if (k === con.KEY_LEFT) {
-            if (focusIdx < fields.length) {
-                if (cursors[focusIdx] > 0) {
-                    cursors[focusIdx] -= 1
-                    render()
-                }
-            } else {
-                focusIdx = (focusIdx - 1 + totalFocus) % totalFocus
-                render()
-            }
-            continue
-        }
-        if (k === con.KEY_RIGHT) {
-            if (focusIdx < fields.length) {
-                if (cursors[focusIdx] < values[focusIdx].length) {
-                    cursors[focusIdx] += 1
-                    render()
-                }
-            } else {
-                focusIdx = (focusIdx + 1) % totalFocus
-                render()
-            }
-            continue
-        }
-        // On a field
-        if (focusIdx < fields.length) {
-            if (k === con.KEY_RETURN) {
-                if (focusIdx < fields.length - 1) {
-                    focusIdx += 1
-                } else {
-                    focusIdx = fields.length  // move to OK button
-                }
-                render()
-                continue
-            }
-            if (k === con.KEY_BACKSPACE) {
-                let c = cursors[focusIdx]
-                if (c > 0) {
-                    let v = values[focusIdx]
-                    values[focusIdx] = v.substring(0, c - 1) + v.substring(c)
-                    cursors[focusIdx] = c - 1
-                    render()
-                }
-                continue
-            }
-            // Printable: insert at the caret.
-            if (k >= 32 && k < 256 && values[focusIdx].length < fields[focusIdx].width * 4) {
-                let v = values[focusIdx]
-                let c = cursors[focusIdx]
-                values[focusIdx] = v.substring(0, c) + String.fromCharCode(k) + v.substring(c)
-                cursors[focusIdx] = c + 1
-                render()
-            }
-            continue
-        }
-        // On a button
-        if (k === con.KEY_RETURN || k === 32) {
-            done = {action: buttons[focusIdx - fields.length].action, values: values}
-            break
-        }
-    }
-
-    con.curs_set(0)
-    return done
-}
 
 // Map (mouse char x, mouse char y) to a row index for a widget drawn at
 // (xoff, yoff) with `length` existing entries and `maxRows` total rows.
@@ -673,7 +440,7 @@ _fsh.redrawAll = function() {
 }
 
 _fsh.openAddTodoDialog = function() {
-    let res = _fsh.showDialog({
+    let res = win.showDialog({
         title: "New Todo",
         fields: [{label: "Text", initial: "", width: _fsh.TODO_TEXT_WIDTH}],
         allowDelete: false
@@ -690,7 +457,7 @@ _fsh.openAddTodoDialog = function() {
 _fsh.openEditTodoDialog = function(index) {
     let entry = todoWidget.todoList[index]
     if (!entry) return
-    let res = _fsh.showDialog({
+    let res = win.showDialog({
         title: "Edit Todo",
         fields: [{label: "Text", initial: entry[0], width: _fsh.TODO_TEXT_WIDTH}],
         allowDelete: true
@@ -709,7 +476,7 @@ _fsh.openEditTodoDialog = function(index) {
 }
 
 _fsh.openAddQaDialog = function() {
-    let res = _fsh.showDialog({
+    let res = win.showDialog({
         title: "New Quick Access",
         fields: [
             {label: "Label",   initial: "", width: _fsh.QA_LABEL_WIDTH},
@@ -730,7 +497,7 @@ _fsh.openAddQaDialog = function() {
 _fsh.openEditQaDialog = function(index) {
     let entry = quickAccessWidget.entries[index]
     if (!entry) return
-    let res = _fsh.showDialog({
+    let res = win.showDialog({
         title: "Edit Quick Access",
         fields: [
             {label: "Label",   initial: entry[0], width: _fsh.QA_LABEL_WIDTH},

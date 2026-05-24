@@ -21,6 +21,10 @@ const FILELIST_WIDTH = WIDTH - SIDEBAR_WIDTH - 3 - FILESIZE_WIDTH
 const POPUP_WIDTH = 52 // always even number
 const POPUP_HEIGHT = 16
 
+const [SCRPW, SCRPH] = graphics.getPixelDimension()
+const CELL_PW = (SCRPW / WIDTH) | 0
+const CELL_PH = (SCRPH / WHEIGHT) | 0
+
 const COL_HL_EXT = {
     "js": 215,
     "bas": 215,
@@ -67,6 +71,13 @@ const EXEC_FUNS = {
     "md": (f) => _G.shell.execute(`less "${f}"`),
     "log": (f) => _G.shell.execute(`less "${f}"`),
     "taud": (f) => _G.shell.execute(`playtaud "${f}"`),
+}
+
+const EDIT_FUNS = {
+    "bas": (f) => _G.shell.execute(`edit "${f}"`),
+    "txt": (f) => _G.shell.execute(`edit "${f}"`),
+    "md": (f) => _G.shell.execute(`edit "${f}"`),
+    "taud": (f) => _G.shell.execute(`microtone "${f}"`),
 }
 
 function makeExecFun(template) {
@@ -117,6 +128,57 @@ function loadZfmrc() {
 }
 
 loadZfmrc()
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// Mouse region registry
+///////////////////////////////////////////////////////////////////////////////////////////////////
+
+const MOUSE_PANEL = []
+const MOUSE_POPUP_STACK = []
+let lastHoveredRegion = null
+
+function pixelToCell(px, py) {
+    return [(py / CELL_PH | 0) + 1, (px / CELL_PW | 0) + 1]
+}
+function regionHits(r, cy, cx) {
+    return cy >= r.y && cy < r.y + r.h && cx >= r.x && cx < r.x + r.w
+}
+function clearPanelMouseRegions() { MOUSE_PANEL.length = 0; lastHoveredRegion = null }
+function addPanelMouseRegion(x, y, w, h, handlers) { MOUSE_PANEL.push(Object.assign({x, y, w, h}, handlers)) }
+function pushMousePopup(regions) { MOUSE_POPUP_STACK.push(regions); lastHoveredRegion = null }
+function popMousePopup() { MOUSE_POPUP_STACK.pop(); lastHoveredRegion = null }
+
+function dispatchMouseEvent(event) {
+    const t = event[0]
+    if (t !== 'mouse_down' && t !== 'mouse_wheel' && t !== 'mouse_up' && t !== 'mouse_move') return false
+    const [cy, cx] = pixelToCell(event[1], event[2])
+    const pool = (MOUSE_POPUP_STACK.length > 0)
+        ? MOUSE_POPUP_STACK[MOUSE_POPUP_STACK.length - 1]
+        : MOUSE_PANEL
+
+    if (t === 'mouse_move') {
+        let hit = null
+        for (let i = pool.length - 1; i >= 0; i--) {
+            const r = pool[i]
+            if (regionHits(r, cy, cx) && (r.onHover || r.onHoverLeave)) { hit = r; break }
+        }
+        if (hit !== lastHoveredRegion) {
+            if (lastHoveredRegion && lastHoveredRegion.onHoverLeave) lastHoveredRegion.onHoverLeave()
+            lastHoveredRegion = hit
+        }
+        if (hit && hit.onHover) { hit.onHover(cy, cx, event); return true }
+        return false
+    }
+
+    for (let i = pool.length - 1; i >= 0; i--) {
+        const r = pool[i]
+        if (!regionHits(r, cy, cx)) continue
+        if (t === 'mouse_down'  && r.onClick)   { r.onClick(cy, cx, event[3], event); return true }
+        if (t === 'mouse_wheel' && r.onWheel)   { r.onWheel(cy, cx, event[3], event); return true }
+        if (t === 'mouse_up'    && r.onRelease) { r.onRelease(cy, cx, event[3], event); return true }
+    }
+    return false
+}
 
 let windowMode = 0 // 0 == left, 1 == right
 let windowFocus = [0] // is a stack; 0: files window, 1: palette window, 2: popup window
@@ -347,11 +409,30 @@ let filesPanelDraw = (wo) => {
     con.color_pair(COL_TEXT, COL_BACK)
 
 }
+// Op panel buttons. yOff is the row offset (icon) inside the op panel frame;
+// label sits at yOff+1. Hit regions span both rows.
+// hitH is the row count for the mouse hit-box. The switch button gets a taller
+// hit-box than the others because the icon glyph above its label leaves extra
+// whitespace inside the cell above the first horizontal rule.
+const OP_BUTTONS = [
+    { id: 'switch', yOff: 0,  hitH: 5, key: 'z' },
+    { id: 'up',     yOff: 6,  hitH: 2, key: 'u' },
+    { id: 'copy',   yOff: 9,  hitH: 2, key: 'c' },
+    { id: 'move',   yOff: 12, hitH: 2, key: 'v' },
+    { id: 'delete', yOff: 15, hitH: 2, key: 'd' },
+    { id: 'mkdir',  yOff: 18, hitH: 2, key: 'k' },
+    { id: 'rename', yOff: 21, hitH: 2, key: 'r' },
+    { id: 'more',   yOff: 24, hitH: 2, key: 'm' },
+    { id: 'quit',   yOff: 27, hitH: 2, key: 'q' },
+]
+let opHover = -1
+
 let opPanelDraw = (wo) => {
     function hr(y) {
         con.move(y, xp)
         print(`\x84196u`.repeat(SIDEBAR_WIDTH - 2))
     }
+    function labCol(i) { return (opHover === i) ? COL_HLTEXT : COL_TEXT }
 
     con.color_pair(COL_TEXT, COL_BACK)
 
@@ -362,14 +443,14 @@ let opPanelDraw = (wo) => {
     con.move(yp + 2, xp + 3)
     con.prnch((windowMode) ? 0x11 : 0x10)
     con.move(yp + 3, xp)
-    print(`  \x1B[38;5;${COL_TEXT}m[\x1B[38;5;${COL_HLACTION}mZ\x1B[38;5;${COL_TEXT}m]`)
+    print(`  \x1B[38;5;${labCol(0)}m[\x1B[38;5;${COL_HLACTION}mZ\x1B[38;5;${labCol(0)}m]`)
 
     hr(yp+5)
 
     // go up
     con.mvaddch(yp + 6, xp + 3, 0x18)
     con.move(yp + 7, xp)
-    print(` \x1B[38;5;${COL_TEXT}mGo \x1B[38;5;${COL_HLACTION}mU\x1B[38;5;${COL_TEXT}mp`)
+    print(` \x1B[38;5;${labCol(1)}mGo \x1B[38;5;${COL_HLACTION}mU\x1B[38;5;${labCol(1)}mp`)
 
     hr(yp+8)
 
@@ -377,7 +458,7 @@ let opPanelDraw = (wo) => {
     con.move(yp + 9, xp + 2)
     con.prnch(0xDB);con.prnch((windowMode) ? 0x1B : 0x1A);con.prnch(0xDB)
     con.move(yp + 10, xp)
-    print(` \x1B[38;5;${COL_HLACTION}mC\x1B[38;5;${COL_TEXT}mopy`)
+    print(` \x1B[38;5;${COL_HLACTION}mC\x1B[38;5;${labCol(2)}mopy`)
 
     hr(yp+11)
 
@@ -385,7 +466,7 @@ let opPanelDraw = (wo) => {
     con.move(yp + 12, xp + 2)
     if (windowMode) con.prnch([0xDB, 0x1B, 0xB0]); else con.prnch([0xB0, 0x1A, 0xDB])
     con.move(yp + 13, xp)
-    print(` \x1B[38;5;${COL_TEXT}mMo\x1B[38;5;${COL_HLACTION}mv\x1B[38;5;${COL_TEXT}me`)
+    print(` \x1B[38;5;${labCol(3)}mMo\x1B[38;5;${COL_HLACTION}mv\x1B[38;5;${labCol(3)}me`)
 
     hr(yp+14)
 
@@ -393,7 +474,7 @@ let opPanelDraw = (wo) => {
     con.move(yp + 15, xp + 2)
     if (windowMode) con.prnch([0xDB, 0x1A, 0xF9]); else con.prnch([0xF9, 0x1B, 0xDB])
     con.move(yp + 16, xp)
-    print(` \x1B[38;5;${COL_HLACTION}mD\x1B[38;5;${COL_TEXT}melete`)
+    print(` \x1B[38;5;${COL_HLACTION}mD\x1B[38;5;${labCol(4)}melete`)
 
     hr(yp+17)
 
@@ -403,7 +484,7 @@ let opPanelDraw = (wo) => {
     con.video_reverse();con.prnch(0x2B);con.video_reverse()
     con.prnch(0xDF)
     con.move(yp + 19, xp)
-    print(` \x1B[38;5;${COL_TEXT}mM\x1B[38;5;${COL_HLACTION}mk\x1B[38;5;${COL_TEXT}mDir`)
+    print(` \x1B[38;5;${labCol(5)}mM\x1B[38;5;${COL_HLACTION}mk\x1B[38;5;${labCol(5)}mDir`)
 
     hr(yp+20)
 
@@ -411,7 +492,7 @@ let opPanelDraw = (wo) => {
     con.move(yp + 21, xp + 2)
     con.prnch(0x4E);con.prnch(0x1A);con.prnch(0x52)
     con.move(yp + 22, xp)
-    print(` \x1B[38;5;${COL_HLACTION}mR\x1B[38;5;${COL_TEXT}mename`)
+    print(` \x1B[38;5;${COL_HLACTION}mR\x1B[38;5;${labCol(6)}mename`)
 
     hr(yp+23)
 
@@ -419,7 +500,7 @@ let opPanelDraw = (wo) => {
     con.move(yp + 24, xp + 3)
     con.prnch(0xf0)
     con.move(yp + 25, xp)
-    print(` \x1B[38;5;${COL_HLACTION}mM\x1B[38;5;${COL_TEXT}more`)
+    print(` \x1B[38;5;${COL_HLACTION}mM\x1B[38;5;${labCol(7)}more`)
 
     hr(yp+26)
 
@@ -427,7 +508,7 @@ let opPanelDraw = (wo) => {
     con.move(yp + 27, xp + 3)
     con.prnch(0x58)
     con.move(yp + 28, xp)
-    print(` \x1B[38;5;${COL_HLACTION}mQ\x1B[38;5;${COL_TEXT}muit`)
+    print(` \x1B[38;5;${COL_HLACTION}mQ\x1B[38;5;${labCol(8)}muit`)
 
 
 }
@@ -463,9 +544,8 @@ let popupDraw = (wo) => {
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 let filenavOninput = (window, event) => {
-
     let eventName = event[0]
-    if (eventName == "key_down") {
+    if (eventName !== "key_down") return
 
     let keysym = event[1]
     let keyJustHit = (1 == event[2])
@@ -474,13 +554,15 @@ let filenavOninput = (window, event) => {
 
     let scrollPeek = (LIST_HEIGHT / 3)|0
 
-    if (keyJustHit && keysym == "q") {
-        exit = true
-    }
-    else if (keyJustHit && keysym == "z") {
-        windowMode = 1 - windowMode
-        redraw() // this would double-redraw (hence no panel switching) or something if redraw() is not merely a request to do so
-    }
+    if      (keyJustHit && keysym == "q") actQuit()
+    else if (keyJustHit && keysym == "z") actSwitchPanel()
+    else if (keyJustHit && keysym == 'u') actGoUp()
+    else if (keyJustHit && keysym == 'c') actCopy()
+    else if (keyJustHit && keysym == 'v') actMove()
+    else if (keyJustHit && keysym == 'd') actDelete()
+    else if (keyJustHit && keysym == 'k') actMkdir()
+    else if (keyJustHit && keysym == 'r') actRename()
+    else if (keyJustHit && keysym == 'm') actMore()
     else if (keysym == "<UP>") {
         [cursor[windowMode], scroll[windowMode]] = win.scrollVert(-1, dirFileList[windowMode].length, LIST_HEIGHT, cursor[windowMode], scroll[windowMode], scrollPeek)
         drawFilePanel()
@@ -498,71 +580,7 @@ let filenavOninput = (window, event) => {
         drawFilePanel()
     }
     else if (keyJustHit && keycode == 66) { // enter
-        let selectedFileCache = filePanelCache[windowMode][cursor[windowMode]]
-        let selectedFile = selectedFileCache.file
-
-        //serial.println(`selectedFile = ${selectedFile.fullPath}`)
-
-        if (selectedFile.fullPath[1] == ":" && selectedFile.fullPath[2] == "\\" && selectedFile.fullPath.length == 3) {
-            path[windowMode].push(selectedFile.fullPath)
-            cursor[windowMode] = 0; scroll[windowMode] = 0
-            refreshFilePanelCache(windowMode)
-            drawFilePanel()
-        }
-        else if (selectedFileCache.isDirectory) {
-            //serial.println(`selectedFile.name = ${selectedFile.name}`)
-            path[windowMode].push(selectedFileCache.filename)
-            cursor[windowMode] = 0; scroll[windowMode] = 0
-            refreshFilePanelCache(windowMode)
-            drawFilePanel()
-        }
-        else {
-            let fileext = selectedFileCache.filename.substring(selectedFileCache.filename.lastIndexOf(".") + 1).toLowerCase()
-            let execfun = EXEC_FUNS[fileext] || ((f) => _G.shell.execute(f))
-            let errorlevel = 0
-
-            con.curs_set(1);clearScr();con.move(1,1)
-            try {
-                //serial.println(selectedFile.fullPath)
-                errorlevel = execfun(selectedFile.fullPath)
-                //serial.println("1 errorlevel = " + errorlevel)
-            }
-            catch (e) {
-                // TODO popup error
-                println(e)
-                errorlevel = 1
-                //serial.println("2 errorlevel = " + errorlevel)
-            }
-
-            if (errorlevel) {
-                println("Hit Return/Enter key to continue . . . .")
-                sys.read()
-            }
-
-            firstRunLatch = true
-            con.curs_set(0);clearScr()
-            refreshFilePanelCache(windowMode)
-            redraw()
-        }
-    }
-    else if (keyJustHit && keysym == 'u') { // no bksp: used as an exit key for playmov/playwav
-        if (path[windowMode].length >= 1) {
-            path[windowMode].pop()
-            cursor[windowMode] = 0; scroll[windowMode] = 0
-            refreshFilePanelCache(windowMode)
-            drawFilePanel()
-        }
-        else {
-            // TODO list of drives
-
-        }
-    }
-    else if (keyJustHit && keysym == 'm') {
-        makePopup(1); redraw()
-    }
-
-
-
+        actActivate()
     }
 }
 
@@ -593,6 +611,44 @@ let popupInput = (window, event) => {
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
+// Popup wrappers (delegate to win.showDialog in wintex.mjs)
+///////////////////////////////////////////////////////////////////////////////////////////////////
+
+function showConfirmPopup(title, message) {
+    const res = win.showDialog({
+        title: title,
+        message: message,
+        fields: [],
+        buttons: [
+            { label: 'OK',     action: 'ok', default: true },
+            { label: 'CANCEL', action: 'cancel' },
+        ],
+    })
+    return res.action === 'ok'
+}
+
+function showInputPopup(title, prompt, defaultVal) {
+    const res = win.showDialog({
+        title: title,
+        fields: [{ label: prompt, initial: defaultVal || '', width: POPUP_WIDTH - 6 }],
+        buttons: [
+            { label: 'OK',     action: 'ok', default: true },
+            { label: 'CANCEL', action: 'cancel' },
+        ],
+    })
+    return res.action === 'ok' ? res.values[0] : null
+}
+
+function showMessagePopup(title, message) {
+    win.showDialog({
+        title: title,
+        message: message,
+        fields: [],
+        buttons: [{ label: 'OK', action: 'ok', default: true }],
+    })
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
 
 let windows = [
 /*index 0: main three panels*/[
@@ -617,6 +673,11 @@ let currentPopup = 0
 function makePopup(index) {
     currentPopup = index
     windowFocus.push(currentPopup)
+    // Push an empty mouse region set so the panel's op-button / file-row regions
+    // stop receiving clicks while this popup is open. Otherwise the user could
+    // click a panel button while e.g. the "More" palette is shown and end up
+    // with two popups stacked on top of each other.
+    pushMousePopup([])
     for (let i = 0; i < windows.length; i++) {
         windows[i].forEach(it => {
             it.isHighlighted = (i == index)
@@ -626,6 +687,7 @@ function makePopup(index) {
 
 function removePopup() {
     windowFocus.pop()
+    popMousePopup()
     const index = windowFocus.last
     currentPopup = 0
     for (let i = 0; i < windows.length; i++) {
@@ -701,6 +763,7 @@ function _redraw() {
     drawFilePanel()
     drawOpPanel()
     drawPopupPanel()
+    setupPanelMouseRegions()
 }
 
 function clearScr() {
@@ -711,11 +774,322 @@ function clearScr() {
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
+// File operations and op-panel actions
+///////////////////////////////////////////////////////////////////////////////////////////////////
+
+function getCurrentDirStr(side) {
+    return path[side].concat(['']).join("\\").replaceAll('\\\\', '\\')
+}
+
+function clampCursorAfterChange() {
+    const len = dirFileList[windowMode].length
+    if (cursor[windowMode] >= len) cursor[windowMode] = Math.max(0, len - 1)
+    const maxScroll = Math.max(0, len - LIST_HEIGHT)
+    if (scroll[windowMode] > maxScroll) scroll[windowMode] = maxScroll
+    if (scroll[windowMode] < 0) scroll[windowMode] = 0
+}
+
+function actSwitchPanel() {
+    windowMode = 1 - windowMode
+    redraw()
+}
+
+function actGoUp() {
+    if (path[windowMode].length >= 1) {
+        path[windowMode].pop()
+        cursor[windowMode] = 0; scroll[windowMode] = 0
+        refreshFilePanelCache(windowMode)
+        _redraw()
+    }
+}
+
+function actActivate() {
+    let selectedFileCache = filePanelCache[windowMode][cursor[windowMode]]
+    if (!selectedFileCache || !selectedFileCache.file) return
+    let selectedFile = selectedFileCache.file
+
+    if (selectedFile.fullPath[1] == ":" && selectedFile.fullPath[2] == "\\" && selectedFile.fullPath.length == 3) {
+        path[windowMode].push(selectedFile.fullPath)
+        cursor[windowMode] = 0; scroll[windowMode] = 0
+        refreshFilePanelCache(windowMode)
+        _redraw()
+    }
+    else if (selectedFileCache.isDirectory) {
+        path[windowMode].push(selectedFileCache.filename)
+        cursor[windowMode] = 0; scroll[windowMode] = 0
+        refreshFilePanelCache(windowMode)
+        _redraw()
+    }
+    else {
+        let fileext = selectedFileCache.filename.substring(selectedFileCache.filename.lastIndexOf(".") + 1).toLowerCase()
+        let execfun = EXEC_FUNS[fileext] || ((f) => _G.shell.execute(f))
+        let errorlevel = 0
+
+        con.curs_set(1); clearScr(); con.move(1,1)
+        try {
+            errorlevel = execfun(selectedFile.fullPath)
+        }
+        catch (e) {
+            println(e)
+            errorlevel = 1
+        }
+
+        if (errorlevel) {
+            println("Hit Return/Enter key to continue . . . .")
+            sys.read()
+        }
+
+        firstRunLatch = true
+        con.curs_set(0); clearScr()
+        refreshFilePanelCache(windowMode)
+        redraw()
+    }
+}
+
+function actCopy() {
+    if (path[windowMode].length === 0) return
+    const cache = filePanelCache[windowMode][cursor[windowMode]]
+    if (!cache || !cache.file) return
+    if (cache.isDirectory) { showMessagePopup('Copy', 'Directory copy is not supported.'); _redraw(); return }
+    if (path[1 - windowMode].length === 0) { showMessagePopup('Copy', 'Cannot copy to drive list view.'); _redraw(); return }
+
+    const srcPath = cache.file.fullPath
+    const dstDir = getCurrentDirStr(1 - windowMode)
+    const dstPath = dstDir + cache.file.name
+    if (srcPath === dstPath) { _redraw(); return } // both panels point to same directory
+
+    try {
+        const srcFile = files.open(srcPath)
+        const dstFile = files.open(dstPath)
+        if (!srcFile.exists) { showMessagePopup('Copy', 'Source not found.'); _redraw(); return }
+        if (dstFile.exists) {
+            if (!showConfirmPopup('Copy', `Overwrite "${cache.file.name}"?`)) { _redraw(); return }
+        }
+        if (!dstFile.exists) dstFile.mkFile()
+        dstFile.bwrite(srcFile.bread())
+        try { dstFile.flush() } catch (e) {}
+        try { dstFile.close() } catch (e) {}
+        try { srcFile.close() } catch (e) {}
+        refreshFilePanelCache(1 - windowMode)
+    }
+    catch (e) {
+        showMessagePopup('Copy failed', e.message || ('' + e))
+    }
+    _redraw()
+}
+
+function actMove() {
+    if (path[windowMode].length === 0) return
+    const cache = filePanelCache[windowMode][cursor[windowMode]]
+    if (!cache || !cache.file) return
+    if (cache.isDirectory) { showMessagePopup('Move', 'Directory move is not supported.'); _redraw(); return }
+    if (path[1 - windowMode].length === 0) { showMessagePopup('Move', 'Cannot move to drive list view.'); _redraw(); return }
+
+    const srcPath = cache.file.fullPath
+    const dstDir = getCurrentDirStr(1 - windowMode)
+    const dstPath = dstDir + cache.file.name
+    if (srcPath === dstPath) { _redraw(); return } // no-op
+
+    try {
+        const srcFile = files.open(srcPath)
+        const dstFile = files.open(dstPath)
+        if (!srcFile.exists) { showMessagePopup('Move', 'Source not found.'); _redraw(); return }
+        if (dstFile.exists) {
+            if (!showConfirmPopup('Move', `Overwrite "${cache.file.name}"?`)) { _redraw(); return }
+        }
+        if (!dstFile.exists) dstFile.mkFile()
+        dstFile.bwrite(srcFile.bread())
+        try { dstFile.flush() } catch (e) {}
+        try { dstFile.close() } catch (e) {}
+        srcFile.remove()
+        refreshFilePanelCache(windowMode)
+        refreshFilePanelCache(1 - windowMode)
+        clampCursorAfterChange()
+    }
+    catch (e) {
+        showMessagePopup('Move failed', e.message || ('' + e))
+    }
+    _redraw()
+}
+
+function actDelete() {
+    if (path[windowMode].length === 0) return
+    const cache = filePanelCache[windowMode][cursor[windowMode]]
+    if (!cache || !cache.file) return
+
+    const name = cache.file.name
+    const kind = cache.isDirectory ? 'directory' : 'file'
+    if (!showConfirmPopup('Delete', `Delete ${kind} "${name}"?`)) { _redraw(); return }
+
+    try {
+        const status = cache.file.remove()
+        if (status !== undefined && status !== 0 && status !== true) {
+            showMessagePopup('Delete failed', `Cannot delete "${name}" (status ${status}).`)
+        }
+        refreshFilePanelCache(windowMode)
+        clampCursorAfterChange()
+    }
+    catch (e) {
+        showMessagePopup('Delete failed', e.message || ('' + e))
+    }
+    _redraw()
+}
+
+function actMkdir() {
+    if (path[windowMode].length === 0) { showMessagePopup('Mkdir', 'Choose a directory first.'); _redraw(); return }
+    const name = showInputPopup('Make Directory', 'Directory name:', '')
+    if (name === null || name.length === 0) { _redraw(); return }
+
+    const dstPath = getCurrentDirStr(windowMode) + name
+    try {
+        const dstFile = files.open(dstPath)
+        if (dstFile.exists) {
+            showMessagePopup('Mkdir', `"${name}" already exists.`)
+        }
+        else {
+            const ok = dstFile.mkDir()
+            if (!ok) showMessagePopup('Mkdir failed', `Cannot create "${name}".`)
+            else refreshFilePanelCache(windowMode)
+        }
+    }
+    catch (e) {
+        showMessagePopup('Mkdir failed', e.message || ('' + e))
+    }
+    _redraw()
+}
+
+function actRename() {
+    if (path[windowMode].length === 0) return
+    const cache = filePanelCache[windowMode][cursor[windowMode]]
+    if (!cache || !cache.file) return
+    if (cache.isDirectory) { showMessagePopup('Rename', 'Directory rename is not supported.'); _redraw(); return }
+
+    const oldName = cache.file.name
+    const newName = showInputPopup('Rename', 'New name:', oldName)
+    if (newName === null || newName.length === 0 || newName === oldName) { _redraw(); return }
+
+    const dirStr = getCurrentDirStr(windowMode)
+    const srcPath = cache.file.fullPath
+    const dstPath = dirStr + newName
+
+    try {
+        const srcFile = files.open(srcPath)
+        const dstFile = files.open(dstPath)
+        if (dstFile.exists) {
+            if (!showConfirmPopup('Rename', `Overwrite "${newName}"?`)) { _redraw(); return }
+        }
+        if (!dstFile.exists) dstFile.mkFile()
+        dstFile.bwrite(srcFile.bread())
+        try { dstFile.flush() } catch (e) {}
+        try { dstFile.close() } catch (e) {}
+        srcFile.remove()
+        refreshFilePanelCache(windowMode)
+        clampCursorAfterChange()
+    }
+    catch (e) {
+        showMessagePopup('Rename failed', e.message || ('' + e))
+    }
+    _redraw()
+}
+
+function actMore() { makePopup(1); redraw() }
+function actQuit() { exit = true }
+
+function invokeOpAction(id) {
+    if      (id === 'switch') actSwitchPanel()
+    else if (id === 'up')     actGoUp()
+    else if (id === 'copy')   actCopy()
+    else if (id === 'move')   actMove()
+    else if (id === 'delete') actDelete()
+    else if (id === 'mkdir')  actMkdir()
+    else if (id === 'rename') actRename()
+    else if (id === 'more')   actMore()
+    else if (id === 'quit')   actQuit()
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// Mouse region setup (file list + op buttons)
+///////////////////////////////////////////////////////////////////////////////////////////////////
+
+function setupPanelMouseRegions() {
+    clearPanelMouseRegions()
+
+    const fp = (windowMode === 0) ? LEFTPANEL : RIGHTPANEL
+    const fpX = fp.x + 1
+    const fpW = fp.width - 2
+    const fpY = fp.y + 2  // first file row (after frame top + header)
+
+    // Wheel-scroll over the file list. Wheel and keyboard are the only inputs allowed
+    // to move the scroll position; hover (below) only moves the caret.
+    addPanelMouseRegion(fpX, fpY, fpW, LIST_HEIGHT, {
+        onWheel: (cy, cx, dy) => {
+            const filesCount = dirFileList[windowMode].length
+            const maxScroll = Math.max(0, filesCount - LIST_HEIGHT)
+            let s = scroll[windowMode] + dy * 3
+            if (s > maxScroll) s = maxScroll
+            if (s < 0) s = 0
+            if (s !== scroll[windowMode]) {
+                scroll[windowMode] = s
+                drawFilePanel()
+            }
+        }
+    })
+
+    // One hover/click region per row so the caret can follow the mouse without
+    // calling scrollVert (which would re-scroll the list near the upper/lower thirds).
+    for (let i = 0; i < LIST_HEIGHT; i++) {
+        const rowIdx = i
+        addPanelMouseRegion(fpX, fpY + i, fpW, 1, {
+            onHover: () => {
+                const target = scroll[windowMode] + rowIdx
+                if (target < dirFileList[windowMode].length && cursor[windowMode] !== target) {
+                    cursor[windowMode] = target
+                    drawFilePanel()
+                }
+            },
+            onClick: (cy, cx, btn) => {
+                if (btn !== 1) return
+                const target = scroll[windowMode] + rowIdx
+                if (target >= dirFileList[windowMode].length) return
+                cursor[windowMode] = target
+                actActivate()
+            }
+        })
+    }
+
+    // Op-panel button hover/click. Each button covers its icon row + label row.
+    const opX = OPPANEL.x + 1
+    const opW = SIDEBAR_WIDTH - 2
+    for (let i = 0; i < OP_BUTTONS.length; i++) {
+        const idx = i
+        const btn = OP_BUTTONS[i]
+        addPanelMouseRegion(opX, OPPANEL.y + 1 + btn.yOff, opW, btn.hitH || 2, {
+            onHover: () => {
+                if (opHover !== idx) { opHover = idx; drawOpPanel() }
+            },
+            onHoverLeave: () => {
+                if (opHover === idx) { opHover = -1; drawOpPanel() }
+            },
+            onClick: (cy, cx, btnNum) => {
+                if (btnNum !== 1) return
+                invokeOpAction(btn.id)
+            }
+        })
+    }
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
 
 con.curs_set(0)
 refreshFilePanelCache(0)
 refreshFilePanelCache(1)
 _redraw()
+
+// Drain inherited mouse/key state from whoever launched us. Polling launchers
+// like fsh.js can hand off with the mouse button still held; without this,
+// input.withEvent's first call edge-detects that as a fresh mouse_down at the
+// cursor and activates whichever file row happens to sit there.
+input.withEvent(() => {})
 
 let redrawRequested = false
 let exit = false
@@ -723,6 +1097,14 @@ let firstRunLatch = true
 
 while (!exit) {
     input.withEvent(event => {
+
+        if (dispatchMouseEvent(event)) {
+            if (redrawRequested) {
+                redrawRequested = false
+                _redraw()
+            }
+            return
+        }
 
         let keysym = event[1]
         let keyJustHit = (1 == event[2])
