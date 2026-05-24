@@ -49,7 +49,7 @@ MMIO
 0..31 RO: Raw Keyboard Buffer read. Won't shift the key buffer
 32..33 RO: Mouse X pos
 34..35 RO: Mouse Y pos
-36 RO: Mouse down? (1 for TRUE, 0 for FALSE)
+36 RO: Mouse down? (1 for LEFT, 2 for RIGHT, 3 for BOTH)
 37 RW: Read/Write single key input. Key buffer will be shifted. Manual writing is
     usually unnecessary as such action must be automatically managed via LibGDX
     input processing.

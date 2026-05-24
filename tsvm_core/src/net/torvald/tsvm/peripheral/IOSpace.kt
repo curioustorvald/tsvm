@@ -98,7 +98,7 @@ class IOSpace(val vm: VM) : PeriBase("io"), InputProcessor {
             in 0..31 -> keyboardBuffer[(addr.toInt())] ?: -1
             in 32..33 -> (mouseX.toInt() shr (adi - 32).times(8)).toByte()
             in 34..35 -> (mouseY.toInt() shr (adi - 34).times(8)).toByte()
-            36L -> mouseDown.toInt().toByte()
+            36L -> mouseButtons.toByte() // only bits 0..1 used; higher bits intentionally truncated
             37L -> {
                 val key = keyboardBuffer.removeTail() ?: -1
                 keyPushed = !keyboardBuffer.isEmpty  // Clear flag when buffer becomes empty
@@ -280,7 +280,7 @@ class IOSpace(val vm: VM) : PeriBase("io"), InputProcessor {
 
     private var mouseX: Short = 0
     private var mouseY: Short = 0
-    private var mouseDown = false
+    private var mouseButtons: Int = 0  // bit 0 = LEFT, bit 1 = RIGHT
     private var systemUptime = 0L
     private var rtc = 0L
 
@@ -299,7 +299,8 @@ class IOSpace(val vm: VM) : PeriBase("io"), InputProcessor {
                 // store mouse info
                 mouseX = (Gdx.input.x + guiPosX).toShort()
                 mouseY = (Gdx.input.y + guiPosY).toShort()
-                mouseDown = Gdx.input.isTouched
+                mouseButtons = (if (Gdx.input.isButtonPressed(Input.Buttons.LEFT))  1 else 0) or
+                               (if (Gdx.input.isButtonPressed(Input.Buttons.RIGHT)) 2 else 0)
 
                 // strobe keys to fill the key read buffer
                 var keysPushed = 0
@@ -313,7 +314,7 @@ class IOSpace(val vm: VM) : PeriBase("io"), InputProcessor {
                 }
             }
             else {
-                mouseDown = false
+                mouseButtons = 0
             }
         }
 
