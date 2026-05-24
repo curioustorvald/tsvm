@@ -19,7 +19,6 @@ const LIST_HEIGHT = HEIGHT - 3
 const FILESIZE_WIDTH = 7
 const FILELIST_WIDTH = WIDTH - SIDEBAR_WIDTH - 3 - FILESIZE_WIDTH
 const POPUP_WIDTH = 52 // always even number
-const POPUP_HEIGHT = 16
 
 const [SCRPW, SCRPH] = graphics.getPixelDimension()
 const CELL_PW = (SCRPW / WIDTH) | 0
@@ -74,11 +73,9 @@ const EXEC_FUNS = {
 }
 
 const EDIT_FUNS = {
-    "bas": (f) => _G.shell.execute(`edit "${f}"`),
-    "txt": (f) => _G.shell.execute(`edit "${f}"`),
-    "md": (f) => _G.shell.execute(`edit "${f}"`),
     "taud": (f) => _G.shell.execute(`microtone "${f}"`),
 }
+const DEFAULT_EDITOR = `edit`
 
 function makeExecFun(template) {
     return (f) => _G.shell.execute(template.replaceAll("{0}", `"${f}"`))
@@ -134,7 +131,6 @@ loadZfmrc()
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 const MOUSE_PANEL = []
-const MOUSE_POPUP_STACK = []
 let lastHoveredRegion = null
 
 function pixelToCell(px, py) {
@@ -145,21 +141,16 @@ function regionHits(r, cy, cx) {
 }
 function clearPanelMouseRegions() { MOUSE_PANEL.length = 0; lastHoveredRegion = null }
 function addPanelMouseRegion(x, y, w, h, handlers) { MOUSE_PANEL.push(Object.assign({x, y, w, h}, handlers)) }
-function pushMousePopup(regions) { MOUSE_POPUP_STACK.push(regions); lastHoveredRegion = null }
-function popMousePopup() { MOUSE_POPUP_STACK.pop(); lastHoveredRegion = null }
 
 function dispatchMouseEvent(event) {
     const t = event[0]
     if (t !== 'mouse_down' && t !== 'mouse_wheel' && t !== 'mouse_up' && t !== 'mouse_move') return false
     const [cy, cx] = pixelToCell(event[1], event[2])
-    const pool = (MOUSE_POPUP_STACK.length > 0)
-        ? MOUSE_POPUP_STACK[MOUSE_POPUP_STACK.length - 1]
-        : MOUSE_PANEL
 
     if (t === 'mouse_move') {
         let hit = null
-        for (let i = pool.length - 1; i >= 0; i--) {
-            const r = pool[i]
+        for (let i = MOUSE_PANEL.length - 1; i >= 0; i--) {
+            const r = MOUSE_PANEL[i]
             if (regionHits(r, cy, cx) && (r.onHover || r.onHoverLeave)) { hit = r; break }
         }
         if (hit !== lastHoveredRegion) {
@@ -170,8 +161,8 @@ function dispatchMouseEvent(event) {
         return false
     }
 
-    for (let i = pool.length - 1; i >= 0; i--) {
-        const r = pool[i]
+    for (let i = MOUSE_PANEL.length - 1; i >= 0; i--) {
+        const r = MOUSE_PANEL[i]
         if (!regionHits(r, cy, cx)) continue
         if (t === 'mouse_down'  && r.onClick)   { r.onClick(cy, cx, event[3], event); return true }
         if (t === 'mouse_wheel' && r.onWheel)   { r.onWheel(cy, cx, event[3], event); return true }
@@ -181,7 +172,6 @@ function dispatchMouseEvent(event) {
 }
 
 let windowMode = 0 // 0 == left, 1 == right
-let windowFocus = [0] // is a stack; 0: files window, 1: palette window, 2: popup window
 
 // window states
 let path = [["A:", "home"], ["A:"]]
@@ -439,14 +429,10 @@ let opPanelDraw = (wo) => {
             let moveBack = (i == 0) ? 6 : 3
 
             con.color_pair(COL_HLTEXT, 255)
-            con.move(y - moveBack, xp - 1)
-            con.prnch(0xDA); print('\u00C4'.repeat(SIDEBAR_WIDTH - 2)); con.prnch(0xBF)
-            for (let yy = 1; yy < moveBack; yy++) {
-                con.move(y - moveBack + yy, xp - 1); con.prnch(0xB3)
-                con.move(y - moveBack + yy, xp + SIDEBAR_WIDTH); con.prnch(0xB3)
-            }
-            con.move(y, xp - 1)
-            con.prnch(0xC0); print('\u00C4'.repeat(SIDEBAR_WIDTH - 2)); con.prnch(0xD9)
+            con.move(y - moveBack, xp)
+             print('\u00CD'.repeat(SIDEBAR_WIDTH - 2))
+            con.move(y, xp)
+            print('\u00CD'.repeat(SIDEBAR_WIDTH - 2))
         }
     }
     function labCol(i) { return (opHover === i) ? COL_HLTEXT : COL_TEXT }
@@ -532,35 +518,6 @@ let opPanelDraw = (wo) => {
 }
 
 
-let paletteDraw = (wo) => {
-    function hr(y) {
-        con.move(y, xp)
-        print(`\x84196u`.repeat(POPUP_WIDTH - 2))
-    }
-
-    con.color_pair(COL_TEXT, COL_BACK)
-
-    let xp = wo.x + 1
-    let yp = wo.y + 1
-
-    // erase first
-    for (let y = 0; y <= POPUP_HEIGHT-2; y++) {
-        con.move(yp + y, xp)
-        print(" ".repeat(POPUP_WIDTH-2))
-    }
-
-    // finally draw something
-    con.move(yp, xp)
-    print("More commands (hit m to return):")
-}
-
-
-let popupDraw = (wo) => {
-
-}
-
-///////////////////////////////////////////////////////////////////////////////////////////////////
-
 let filenavOninput = (window, event) => {
     let eventName = event[0]
     if (eventName !== "key_down") return
@@ -600,32 +557,6 @@ let filenavOninput = (window, event) => {
     else if (keyJustHit && keycode == 66) { // enter
         actActivate()
     }
-}
-
-
-
-let paletteInput = (window, event) => {
-
-    let eventName = event[0]
-    if (eventName == "key_down") {
-
-    let keysym = event[1]
-    let keyJustHit = (1 == event[2])
-    let keycodes = [event[3],event[4],event[5],event[6],event[7],event[8],event[9],event[10]]
-    let keycode = keycodes[0]
-
-    if (keyJustHit && keysym == 'm') {
-        removePopup(); redraw()
-    }
-
-    }
-}
-
-
-
-let popupInput = (window, event) => {
-
-
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -668,52 +599,15 @@ function showMessagePopup(title, message) {
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
-let windows = [
-/*index 0: main three panels*/[
+const windows = [
     new win.WindowObject(1, 2, WIDTH - SIDEBAR_WIDTH, HEIGHT, filenavOninput, filesPanelDraw), // left panel
     new win.WindowObject(WIDTH - SIDEBAR_WIDTH+1, 2, SIDEBAR_WIDTH, HEIGHT, ()=>{}, opPanelDraw),
-//    new win.WindowObject(1, 2, SIDEBAR_WIDTH, HEIGHT, ()=>{}, opPanelDraw),
     new win.WindowObject(SIDEBAR_WIDTH + 1, 2, WIDTH - SIDEBAR_WIDTH, HEIGHT, filenavOninput, filesPanelDraw), // right panel
-],
-/*index 1: commands palette*/[
-    new win.WindowObject((WIDTH - POPUP_WIDTH) / 2, (HEIGHT - POPUP_HEIGHT) / 2, POPUP_WIDTH, POPUP_HEIGHT, paletteInput, paletteDraw, "Commands")
-],
-/*index 2: popup messages*/[
-    new win.WindowObject((WIDTH - POPUP_WIDTH) / 2, (HEIGHT - POPUP_HEIGHT) / 2, POPUP_WIDTH, POPUP_HEIGHT, popupInput, popupDraw)
-]]
+]
 
-const LEFTPANEL = windows[0][0]
-const OPPANEL = windows[0][1]
-const RIGHTPANEL = windows[0][2]
-
-let currentPopup = 0
-
-function makePopup(index) {
-    currentPopup = index
-    windowFocus.push(currentPopup)
-    // Push an empty mouse region set so the panel's op-button / file-row regions
-    // stop receiving clicks while this popup is open. Otherwise the user could
-    // click a panel button while e.g. the "More" palette is shown and end up
-    // with two popups stacked on top of each other.
-    pushMousePopup([])
-    for (let i = 0; i < windows.length; i++) {
-        windows[i].forEach(it => {
-            it.isHighlighted = (i == index)
-        })
-    }
-}
-
-function removePopup() {
-    windowFocus.pop()
-    popMousePopup()
-    const index = windowFocus.last
-    currentPopup = 0
-    for (let i = 0; i < windows.length; i++) {
-        windows[i].forEach(it => {
-            it.isHighlighted = (i == index)
-        })
-    }
-}
+const LEFTPANEL = windows[0]
+const OPPANEL = windows[1]
+const RIGHTPANEL = windows[2]
 
 function drawTitle() {
     // draw window title
@@ -731,18 +625,9 @@ function drawTitle() {
 
 
 function drawFilePanel() {
-    // set highlight status
-    const currentTopPanel = windowFocus.last()
-    if (currentTopPanel == 0) {
-        windows[0].forEach((panel, i)=>{
-            panel.isHighlighted = (i == 2 * windowMode)
-        })
-    }
-    else {
-        windows[0].forEach((panel, i)=>{
-            panel.isHighlighted = false
-        })
-    }
+    windows.forEach((panel, i) => {
+        panel.isHighlighted = (i == 2 * windowMode)
+    })
     if (windowMode) {
         RIGHTPANEL.drawContents()
         RIGHTPANEL.drawFrame()
@@ -763,14 +648,6 @@ function drawOpPanel() {
     OPPANEL.drawFrame()
 }
 
-function drawPopupPanel() {
-    if (currentPopup) {
-        windows[currentPopup][0].drawContents()
-        windows[currentPopup][0].drawFrame()
-    }
-}
-
-
 function redraw() {
     redrawRequested = true
 }
@@ -780,7 +657,6 @@ function _redraw() {
     drawTitle()
     drawFilePanel()
     drawOpPanel()
-    drawPopupPanel()
     setupPanelMouseRegions()
 }
 
@@ -1010,7 +886,49 @@ function actRename() {
     _redraw()
 }
 
-function actMore() { makePopup(1); redraw() }
+function actMore() {
+    if (path[windowMode].length === 0) return
+    const cache = filePanelCache[windowMode][cursor[windowMode]]
+    if (!cache || !cache.file || cache.isDirectory) return
+
+    const res = win.showDialog({
+        title: 'More',
+        message: cache.file.name,
+        fields: [],
+        buttons: [
+            { label: 'Execute', action: 'execute', default: true },
+            { label: 'Edit',    action: 'edit' },
+            { label: 'Close',   action: 'close' },
+        ],
+    })
+    _redraw()
+
+    if (res.action === 'execute') {
+        actActivate()
+        return
+    }
+    if (res.action === 'edit') {
+        const editfun = EDIT_FUNS[cache.fileext]
+            || ((f) => _G.shell.execute(`${DEFAULT_EDITOR} "${f}"`))
+        let errorlevel = 0
+        con.curs_set(1); clearScr(); con.move(1, 1)
+        try {
+            errorlevel = editfun(cache.file.fullPath)
+        }
+        catch (e) {
+            println(e)
+            errorlevel = 1
+        }
+        if (errorlevel) {
+            println("Hit Return/Enter key to continue . . . .")
+            sys.read()
+        }
+        firstRunLatch = true
+        con.curs_set(0); clearScr()
+        refreshFilePanelCache(windowMode)
+        redraw()
+    }
+}
 function actQuit() { exit = true }
 
 function invokeOpAction(id) {
@@ -1135,7 +1053,7 @@ while (!exit) {
             firstRunLatch = false
         }
         else {
-            windows[windowFocus.last()].forEach(it => {
+            windows.forEach(it => {
                 if (it.isHighlighted) { // double input processing without this? wtf?!
                     it.processInput(event)
                 }
