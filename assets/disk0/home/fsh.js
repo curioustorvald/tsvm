@@ -792,6 +792,9 @@ _fsh.launchEntry = function(label, cmd) {
     con.curs_set(0)
     graphics.setBackground(2,1,3)
     graphics.resetPalette()
+    // Apps (e.g. zfm) may switch to graphics mode 0; restore mode 3 so the
+    // clock widget on framebuffer 2 is composited again.
+    graphics.setGraphicsMode(3)
     _fsh.redrawAll()
 }
 
