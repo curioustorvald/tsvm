@@ -428,9 +428,26 @@ const OP_BUTTONS = [
 let opHover = -1
 
 let opPanelDraw = (wo) => {
-    function hr(y) {
+    function hr(i, y) {
+        // draw horizontal rule...
+        con.color_pair(COL_TEXT, 255)
         con.move(y, xp)
-        print(`\x84196u`.repeat(SIDEBAR_WIDTH - 2))
+        print(`\u00C4`.repeat(SIDEBAR_WIDTH - 2))
+
+        // if mouse is up, draw the whole box
+        if (opHover == i) {
+            let moveBack = (i == 0) ? 6 : 3
+
+            con.color_pair(COL_HLTEXT, 255)
+            con.move(y - moveBack, xp - 1)
+            con.prnch(0xDA); print('\u00C4'.repeat(SIDEBAR_WIDTH - 2)); con.prnch(0xBF)
+            for (let yy = 1; yy < moveBack; yy++) {
+                con.move(y - moveBack + yy, xp - 1); con.prnch(0xB3)
+                con.move(y - moveBack + yy, xp + SIDEBAR_WIDTH); con.prnch(0xB3)
+            }
+            con.move(y, xp - 1)
+            con.prnch(0xC0); print('\u00C4'.repeat(SIDEBAR_WIDTH - 2)); con.prnch(0xD9)
+        }
     }
     function labCol(i) { return (opHover === i) ? COL_HLTEXT : COL_TEXT }
 
@@ -441,76 +458,77 @@ let opPanelDraw = (wo) => {
 
     // other panel
     con.move(yp + 2, xp + 3)
-    con.prnch((windowMode) ? 0x11 : 0x10)
+    con.color_pair(labCol(0), 255); con.prnch((windowMode) ? 0x11 : 0x10)
     con.move(yp + 3, xp)
     print(`  \x1B[38;5;${labCol(0)}m[\x1B[38;5;${COL_HLACTION}mZ\x1B[38;5;${labCol(0)}m]`)
 
-    hr(yp+5)
+    hr(0, yp+5)
 
     // go up
-    con.mvaddch(yp + 6, xp + 3, 0x18)
+    con.color_pair(labCol(1), 255); con.mvaddch(yp + 6, xp + 3, 0x18)
     con.move(yp + 7, xp)
     print(` \x1B[38;5;${labCol(1)}mGo \x1B[38;5;${COL_HLACTION}mU\x1B[38;5;${labCol(1)}mp`)
 
-    hr(yp+8)
+    hr(1, yp+8)
 
     // copy
     con.move(yp + 9, xp + 2)
-    con.prnch(0xDB);con.prnch((windowMode) ? 0x1B : 0x1A);con.prnch(0xDB)
+    con.color_pair(labCol(2), 255); con.prnch(0xDB);con.prnch((windowMode) ? 0x1B : 0x1A);con.prnch(0xDB)
     con.move(yp + 10, xp)
     print(` \x1B[38;5;${COL_HLACTION}mC\x1B[38;5;${labCol(2)}mopy`)
 
-    hr(yp+11)
+    hr(2, yp+11)
 
     // move
     con.move(yp + 12, xp + 2)
-    if (windowMode) con.prnch([0xDB, 0x1B, 0xB0]); else con.prnch([0xB0, 0x1A, 0xDB])
+    con.color_pair(labCol(3), 255); if (windowMode) con.prnch([0xDB, 0x1B, 0xB0]); else con.prnch([0xB0, 0x1A, 0xDB])
     con.move(yp + 13, xp)
     print(` \x1B[38;5;${labCol(3)}mMo\x1B[38;5;${COL_HLACTION}mv\x1B[38;5;${labCol(3)}me`)
 
-    hr(yp+14)
+    hr(3, yp+14)
 
     // delete
     con.move(yp + 15, xp + 2)
-    if (windowMode) con.prnch([0xDB, 0x1A, 0xF9]); else con.prnch([0xF9, 0x1B, 0xDB])
+    con.color_pair(labCol(4), 255); if (windowMode) con.prnch([0xDB, 0x1A, 0xF9]); else con.prnch([0xF9, 0x1B, 0xDB])
     con.move(yp + 16, xp)
     print(` \x1B[38;5;${COL_HLACTION}mD\x1B[38;5;${labCol(4)}melete`)
 
-    hr(yp+17)
+    hr(4, yp+17)
 
     // mkdir
     con.move(yp + 18, xp + 2)
+    con.color_pair(labCol(5), 255);
     con.prnch(0xDB)
     con.video_reverse();con.prnch(0x2B);con.video_reverse()
     con.prnch(0xDF)
     con.move(yp + 19, xp)
     print(` \x1B[38;5;${labCol(5)}mM\x1B[38;5;${COL_HLACTION}mk\x1B[38;5;${labCol(5)}mDir`)
 
-    hr(yp+20)
+    hr(5, yp+20)
 
     // rename
     con.move(yp + 21, xp + 2)
-    con.prnch(0x4E);con.prnch(0x1A);con.prnch(0x52)
+    con.color_pair(labCol(6), 255); con.prnch(0x4E);con.prnch(0x1A);con.prnch(0x52)
     con.move(yp + 22, xp)
     print(` \x1B[38;5;${COL_HLACTION}mR\x1B[38;5;${labCol(6)}mename`)
 
-    hr(yp+23)
+    hr(6, yp+23)
 
     // the dreaded hamburger menu
     con.move(yp + 24, xp + 3)
-    con.prnch(0xf0)
+    con.color_pair(labCol(7), 255); con.prnch(0xf0)
     con.move(yp + 25, xp)
     print(` \x1B[38;5;${COL_HLACTION}mM\x1B[38;5;${labCol(7)}more`)
 
-    hr(yp+26)
+    hr(7, yp+26)
 
     // quit
     con.move(yp + 27, xp + 3)
-    con.prnch(0x58)
+    con.color_pair(labCol(8), 255); con.prnch(0x58)
     con.move(yp + 28, xp)
     print(` \x1B[38;5;${COL_HLACTION}mQ\x1B[38;5;${labCol(8)}muit`)
 
-
+    con.color_pair(COL_TEXT, 255)
 }
 
 

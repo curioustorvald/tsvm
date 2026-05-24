@@ -220,6 +220,9 @@ function showDialog(opts) {
     const values  = fields.map(f => (f.initial == null) ? '' : ('' + f.initial))
     const cursors = values.map(v => v.length)
 
+    let oldFG = con.get_color_fore()
+    let oldBG = con.get_color_back()
+
     let buttons
     if (opts.buttons) {
         buttons = opts.buttons
@@ -322,23 +325,23 @@ function showDialog(opts) {
         // Top border
         con.color_pair(frameFg, bg)
         con.move(fbRow, fbCol)
-        print('Ú' + 'Ä'.repeat(fw) + '¿')
+        print('\u00DA' + '\u00C4'.repeat(fw) + '\u00BF')
 
         // Side borders + content
         con.color_pair(frameFg, bg)
         con.move(fbRow + 1, fbCol)
-        print('³')
+        print('\u00B3')
         con.color_pair(fg, fieldBg)
         const s = fieldScroll(cursors[i], fw)
         const vis = values[i].substring(s, s + fw)
         print(vis.padEnd(fw, ' '))
         con.color_pair(frameFg, bg)
         con.move(fbRow + 1, fbCol + fw + 1)
-        print('³')
+        print('\u00B3')
 
         // Bottom border
         con.move(fbRow + 2, fbCol)
-        print('À' + 'Ä'.repeat(fw) + 'Ù')
+        print('\u00C0' + '\u00C4'.repeat(fw) + '\u00D9')
         con.color_pair(fg, bg)
     }
 
@@ -518,6 +521,7 @@ function showDialog(opts) {
     }
 
     con.curs_set(0)
+    con.color_pair(oldFG, oldBG)
     return done
 }
 
