@@ -170,6 +170,10 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
 
         Gdx.input.inputProcessor = vm.getIO()
         vm.getIO().inputViewport = inputViewport
+        vm.getIO().inputOriginX = (viewportWidth - loaderInfo.drawWidth) / 2
+        vm.getIO().inputOriginY = (viewportHeight - loaderInfo.drawHeight) / 2
+        vm.getIO().inputAreaW   = loaderInfo.drawWidth
+        vm.getIO().inputAreaH   = loaderInfo.drawHeight
 
         if (usememvwr) memvwr = Memvwr(vm)
 

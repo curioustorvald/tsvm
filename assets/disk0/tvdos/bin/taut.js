@@ -3378,23 +3378,48 @@ function openHelpPopup() {
     repaint()
 
     let done = false
+    const buttons = makePopupButtonRow(HELP_POPUP_Y + HELP_POPUP_H - 1, HELP_POPUP_X, HELP_POPUP_W, [
+        { label: 'OK', action: () => { done = true }, default: true },
+    ])
+    buttons.repaint()
+
     let eventJustReceived = true
+
+    pushMousePopup(buttons.regions.concat([
+        // Scroll body: wheel scrolls help text.
+        { x: HELP_CONTENT_X, y: HELP_CONTENT_Y, w: HELP_CONTENT_W, h: HELP_CONTENT_H, onWheel: (cy, cx, dy) => {
+            scroll += dy * 3
+            if (scroll < 0) scroll = 0
+            if (scroll > maxScroll) scroll = maxScroll
+            repaint()
+            buttons.repaint()
+        }},
+    ]))
+
+    const scrollAndRepaint = () => { repaint(); buttons.repaint() }
+
     while (!done) {
         input.withEvent(ev => {
+            if (eventJustReceived && (ev[0] === 'key_down' || ev[0] === 'mouse_down')) {
+                eventJustReceived = false; return
+            }
+            if (dispatchMouseEvent(ev)) return
             if (ev[0] !== 'key_down') return
-            if (eventJustReceived) { eventJustReceived = false; return }
             const ks = ev[1]
+            const shiftDown = (ev.includes(59) || ev.includes(60))
 
-            if (ks === '<ESC>' || ks === '!' || ks === 'q' || ks === '\n') { done = true }
-            else if (ks === '<UP>')        { if (scroll > 0)         { scroll -= 1;                                    repaint() } }
-            else if (ks === '<DOWN>')      { if (scroll < maxScroll) { scroll += 1;                                    repaint() } }
-            else if (ks === '<PAGE_UP>')   {                           scroll = Math.max(0,         scroll - HELP_CONTENT_H); repaint() }
-            else if (ks === '<PAGE_DOWN>') {                           scroll = Math.min(maxScroll, scroll + HELP_CONTENT_H); repaint() }
-            else if (ks === '<HOME>')      {                           scroll = 0;                                            repaint() }
-            else if (ks === '<END>')       {                           scroll = maxScroll;                                    repaint() }
+            if (buttons.keyHandler(ks, shiftDown)) return
+            if (ks === '<ESC>' || ks === '!' || ks === 'q') { done = true }
+            else if (ks === '<UP>')        { if (scroll > 0)         { scroll -= 1;                                    scrollAndRepaint() } }
+            else if (ks === '<DOWN>')      { if (scroll < maxScroll) { scroll += 1;                                    scrollAndRepaint() } }
+            else if (ks === '<PAGE_UP>')   {                           scroll = Math.max(0,         scroll - HELP_CONTENT_H); scrollAndRepaint() }
+            else if (ks === '<PAGE_DOWN>') {                           scroll = Math.min(maxScroll, scroll + HELP_CONTENT_H); scrollAndRepaint() }
+            else if (ks === '<HOME>')      {                           scroll = 0;                                            scrollAndRepaint() }
+            else if (ks === '<END>')       {                           scroll = maxScroll;                                    scrollAndRepaint() }
         })
     }
 
+    popMousePopup()
     drawAll()
 }
 
@@ -3432,6 +3457,76 @@ const popupDrawFrame = (wo) => {
     }
 }
 
+// Render a centred button "[ Label ]" at (y, x). State drives the colour scheme so
+// the button can appear normal / keyboard-focused / mouse-hovered / both.
+//   state: 0 = normal, 1 = focused, 2 = hovered, 3 = focused + hovered
+function drawPopupButton(y, x, label, state) {
+    const txt = `[ ${label} ]`
+    let fore, back
+    if      (state === 1) { fore = colWHITE; back = colTabBarBack2 }   // focused
+    else if (state === 2) { fore = colWHITE; back = colHighlight }     // hovered
+    else if (state === 3) { fore = colBLACK; back = colWHITE }         // focused + hovered
+    else                  { fore = 230;      back = colPopupBack }     // normal
+    con.color_pair(fore, back)
+    con.move(y, x)
+    print(txt)
+    con.color_pair(colStatus, 255)
+    return { x: x, y: y, w: txt.length, h: 1 }
+}
+
+// Build a row of OK/Cancel-style buttons centred under a popup. Each entry:
+//   { label, action() }  (and an optional `default: true` to pre-focus)
+// Returns:
+//   - `regions`: an array suitable for MOUSE_POPUP_STACK.push (handles hover + click)
+//   - `keyHandler(ks) -> bool`: feed key symbols here; returns true if it consumed Tab/Enter
+//   - `repaint()`: redraw all buttons with their current focus/hover state
+//   - `focus`, `hover`: getters/setters via methods (so popups can drive Esc → Cancel)
+function makePopupButtonRow(y, popupX, popupW, defs) {
+    // Lay out buttons centred along row `y`. Label widths are tracked so we can compute hits.
+    const labels = defs.map(d => `[ ${d.label} ]`)
+    const totalW = labels.reduce((s, l) => s + l.length, 0) + 2 * (defs.length - 1)
+    const startX = popupX + ((popupW - totalW) >>> 1)
+    let cursor = startX
+    const buttons = defs.map((d, i) => {
+        const w = labels[i].length
+        const b = { x: cursor, y, w, label: d.label, action: d.action }
+        cursor += w + 2
+        return b
+    })
+    let focus = Math.max(0, defs.findIndex(d => d.default))
+    if (focus < 0) focus = 0
+    let hover = -1
+
+    const repaint = () => {
+        buttons.forEach((b, i) => {
+            const st = (i === focus ? 1 : 0) | (i === hover ? 2 : 0)
+            drawPopupButton(b.y, b.x, b.label, st)
+        })
+    }
+
+    const regions = buttons.map((b, i) => ({
+        x: b.x, y: b.y, w: b.w, h: b.h || 1,
+        onClick: (cy, cx, btn) => { if (btn === 1) b.action() },
+        onHover: () => { if (hover !== i) { hover = i; repaint() } },
+        onHoverLeave: () => { if (hover === i) { hover = -1; repaint() } },
+    }))
+
+    // Tab/Shift+Tab cycles focus; Enter activates. Returns true if the key was consumed.
+    const keyHandler = (ks, shiftDown) => {
+        if (ks === '\t' || ks === '<TAB>') {
+            focus = (focus + (shiftDown ? defs.length - 1 : 1)) % defs.length
+            repaint()
+            return true
+        }
+        if (ks === '\n') { buttons[focus].action(); return true }
+        return false
+    }
+
+    return { regions, keyHandler, repaint,
+             getFocus: () => focus, setFocus: (i) => { focus = i; repaint() },
+             activate: (i) => buttons[i].action() }
+}
+
 function drawGotoPopup(popup, buf) {
     con.color_pair(230, colPopupBack)
     popup.drawFrame()
@@ -3463,8 +3558,8 @@ function applyGoto(num) {
 }
 
 function openConfirmQuit() {
-    const pw = 25 + hasUnsavedChanges * 4
-    const ph = 5 + hasUnsavedChanges
+    const pw = 28 + hasUnsavedChanges * 4
+    const ph = 6 + hasUnsavedChanges
     const px = ((SCRW - pw) / 2 | 0) + 1
     const py = ((SCRH - ph) / 2 | 0)
 
@@ -3477,9 +3572,7 @@ function openConfirmQuit() {
 
     con.move(py + 2, px + 2)
     con.color_pair(colWHITE, colPopupBack)
-    print('Exit Microtone? ')
-    con.color_pair(230, 240)
-    print('[Y/N]')
+    print('Exit Microtone?')
 
     if (hasUnsavedChanges) {
         con.move(py + 3, px + 2)
@@ -3487,29 +3580,40 @@ function openConfirmQuit() {
         print('You have unsaved changes.')
     }
 
-    con.color_pair(colStatus, 255) // reset colour
-
     let result = false
     let done = false
+
+    const buttons = makePopupButtonRow(py + ph - 2, px, pw, [
+        { label: 'Yes', action: () => { result = true; done = true }, default: true },
+        { label: 'No',  action: () => { done = true } },
+    ])
+    buttons.repaint()
+    pushMousePopup(buttons.regions)
+
     let eventJustReceived = true
     while (!done) {
         input.withEvent(ev => {
+            if (eventJustReceived && ev[0] === 'mouse_down') { eventJustReceived = false; return }
+            if (dispatchMouseEvent(ev)) return
             if (ev[0] !== 'key_down') return
             if (1 !== ev[2]) return
             const ks = ev[1]
+            const shiftDown = (ev.includes(59) || ev.includes(60))
 
-            if (ks === 'y' || ks === 'Y' || ks === '\n') { result = true;  done = true }
+            if (buttons.keyHandler(ks, shiftDown)) return
+            if (ks === 'y' || ks === 'Y') { result = true; done = true }
             else if (ks === 'n' || ks === 'N' || ks === '<ESC>') { done = true }
         })
     }
 
+    popMousePopup()
     if (!result) drawAll()
     return result
 }
 
 function openGotoPopup() {
     const pw = GOTO_POPUP_W
-    const ph = GOTO_POPUP_H
+    const ph = GOTO_POPUP_H + 2
     const px = ((SCRW - pw) / 2 | 0) + 1
     const py = ((SCRH - ph) / 2 | 0)
 
@@ -3519,36 +3623,45 @@ function openGotoPopup() {
 
     let buf = ''
     let done = false
-    drawGotoPopup(popup, buf)
+    let commit = false
+
+    const buttons = makePopupButtonRow(py + ph - 2, px, pw, [
+        { label: 'OK',     action: () => { commit = true; done = true }, default: true },
+        { label: 'Cancel', action: () => { done = true } },
+    ])
+    const repaintAll = () => { drawGotoPopup(popup, buf); buttons.repaint() }
+    repaintAll()
+    pushMousePopup(buttons.regions)
 
     let eventJustReceived = true
 
     while (!done) {
         input.withEvent(ev => {
-            if (ev[0] !== 'key_down') return
-            const ks = ev[1]
-            if (1 !== ev[2]) return // not key just hit
-
-            if (eventJustReceived) { // filter lingering input
+            if (eventJustReceived && (ev[0] === 'key_down' || ev[0] === 'mouse_down')) {
                 eventJustReceived = false
                 return
             }
+            if (dispatchMouseEvent(ev)) return
+            if (ev[0] !== 'key_down') return
+            const ks = ev[1]
+            if (1 !== ev[2]) return // not key just hit
+            const shiftDown = (ev.includes(59) || ev.includes(60))
 
+            if (buttons.keyHandler(ks, shiftDown)) return
             if (ks === '<ESC>' || ks === 'x') {
-                done = true
-            } else if (ks === '\n') {
-                if (buf.length > 0) applyGoto(parseInt(buf, 16))
                 done = true
             } else if (ks === '\u0008') {
                 buf = buf.slice(0, -1)
-                drawGotoPopup(popup, buf)
+                repaintAll()
             } else if (ks.length === 1 && '0123456789abcdefABCDEF'.includes(ks) && buf.length < 3) {
                 buf += ks.toUpperCase()
-                drawGotoPopup(popup, buf)
+                repaintAll()
             }
         })
     }
 
+    popMousePopup()
+    if (commit && buf.length > 0) applyGoto(parseInt(buf, 16))
     drawAll()
 }
 
@@ -3575,7 +3688,7 @@ function openRetunePopup() {
 
     const pw     = 42
     const listH  = Math.min(n, 15)
-    const ph     = listH + 5
+    const ph     = listH + 7
     const px     = ((SCRW - pw) / 2 | 0)
     const py     = ((SCRH - ph) / 2 | 0)
     const listX  = px + 2
@@ -3589,6 +3702,14 @@ function openRetunePopup() {
     let sel = entries.findIndex(p => p.index === PITCH_PRESET_IDX)
     if (sel < 0) sel = 0
     let scroll = centerScroll(sel, 0, listH, n)
+
+    // OK/Cancel button placement (bottom inside row)
+    const btnRow   = py + ph - 2
+    const labelOK  = `[ OK ]`.length
+    const labelCan = `[ Cancel ]`.length
+    const totalW   = labelOK + 2 + labelCan
+    const btnXOk   = px + ((pw - totalW) >>> 1)
+    const btnXCan  = btnXOk + labelOK + 2
 
     const repaint = () => {
         con.color_pair(230, colPopupBack)
@@ -3637,41 +3758,60 @@ function openRetunePopup() {
             }
         }
 
-        con.move(py + ph - 2, px + 2)
+        con.move(py + ph - 3, px + 2)
         con.color_pair(colVoiceHdr, colPopupBack)
         print(`\u008418u `)
         con.color_pair(colStatus, colPopupBack)
         print(`Sel `)
         con.color_pair(colVoiceHdr, colPopupBack)
-        print(`ent `)
-        con.color_pair(colStatus, colPopupBack)
-        print(`OK `)
-        con.color_pair(colVoiceHdr, colPopupBack)
         print(`m `)
         con.color_pair(colStatus, colPopupBack)
-        print(`Method `)
-        con.color_pair(colVoiceHdr, colPopupBack)
-        print(`Q `)
-        con.color_pair(colStatus, colPopupBack)
-        print(`Cancel`)
+        print(`Method`)
+
+        buttons.repaint()
 
         con.color_pair(colStatus, 255)
     }
 
     repaint()
 
-    let done = false
-    let confirmed = false
     let eventJustReceived = true
+
+    pushMousePopup(buttons.regions.concat([
+        // List rows: click to select, double-click semantics omitted (clarity over speed).
+        { x: listX, y: listY, w: listW, h: listH, onClick: (cy, cx, btn) => {
+            if (btn !== 1) return
+            const r = cy - listY
+            const idx = scroll + r
+            if (idx < 0 || idx >= n) return
+            sel = idx; repaint()
+        }, onWheel: (cy, cx, dy) => {
+            sel += dy * 3
+            if (sel < 0) sel = 0
+            if (sel >= n) sel = n - 1
+            scroll = centerScroll(sel, scroll, listH, n)
+            repaint()
+        }},
+        // Method label clickable
+        { x: px + 2, y: py + 2, w: listW, h: 1, onClick: (cy, cx, btn) => {
+            if (btn !== 1) return
+            method = methodCycle[(methodCycle.indexOf(method) + 1) % methodCycle.length]
+            repaint()
+        }},
+    ]))
 
     while (!done) {
         input.withEvent(ev => {
+            if (eventJustReceived && (ev[0] === 'key_down' || ev[0] === 'mouse_down')) {
+                eventJustReceived = false; return
+            }
+            if (dispatchMouseEvent(ev)) return
             if (ev[0] !== 'key_down') return
-            if (eventJustReceived) { eventJustReceived = false; return }
             const ks = ev[1]
+            const shiftDown = (ev.includes(59) || ev.includes(60))
 
-            if (ks === 'Q') { done = true }
-            else if (ks === '\n') { confirmed = true; done = true }
+            if (buttons.keyHandler(ks, shiftDown)) return
+            if (ks === 'Q' || ks === '<ESC>') { done = true }
             else if (ks === 'M' || ks === 'm') {
                 method = methodCycle[(methodCycle.indexOf(method) + 1) % methodCycle.length]
                 repaint()
@@ -3691,6 +3831,8 @@ function openRetunePopup() {
             }
         })
     }
+
+    popMousePopup()
 
     if (confirmed) {
         const target = entries[sel]
@@ -3729,13 +3871,20 @@ function openFlagsPopup() {
     let sel = 0
 
     const pw = 28
-    const ph = items.length + 4
+    const ph = items.length + 6
     const px = ((SCRW - pw) / 2 | 0) + 1
     const py = ((SCRH - ph) / 2 | 0)
 
     const popup = new win.WindowObject(px, py, pw, ph, ()=>{}, ()=>{}, 'Mixer Flags', popupDrawFrame)
     popup.isHighlighted = true
     popup.titleBack = colPopupBack
+
+    let done = false
+    let confirmed = false
+    const buttons = makePopupButtonRow(py + ph - 2, px, pw, [
+        { label: 'OK',     action: () => { confirmed = true; done = true }, default: true },
+        { label: 'Cancel', action: () => { done = true } },
+    ])
 
     const repaint = () => {
         con.color_pair(230, colPopupBack)
@@ -3760,32 +3909,48 @@ function openFlagsPopup() {
             }
         }
 
-        con.move(py + ph - 2, px + 2)
+        con.move(py + ph - 3, px + 2)
         con.color_pair(colVoiceHdr, colPopupBack); print(`\u008418u `)
         con.color_pair(colStatus,   colPopupBack); print('Sel ')
         con.color_pair(colVoiceHdr, colPopupBack); print('sp ')
-        con.color_pair(colStatus,   colPopupBack); print('Tick ')
-        con.color_pair(colVoiceHdr, colPopupBack); print('ent ')
-        con.color_pair(colStatus,   colPopupBack); print('OK ')
-        con.color_pair(colVoiceHdr, colPopupBack); print('Q ')
-        con.color_pair(colStatus,   colPopupBack); print('X')
+        con.color_pair(colStatus,   colPopupBack); print('Tick')
+
+        buttons.repaint()
 
         con.color_pair(colStatus, 255)
     }
 
     repaint()
 
-    let done = false
-    let confirmed = false
     let eventJustReceived = true
+
+    pushMousePopup(buttons.regions.concat([
+        // Clickable rows — each maps to a selectable index.
+        { x: px + 2, y: py + 1, w: pw - 4, h: items.length, onClick: (cy, cx, btn) => {
+            if (btn !== 1) return
+            const i = cy - (py + 1)
+            const it = items[i]
+            if (!it || !it.kind) return
+            sel = selectables.indexOf(i)
+            if (sel < 0) sel = 0
+            if (it.kind === 'tone') toneMode = it.idx
+            else if (it.kind === 'intp') intpMode = it.idx
+            repaint()
+        }},
+    ]))
+
     while (!done) {
         input.withEvent(ev => {
+            if (eventJustReceived && (ev[0] === 'key_down' || ev[0] === 'mouse_down')) {
+                eventJustReceived = false; return
+            }
+            if (dispatchMouseEvent(ev)) return
             if (ev[0] !== 'key_down') return
             const ks = ev[1]
-            if (eventJustReceived) { eventJustReceived = false; return }
+            const shiftDown = (ev.includes(59) || ev.includes(60))
 
+            if (buttons.keyHandler(ks, shiftDown)) return
             if (ks === '<ESC>' || ks === 'q' || ks === 'Q') { done = true; return }
-            if (ks === '\n') { confirmed = true; done = true; return }
             if (ks === '<UP>'   && sel > 0)                    { sel--; repaint(); return }
             if (ks === '<DOWN>' && sel < selectables.length-1) { sel++; repaint(); return }
             if (ks === ' ') {
@@ -3797,6 +3962,8 @@ function openFlagsPopup() {
             }
         })
     }
+
+    popMousePopup()
 
     if (confirmed) {
         const newFlags = (initialTrackerMixerflags & ~0x1F) |
@@ -3838,12 +4005,37 @@ function openInlineHexEdit(y, x, digits, initialValue) {
 
     repaint()
     let eventJustReceived = true
+
+    // Field spans " $XX " — onClick on a digit moves the cursor there.
+    // Outside-click commits (Enter); right-click cancels.
+    // Region order matters: dispatchMouseEvent searches in reverse, so the
+    // field region (registered last) is tested before the catch-all.
+    pushMousePopup([
+        { x: 1, y: 1, w: SCRW, h: SCRH, onClick: (cy, cx, btn) => {
+            if (btn === 1) done = true
+            else if (btn === 2) { cancelled = true; done = true }
+        }},
+        { x: x + 2, y: y, w: digits, h: 1, onClick: (cy, cx, btn) => {
+            if (btn === 1) { cur = cx - (x + 2); repaint() }
+            else if (btn === 2) { cancelled = true; done = true }
+        }, onWheel: (cy, cx, dy) => {
+            // Wheel adjusts the digit under the cursor.
+            const digit = parseInt(buf[cur], 16)
+            const next = (digit + (dy < 0 ? 1 : -1) + 16) & 0xF
+            buf = buf.substring(0, cur) + next.toString(16).toUpperCase() + buf.substring(cur + 1)
+            repaint()
+        }},
+    ])
+
     while (!done) {
         input.withEvent(ev => {
+            if (eventJustReceived && (ev[0] === 'key_down' || ev[0] === 'mouse_down')) {
+                eventJustReceived = false; return
+            }
+            if (dispatchMouseEvent(ev)) return
             if (ev[0] !== 'key_down') return
             if (1 !== ev[2]) return
             const ks = ev[1]
-            if (eventJustReceived) { eventJustReceived = false; return }
 
             if (ks === '<ESC>') { cancelled = true; done = true; return }
             if (ks === '\n')    { done = true; return }
@@ -3860,6 +4052,8 @@ function openInlineHexEdit(y, x, digits, initialValue) {
             }
         })
     }
+
+    popMousePopup()
 
     return cancelled ? null : parseInt(buf, 16)
 }
@@ -3879,6 +4073,339 @@ function isExternalPanel(p) {
     return p === VIEW_SAMPLES || p === VIEW_INSTRMNT || p === VIEW_FILE
 }
 
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// MOUSE INPUT
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// Region registry. Coordinates are 1-indexed text cell positions. Each region:
+//   {x, y, w, h, onClick(cy, cx, btn, ev)?, onWheel(cy, cx, dy, ev)?, onRelease(...)?}
+// MOUSE_GLOBAL  — tabs + transport, live for the whole session.
+// MOUSE_PANEL   — per-panel viewport handlers, cleared whenever the panel changes.
+// MOUSE_POPUP_STACK — popups push their own region set on open and pop on close;
+//                     while non-empty, only the topmost set receives mouse events.
+const MOUSE_GLOBAL = []
+const MOUSE_PANEL  = []
+const MOUSE_POPUP_STACK = []
+
+// Wrap push/pop so closing a popup also drops any onHoverLeave that would otherwise
+// be invoked against the popup's stale regions on the next mouse move.
+function pushMousePopup(regions) { MOUSE_POPUP_STACK.push(regions); lastHoveredRegion = null }
+function popMousePopup()         { MOUSE_POPUP_STACK.pop();  lastHoveredRegion = null }
+
+function pixelToCell(px, py) {
+    return [(py / CELL_PH | 0) + 1, (px / CELL_PW | 0) + 1]  // [cy, cx], 1-indexed
+}
+
+function regionHits(r, cy, cx) {
+    return cy >= r.y && cy < r.y + r.h && cx >= r.x && cx < r.x + r.w
+}
+
+// Dispatch a mouse event to the topmost matching region. Returns true if handled.
+// `mouse_move` also fires onHoverLeave for the previously-hovered region so popups can
+// repaint un-hovered buttons without tracking that themselves.
+let lastHoveredRegion = null
+function dispatchMouseEvent(event) {
+    const t = event[0]
+    if (t !== 'mouse_down' && t !== 'mouse_wheel' && t !== 'mouse_up' && t !== 'mouse_move') return false
+
+    const [cy, cx] = pixelToCell(event[1], event[2])
+    const pool = (MOUSE_POPUP_STACK.length > 0)
+        ? MOUSE_POPUP_STACK[MOUSE_POPUP_STACK.length - 1]
+        : MOUSE_PANEL.concat(MOUSE_GLOBAL)
+
+    if (t === 'mouse_move') {
+        let hit = null
+        for (let i = pool.length - 1; i >= 0; i--) {
+            const r = pool[i]
+            if (regionHits(r, cy, cx) && (r.onHover || r.onHoverLeave)) { hit = r; break }
+        }
+        if (hit !== lastHoveredRegion) {
+            if (lastHoveredRegion && lastHoveredRegion.onHoverLeave) lastHoveredRegion.onHoverLeave()
+            lastHoveredRegion = hit
+        }
+        if (hit && hit.onHover) { hit.onHover(cy, cx, event); return true }
+        return false
+    }
+
+    for (let i = pool.length - 1; i >= 0; i--) {
+        const r = pool[i]
+        if (!regionHits(r, cy, cx)) continue
+        if (t === 'mouse_down'  && r.onClick)   { r.onClick(cy, cx, event[3], event); return true }
+        if (t === 'mouse_wheel' && r.onWheel)   { r.onWheel(cy, cx, event[3], event); return true }
+        if (t === 'mouse_up'    && r.onRelease) { r.onRelease(cy, cx, event[3], event); return true }
+    }
+    return false
+}
+
+function clearPanelMouseRegions() { MOUSE_PANEL.length = 0 }
+function addPanelMouseRegion(x, y, w, h, handlers)  { MOUSE_PANEL.push(Object.assign({x, y, w, h}, handlers)) }
+function addGlobalMouseRegion(x, y, w, h, handlers) { MOUSE_GLOBAL.push(Object.assign({x, y, w, h}, handlers)) }
+
+// Apply the same panel-switch logic the Tab key path uses.
+function switchToPanel(newPanel) {
+    if (newPanel === currentPanel) return
+    const wasTimeline = (currentPanel === VIEW_TIMELINE)
+    currentPanel = newPanel
+    applyMuteTransition(currentPanel)
+    if (wasTimeline && currentPanel !== VIEW_TIMELINE) clearVoiceMeters()
+    if (isExternalPanel(currentPanel)) {
+        clearPanelMouseRegions()
+        con.clear(); drawAlwaysOnElems(); drawControlHint()
+        pendingExternalDraw = true
+    } else {
+        rebuildPanelMouseRegions()
+        drawAll()
+    }
+}
+
+// --- Tab bar regions (registered once; tab geometry is constant) ---
+function registerTabRegions() {
+    let col = 2  // XOFF, mirrors drawTabBar
+    for (let i = 0; i < PANEL_NAMES.length; i++) {
+        const w = 1 + PANEL_NAMES[i].length + 1  // spcL + name + spcR
+        const tabIdx = i
+        addGlobalMouseRegion(col, 3, w, 1, {
+            onClick: (cy, cx, btn) => { if (btn === 1) switchToPanel(tabIdx) }
+        })
+        col += w + (i < PANEL_NAMES.length - 1 ? TAB_GAP : 0)
+    }
+}
+
+// --- Transport regions (rows 1-2 on the right edge) ---
+// Order j: 0=stop, 1=playrow, 2=playcue, 3=playall — mirrors drawStatusBar's loop.
+function registerTransportRegions() {
+    for (let j = 0; j < 4; j++) {
+        const glyphCol = SCRW - 5 * (j + 1) + 3
+        const idx = j
+        addGlobalMouseRegion(glyphCol - 1, 1, 3, 2, {
+            onClick: (cy, cx, btn) => {
+                if (btn !== 1) return
+                if (idx === 0) {
+                    if (playbackMode !== PLAYMODE_NONE) { stopPlayback(); drawAlwaysOnElems(); redrawPanel() }
+                    return
+                }
+                // The play handlers vary by panel — match the keyboard shortcut mapping.
+                if (currentPanel === VIEW_PATTERN_DETAILS) {
+                    if (idx === 1) startPlayPatternRow()
+                    else           startPlayPattern()
+                    drawPatternsContents(panelPatterns)
+                } else {
+                    if (idx === 1)      startPlayRow()
+                    else if (idx === 2) startPlayCue()
+                    else                startPlaySong()
+                    redrawPanel()
+                }
+                drawAlwaysOnElems()
+            }
+        })
+    }
+}
+
+// --- Per-panel viewport regions ---
+function rebuildPanelMouseRegions() {
+    clearPanelMouseRegions()
+    if      (currentPanel === VIEW_TIMELINE)        registerTimelineMouse()
+    else if (currentPanel === VIEW_CUES)            registerOrdersMouse()
+    else if (currentPanel === VIEW_PATTERN_DETAILS) registerPatternsMouse()
+    else if (currentPanel === VIEW_PROJECT)         registerProjectMouse()
+}
+
+function registerTimelineMouse() {
+    addPanelMouseRegion(1, PTNVIEW_OFFSET_Y, SCRW, PTNVIEW_HEIGHT, {
+        onClick: (cy, cx, btn) => {
+            if (btn !== 1 || playbackMode !== PLAYMODE_NONE) return
+            const viewRow   = cy - PTNVIEW_OFFSET_Y
+            const targetRow = scrollRow + viewRow
+            if (targetRow < 0 || targetRow >= ROWS_PER_PAT) return
+            const oldCursor = cursorRow
+            const oldVoxOff = voiceOff
+            cursorRow = targetRow
+            const relCol = cx - PTNVIEW_OFFSET_X
+            if (relCol >= 0) {
+                const colSlot = (relCol / COLSIZE_TIMELINE_FULL) | 0
+                const targetVox = voiceOff + colSlot
+                if (targetVox >= 0 && targetVox < song.numVoices) {
+                    cursorVox = targetVox
+                    const fieldX = relCol - colSlot * COLSIZE_TIMELINE_FULL
+                    let field = 0
+                    for (let k = 0; k < TL_FIELD_OFFSETS.length; k++) if (fieldX >= TL_FIELD_OFFSETS[k]) field = k
+                    timelineColCursor = field
+                }
+            }
+            clampCursor(); clampVoice()
+            if (voiceOff !== oldVoxOff || Math.abs(cursorRow - oldCursor) >= PTNVIEW_HEIGHT) drawAll()
+            else {
+                drawPatternView(); drawVoiceHeaders(); drawSeparators(separatorStyle)
+                drawAlwaysOnElems(); drawVoiceDetail()
+            }
+        },
+        onWheel: (cy, cx, dy) => {
+            if (playbackMode !== PLAYMODE_NONE) return
+            cursorRow += dy * 3
+            clampCursor()
+            drawPatternView(); drawSeparators(separatorStyle); drawAlwaysOnElems(); drawVoiceDetail()
+        }
+    })
+}
+
+function registerOrdersMouse() {
+    // Layout (1-indexed cells, mirrors drawOrdersRowAt):
+    //   cols 1..3   = row number       (no column meaning)
+    //   col  4      = gap
+    //   cols 5..10  = CMD               (ordersColCursor = 0)
+    //   col  11     = gap
+    //   cols 12 + s*4 .. 12 + s*4 + 3   = voice slot s on screen
+    //                                     (ordersColCursor = ordersVoiceOff + s + 1)
+    //
+    // Returns the ordersColCursor value for a given cx, or -1 if not on a column.
+    const colAtX = (cx) => {
+        if (cx >= ORDERS_CMD_X && cx < ORDERS_CMD_X + 6) return 0
+        if (cx >= ORDERS_VOICE_X) {
+            const slot = ((cx - ORDERS_VOICE_X) / ORDERS_VOICE_COL_W) | 0
+            if (slot < 0 || slot >= VOCSIZE_ORDERS) return -1
+            const v = ordersVoiceOff + slot
+            if (v >= song.numVoices) return -1
+            return v + 1
+        }
+        return -1
+    }
+
+    const hscrollBy = (dx) => {
+        const maxOff = Math.max(0, song.numVoices - VOCSIZE_ORDERS)
+        const next = Math.max(0, Math.min(maxOff, ordersVoiceOff + dx))
+        if (next === ordersVoiceOff) return false
+        ordersVoiceOff = next
+        return true
+    }
+
+    // Header row: click selects a column without touching the row; wheel scrolls
+    // voice columns horizontally (it's the natural place for column navigation).
+    addPanelMouseRegion(1, PTNVIEW_OFFSET_Y - 1, SCRW, 1, {
+        onClick: (cy, cx, btn) => {
+            if (btn !== 1 || playbackMode !== PLAYMODE_NONE) return
+            const col = colAtX(cx)
+            if (col < 0) return
+            ordersColCursor = col
+            clampOrdersHoriz(); redrawPanel(); drawAlwaysOnElems()
+        },
+        onWheel: (cy, cx, dy) => {
+            if (hscrollBy(dy * 3)) { redrawPanel(); drawAlwaysOnElems() }
+        },
+    })
+
+    // Content rows: click sets the row and (when on a column) the column too;
+    // wheel scrolls vertically; Shift+wheel scrolls horizontally.
+    addPanelMouseRegion(1, PTNVIEW_OFFSET_Y, SCRW, PTNVIEW_HEIGHT, {
+        onClick: (cy, cx, btn, ev) => {
+            if (btn !== 1 || playbackMode !== PLAYMODE_NONE) return
+            const viewRow   = cy - PTNVIEW_OFFSET_Y
+            const targetIdx = ordersScroll + viewRow
+            const maxCue    = song.lastActiveCue < 0 ? 0 : song.lastActiveCue
+            if (targetIdx < 0 || targetIdx > maxCue) return
+            ordersCursor = targetIdx
+            const col = colAtX(cx)
+            if (col >= 0) ordersColCursor = col
+            scrollOrdersTo(ordersCursor)
+            clampOrdersHoriz()
+            redrawPanel(); drawAlwaysOnElems()
+        },
+        onWheel: (cy, cx, dy, ev) => {
+            const shiftDown = (ev.includes(59) || ev.includes(60))
+            if (shiftDown) {
+                if (hscrollBy(dy * 3)) { redrawPanel(); drawAlwaysOnElems() }
+                return
+            }
+            const maxCue = song.lastActiveCue < 0 ? 0 : song.lastActiveCue
+            ordersCursor += dy * 3
+            if (ordersCursor < 0) ordersCursor = 0
+            if (ordersCursor > maxCue) ordersCursor = maxCue
+            scrollOrdersTo(ordersCursor)
+            redrawPanel(); drawAlwaysOnElems()
+        }
+    })
+}
+
+function registerPatternsMouse() {
+    // Left column: pattern list. cx in [PATEDITOR_LIST_X, PATEDITOR_SEP1_X)
+    addPanelMouseRegion(PATEDITOR_LIST_X, PTNVIEW_OFFSET_Y,
+                        PATEDITOR_SEP1_X - PATEDITOR_LIST_X, PTNVIEW_HEIGHT, {
+        onClick: (cy, cx, btn) => {
+            if (btn !== 1 || song.numPats === 0 || playbackMode !== PLAYMODE_NONE) return
+            const targetIdx = patternListScroll + (cy - PTNVIEW_OFFSET_Y)
+            if (targetIdx < 0 || targetIdx >= song.numPats) return
+            patternIdx = targetIdx
+            clampPatternIdx(); simStateKey = ''
+            drawPatternsContents(panelPatterns)
+        },
+        onWheel: (cy, cx, dy) => {
+            if (song.numPats === 0) return
+            patternIdx += dy
+            clampPatternIdx(); simStateKey = ''
+            drawPatternsContents(panelPatterns)
+        }
+    })
+    // Middle grid: pattern editor cells. cx in [PATEDITOR_GRID_X, PATEDITOR_DETAIL_X)
+    addPanelMouseRegion(PATEDITOR_GRID_X, PTNVIEW_OFFSET_Y,
+                        PATEDITOR_DETAIL_X - PATEDITOR_GRID_X, PTNVIEW_HEIGHT, {
+        onClick: (cy, cx, btn) => {
+            if (btn !== 1 || song.numPats === 0 || playbackMode !== PLAYMODE_NONE) return
+            const targetRow = patternGridScroll + (cy - PTNVIEW_OFFSET_Y)
+            if (targetRow < 0 || targetRow >= ROWS_PER_PAT) return
+            patternGridRow = targetRow
+            const cellRel = cx - PATEDITOR_CELL_X
+            const fieldOffsets = [0, 5, 8, 11, 14, 15]
+            let field = 0
+            for (let k = 0; k < fieldOffsets.length; k++) if (cellRel >= fieldOffsets[k]) field = k
+            if (field < 0) field = 0; if (field > 5) field = 5
+            patternGridCol = field
+            clampPatternGrid(); simStateKey = ''
+            drawPatternsContents(panelPatterns)
+        },
+        onWheel: (cy, cx, dy) => {
+            if (song.numPats === 0) return
+            patternGridRow += dy * 3
+            clampPatternGrid(); simStateKey = ''
+            drawPatternsContents(panelPatterns)
+        }
+    })
+}
+
+function registerProjectMouse() {
+    addPanelMouseRegion(1, PTNVIEW_OFFSET_Y, SCRW, PTNVIEW_HEIGHT, {
+        onClick: (cy, cx, btn) => {
+            if (btn !== 1 || playbackMode !== PLAYMODE_NONE) return
+            // Meta rows occupy PTNVIEW_OFFSET_Y .. PTNVIEW_OFFSET_Y + PROJ_META_ROWS_COUNT - 1.
+            // The song list starts at PROJ_SONGLIST_Y + 1.
+            const metaRow = cy - PTNVIEW_OFFSET_Y
+            if (metaRow >= 0 && metaRow < PROJ_META_ROWS_COUNT) {
+                projectCursor = metaRow
+                clampProjectCursor(); redrawPanel()
+                return
+            }
+            const songRow = cy - (PROJ_SONGLIST_Y + 1)
+            if (songRow >= 0) {
+                const songIdx = projectSongScroll + songRow
+                if (songIdx >= 0 && songIdx < songsMeta.numSongs) {
+                    projectCursor = PROJ_META_ROWS_COUNT + songIdx
+                    clampProjectCursor(); redrawPanel()
+                }
+            }
+        },
+        onWheel: (cy, cx, dy) => {
+            const rowsVis = projectSongListRowsVisible()
+            const maxScroll = Math.max(0, songsMeta.numSongs - rowsVis)
+            projectSongScroll += dy * 3
+            if (projectSongScroll < 0) projectSongScroll = 0
+            if (projectSongScroll > maxScroll) projectSongScroll = maxScroll
+            redrawPanel()
+        }
+    })
+}
+
+registerTabRegions()
+registerTransportRegions()
+rebuildPanelMouseRegions()
+
 // Launching a sub-program from inside an input.withEvent callback causes the triggering
 // Tab event to leak into the sub-program's own withEvent call (the event hasn't been
 // consumed yet when the callback is still executing). We avoid this by deferring the
@@ -3888,6 +4415,7 @@ let pendingExternalDraw = false
 
 while (!exitFlag) {
     input.withEvent(event => {
+        if (dispatchMouseEvent(event)) return
         if (event[0] !== "key_down") return
         const keysym     = event[1]
         const keyJustHit = (1 == event[2])
@@ -3914,9 +4442,11 @@ while (!exitFlag) {
             if (isExternalPanel(currentPanel)) {
                 // Redraw header now so the tab highlight is visible immediately,
                 // but defer the actual sub-program launch to after withEvent returns.
+                clearPanelMouseRegions()
                 con.clear(); drawAlwaysOnElems(); drawControlHint()
                 pendingExternalDraw = true
             } else {
+                rebuildPanelMouseRegions()
                 drawAll()
             }
             return
@@ -3947,9 +4477,11 @@ while (!exitFlag) {
             applyMuteTransition(currentPanel)
             if (wasTimeline && currentPanel !== VIEW_TIMELINE) clearVoiceMeters()
             if (isExternalPanel(currentPanel)) {
+                clearPanelMouseRegions()
                 con.clear(); drawAlwaysOnElems(); drawControlHint()
                 redrawPanel()
             } else {
+                rebuildPanelMouseRegions()
                 drawAll()
             }
         }

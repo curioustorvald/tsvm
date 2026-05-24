@@ -1114,13 +1114,18 @@ inputwork.repeatCount = 0;
  * where:
  *  "key_down", <key symbol string>, <repeat count>, keycode0, keycode1 .. keycode7
  *  "key_change", <key symbol string (what went up)>, 0, keycode0, keycode1 .. keycode7 (remaining keys that are held down)
- *  "mouse_down", pos-x, pos-y, 1 // yes there's only one mouse button :p
- *  "mouse_up", pos-x, pos-y, 0
- *  "mouse_move", pos-x, pos-y, <button down?>, oldpos-x, oldpos-y
+ *  "mouse_down",  pos-x, pos-y, <button mask: 1=left, 2=right, 4=middle>, keycode0..keycode7
+ *  "mouse_up",    pos-x, pos-y, <button mask of the released button>,    keycode0..keycode7
+ *  "mouse_move",  pos-x, pos-y, <currently-held button mask>, oldpos-x, oldpos-y, keycode0..keycode7
+ *  "mouse_wheel", pos-x, pos-y, <-1 for wheel up, +1 for wheel down>,     keycode0..keycode7
+ *
+ * Button mask values come from MMIO[36] bits 0..2 (terranmon.txt:52-58). The wheel
+ * bits (6, 7) latch in hardware and clear on read, so a one-shot detent fires once.
+ * Every mouse event carries the currently-held key buffer (same shape as key_down)
+ * so handlers can detect modifiers like Shift+wheel via `event.includes(<keysym>)`.
  */
 input.withEvent = function(callback) {
 
-    // TODO mouse event
     function arrayEq(a,b) {
         for (let i = 0; i < a.length; ++i) {
             if (a[i] !== b[i]) return false;
@@ -1141,7 +1146,33 @@ input.withEvent = function(callback) {
 
     sys.poke(-40, 255);
     let keys = [sys.peek(-41),sys.peek(-42),sys.peek(-43),sys.peek(-44),sys.peek(-45),sys.peek(-46),sys.peek(-47),sys.peek(-48)];
-    let mouse = [sys.peek(-33) | (sys.peek(-34) << 8), sys.peek(-35) | (sys.peek(-36) << 8), sys.peek(-37)];
+    let mx = (sys.peek(-33) & 0xFF) | ((sys.peek(-34) & 0xFF) << 8);
+    let my = (sys.peek(-35) & 0xFF) | ((sys.peek(-36) & 0xFF) << 8);
+    let mb = sys.peek(-37) & 0xFF; // bits 0..2 = L/R/M held, bit 6 = wheel up, bit 7 = wheel down
+    let mouse = [mx, my, mb];
+
+    // --- mouse dispatch ---
+    let oldMouse = inputwork.oldMouse;
+    let hasOld   = oldMouse && oldMouse.length === 3;
+    let oldBtns  = hasOld ? (oldMouse[2] & 0x07) : 0;
+    let curBtns  = mb & 0x07;
+    let wheelUp  = (mb & 0x40) !== 0;
+    let wheelDn  = (mb & 0x80) !== 0;
+
+    if (wheelUp) callback(["mouse_wheel", mx, my, -1].concat(keys));
+    if (wheelDn) callback(["mouse_wheel", mx, my,  1].concat(keys));
+
+    let pressed  = curBtns & ~oldBtns;
+    let released = oldBtns & ~curBtns;
+    for (let b = 1; b <= 4; b <<= 1) {
+        if (pressed  & b) callback(["mouse_down", mx, my, b].concat(keys));
+        if (released & b) callback(["mouse_up",   mx, my, b].concat(keys));
+    }
+    if (hasOld && (mx !== oldMouse[0] || my !== oldMouse[1])) {
+        callback(["mouse_move", mx, my, curBtns, oldMouse[0], oldMouse[1]].concat(keys));
+    }
+    // --- end mouse dispatch ---
+
     let keyChanged = !arrayEq(keys, inputwork.oldKeys)
     let keyDiff = arrayDiff(keys, inputwork.oldKeys)
 

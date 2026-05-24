@@ -12,6 +12,7 @@ import net.torvald.tsvm.CircularArray
 import net.torvald.tsvm.VM
 import net.torvald.tsvm.isNonZero
 import net.torvald.tsvm.toInt
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.experimental.and
 
 class IOSpace(val vm: VM) : PeriBase("io"), InputProcessor {
@@ -32,6 +33,13 @@ class IOSpace(val vm: VM) : PeriBase("io"), InputProcessor {
      */
     var inputViewport: Viewport? = null
     private val tmpMouseVec = Vector2()
+    // Letterbox offset and renderable area inside the inputViewport, set by the host VMGUI.
+    // After unproject, mouse pixel coords are shifted by (inputOriginX, inputOriginY) and
+    // clamped to (inputAreaW, inputAreaH) so apps see VM-screen pixel coords (0..drawWidth).
+    var inputOriginX: Int = 0
+    var inputOriginY: Int = 0
+    var inputAreaW: Int = Int.MAX_VALUE
+    var inputAreaH: Int = Int.MAX_VALUE
 
     /** Accepts a keycode */
     private val keyboardBuffer = CircularArray<Byte>(32, true)
@@ -108,7 +116,12 @@ class IOSpace(val vm: VM) : PeriBase("io"), InputProcessor {
             in 0..31 -> keyboardBuffer[(addr.toInt())] ?: -1
             in 32..33 -> (mouseX.toInt() shr (adi - 32).times(8)).toByte()
             in 34..35 -> (mouseY.toInt() shr (adi - 34).times(8)).toByte()
-            36L -> mouseButtons.toByte() // only bits 0..1 used; higher bits intentionally truncated
+            36L -> {
+                // bit 0: left, bit 1: right, bit 2: middle, bit 6: wheel up, bit 7: wheel down
+                // Wheel bits are latched on scrolled() and cleared on read so a one-shot
+                // detent fires exactly once for the polling app.
+                (mouseButtons or wheelLatch.getAndSet(0)).toByte()
+            }
             37L -> {
                 val key = keyboardBuffer.removeTail() ?: -1
                 keyPushed = !keyboardBuffer.isEmpty  // Clear flag when buffer becomes empty
@@ -290,7 +303,9 @@ class IOSpace(val vm: VM) : PeriBase("io"), InputProcessor {
 
     private var mouseX: Short = 0
     private var mouseY: Short = 0
-    private var mouseButtons: Int = 0  // bit 0 = LEFT, bit 1 = RIGHT
+    private var mouseButtons: Int = 0  // bit 0 = LEFT, bit 1 = RIGHT, bit 2 = MIDDLE
+    // bits 6 (wheel up) and 7 (wheel down) — set by scrolled(), cleared on MMIO[36] read
+    private val wheelLatch = AtomicInteger(0)
     private var systemUptime = 0L
     private var rtc = 0L
 
@@ -310,18 +325,24 @@ class IOSpace(val vm: VM) : PeriBase("io"), InputProcessor {
                 // VM sees logical framebuffer pixels regardless of window magnification,
                 // letterboxing or sub-region placement done by an embedding GDX app.
                 val vp = inputViewport
+                val rawX: Int
+                val rawY: Int
                 if (vp != null) {
                     tmpMouseVec.set(Gdx.input.x.toFloat(), Gdx.input.y.toFloat())
                     vp.unproject(tmpMouseVec)
-                    mouseX = tmpMouseVec.x.toInt().toShort()
-                    mouseY = tmpMouseVec.y.toInt().toShort()
+                    rawX = tmpMouseVec.x.toInt()
+                    rawY = tmpMouseVec.y.toInt()
                 }
                 else {
-                    mouseX = Gdx.input.x.toShort()
-                    mouseY = Gdx.input.y.toShort()
+                    rawX = Gdx.input.x
+                    rawY = Gdx.input.y
                 }
-                mouseButtons = (if (Gdx.input.isButtonPressed(Input.Buttons.LEFT))  1 else 0) or
-                               (if (Gdx.input.isButtonPressed(Input.Buttons.RIGHT)) 2 else 0)
+                // Subtract the letterbox origin so apps see VM-screen pixel coords (0..drawWidth).
+                mouseX = (rawX - inputOriginX).coerceIn(0, inputAreaW - 1).toShort()
+                mouseY = (rawY - inputOriginY).coerceIn(0, inputAreaH - 1).toShort()
+                mouseButtons = (if (Gdx.input.isButtonPressed(Input.Buttons.LEFT))   1 else 0) or
+                               (if (Gdx.input.isButtonPressed(Input.Buttons.RIGHT))  2 else 0) or
+                               (if (Gdx.input.isButtonPressed(Input.Buttons.MIDDLE)) 4 else 0)
 
                 // strobe keys to fill the key read buffer
                 var keysPushed = 0
@@ -398,8 +419,15 @@ class IOSpace(val vm: VM) : PeriBase("io"), InputProcessor {
         }
     }
 
-    override fun scrolled(p0: Float, p1: Float): Boolean {
-        return false
+    override fun scrolled(amountX: Float, amountY: Float): Boolean {
+        // LibGDX: amountY > 0 = scroll DOWN (toward user), amountY < 0 = scroll UP.
+        // Latch bits 6/7 of MMIO[36]; the latch is cleared the next time MMIO[36] is read.
+        if (Gdx.input.inputProcessor !== this) return false
+        when {
+            amountY < 0f -> wheelLatch.updateAndGet { it or 0x40 }
+            amountY > 0f -> wheelLatch.updateAndGet { it or 0x80 }
+        }
+        return true
     }
 
     override fun keyUp(p0: Int): Boolean {

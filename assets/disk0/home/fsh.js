@@ -908,9 +908,13 @@ while (true) {
     let navRight = edge(KEY_RIGHT)
 
     // -- mouse --
+    // MMIO returns VM-screen pixel coords (origin at the top-left of the framebuffer).
+    // Widget xoff/yoff are passed straight into con.move(y, x), which is 1-indexed, so
+    // we offset by +1 here. Without this the click registers one cell up-and-left from
+    // where the user's pointer is, because pixel 0 = con.move(1, 1).
     let pos = readMousePos()
-    let charX = (pos[0] / 7) | 0
-    let charY = (pos[1] / 14) | 0
+    let charX = (pos[0] / 7  | 0) + 1
+    let charY = (pos[1] / 14 | 0) + 1
     let mouseMoved = (charX !== prevMouseCharX || charY !== prevMouseCharY)
     prevMouseCharX = charX
     prevMouseCharY = charY
