@@ -8,6 +8,8 @@ import com.badlogic.gdx.graphics.g2d.SpriteBatch
 import com.badlogic.gdx.graphics.g2d.TextureRegion
 import com.badlogic.gdx.graphics.glutils.FrameBuffer
 import com.badlogic.gdx.graphics.glutils.ShaderProgram
+import com.badlogic.gdx.utils.viewport.StretchViewport
+import com.badlogic.gdx.utils.viewport.Viewport
 import net.torvald.terrarum.DefaultGL32Shaders
 import net.torvald.tsvm.peripheral.*
 import net.torvald.tsvm.peripheral.GraphicsAdapter.Companion.DRAW_SHADER_VERT
@@ -47,6 +49,14 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
 
     lateinit var batch: SpriteBatch
     lateinit var camera: OrthographicCamera
+
+    /**
+     * Maps window pixels to the VM framebuffer (origin top-left, world size =
+     * viewportWidth × viewportHeight). Stretches to fill the whole window so it
+     * matches the `MAGN`-scaled blit at the end of [renderGame]. Handed to
+     * [IOSpace.inputViewport] so mouse coordinates unproject correctly.
+     */
+    lateinit var inputViewport: Viewport
 
     var gpu: GraphicsAdapter? = null
     lateinit var vmRunner: VMRunner
@@ -103,7 +113,18 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
         gpuFBO = FrameBuffer(Pixmap.Format.RGBA8888, viewportWidth, viewportHeight, false)
         winFBO = FrameBuffer(Pixmap.Format.RGBA8888, viewportWidth, viewportHeight, false)
 
+        val inputCam = OrthographicCamera().also {
+            it.setToOrtho(true, viewportWidth.toFloat(), viewportHeight.toFloat())
+        }
+        inputViewport = StretchViewport(viewportWidth.toFloat(), viewportHeight.toFloat(), inputCam)
+        inputViewport.update(Gdx.graphics.width, Gdx.graphics.height, true)
+
         init()
+    }
+
+    override fun resize(width: Int, height: Int) {
+        super.resize(width, height)
+        inputViewport.update(width, height, true)
     }
 
     private fun init() {
@@ -148,6 +169,7 @@ class VMGUI(val loaderInfo: EmulInstance, val viewportWidth: Int, val viewportHe
         }
 
         Gdx.input.inputProcessor = vm.getIO()
+        vm.getIO().inputViewport = inputViewport
 
         if (usememvwr) memvwr = Memvwr(vm)
 

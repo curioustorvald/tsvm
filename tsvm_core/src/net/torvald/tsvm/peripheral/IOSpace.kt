@@ -3,6 +3,8 @@ package net.torvald.tsvm.peripheral
 import com.badlogic.gdx.Gdx
 import com.badlogic.gdx.Input
 import com.badlogic.gdx.InputProcessor
+import com.badlogic.gdx.math.Vector2
+import com.badlogic.gdx.utils.viewport.Viewport
 import net.torvald.AddressOverflowException
 import net.torvald.DanglingPointerException
 import net.torvald.UnsafeHelper
@@ -18,10 +20,18 @@ class IOSpace(val vm: VM) : PeriBase("io"), InputProcessor {
         return vm
     }
 
-    /** Absolute x-position of the computer GUI */
-    var guiPosX = 0
-    /** Absolute y-position of the computer GUI */
-    var guiPosY = 0
+    /**
+     * Viewport that maps screen pixels (as reported by `Gdx.input.x/y`) to the VM's
+     * logical framebuffer coordinate space. The host application owns the rendering
+     * camera, so the host is responsible for installing a viewport whose world
+     * coordinates match the VM framebuffer (origin top-left, world size = framebuffer
+     * size in pixels) and whose screen rectangle matches where the VM is drawn.
+     *
+     * If left null, `Gdx.input.x/y` is forwarded verbatim — only correct when the VM
+     * occupies the entire window at 1:1 scale.
+     */
+    var inputViewport: Viewport? = null
+    private val tmpMouseVec = Vector2()
 
     /** Accepts a keycode */
     private val keyboardBuffer = CircularArray<Byte>(32, true)
@@ -296,9 +306,20 @@ class IOSpace(val vm: VM) : PeriBase("io"), InputProcessor {
             keyEventBuffers.fill(0)
 
             if (isFocused) {
-                // store mouse info
-                mouseX = (Gdx.input.x + guiPosX).toShort()
-                mouseY = (Gdx.input.y + guiPosY).toShort()
+                // store mouse info; unproject through the host-provided viewport so the
+                // VM sees logical framebuffer pixels regardless of window magnification,
+                // letterboxing or sub-region placement done by an embedding GDX app.
+                val vp = inputViewport
+                if (vp != null) {
+                    tmpMouseVec.set(Gdx.input.x.toFloat(), Gdx.input.y.toFloat())
+                    vp.unproject(tmpMouseVec)
+                    mouseX = tmpMouseVec.x.toInt().toShort()
+                    mouseY = tmpMouseVec.y.toInt().toShort()
+                }
+                else {
+                    mouseX = Gdx.input.x.toShort()
+                    mouseY = Gdx.input.y.toShort()
+                }
                 mouseButtons = (if (Gdx.input.isButtonPressed(Input.Buttons.LEFT))  1 else 0) or
                                (if (Gdx.input.isButtonPressed(Input.Buttons.RIGHT)) 2 else 0)
 
