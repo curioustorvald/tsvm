@@ -737,6 +737,7 @@ function actActivate() {
         firstRunLatch = true
         con.curs_set(0); clearScr()
         refreshFilePanelCache(windowMode)
+        pendingPostExecDrain = true
         redraw()
     }
 }
@@ -927,6 +928,7 @@ function actMore() {
         firstRunLatch = true
         con.curs_set(0); clearScr()
         refreshFilePanelCache(windowMode)
+        pendingPostExecDrain = true
         redraw()
     }
 }
@@ -985,11 +987,17 @@ function setupPanelMouseRegions() {
                 }
             },
             onClick: (cy, cx, btn) => {
-                if (btn !== 1) return
                 const target = scroll[windowMode] + rowIdx
                 if (target >= dirFileList[windowMode].length) return
-                cursor[windowMode] = target
-                actActivate()
+                if (btn === 1) {
+                    cursor[windowMode] = target
+                    actActivate()
+                }
+                else if (btn === 2) {
+                    cursor[windowMode] = target
+                    drawFilePanel()
+                    actMore()
+                }
             }
         })
     }
@@ -1026,11 +1034,19 @@ _redraw()
 // like fsh.js can hand off with the mouse button still held; without this,
 // input.withEvent's first call edge-detects that as a fresh mouse_down at the
 // cursor and activates whichever file row happens to sit there.
-input.withEvent(() => {})
+//
+// The same problem reappears after every child app returns, but draining
+// inside the dispatcher callback is undone by TVDOS.SYS:1235 (input.withEvent
+// unconditionally writes inputwork.oldMouse = its-stale-local-snapshot at the
+// end of the outer call). So actActivate / actMore set pendingPostExecDrain
+// and the main loop calls drainInheritedInput() AFTER input.withEvent returns.
+function drainInheritedInput() { input.withEvent(() => {}) }
+drainInheritedInput()
 
 let redrawRequested = false
 let exit = false
 let firstRunLatch = true
+let pendingPostExecDrain = false
 
 while (!exit) {
     input.withEvent(event => {
@@ -1066,6 +1082,16 @@ while (!exit) {
             _redraw()
         }
     })
+
+    // Re-baseline mouse state AFTER input.withEvent returns so its trailing
+    // `inputwork.oldMouse = mouse` (TVDOS.SYS:1235) doesn't overwrite the
+    // freshly-correct state with the stale snapshot taken at the start of the
+    // outer call. Without this, a child app exited by a click leaves zfm with
+    // oldBtns=0 while the user is still holding → spurious mouse_down next poll.
+    if (pendingPostExecDrain) {
+        pendingPostExecDrain = false
+        drainInheritedInput()
+    }
 }
 
 con.curs_set(1)

@@ -385,6 +385,10 @@ const ag_workMid = new Float32Array(AG_WORK_N)
 const ag_workTmp = new Float32Array(AG_WORK_N >> 1)
 const ag_bandEnergy = new Float32Array(AG_N_BANDS)
 
+// Sub-500 Hz residual — drops out of the wavelet modulator set on purpose,
+// but we keep its RMS around to drive the bass mark.
+let ag_bassEnergy = 0
+
 // Persistence buffer — float intensity per cell, plus the glyph last written
 // there.  Decay shrinks intensity each frame; new beam samples overwrite the
 // glyph and bump intensity.
@@ -397,6 +401,7 @@ const ag_cellFg    = new Int16Array(AG_VIS_H * AG_VIS_W).fill(-1)
 const ag_waveGlyph = new Int16Array(AG_LANE_W * 3).fill(-1)
 const ag_stereoGlyph = new Int16Array(AG_LANE_W).fill(-1)
 const ag_stereoFg    = new Int16Array(AG_LANE_W).fill(-1)
+let ag_lastBassFg    = -1
 
 // Render rate-limiter — playmp2 spins ~32 Hz, playtad ~1 Hz, playwav ~100 Hz
 // at decode time.  Clamp visual refresh to 20 Hz so each caller can spam
@@ -579,6 +584,16 @@ function ag_analyseHaar() {
         ag_bandEnergy[lv] = rms > 1 ? 1 : rms
         len = half
     }
+    // Residual approximation in ag_workMid[0..len-1] holds the sub-500 Hz
+    // energy that the modulator pipeline intentionally discards.  Reuse it
+    // to drive the bass mark.
+    let bassSumSq = 0
+    for (let i = 0; i < len; i++) {
+        const v = ag_workMid[i]
+        bassSumSq += v * v
+    }
+    const bassRms = Math.sqrt(bassSumSq / len) * 1.8
+    ag_bassEnergy = bassRms > 1 ? 1 : bassRms
 }
 
 // ── Wavescope (rows 3..5) ──────────────────────────────────────────────────
@@ -651,6 +666,16 @@ const AG_XY_CX = AG_VIS_W >> 1     // centre column inside visualiser canvas
 const AG_XY_CY = AG_VIS_H >> 1     // centre row
 const AG_XY_SX = 18                // (L−R) → horizontal extent ±36 cells
 const AG_XY_SY = 9                 // (L+R) → vertical   extent ±18 cells
+
+// Bass mark: 2×2 cell indicator pinned to the centre of the vectorscope so
+// the bass "subwoofer" sits underneath the beam's pivot point.  Half-blocks
+// form a compact 16×16-pixel "dot" centred in the 16×32-pixel 2×2 area.
+const AG_BASS_VIS_R0 = AG_XY_CY - 1
+const AG_BASS_VIS_C0 = AG_XY_CX - 1
+const AG_BASS_VIS_R1 = AG_BASS_VIS_R0 + 1
+const AG_BASS_VIS_C1 = AG_BASS_VIS_C0 + 1
+const AG_BASS_SCR_R  = AG_ROW_VIS_TOP + AG_BASS_VIS_R0
+const AG_BASS_SCR_C  = AG_COL_INSIDE_L + AG_BASS_VIS_C0
 
 // Glyphs.
 const AG_G_DOT  = 0xFA  // ·
@@ -741,7 +766,10 @@ function ag_drawVisualiser() {
     for (let r = 0; r < AG_VIS_H; r++) {
         const rowOff = r * AG_VIS_W
         const screenY = AG_ROW_VIS_TOP + r
+        const inBassRow = (r === AG_BASS_VIS_R0 || r === AG_BASS_VIS_R1)
         for (let c = 0; c < AG_VIS_W; c++) {
+            // Bass mark owns its 2×2 cells — let ag_drawBassMark() paint them.
+            if (inBassRow && (c === AG_BASS_VIS_C0 || c === AG_BASS_VIS_C1)) continue
             const idx = rowOff + c
             const e = ag_persist[idx]
             let levelIdx = (e * 5) | 0
@@ -756,6 +784,25 @@ function ag_drawVisualiser() {
             ag_mvprn(screenY, AG_COL_INSIDE_L + c, glyph)
         }
     }
+}
+
+// ── Bass mark (rows 29-30, cols 2-3) ───────────────────────────────────────
+// Brightness-only indicator driven by the sub-500 Hz residual of the Haar
+// pyramid.  Uses indices 1..4 of the beam palette so the dot never falls all
+// the way to background — a quiet track still shows a faint amber ember.
+
+function ag_drawBassMark() {
+    let idx = (ag_bassEnergy * 4) | 0
+    if (idx > 3) idx = 3
+    if (idx < 0) idx = 0
+    const fg = AG_BEAM_PAL[idx + 1]
+    if (fg === ag_lastBassFg) return
+    ag_lastBassFg = fg
+    ag_color(fg, AG_COL_BG)
+    ag_mvprn(AG_BASS_SCR_R,     AG_BASS_SCR_C,     0xDC)
+    ag_mvprn(AG_BASS_SCR_R,     AG_BASS_SCR_C + 1, 0xDC)
+    ag_mvprn(AG_BASS_SCR_R + 1, AG_BASS_SCR_C,     0xDF)
+    ag_mvprn(AG_BASS_SCR_R + 1, AG_BASS_SCR_C + 1, 0xDF)
 }
 
 // ── Stereo energy bar (row 31) ─────────────────────────────────────────────
@@ -840,6 +887,8 @@ function audioInit(params) {
     ag_cellGlyph.fill(-1); ag_cellFg.fill(-1)
     ag_waveGlyph.fill(-1)
     ag_stereoGlyph.fill(-1); ag_stereoFg.fill(-1)
+    ag_bassEnergy = 0
+    ag_lastBassFg = -1
 
     con.curs_set(0)
     con.clear()
@@ -861,6 +910,7 @@ function audioRender() {
     ag_updateXYScope()
     ag_drawWavescope()
     ag_drawVisualiser()
+    ag_drawBassMark()
     ag_drawStereo()
 }
 

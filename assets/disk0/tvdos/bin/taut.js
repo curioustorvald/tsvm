@@ -3703,13 +3703,12 @@ function openRetunePopup() {
     if (sel < 0) sel = 0
     let scroll = centerScroll(sel, 0, listH, n)
 
-    // OK/Cancel button placement (bottom inside row)
-    const btnRow   = py + ph - 2
-    const labelOK  = `[ OK ]`.length
-    const labelCan = `[ Cancel ]`.length
-    const totalW   = labelOK + 2 + labelCan
-    const btnXOk   = px + ((pw - totalW) >>> 1)
-    const btnXCan  = btnXOk + labelOK + 2
+    let done = false
+    let confirmed = false
+    const buttons = makePopupButtonRow(py + ph - 2, px, pw, [
+        { label: 'OK',     action: () => { confirmed = true; done = true }, default: true },
+        { label: 'Cancel', action: () => { done = true } },
+    ])
 
     const repaint = () => {
         con.color_pair(230, colPopupBack)
@@ -4089,8 +4088,18 @@ const MOUSE_POPUP_STACK = []
 
 // Wrap push/pop so closing a popup also drops any onHoverLeave that would otherwise
 // be invoked against the popup's stale regions on the next mouse move.
+//
+// When the pop happens with a mouse button still held, the popup was almost certainly
+// closed by a click. We arm `swallowResidualClick` so the trailing mouse_up (and any
+// echo mouse_down from that same physical click) doesn't leak into the panel that the
+// popup was covering. A keyboard close leaves no button held, so this is a no-op.
+let swallowResidualClick = false
 function pushMousePopup(regions) { MOUSE_POPUP_STACK.push(regions); lastHoveredRegion = null }
-function popMousePopup()         { MOUSE_POPUP_STACK.pop();  lastHoveredRegion = null }
+function popMousePopup() {
+    MOUSE_POPUP_STACK.pop()
+    lastHoveredRegion = null
+    if ((sys.peek(-37) & 0x07) !== 0) swallowResidualClick = true
+}
 
 function pixelToCell(px, py) {
     return [(py / CELL_PH | 0) + 1, (px / CELL_PW | 0) + 1]  // [cy, cx], 1-indexed
@@ -4107,6 +4116,16 @@ let lastHoveredRegion = null
 function dispatchMouseEvent(event) {
     const t = event[0]
     if (t !== 'mouse_down' && t !== 'mouse_wheel' && t !== 'mouse_up' && t !== 'mouse_move') return false
+
+    // Eat residual events from the click that just closed a popup. The flag is armed
+    // by popMousePopup when a button was still held at pop time; it clears on the
+    // matching mouse_up so the next fresh press goes through normally.
+    if (swallowResidualClick && MOUSE_POPUP_STACK.length === 0) {
+        if (t === 'mouse_up')   { swallowResidualClick = false; return true }
+        if (t === 'mouse_down') { return true }
+        if (t === 'mouse_move') { return true }
+        // mouse_wheel passes through — it's its own gesture, not part of the closing click
+    }
 
     const [cy, cx] = pixelToCell(event[1], event[2])
     const pool = (MOUSE_POPUP_STACK.length > 0)

@@ -240,7 +240,7 @@ function showDialog(opts) {
 
     const c       = opts.colours || {}
     const fg      = (c.fg      != null) ? c.fg      : 254
-    const bg      = (c.bg      != null) ? c.bg      : 242
+    const bg      = (c.bg      != null) ? c.bg      : 243
     const fieldBg = (c.fieldBg != null) ? c.fieldBg : 240
     const dimFg   = (c.dimFg   != null) ? c.dimFg   : 249
     const hlFg    = (c.hlFg    != null) ? c.hlFg    : 230
@@ -323,25 +323,26 @@ function showDialog(opts) {
         print(f.label + ':')
 
         // Top border
-        con.color_pair(frameFg, bg)
+        con.color_pair(fieldBg, bg)
         con.move(fbRow, fbCol)
-        print('\u00DA' + '\u00C4'.repeat(fw) + '\u00BF')
+        print('\u00EC' + '\u00A9'.repeat(fw) + '\u00ED')
 
         // Side borders + content
-        con.color_pair(frameFg, bg)
         con.move(fbRow + 1, fbCol)
-        print('\u00B3')
+        print('\u00AB')
+
         con.color_pair(fg, fieldBg)
         const s = fieldScroll(cursors[i], fw)
         const vis = values[i].substring(s, s + fw)
         print(vis.padEnd(fw, ' '))
-        con.color_pair(frameFg, bg)
+
+        con.color_pair(fieldBg, bg)
         con.move(fbRow + 1, fbCol + fw + 1)
-        print('\u00B3')
+        print('\u00AA')
 
         // Bottom border
         con.move(fbRow + 2, fbCol)
-        print('\u00C0' + '\u00C4'.repeat(fw) + '\u00D9')
+        print('\u00F4' + '\u00AC'.repeat(fw) + '\u00F5')
         con.color_pair(fg, bg)
     }
 
@@ -484,7 +485,7 @@ function showDialog(opts) {
                     render()
                     return
                 }
-                if (ks === '') {
+                if (ks === '\x08') {
                     const cur = cursors[focusIdx]
                     if (cur > 0) {
                         const v = values[focusIdx]
@@ -494,7 +495,7 @@ function showDialog(opts) {
                     }
                     return
                 }
-                if (ks === '<FORWARD_DEL>' || ks === '<DEL>') {
+                if (ks === '<DEL>') {
                     const cur = cursors[focusIdx]
                     const v = values[focusIdx]
                     if (cur < v.length) {

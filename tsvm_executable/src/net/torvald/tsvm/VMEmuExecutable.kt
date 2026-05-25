@@ -127,7 +127,9 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
     internal fun moveView(oldIndex: Int, newIndex: Int?) {
         if (oldIndex != newIndex) {
             if (newIndex != null) {
-                vms[newIndex] = vms[oldIndex]
+                val moved = vms[oldIndex]
+                vms[newIndex] = moved
+                moved?.vm?.let { applyMouseInputMappingForPanel(it, newIndex) }
             }
             vms[oldIndex] = null
         }
@@ -135,6 +137,28 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
 
     internal fun addVMtoView(vm: VM, profileName: String, index: Int) {
         vms[index] = VMRunnerInfo(vm, profileName)
+        applyMouseInputMappingForPanel(vm, index)
+    }
+
+    /**
+     * Wire the VM's IOSpace so the mouse pixels it sees are relative to its own
+     * GPU framebuffer rather than the whole TsvmEmulator window. Each tiled VM
+     * lives at panel (pposX, pposY) with a letterbox inside that panel, so the
+     * offset is `panel origin + (panel size − GPU size) / 2`.
+     */
+    private fun applyMouseInputMappingForPanel(vm: VM, panelIndex: Int) {
+        val gpu = vm.peripheralTable.getOrNull(1)?.peripheral as? GraphicsAdapter ?: return
+        val pposX = panelIndex % panelsX
+        val pposY = panelIndex / panelsX
+        val gpuW = gpu.config.width
+        val gpuH = gpu.config.height
+        val io = vm.getIO()
+        // TsvmEmulator draws at 1:1 pixel scale, so no GDX viewport is needed.
+        io.inputViewport = null
+        io.inputOriginX = pposX * windowWidth + (windowWidth - gpuW) / 2
+        io.inputOriginY = pposY * windowHeight + (windowHeight - gpuH) / 2
+        io.inputAreaW = gpuW
+        io.inputAreaH = gpuH
     }
 
     internal fun getCurrentlySelectedVM(): VMRunnerInfo? = if (currentVMselection == null) null else vms[currentVMselection!!]
@@ -201,6 +225,7 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
         val vm1 = getVMbyProfileName("Initial VM")!!
         initVMenv(vm1, "Initial VM")
         vms[0] = VMRunnerInfo(vm1, "Initial VM")
+        applyMouseInputMappingForPanel(vm1, 0)
 
         init()
     }
@@ -307,6 +332,11 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
         if (currentVMselection != null && vms[currentVMselection!!]?.vm?.id == vm.id) {
             Gdx.input.inputProcessor = vm.getIO()
         }
+
+        // peripheralTable[1] (the GPU) was disposed and re-installed; re-apply
+        // the mouse mapping so the rebooted VM keeps targeting its own panel.
+        val panelIndex = vms.indexOfFirst { it?.vm?.id == vm.id }
+        if (panelIndex >= 0) applyMouseInputMappingForPanel(vm, panelIndex)
     }
 
     private fun updateGame(delta: Float) {
@@ -434,6 +464,10 @@ class VMEmuExecutable(val windowWidth: Int, val windowHeight: Int, var panelsX: 
         this.panelsX = panelsX
         this.panelsY = panelsY
         resize(windowWidth * panelsX, windowHeight * panelsY)
+        // Panel positions shifted, so every VM needs its mouse origin re-mapped.
+        vms.forEachIndexed { index, info ->
+            info?.vm?.let { applyMouseInputMappingForPanel(it, index) }
+        }
     }
 
     override fun resize(width: Int, height: Int) {
