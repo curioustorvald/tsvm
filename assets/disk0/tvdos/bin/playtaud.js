@@ -512,7 +512,6 @@ function drawFrame() {
     colour(COL_LABEL, COL_BG)
     mvtext(ROW_TOP_BORDER, 4, ' TAUD ')
     colour(COL_DIM, COL_BG)
-    mvtext(ROW_TOP_BORDER, COLS - 7, ' v0.1 ')
 
     // Bottom border + exit hint.
     colour(COL_BORDER, COL_BG)
@@ -725,7 +724,7 @@ function spawnEventsForRow(cueIdx, rowIdx) {
             note: note, pan: pan,
             ageFrames: 0,
             peakVol: 0,
-            glyphSeed: (cueIdx * 64 + rowIdx + v * 13) & 0xFFFF
+            glyphSeed: (cueIdx * 64 + rowIdx + v * 1280) & 0xFFFF
         }
         voiceLastNote[v] = note
         voiceLastInst[v] = effInst
