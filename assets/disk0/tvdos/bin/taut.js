@@ -870,6 +870,22 @@ function loadTaudSongList(filePath) {
     }
 
     let projectName = ''
+    // 0x1E-separated UTF-8 strings; slot 0 is always present (typically empty)
+    // because converters write a leading separator. Read all entries that exist.
+    const instNames   = []
+    const sampleNames = []
+
+    function parseNameTable(payloadStart, secLen) {
+        const out = []
+        let s = ''
+        for (let k = 0; k < secLen; k++) {
+            const b = sys.peek(ptr + payloadStart + k) & 0xFF
+            if (b === 0x1E) { out.push(s); s = '' }
+            else            { s += String.fromCharCode(b) }
+        }
+        out.push(s)
+        return out
+    }
 
     // Parse Project Data section (\x1ETaudPrJ) for song names / project name.
     // See terranmon.txt "Project Data" / "sMet" for the format.
@@ -899,6 +915,16 @@ function loadTaudSongList(filePath) {
                         s += String.fromCharCode(b)
                     }
                     projectName = s
+                }
+                // 'INam' = 0x49,0x4E,0x61,0x6D
+                else if (fc0 === 0x49 && fc1 === 0x4E && fc2 === 0x61 && fc3 === 0x6D) {
+                    const names = parseNameTable(payloadStart, secLen)
+                    for (let k = 0; k < names.length; k++) instNames[k] = names[k]
+                }
+                // 'SNam' = 0x53,0x4E,0x61,0x6D
+                else if (fc0 === 0x53 && fc1 === 0x4E && fc2 === 0x61 && fc3 === 0x6D) {
+                    const names = parseNameTable(payloadStart, secLen)
+                    for (let k = 0; k < names.length; k++) sampleNames[k] = names[k]
                 }
                 // 'sMet' = 0x73,0x4D,0x65,0x74
                 else if (fc0 === 0x73 && fc1 === 0x4D && fc2 === 0x65 && fc3 === 0x74) {
@@ -939,7 +965,7 @@ function loadTaudSongList(filePath) {
     }
 
     sys.free(ptr)
-    return { numSongs, projectName, songs }
+    return { numSongs, projectName, songs, instNames, sampleNames }
 }
 
 
@@ -1493,7 +1519,17 @@ function drawControlHint() {
     ['sep'],
         ['!','Help'],
     ]
-    let hintElems = [hintElemTimeline, hintElemOrders, hintElemPatterns, hintElemExternal, hintElemExternal, hintElemProject, hintElemExternal]
+    const hintElemSamples = [
+        [`\u008428u\u008429u`,'Nav'],
+    ['sep'],
+        ['e','Edit'],
+        ['ent','View inst'],
+    ['sep'],
+        ['tab','Panel'],
+    ['sep'],
+        ['!','Help'],
+    ]
+    let hintElems = [hintElemTimeline, hintElemOrders, hintElemPatterns, hintElemSamples, hintElemExternal, hintElemProject, hintElemExternal]
     let hintElemPat = [hintElemEditNoteValue, hintElemEditInstValue, hintElemEditVolEff, hintElemEditPanEff, hintElemEditFxSym, hintElemEditFxVal]
 
     // erase current line
@@ -1921,6 +1957,7 @@ function switchSong(newIndex) {
 
     currentSongIndex = newIndex
     song = loadTaud(fullPathObj.full, newIndex)
+    refreshSamplesCache()
 
     const newPitchIdx = songsMeta.songs[newIndex].pitchPresetIdx
     PITCH_PRESET_IDX = (newPitchIdx != null && pitchTablePresets[newPitchIdx])
@@ -3021,7 +3058,438 @@ function projectInput(wo, event) {
 
 function externalPanelInput(wo, event) {}
 
-const panelSamples  = new win.WindowObject(1, PTNVIEW_OFFSET_Y, SCRW, PTNVIEW_HEIGHT, externalPanelInput, makeExternalPanelDraw('taut_sampleedit'), undefined, ()=>{})
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// SAMPLES VIEWER
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// The Samples tab is an internal viewer: sample list on the left, properties +
+// "used by" instrument list + waveform graphics on the right, and an Edit
+// button that launches the external taut_sampleedit sub-program.
+//
+// Sample identity in .taud is derived from (samplePtr, sampleLen) inside the
+// 256-byte instrument records (terranmon.txt §"Instrument bin"). Conversion
+// scripts pack samples into the 8 MB pool in slot order, so sorting unique
+// pointers ascending lines up with SNam[i] in the project-data block.
+
+// Peripheral memory window offsets, from terranmon.txt:1994-1999.
+const TAUT_SBANK_SIZE       = 524288  // 512 K window for sample bin
+const TAUT_INST_WINDOW_OFF  = 720896  // instrument bin starts here in peri space
+const TAUT_INST_RECORD_SIZE = 256
+const TAUT_INST_COUNT       = 256     // slots 0..255; slot 0 is unused
+
+// Read one 256-byte instrument record straight out of the audio adapter.
+function readInstRecord(slot) {
+    const memBase = audio.getMemAddr()
+    const base    = TAUT_INST_WINDOW_OFF + slot * TAUT_INST_RECORD_SIZE
+    const rec = new Uint8Array(TAUT_INST_RECORD_SIZE)
+    for (let i = 0; i < TAUT_INST_RECORD_SIZE; i++) {
+        rec[i] = sys.peek(memBase - (base + i)) & 0xFF
+    }
+    return rec
+}
+
+// Decode the fields the viewer actually cares about. Offsets from terranmon.txt:2071+.
+function decodeInstRecord(rec) {
+    const samplePtr  = (rec[0]) | (rec[1] << 8) | (rec[2] << 16) | (rec[3] * 0x1000000)
+    const sampleLen  = rec[4] | (rec[5] << 8)
+    const c4Rate     = rec[6] | (rec[7] << 8)
+    const playStart  = rec[8] | (rec[9] << 8)
+    const loopStart  = rec[10] | (rec[11] << 8)
+    const loopEnd    = rec[12] | (rec[13] << 8)
+    const sampleFlags = rec[14]
+    const instGV     = rec[171]
+    const defNoteVol = rec[196]
+    const detune     = rec[184] | (rec[185] << 8)
+    return {
+        samplePtr, sampleLen, c4Rate, playStart, loopStart, loopEnd,
+        sampleFlags, instGV, defNoteVol, detune
+    }
+}
+
+// Scan all 256 instruments and build the deduped sample list. Each returned
+// entry is { ptr, len, c4Rate, playStart, loopStart, loopEnd, sampleFlags,
+// usedBy[], name }. usedBy is a list of instrument slot numbers (1..255).
+let samplesCache = null
+
+function buildSampleIndex() {
+    const byPtr = new Map()
+    for (let i = 1; i < TAUT_INST_COUNT; i++) {
+        const d = decodeInstRecord(readInstRecord(i))
+        if (d.sampleLen === 0) continue
+        const key = d.samplePtr + ':' + d.sampleLen
+        if (!byPtr.has(key)) {
+            byPtr.set(key, {
+                ptr:        d.samplePtr,
+                len:        d.sampleLen,
+                c4Rate:     d.c4Rate,
+                playStart:  d.playStart,
+                loopStart:  d.loopStart,
+                loopEnd:    d.loopEnd,
+                sampleFlags:d.sampleFlags,
+                usedBy:     [],
+                name:       ''
+            })
+        }
+        byPtr.get(key).usedBy.push(i)
+    }
+    const list = Array.from(byPtr.values()).sort((a, b) => a.ptr - b.ptr)
+    const names = (songsMeta && songsMeta.sampleNames) || []
+    for (let i = 0; i < list.length; i++) {
+        // SNam is slot-indexed (entry 0 unused); converters keep sample order
+        // identical to pool order, so list[i] corresponds to names[i+1].
+        const n = names[i + 1]
+        list[i].name = (n != null) ? n : ''
+    }
+    return list
+}
+
+function refreshSamplesCache() { samplesCache = buildSampleIndex() }
+
+// ── Layout ───────────────────────────────────────────────────────────────────
+// Panel area is rows PTNVIEW_OFFSET_Y .. SCRH-1 (the hint bar lives at SCRH).
+// Columns mirror the Patterns tab: list body | scroll-bar col | VERT separator | right pane.
+const SMP_LIST_X      = 1
+const SMP_LIST_BODY_W = 26                              // text width of one list row
+const SMP_LIST_W      = SMP_LIST_BODY_W + 1             // body + 1-col scroll indicator
+const SMP_LIST_SCROLL_X = SMP_LIST_X + SMP_LIST_BODY_W  // scroll-indicator column
+const SMP_LIST_Y    = PTNVIEW_OFFSET_Y
+const SMP_LIST_H    = PTNVIEW_HEIGHT                    // full panel height
+const SMP_SEP_X     = SMP_LIST_X + SMP_LIST_W           // vertical separator column
+const SMP_RIGHT_X   = SMP_SEP_X + 1
+const SMP_RIGHT_Y   = PTNVIEW_OFFSET_Y
+const SMP_PROP_H    = 10                  // rows 5..14
+const SMP_USED_Y    = SMP_RIGHT_Y + SMP_PROP_H            // header row
+const SMP_USED_HDR_H = 1
+const SMP_USED_LIST_H = 5
+const SMP_WAVE_Y    = SMP_USED_Y + SMP_USED_HDR_H + SMP_USED_LIST_H   // row 21
+const SMP_BTN_Y     = SCRH - 1            // bottom-most panel row, reserved for Edit button
+const SMP_WAVE_H_ROWS = SMP_BTN_Y - SMP_WAVE_Y                        // visual rows used by the waveform
+
+const colSmpListBg     = colBackPtn
+const colSmpListSel    = colHighlight
+const colSmpListNumFg  = colInst
+const colSmpListNameFg = colStatus
+const colSmpPropLabel  = colVoiceHdr
+const colSmpPropValue  = colWHITE
+const colSmpUsedHdr    = colVoiceHdr
+const colSmpUsedFg     = colInst
+const colSmpWaveLine   = 77        // bright cyan-ish; visible on dark bg
+const colSmpWaveMid    = 246       // dim grey for zero-line
+
+let smpListScroll = 0
+let smpListCursor = 0
+
+function clampSamplesCursor() {
+    const n = samplesCache ? samplesCache.length : 0
+    if (smpListCursor < 0) smpListCursor = 0
+    if (smpListCursor >= n) smpListCursor = Math.max(0, n - 1)
+    if (smpListCursor < smpListScroll) smpListScroll = smpListCursor
+    if (smpListCursor >= smpListScroll + SMP_LIST_H)
+        smpListScroll = smpListCursor - SMP_LIST_H + 1
+    if (smpListScroll < 0) smpListScroll = 0
+}
+
+function drawSamplesListColumn() {
+    const n = samplesCache ? samplesCache.length : 0
+    for (let row = 0; row < SMP_LIST_H; row++) {
+        const idx = smpListScroll + row
+        const y = SMP_LIST_Y + row
+        con.move(y, SMP_LIST_X)
+        if (idx >= n) {
+            con.color_pair(colSmpListNameFg, colSmpListBg)
+            print(' '.repeat(SMP_LIST_BODY_W))
+            continue
+        }
+        const s = samplesCache[idx]
+        const isSel = (idx === smpListCursor)
+        const back  = isSel ? colSmpListSel : colSmpListBg
+        const numStr = (idx + 1).toString(16).toUpperCase().padStart(2, '0')
+        const nameRaw = (s.name && s.name.length) ? s.name : '(sample ' + (idx + 1) + ')'
+        const nameW = SMP_LIST_BODY_W - 6   // ' NN  name ' totals 6 + N chars
+        const nameStr = (nameRaw.length > nameW ? nameRaw.substring(0, nameW) : nameRaw.padEnd(nameW))
+        con.color_pair(colSmpListNumFg, back); print(' ' + numStr + ' ')
+        con.color_pair(colSmpListNameFg, back); print(' ')
+        con.color_pair(isSel ? colWHITE : colSmpListNameFg, back); print(nameStr)
+        con.color_pair(colSmpListNameFg, back); print(' ')
+    }
+    // scroll indicator on the rightmost column of the list area (left of the separator)
+    if (n > SMP_LIST_H) {
+        const maxScroll = n - SMP_LIST_H
+        const indPos = (maxScroll === 0) ? 0 : ((smpListScroll * (SMP_LIST_H - 1) / maxScroll) | 0)
+        for (let r = 0; r < SMP_LIST_H; r++) {
+            con.move(SMP_LIST_Y + r, SMP_LIST_SCROLL_X)
+            con.color_pair(colStatus, colSmpListBg)
+            print(r === indPos ? sym.ticked : sym.unticked)
+        }
+    } else {
+        for (let r = 0; r < SMP_LIST_H; r++) {
+            con.move(SMP_LIST_Y + r, SMP_LIST_SCROLL_X)
+            con.color_pair(colStatus, colSmpListBg); print(' ')
+        }
+    }
+}
+
+function drawSamplesSeparator() {
+    con.color_pair(colSep, colBackPtn)
+    for (let y = SMP_LIST_Y; y < SCRH; y++) {
+        con.move(y, SMP_SEP_X); con.prnch(VERT)
+    }
+}
+
+function loopModeName(flags) {
+    const lp = flags & 3
+    const sus = (flags >>> 2) & 1
+    const names = ['none', 'forward', 'pingpong', 'oneshot']
+    return names[lp] + (sus ? ' (sustain)' : '')
+}
+
+function drawSamplesProperties() {
+    const rightW = SCRW - SMP_RIGHT_X + 1
+    // Clear right side
+    for (let r = 0; r < SMP_PROP_H + SMP_USED_HDR_H + SMP_USED_LIST_H; r++) {
+        con.move(SMP_RIGHT_Y + r, SMP_RIGHT_X)
+        con.color_pair(colSmpPropValue, colBackPtn)
+        print(' '.repeat(rightW))
+    }
+
+    const n = samplesCache ? samplesCache.length : 0
+    if (n === 0) {
+        con.move(SMP_RIGHT_Y, SMP_RIGHT_X)
+        con.color_pair(colSmpPropLabel, colBackPtn)
+        print('No samples in this project.')
+        return
+    }
+
+    const s = samplesCache[smpListCursor]
+    if (!s) return
+
+    const rows = [
+        ['Sample #', (smpListCursor + 1).toString(16).toUpperCase().padStart(2, '0') + '  ($' + s.ptr.toString(16).toUpperCase().padStart(6, '0') + ')'],
+        ['Name',     s.name && s.name.length ? s.name : '(unnamed)'],
+        ['Length',   s.len + ' bytes  ($' + s.len.toString(16).toUpperCase().padStart(4, '0') + ')'],
+        ['Rate@C4',  s.c4Rate + ' Hz'],
+        ['Play st.', '$' + s.playStart.toString(16).toUpperCase().padStart(4, '0')],
+        ['Loop',     loopModeName(s.sampleFlags) +
+                        '  [$' + s.loopStart.toString(16).toUpperCase().padStart(4, '0') +
+                        '..$' + s.loopEnd.toString(16).toUpperCase().padStart(4, '0') + ']'],
+        ['Bank',     ((s.ptr / TAUT_SBANK_SIZE) | 0) + '/15'],
+        ['Used by',  s.usedBy.length + ' instrument' + (s.usedBy.length === 1 ? '' : 's')],
+    ]
+
+    for (let i = 0; i < rows.length; i++) {
+        const y = SMP_RIGHT_Y + i
+        con.move(y, SMP_RIGHT_X)
+        con.color_pair(colSmpPropLabel, colBackPtn)
+        print((rows[i][0] + '         ').substring(0, 10))
+        con.color_pair(colSmpPropValue, colBackPtn)
+        const v = rows[i][1]
+        const valMax = rightW - 11
+        print(v.length > valMax ? v.substring(0, valMax) : v)
+    }
+}
+
+// Vertical scroll for the "Used by instruments" list (small in this viewer).
+let smpUsedScroll = 0
+
+function drawSamplesUsedBy() {
+    const rightW = SCRW - SMP_RIGHT_X + 1
+    con.move(SMP_USED_Y, SMP_RIGHT_X)
+    con.color_pair(colSmpUsedHdr, colBackPtn)
+    print('Used by instruments:'.padEnd(rightW))
+
+    const s = (samplesCache && samplesCache[smpListCursor]) || null
+    const used = s ? s.usedBy : []
+    const names = (songsMeta && songsMeta.instNames) || []
+    const visible = SMP_USED_LIST_H
+
+    if (smpUsedScroll > Math.max(0, used.length - visible))
+        smpUsedScroll = Math.max(0, used.length - visible)
+    if (smpUsedScroll < 0) smpUsedScroll = 0
+
+    for (let r = 0; r < visible; r++) {
+        const y = SMP_USED_Y + 1 + r
+        con.move(y, SMP_RIGHT_X)
+        con.color_pair(colSmpPropValue, colBackPtn)
+        const idx = smpUsedScroll + r
+        if (idx >= used.length) {
+            print(' '.repeat(rightW))
+            continue
+        }
+        const slot = used[idx]
+        const iname = names[slot] || '(unnamed)'
+        const numStr = '$' + slot.toString(16).toUpperCase().padStart(2, '0')
+        con.color_pair(colSmpUsedFg, colBackPtn)
+        print(' ' + numStr + ' ')
+        con.color_pair(colSmpPropValue, colBackPtn)
+        const nameW = rightW - 5
+        print(iname.length > nameW ? iname.substring(0, nameW) : iname.padEnd(nameW))
+    }
+}
+
+// ── Waveform rendering ──────────────────────────────────────────────────────
+// Renders one sample under the right panel as a min/max envelope, using the
+// graphics layer. Samples are unsigned 8-bit; bank-switch is required because
+// only 512 K of the 8 MB pool is mapped at a time. We restore bank 0 (the
+// playback-expected default) when done.
+
+// Pixel rect occupied by the waveform inside the Samples viewer. Both the
+// waveform painter and the leave-Samples cleanup need to reach for the same
+// geometry, so it lives in one helper.
+function sampleWaveformRect() {
+    return {
+        x: (SMP_RIGHT_X - 1) * CELL_PW,
+        y: (SMP_WAVE_Y - 1) * CELL_PH,
+        w: (SCRW - SMP_RIGHT_X + 1) * CELL_PW,
+        h: SMP_WAVE_H_ROWS * CELL_PH,
+    }
+}
+
+function clearSampleWaveformArea() {
+    const r = sampleWaveformRect()
+    graphics.plotRect(r.x, r.y, r.w, r.h, 255)   // 255 = transparent
+}
+
+function drawSampleWaveform() {
+    const r = sampleWaveformRect()
+    const wx0 = r.x, wy0 = r.y, wW = r.w, wH = r.h
+
+    // Clear waveform area to transparent (255 = transparent against text bg)
+    graphics.plotRect(wx0, wy0, wW, wH, 255)
+
+    const s = (samplesCache && samplesCache[smpListCursor]) || null
+    if (!s || s.len === 0) return
+
+    const bankIdxFirst = (s.ptr / TAUT_SBANK_SIZE) | 0
+    const bankOff      = s.ptr - bankIdxFirst * TAUT_SBANK_SIZE
+    const memBase      = audio.getMemAddr()
+    const prevBank     = audio.getSampleBank() || 0
+
+    // Centre line
+    graphics.plotRect(wx0, wy0 + (wH >>> 1), wW, 1, colSmpWaveMid)
+
+    // Walk the sample at one column per output pixel. For each column we read
+    // a chunk and reduce to min/max; vertical extent comes from (max-min).
+    // Bank switching is per-step: each output column may straddle banks.
+    const samplesPerCol = Math.max(1, (s.len / wW) | 0)
+    let pos = 0  // byte offset into the sample, 0..len-1
+    let curBank = -1
+    for (let col = 0; col < wW; col++) {
+        const start = (col * s.len / wW) | 0
+        const end   = Math.min(s.len, (((col + 1) * s.len / wW) | 0))
+        if (end <= start) continue
+
+        let mn = 255, mx = 0
+        // Step in coarse strides for speed when samples are long.
+        const step = Math.max(1, ((end - start) / 8) | 0)
+        for (let p = start; p < end; p += step) {
+            const abs = s.ptr + p
+            const bank = (abs / TAUT_SBANK_SIZE) | 0
+            if (bank !== curBank) {
+                audio.setSampleBank(bank)
+                curBank = bank
+            }
+            const off = abs - bank * TAUT_SBANK_SIZE
+            const v = sys.peek(memBase - off) & 0xFF
+            if (v < mn) mn = v
+            if (v > mx) mx = v
+        }
+        // unsigned 8-bit → centred around 128
+        const yTop = wy0 + ((wH * (255 - mx)) / 255) | 0
+        const yBot = wy0 + ((wH * (255 - mn)) / 255) | 0
+        const h = Math.max(1, yBot - yTop + 1)
+        graphics.plotRect(wx0 + col, yTop, 1, h, colSmpWaveLine)
+    }
+
+    // Restore bank 0 for playback (engine expects bank 0 as default)
+    audio.setSampleBank(prevBank)
+}
+
+function drawSamplesEditButton() {
+    const y = SMP_BTN_Y
+    con.move(y, SMP_RIGHT_X)
+    con.color_pair(colSmpUsedHdr, colBackPtn)
+    print('[ E ]')
+    con.color_pair(colSmpPropValue, colBackPtn)
+    const label = ' Edit sample'
+    print(label)
+    const rest = SCRW - (SMP_RIGHT_X + 5 + label.length) + 1
+    if (rest > 0) print(' '.repeat(rest))
+}
+
+function clearSamplesPanel() {
+    // Panel area only — leave the hint row (SCRH) alone; drawControlHint owns it.
+    for (let y = PTNVIEW_OFFSET_Y; y < SCRH; y++) fillLine(y, colSmpPropValue, colBackPtn)
+}
+
+function drawSamplesContents(wo) {
+    if (samplesCache === null) refreshSamplesCache()
+    clampSamplesCursor()
+    clearSamplesPanel()
+    drawSamplesListColumn()
+    drawSamplesSeparator()
+    drawSamplesProperties()
+    drawSamplesUsedBy()
+    drawSampleWaveform()
+    drawSamplesEditButton()
+}
+
+let pendingEditorLaunch = null   // { progName, args[] }
+
+function requestEditorLaunch(progName, args) {
+    pendingEditorLaunch = { progName, args: args || [] }
+}
+
+// Stub: instrument viewer will live in taut.js once implemented; until then,
+// VIEW_INSTRMNT still routes through the external taut_instredit editor. The
+// `_G.TAUT.UI.PRELOAD_INST` hand-off is read by whichever piece grows into the
+// viewer first.
+function launchInstrumentViewerFor(instSlot) {
+    _G.TAUT.UI.PRELOAD_INST = instSlot
+    // Re-use the panel-switch machinery the Tab key uses.
+    switchToPanel(VIEW_INSTRMNT)
+}
+
+function samplesInput(wo, event) {
+    if (event[0] !== 'key_down') return
+    const keysym     = event[1]
+    const keyJustHit = (1 == event[2])
+    const shiftDown  = (event.includes(59) || event.includes(60))
+    const moveDelta  = shiftDown ? 8 : 1
+
+    const n = samplesCache ? samplesCache.length : 0
+    if (n === 0) {
+        if (keysym === 'e' || keysym === 'E') {
+            requestEditorLaunch('taut_sampleedit', [fullPathObj.full, VIEW_SAMPLES, -1])
+        }
+        return
+    }
+
+    if (keysym === '<UP>')   { smpListCursor -= moveDelta; clampSamplesCursor(); smpUsedScroll = 0; drawSamplesContents(); return }
+    if (keysym === '<DOWN>') { smpListCursor += moveDelta; clampSamplesCursor(); smpUsedScroll = 0; drawSamplesContents(); return }
+    if (keysym === '<PAGE_UP>')   { smpListCursor -= SMP_LIST_H; clampSamplesCursor(); smpUsedScroll = 0; drawSamplesContents(); return }
+    if (keysym === '<PAGE_DOWN>') { smpListCursor += SMP_LIST_H; clampSamplesCursor(); smpUsedScroll = 0; drawSamplesContents(); return }
+    if (keysym === '<HOME>') { smpListCursor = 0; clampSamplesCursor(); smpUsedScroll = 0; drawSamplesContents(); return }
+    if (keysym === '<END>')  { smpListCursor = n - 1; clampSamplesCursor(); smpUsedScroll = 0; drawSamplesContents(); return }
+
+    if (keysym === 'e' || keysym === 'E') {
+        requestEditorLaunch('taut_sampleedit', [fullPathObj.full, VIEW_SAMPLES, smpListCursor])
+        return
+    }
+
+    if (keysym === '\n') {
+        // Open the first instrument that uses this sample in the (stub) inst viewer
+        const s = samplesCache[smpListCursor]
+        if (s && s.usedBy.length > 0) {
+            launchInstrumentViewerFor(s.usedBy[0])
+        }
+        return
+    }
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// END SAMPLES VIEWER
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+const panelSamples  = new win.WindowObject(1, PTNVIEW_OFFSET_Y, SCRW, PTNVIEW_HEIGHT, samplesInput,       drawSamplesContents,                       undefined, ()=>{})
 const panelInstrmnt = new win.WindowObject(1, PTNVIEW_OFFSET_Y, SCRW, PTNVIEW_HEIGHT, externalPanelInput, makeExternalPanelDraw('taut_instredit'),  undefined, ()=>{})
 const panelProject  = new win.WindowObject(1, PTNVIEW_OFFSET_Y, SCRW, PTNVIEW_HEIGHT, projectInput,       drawProjectContents,                       undefined, ()=>{})
 const panelFile     = new win.WindowObject(1, PTNVIEW_OFFSET_Y, SCRW, PTNVIEW_HEIGHT, externalPanelInput, makeExternalPanelDraw('taut_fileop'),       undefined, ()=>{})
@@ -3706,6 +4174,7 @@ drawAll()
 
 resetAudioDevice()
 taud.uploadTaudFile(fullPathObj.full, currentSongIndex, PLAYHEAD)
+refreshSamplesCache()
 audio.setMasterVolume(PLAYHEAD, 255)
 audio.setMasterPan(PLAYHEAD, 128)
 let initialTrackerMixerflags = audio.getTrackerMixerFlags(PLAYHEAD)
@@ -3713,7 +4182,7 @@ let initialGlobalVolume = audio.getSongGlobalVolume(PLAYHEAD)
 let initialMixingVolume = audio.getSongMixingVolume(PLAYHEAD)
 
 function isExternalPanel(p) {
-    return p === VIEW_SAMPLES || p === VIEW_INSTRMNT || p === VIEW_FILE
+    return p === VIEW_INSTRMNT || p === VIEW_FILE
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -3808,9 +4277,11 @@ function addGlobalMouseRegion(x, y, w, h, handlers) { MOUSE_GLOBAL.push(Object.a
 function switchToPanel(newPanel) {
     if (newPanel === currentPanel) return
     const wasTimeline = (currentPanel === VIEW_TIMELINE)
+    const wasSamples  = (currentPanel === VIEW_SAMPLES)
     currentPanel = newPanel
     applyMuteTransition(currentPanel)
     if (wasTimeline && currentPanel !== VIEW_TIMELINE) clearVoiceMeters()
+    if (wasSamples  && currentPanel !== VIEW_SAMPLES)  clearSampleWaveformArea()
     if (isExternalPanel(currentPanel)) {
         clearPanelMouseRegions()
         con.clear(); drawAlwaysOnElems(); drawControlHint()
@@ -3870,7 +4341,54 @@ function rebuildPanelMouseRegions() {
     if      (currentPanel === VIEW_TIMELINE)        registerTimelineMouse()
     else if (currentPanel === VIEW_CUES)            registerOrdersMouse()
     else if (currentPanel === VIEW_PATTERN_DETAILS) registerPatternsMouse()
+    else if (currentPanel === VIEW_SAMPLES)         registerSamplesMouse()
     else if (currentPanel === VIEW_PROJECT)         registerProjectMouse()
+}
+
+function registerSamplesMouse() {
+    // Left list (incl. scroll-indicator column, but excluding the separator).
+    addPanelMouseRegion(SMP_LIST_X, SMP_LIST_Y, SMP_SEP_X - SMP_LIST_X, SMP_LIST_H, {
+        onClick: (cy, cx, btn) => {
+            if (btn !== 1) return
+            const n = samplesCache ? samplesCache.length : 0
+            const target = smpListScroll + (cy - SMP_LIST_Y)
+            if (target < 0 || target >= n) return
+            smpListCursor = target
+            smpUsedScroll = 0
+            clampSamplesCursor()
+            drawSamplesContents()
+        },
+        onWheel: (cy, cx, dy) => {
+            smpListCursor += dy * 3
+            clampSamplesCursor()
+            smpUsedScroll = 0
+            drawSamplesContents()
+        }
+    })
+    // Right "Used by" list: click launches inst viewer for that slot
+    addPanelMouseRegion(SMP_RIGHT_X, SMP_USED_Y + 1, SCRW - SMP_RIGHT_X + 1, SMP_USED_LIST_H, {
+        onClick: (cy, cx, btn) => {
+            if (btn !== 1) return
+            const s = samplesCache && samplesCache[smpListCursor]
+            if (!s) return
+            const idx = smpUsedScroll + (cy - (SMP_USED_Y + 1))
+            if (idx < 0 || idx >= s.usedBy.length) return
+            launchInstrumentViewerFor(s.usedBy[idx])
+        },
+        onWheel: (cy, cx, dy) => {
+            const s = samplesCache && samplesCache[smpListCursor]
+            if (!s) return
+            smpUsedScroll += dy
+            drawSamplesUsedBy()
+        }
+    })
+    // Bottom-row Edit button
+    addPanelMouseRegion(SMP_RIGHT_X, SMP_BTN_Y, 18, 1, {
+        onClick: (cy, cx, btn) => {
+            if (btn !== 1) return
+            requestEditorLaunch('taut_sampleedit', [fullPathObj.full, VIEW_SAMPLES, smpListCursor])
+        }
+    })
 }
 
 function registerTimelineMouse() {
@@ -4097,11 +4615,13 @@ while (!exitFlag) {
 
         if (keyJustHit && keysym === "<TAB>") {
             const wasTimeline = (currentPanel === VIEW_TIMELINE)
+            const wasSamples  = (currentPanel === VIEW_SAMPLES)
             currentPanel = (currentPanel + (shiftDown ? -1 : 1))
             if (currentPanel < 0) currentPanel += panels.length
             currentPanel = currentPanel % panels.length
             applyMuteTransition(currentPanel)
             if (wasTimeline && currentPanel !== VIEW_TIMELINE) clearVoiceMeters()
+            if (wasSamples  && currentPanel !== VIEW_SAMPLES)  clearSampleWaveformArea()
             if (isExternalPanel(currentPanel)) {
                 // Redraw header now so the tab highlight is visible immediately,
                 // but defer the actual sub-program launch to after withEvent returns.
@@ -4146,6 +4666,45 @@ while (!exitFlag) {
             } else {
                 rebuildPanelMouseRegions()
                 drawAll()
+            }
+        }
+    }
+
+    // Launch the sample / instrument editor as a sub-program. Same deferral
+    // reason as pendingExternalDraw: avoid leaking the trigger key into the
+    // sub-program's own withEvent loop. The editor sets NEXTPANEL on exit
+    // (typically back to its parent viewer), so the loop above will repaint.
+    if (pendingEditorLaunch) {
+        const { progName, args } = pendingEditorLaunch
+        pendingEditorLaunch = null
+        stopPlayback()
+        clearSampleWaveformArea()
+        clearPanelMouseRegions()
+        con.clear(); drawAlwaysOnElems(); drawControlHint()
+        _G.TAUT.UI.NEXTPANEL = undefined
+        _G.shell.execute(`${progName} ${args.join(' ')}`)
+        // After the editor returns, instruments / samples may have changed —
+        // rebuild the deduped sample list before redrawing whatever panel comes next.
+        refreshSamplesCache()
+        if (_G.TAUT.UI.NEXTPANEL === undefined || _G.TAUT.UI.NEXTPANEL === null) {
+            // Editor declined to switch panels — repaint the current panel.
+            rebuildPanelMouseRegions()
+            drawAll()
+        } else {
+            while (_G.TAUT.UI.NEXTPANEL !== undefined && _G.TAUT.UI.NEXTPANEL !== null) {
+                const wasTimeline = (currentPanel === VIEW_TIMELINE)
+                currentPanel = _G.TAUT.UI.NEXTPANEL
+                _G.TAUT.UI.NEXTPANEL = undefined
+                applyMuteTransition(currentPanel)
+                if (wasTimeline && currentPanel !== VIEW_TIMELINE) clearVoiceMeters()
+                if (isExternalPanel(currentPanel)) {
+                    clearPanelMouseRegions()
+                    con.clear(); drawAlwaysOnElems(); drawControlHint()
+                    redrawPanel()
+                } else {
+                    rebuildPanelMouseRegions()
+                    drawAll()
+                }
             }
         }
     }
