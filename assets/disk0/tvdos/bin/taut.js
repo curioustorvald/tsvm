@@ -16,11 +16,8 @@ const TRACKER_SIGNATURE = "TsvmTaut"+BUILD_DATE // 14-byte string
 const MIDDOT = "\u00FA"
 const BIGDOT = "\u00F9"
 const BULLET = "\u00847u"
-const VERTCHAR = "\u00CA"
-const TWOVERTCHAR = "\u00DA"
 const DOTHORZ = "\u00B4\u00B5"
-const VERT = 0xCA
-const TWOVERT = 0xDA
+const VERT = 0xDA
 
 // global var for the app
 _G.TAUT = {};
@@ -45,8 +42,8 @@ quadflat:"\u0096\u0097", // refrain from using (not visible on CRT)
 
 csharp:"\u0098",
 cflat:"\u0098",
-cdemisharp:"\u009E",
-cdemiflat:"\u009F",
+cdemisharp:"\u00A7",
+cdemiflat:"\u00A8",
 uptick:"\u009A",
 dntick:"\u009B",
 doubleuptick:"\u009C",
@@ -76,10 +73,10 @@ px:'\u00AC',
 vx:'\u00AD',
 
 /* transport control */
-playall:'\u00A8',
-playcue:'\u00A9',
-playrow:'\u00AA',
-stop:'\u00AB',
+playall:'\u00E1',
+playcue:'\u00E2',
+playrow:'\u00E3',
+stop:'\u00E4',
 
 /* miscellaneous */
 unticked:"\u00AE",
@@ -88,7 +85,7 @@ middot:MIDDOT,
 doubledot:"\u008419u",
 statusstop:"\u008420u\u008421u",
 statusplay:"\u008422u\u008423u",
-playhead:"\u00A7",
+playhead:"\u00E0",
 
 leftshade:'\u00B0',
 rightshade:'\u00B2',
@@ -992,7 +989,7 @@ const colTabBarBack = 187
 const colTabBarBack2 = 136
 const colTabBarOrn = 136
 const colBrand = 211
-const colPopupBack = 245//57
+const colPopupBack = 244
 const colTabActive = 239
 const colTabInactive = 45
 
@@ -3334,102 +3331,40 @@ function openHelpPopup() {
     const lines   = (helpmsg.MSG_BY_TABS && helpmsg.MSG_BY_TABS[currentPanel]) || ['']
     const colText = helpmsg.COL_TEXT || colWHITE
 
-    const popup = new win.WindowObject(
-        HELP_POPUP_X, HELP_POPUP_Y, HELP_POPUP_W, HELP_POPUP_H,
-        ()=>{}, ()=>{}, `Help: ${PANEL_NAMES[currentPanel]}`, popupDrawFrame
-    )
-    popup.isHighlighted = true
-    popup.titleBack = colPopupBack
-
-    let scroll = 0
-    const maxScroll = Math.max(0, lines.length - HELP_CONTENT_H)
-
-    const repaint = () => {
-        con.color_pair(230, colPopupBack)
-        popup.drawFrame()
-
-        // popupDrawFrame leaves the bottom row unpainted; fill it ourselves.
-        con.color_pair(colText, colPopupBack)
-        con.move(HELP_POPUP_Y + HELP_POPUP_H - 1, HELP_POPUP_X)
-        print(' '.repeat(HELP_POPUP_W))
-
-        for (let r = 0; r < HELP_CONTENT_H; r++) {
-            con.move(HELP_CONTENT_Y + r, HELP_CONTENT_X)
-            con.color_pair(colText, colPopupBack)
-            const line = lines[scroll + r]
-            print((line === undefined) ? ' '.repeat(HELP_CONTENT_W) : line)
-        }
-
-        // scroll indicator on the right inner edge
-        if (lines.length > HELP_CONTENT_H) {
-            const trackH = HELP_CONTENT_H
-            const indPos = (maxScroll === 0) ? 0 : ((scroll * (trackH - 1) / maxScroll) | 0)
-            con.color_pair(colStatus, colPopupBack)
-            for (let r = 0; r < trackH; r++) {
-                con.move(HELP_CONTENT_Y + r, HELP_POPUP_X + HELP_POPUP_W - 2)
-                let trough = (r == 0) ? 0xBA : (r == trackH - 1) ? 0xBC : 0xBB
-                print(String.fromCharCode(r === indPos ? (trough + 3) : (trough)))
-            }
-        }
-
-        con.color_pair(colStatus, 255)
-    }
-
-    repaint()
-
-    let done = false
-    const buttons = makePopupButtonRow(HELP_POPUP_Y + HELP_POPUP_H - 1, HELP_POPUP_X, HELP_POPUP_W, [
-        { label: 'OK', action: () => { done = true }, default: true },
-    ])
-    buttons.repaint()
-
-    let eventJustReceived = true
-
-    pushMousePopup(buttons.regions.concat([
-        // Scroll body: wheel scrolls help text.
-        { x: HELP_CONTENT_X, y: HELP_CONTENT_Y, w: HELP_CONTENT_W, h: HELP_CONTENT_H, onWheel: (cy, cx, dy) => {
-            scroll += dy * 3
-            if (scroll < 0) scroll = 0
-            if (scroll > maxScroll) scroll = maxScroll
-            repaint()
-            buttons.repaint()
-        }},
-    ]))
-
-    const scrollAndRepaint = () => { repaint(); buttons.repaint() }
-
-    while (!done) {
-        input.withEvent(ev => {
-            if (eventJustReceived && (ev[0] === 'key_down' || ev[0] === 'mouse_down')) {
-                eventJustReceived = false; return
-            }
-            if (dispatchMouseEvent(ev)) return
-            if (ev[0] !== 'key_down') return
-            const ks = ev[1]
-            const shiftDown = (ev.includes(59) || ev.includes(60))
-
-            if (buttons.keyHandler(ks, shiftDown)) return
-            if (ks === '<ESC>' || ks === '!' || ks === 'q') { done = true }
-            else if (ks === '<UP>')        { if (scroll > 0)         { scroll -= 1;                                    scrollAndRepaint() } }
-            else if (ks === '<DOWN>')      { if (scroll < maxScroll) { scroll += 1;                                    scrollAndRepaint() } }
-            else if (ks === '<PAGE_UP>')   {                           scroll = Math.max(0,         scroll - HELP_CONTENT_H); scrollAndRepaint() }
-            else if (ks === '<PAGE_DOWN>') {                           scroll = Math.min(maxScroll, scroll + HELP_CONTENT_H); scrollAndRepaint() }
-            else if (ks === '<HOME>')      {                           scroll = 0;                                            scrollAndRepaint() }
-            else if (ks === '<END>')       {                           scroll = maxScroll;                                    scrollAndRepaint() }
-        })
-    }
-
-    popMousePopup()
+    win.showDialog({
+        title: `Help: ${PANEL_NAMES[currentPanel]}`,
+        drawFrame: popupDrawFrame,
+        colours: popupColours,
+        list: {
+            items: lines.map(l => ({ label: l })),
+            bg: colPopupBack,
+            height: HELP_CONTENT_H,
+            width: HELP_CONTENT_W+4,
+            selectable: () => false,
+            renderItem: (ctx) => {
+                con.color_pair(colText, ctx.listBg)
+                con.move(ctx.y, ctx.x)
+                const line = (ctx.item.label != null ? ctx.item.label : '')
+                print(line.padEnd(ctx.w, ' ').substring(0, ctx.w))
+            },
+        },
+        buttons: [{ label: 'OK', action: 'ok', default: true }],
+        onKey: (ks, _shift, ctx) => {
+            if (ks === '!' || ks === 'q') { ctx.close({ action: 'cancel' }); return true }
+            return false
+        },
+    })
     drawAll()
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////
-// GOTO POPUP
+// SHARED POPUP CHROME
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-const GOTO_POPUP_W = 26
-const GOTO_POPUP_H = 5
-
+// Custom window-frame painter passed to wintex showDialog as `drawFrame`.
+// Paints a title bar at the top row, then fills the rest of the popup with
+// `colPopupBack` (including the bottom row, so the spacing row below wintex's
+// button strip stays painted).
 const popupDrawFrame = (wo) => {
     // draw header
     con.move(wo.y, wo.x)
@@ -3439,108 +3374,27 @@ const popupDrawFrame = (wo) => {
     // imprint title
     let titleWidth = wo.title.length
     con.move(wo.y, wo.x + (((wo.width - titleWidth - 2) & 254) >>> 1))
-
-    /*let colFore = colTabActive
-    let colBack = colTabBarBack2
-    let colFore2 = colTabBarBack2
-    let colBack2 = colTabBarBack
-    con.color_pair(colFore2, colBack2); print(sym.leftshade)
-    con.color_pair(colFore, colBack); print(wo.title)
-    con.color_pair(colFore2, colBack2); print(sym.rightshade)*/
     con.color_pair(colTabInactive, colTabBarBack); print(` ${wo.title} `)
 
-    // fill content area
-    for (let r = 1; r < wo.height - 1; r++) {
+    // fill content area (title row already painted above)
+    for (let r = 1; r < wo.height; r++) {
         con.move(wo.y + r, wo.x)
         con.color_pair(230, colPopupBack)
         print(' '.repeat(wo.width))
     }
 }
 
-// Render a centred button "[ Label ]" at (y, x). State drives the colour scheme so
-// the button can appear normal / keyboard-focused / mouse-hovered / both.
-//   state: 0 = normal, 1 = focused, 2 = hovered, 3 = focused + hovered
-function drawPopupButton(y, x, label, state) {
-    const txt = `[ ${label} ]`
-    let fore, back
-    if      (state === 1) { fore = colWHITE; back = colTabBarBack2 }   // focused
-    else if (state === 2) { fore = colWHITE; back = colHighlight }     // hovered
-    else if (state === 3) { fore = colBLACK; back = colWHITE }         // focused + hovered
-    else                  { fore = 230;      back = colPopupBack }     // normal
-    con.color_pair(fore, back)
-    con.move(y, x)
-    print(txt)
-    con.color_pair(colStatus, 255)
-    return { x: x, y: y, w: txt.length, h: 1 }
-}
-
-// Build a row of OK/Cancel-style buttons centred under a popup. Each entry:
-//   { label, action() }  (and an optional `default: true` to pre-focus)
-// Returns:
-//   - `regions`: an array suitable for MOUSE_POPUP_STACK.push (handles hover + click)
-//   - `keyHandler(ks) -> bool`: feed key symbols here; returns true if it consumed Tab/Enter
-//   - `repaint()`: redraw all buttons with their current focus/hover state
-//   - `focus`, `hover`: getters/setters via methods (so popups can drive Esc → Cancel)
-function makePopupButtonRow(y, popupX, popupW, defs) {
-    // Lay out buttons centred along row `y`. Label widths are tracked so we can compute hits.
-    const labels = defs.map(d => `[ ${d.label} ]`)
-    const totalW = labels.reduce((s, l) => s + l.length, 0) + 2 * (defs.length - 1)
-    const startX = popupX + ((popupW - totalW) >>> 1)
-    let cursor = startX
-    const buttons = defs.map((d, i) => {
-        const w = labels[i].length
-        const b = { x: cursor, y, w, label: d.label, action: d.action }
-        cursor += w + 2
-        return b
-    })
-    let focus = Math.max(0, defs.findIndex(d => d.default))
-    if (focus < 0) focus = 0
-    let hover = -1
-
-    const repaint = () => {
-        buttons.forEach((b, i) => {
-            const st = (i === focus ? 1 : 0) | (i === hover ? 2 : 0)
-            drawPopupButton(b.y, b.x, b.label, st)
-        })
-    }
-
-    const regions = buttons.map((b, i) => ({
-        x: b.x, y: b.y, w: b.w, h: b.h || 1,
-        onClick: (cy, cx, btn) => { if (btn === 1) b.action() },
-        onHover: () => { if (hover !== i) { hover = i; repaint() } },
-        onHoverLeave: () => { if (hover === i) { hover = -1; repaint() } },
-    }))
-
-    // Tab/Shift+Tab cycles focus; Enter activates. Returns true if the key was consumed.
-    const keyHandler = (ks, shiftDown) => {
-        if (ks === '\t' || ks === '<TAB>') {
-            focus = (focus + (shiftDown ? defs.length - 1 : 1)) % defs.length
-            repaint()
-            return true
-        }
-        if (ks === '\n') { buttons[focus].action(); return true }
-        return false
-    }
-
-    return { regions, keyHandler, repaint,
-             getFocus: () => focus, setFocus: (i) => { focus = i; repaint() },
-             activate: (i) => buttons[i].action() }
-}
-
-function drawGotoPopup(popup, buf) {
-    con.color_pair(230, colPopupBack)
-    popup.drawFrame()
-
-    const prompts = ['Cue (hex):', 'Cue (hex):', 'Pattern (hex):']
-    const promptStr = prompts[currentPanel] || 'Number:'
-
-    con.move(popup.y + 2, popup.x + 2)
-    con.color_pair(colWHITE, colPopupBack)
-    print(promptStr + ' ')
-    con.color_pair(230, 240)
-    print('[' + buf.padEnd(3, '_') + ']')
-
-    con.color_pair(colStatus, 255) // reset colour
+// Standard colour palette shared by every taut popup so wintex's defaults blend
+// with taut's popup chrome.
+const popupColours = {
+    // fg:        colStatus,
+    // bg:        colPopupBack,
+    // fieldBg:   240,
+    // dimFg:     colVoiceHdrMuted,
+    // hlFg:      colWHITE,
+    // focusBg:   colHighlight,
+    // listBg:    colPopupBack,
+    // listSelBg: colHighlight,
 }
 
 function applyGoto(num) {
@@ -3558,110 +3412,48 @@ function applyGoto(num) {
 }
 
 function openConfirmQuit() {
-    const pw = 28 + hasUnsavedChanges * 4
-    const ph = 6 + hasUnsavedChanges
-    const px = ((SCRW - pw) / 2 | 0) + 1
-    const py = ((SCRH - ph) / 2 | 0)
+    const messageLines = ['Exit Microtone?']
+    if (hasUnsavedChanges) messageLines.push('You have unsaved changes.')
 
-    const popup = new win.WindowObject(px, py, pw, ph, ()=>{}, ()=>{}, 'Quit?', popupDrawFrame)
-    popup.isHighlighted = true
-    popup.titleBack = colPopupBack
+    const res = win.showDialog({
+        title: 'Quit?',
+        drawFrame: popupDrawFrame,
+        colours: popupColours,
+        message: messageLines,
+        buttons: [
+            { label: 'Yes', action: 'yes', default: true },
+            { label: 'No',  action: 'no' },
+        ],
+        onKey: (ks, _shift, ctx) => {
+            if (ks === 'y' || ks === 'Y') { ctx.close({ action: 'yes' }); return true }
+            if (ks === 'n' || ks === 'N') { ctx.close({ action: 'no' });  return true }
+            return false
+        },
+    })
 
-    con.color_pair(230, colPopupBack)
-    popup.drawFrame()
-
-    con.move(py + 2, px + 2)
-    con.color_pair(colWHITE, colPopupBack)
-    print('Exit Microtone?')
-
-    if (hasUnsavedChanges) {
-        con.move(py + 3, px + 2)
-        con.color_pair(colWHITE, colPopupBack)
-        print('You have unsaved changes.')
-    }
-
-    let result = false
-    let done = false
-
-    const buttons = makePopupButtonRow(py + ph - 2, px, pw, [
-        { label: 'Yes', action: () => { result = true; done = true }, default: true },
-        { label: 'No',  action: () => { done = true } },
-    ])
-    buttons.repaint()
-    pushMousePopup(buttons.regions)
-
-    let eventJustReceived = true
-    while (!done) {
-        input.withEvent(ev => {
-            if (eventJustReceived && ev[0] === 'mouse_down') { eventJustReceived = false; return }
-            if (dispatchMouseEvent(ev)) return
-            if (ev[0] !== 'key_down') return
-            if (1 !== ev[2]) return
-            const ks = ev[1]
-            const shiftDown = (ev.includes(59) || ev.includes(60))
-
-            if (buttons.keyHandler(ks, shiftDown)) return
-            if (ks === 'y' || ks === 'Y') { result = true; done = true }
-            else if (ks === 'n' || ks === 'N' || ks === '<ESC>') { done = true }
-        })
-    }
-
-    popMousePopup()
+    const result = (res.action === 'yes')
     if (!result) drawAll()
     return result
 }
 
 function openGotoPopup() {
-    const pw = GOTO_POPUP_W
-    const ph = GOTO_POPUP_H + 2
-    const px = ((SCRW - pw) / 2 | 0) + 1
-    const py = ((SCRH - ph) / 2 | 0)
+    const prompts = ['Cue (hex):', 'Cue (hex):', 'Pattern (hex):']
+    const promptStr = prompts[currentPanel] || 'Number:'
 
-    const popup = new win.WindowObject(px, py, pw, ph, ()=>{}, ()=>{}, 'Go To', popupDrawFrame)
-    popup.isHighlighted = true
-    popup.titleBack = colTabBarBack
-
-    let buf = ''
-    let done = false
-    let commit = false
-
-    const buttons = makePopupButtonRow(py + ph - 2, px, pw, [
-        { label: 'OK',     action: () => { commit = true; done = true }, default: true },
-        { label: 'Cancel', action: () => { done = true } },
-    ])
-    const repaintAll = () => { drawGotoPopup(popup, buf); buttons.repaint() }
-    repaintAll()
-    pushMousePopup(buttons.regions)
-
-    let eventJustReceived = true
-
-    while (!done) {
-        input.withEvent(ev => {
-            if (eventJustReceived && (ev[0] === 'key_down' || ev[0] === 'mouse_down')) {
-                eventJustReceived = false
-                return
-            }
-            if (dispatchMouseEvent(ev)) return
-            if (ev[0] !== 'key_down') return
-            const ks = ev[1]
-            if (1 !== ev[2]) return // not key just hit
-            const shiftDown = (ev.includes(59) || ev.includes(60))
-
-            if (buttons.keyHandler(ks, shiftDown)) return
-            if (ks === '<ESC>' || ks === 'x') {
-                done = true
-            } else if (ks === '\u0008') {
-                buf = buf.slice(0, -1)
-                repaintAll()
-            } else if (ks.length === 1 && '0123456789abcdefABCDEF'.includes(ks) && buf.length < 3) {
-                buf += ks.toUpperCase()
-                repaintAll()
-            }
-        })
+    const res = win.showDialog({
+        title: 'Go To',
+        drawFrame: popupDrawFrame,
+        colours: popupColours,
+        fields: [{ label: promptStr, width: 3, maxLength: 3 }],
+        buttons: [
+            { label: 'OK',     action: 'ok', default: true },
+            { label: 'Cancel', action: 'cancel' },
+        ],
+    })
+    if (res.action === 'ok' && res.values[0]) {
+        const n = parseInt(res.values[0], 16)
+        if (!isNaN(n)) applyGoto(n)
     }
-
-    popMousePopup()
-    if (commit && buf.length > 0) applyGoto(parseInt(buf, 16))
     drawAll()
 }
 
@@ -3686,155 +3478,58 @@ function openRetunePopup() {
     const methodCycle = ['pitch', 'harmonic', 'delta'/*, 'cadence'*/]
     let method = 'pitch'
 
-    const pw     = 42
-    const listH  = Math.min(n, 15)
-    const ph     = listH + 7
-    const px     = ((SCRW - pw) / 2 | 0)
-    const py     = ((SCRH - ph) / 2 | 0)
-    const listX  = px + 2
-    const listY  = py + 3
-    const listW  = pw - 4
+    let selIdx = entries.findIndex(p => p.index === PITCH_PRESET_IDX)
+    if (selIdx < 0) selIdx = 0
 
-    const popup = new win.WindowObject(px, py, pw, ph, ()=>{}, ()=>{}, 'Retune', popupDrawFrame)
-    popup.isHighlighted = true
-    popup.titleBack = colPopupBack
+    const items = entries.map(e => ({ label: e.name, preset: e }))
+    const listH = Math.min(n, 13)
+    const messageLines = [
+        'Select new tuning preset:',
+        'Method: ' + methodLabels[method],
+    ]
 
-    let sel = entries.findIndex(p => p.index === PITCH_PRESET_IDX)
-    if (sel < 0) sel = 0
-    let scroll = centerScroll(sel, 0, listH, n)
-
-    let done = false
-    let confirmed = false
-    const buttons = makePopupButtonRow(py + ph - 2, px, pw, [
-        { label: 'OK',     action: () => { confirmed = true; done = true }, default: true },
-        { label: 'Cancel', action: () => { done = true } },
-    ])
-
-    const repaint = () => {
-        con.color_pair(230, colPopupBack)
-        popup.drawFrame()
-
-        con.move(py + 1, px + 2)
-        con.color_pair(colStatus, colPopupBack)
-        print('Select new tuning preset:')
-
-        con.move(py + 2, px + 2)
-        con.color_pair(colStatus, colPopupBack)
-        print('Method: ')
-        con.color_pair(colWHITE, colPopupBack)
-        const mLabel = methodLabels[method]
-        print(mLabel.padEnd(listW - 8))
-
-        for (let r = 0; r < listH; r++) {
-            const idx = scroll + r
-            con.move(listY + r, listX)
-            if (idx >= n) {
-                con.color_pair(230, colPopupBack)
-                print(' '.repeat(listW))
-                continue
-            }
-            const e = entries[idx]
-            const isSel = (idx === sel)
-            const isCur = (e.index === PITCH_PRESET_IDX)
-            const back  = isSel ? colHighlight : colPopupBack
-            const fore  = (e.t in tuningTypeColour) ? tuningTypeColour[e.t] : 230
-            const marker = isCur ? sym.playhead : ' '
-            let label = `${marker} ${e.index.toString().padStart(5, ' ')}  ${e.name}`
-            if (label.length > listW) label = label.substring(0, listW)
-            else label = label.padEnd(listW)
-            con.color_pair(fore, back)
-            print(label)
-        }
-
-        if (n > listH) {
-            const maxScroll = n - listH
-            const indPos = (maxScroll === 0) ? 0 : ((scroll * (listH - 1) / maxScroll) | 0)
-            con.color_pair(colStatus, colPopupBack)
-            for (let r = 0; r < listH; r++) {
-                con.move(listY + r, px + pw - 2)
-                let trough = (r === 0) ? 0xBA : (r === listH - 1) ? 0xBC : 0xBB
-                print(String.fromCharCode(r === indPos ? (trough + 3) : trough))
-            }
-        }
-
-        con.move(py + ph - 3, px + 2)
-        con.color_pair(colVoiceHdr, colPopupBack)
-        print(`\u008418u `)
-        con.color_pair(colStatus, colPopupBack)
-        print(`Sel `)
-        con.color_pair(colVoiceHdr, colPopupBack)
-        print(`m `)
-        con.color_pair(colStatus, colPopupBack)
-        print(`Method`)
-
-        buttons.repaint()
-
-        con.color_pair(colStatus, 255)
-    }
-
-    repaint()
-
-    let eventJustReceived = true
-
-    pushMousePopup(buttons.regions.concat([
-        // List rows: click to select, double-click semantics omitted (clarity over speed).
-        { x: listX, y: listY, w: listW, h: listH, onClick: (cy, cx, btn) => {
-            if (btn !== 1) return
-            const r = cy - listY
-            const idx = scroll + r
-            if (idx < 0 || idx >= n) return
-            sel = idx; repaint()
-        }, onWheel: (cy, cx, dy) => {
-            sel += dy * 3
-            if (sel < 0) sel = 0
-            if (sel >= n) sel = n - 1
-            scroll = centerScroll(sel, scroll, listH, n)
-            repaint()
-        }},
-        // Method label clickable
-        { x: px + 2, y: py + 2, w: listW, h: 1, onClick: (cy, cx, btn) => {
-            if (btn !== 1) return
-            method = methodCycle[(methodCycle.indexOf(method) + 1) % methodCycle.length]
-            repaint()
-        }},
-    ]))
-
-    while (!done) {
-        input.withEvent(ev => {
-            if (eventJustReceived && (ev[0] === 'key_down' || ev[0] === 'mouse_down')) {
-                eventJustReceived = false; return
-            }
-            if (dispatchMouseEvent(ev)) return
-            if (ev[0] !== 'key_down') return
-            const ks = ev[1]
-            const shiftDown = (ev.includes(59) || ev.includes(60))
-
-            if (buttons.keyHandler(ks, shiftDown)) return
-            if (ks === 'Q' || ks === '<ESC>') { done = true }
-            else if (ks === 'M' || ks === 'm') {
+    const res = win.showDialog({
+        title: 'Retune',
+        drawFrame: popupDrawFrame,
+        colours: popupColours,
+        message: messageLines,
+        list: {
+            items: items,
+            height: listH,
+            width: 36,
+            cursor: selIdx,
+            renderItem: (ctx) => {
+                const e = ctx.item.preset
+                const isCur = (e.index === PITCH_PRESET_IDX)
+                const fore = (e.t in tuningTypeColour) ? tuningTypeColour[e.t] : 230
+                const useFg = (ctx.isCursor && ctx.focused) ? colWHITE : fore
+                const useBg = (ctx.isCursor && ctx.focused) ? colHighlight : ctx.listBg
+                con.color_pair(useFg, useBg)
+                con.move(ctx.y, ctx.x)
+                const marker = isCur ? sym.playhead : ' '
+                let label = `${marker} ${e.name}`
+                if (label.length > ctx.w) label = label.substring(0, ctx.w)
+                else label = label.padEnd(ctx.w, ' ')
+                print(label)
+            },
+        },
+        buttons: [
+            { label: 'OK',     action: 'ok', default: true },
+            { label: 'Cancel', action: 'cancel' },
+        ],
+        onKey: (ks, _shift, ctx) => {
+            if (ks === 'm' || ks === 'M') {
                 method = methodCycle[(methodCycle.indexOf(method) + 1) % methodCycle.length]
-                repaint()
+                messageLines[1] = 'Method: ' + methodLabels[method]
+                ctx.render()
+                return true
             }
-            else if (ks === '<UP>') {
-                if (sel > 0) { sel--; scroll = centerScroll(sel, scroll, listH, n); repaint() }
-            } else if (ks === '<DOWN>') {
-                if (sel < n - 1) { sel++; scroll = centerScroll(sel, scroll, listH, n); repaint() }
-            } else if (ks === '<HOME>') {
-                sel = 0; scroll = centerScroll(sel, scroll, listH, n); repaint()
-            } else if (ks === '<END>') {
-                sel = n - 1; scroll = centerScroll(sel, scroll, listH, n); repaint()
-            } else if (ks === '<PAGE_UP>') {
-                sel = Math.max(0, sel - listH); scroll = centerScroll(sel, scroll, listH, n); repaint()
-            } else if (ks === '<PAGE_DOWN>') {
-                sel = Math.min(n - 1, sel + listH); scroll = centerScroll(sel, scroll, listH, n); repaint()
-            }
-        })
-    }
+            return false
+        },
+    })
 
-    popMousePopup()
-
-    if (confirmed) {
-        const target = entries[sel]
+    if (res.action === 'ok' && res.listItem) {
+        const target = res.listItem.preset
         if (target && target.index !== PITCH_PRESET_IDX) {
             retuneAllPatterns(target.index, method)
         }
@@ -3857,114 +3552,63 @@ function openFlagsPopup() {
     if (intpMode >= intpNames.length) intpMode = 0
 
     // Build list rows: headers + selectable radio options.
-    // items[].kind: undefined = header, 'tone' | 'intp' = selectable.
     const items = []
-    items.push({ label: 'Tone Mode:' })
-    toneNames.forEach((n, i) => items.push({ kind: 'tone', idx: i, label: n }))
-    items.push({ label: '' })
-    items.push({ label: 'Interpolation:' })
-    intpNames.forEach((n, i) => items.push({ kind: 'intp', idx: i, label: n }))
+    items.push({ label: 'Tone Mode:', kind: 'header' })
+    toneNames.forEach((nm, i) => items.push({ label: nm, kind: 'tone', idx: i }))
+    items.push({ label: '', kind: 'spacer' })
+    items.push({ label: 'Interpolation:', kind: 'header' })
+    intpNames.forEach((nm, i) => items.push({ label: nm, kind: 'intp', idx: i }))
 
-    const selectables = []
-    items.forEach((it, i) => { if (it.kind) selectables.push(i) })
-    let sel = 0
-
-    const pw = 28
-    const ph = items.length + 6
-    const px = ((SCRW - pw) / 2 | 0) + 1
-    const py = ((SCRH - ph) / 2 | 0)
-
-    const popup = new win.WindowObject(px, py, pw, ph, ()=>{}, ()=>{}, 'Mixer Flags', popupDrawFrame)
-    popup.isHighlighted = true
-    popup.titleBack = colPopupBack
-
-    let done = false
-    let confirmed = false
-    const buttons = makePopupButtonRow(py + ph - 2, px, pw, [
-        { label: 'OK',     action: () => { confirmed = true; done = true }, default: true },
-        { label: 'Cancel', action: () => { done = true } },
-    ])
-
-    const repaint = () => {
-        con.color_pair(230, colPopupBack)
-        popup.drawFrame()
-
-        for (let i = 0; i < items.length; i++) {
-            const it = items[i]
-            con.move(py + 1 + i, px + 2)
-            if (!it.kind) {
-                con.color_pair(colStatus, colPopupBack)
-                print(it.label.padEnd(pw - 4))
-            } else {
-                const isSel    = (selectables[sel] === i)
+    const res = win.showDialog({
+        title: 'Mixer Flags',
+        drawFrame: popupDrawFrame,
+        colours: popupColours,
+        list: {
+            items: items,
+            height: items.length,
+            width: 22,
+            showScrollbar: false,
+            selectable: (it) => it.kind === 'tone' || it.kind === 'intp',
+            renderItem: (ctx) => {
+                const it = ctx.item
+                con.move(ctx.y, ctx.x)
+                if (it.kind === 'header') {
+                    con.color_pair(colStatus, colPopupBack)
+                    print(it.label.padEnd(ctx.w, ' ').substring(0, ctx.w))
+                    return
+                }
+                if (it.kind === 'spacer') {
+                    con.color_pair(colStatus, colPopupBack)
+                    print(' '.repeat(ctx.w))
+                    return
+                }
                 const isChecked = (it.kind === 'tone')
                     ? (toneMode === it.idx)
                     : (intpMode === it.idx)
-                const back = isSel ? colHighlight : colPopupBack
-                const fore = isChecked ? colVoiceHdr : colWHITE
-                con.color_pair(fore, back)
+                const useBg = (ctx.isCursor && ctx.focused) ? colHighlight : colPopupBack
+                const useFg = isChecked ? colVoiceHdr : colWHITE
+                con.color_pair(useFg, useBg)
                 const line = ' ' + (isChecked ? sym.ticked : sym.unticked) + ' ' + it.label
-                print(line.padEnd(pw - 4))
-            }
-        }
+                print(line.padEnd(ctx.w, ' ').substring(0, ctx.w))
+            },
+            // Space and left-click toggle the radio; Enter commits via OK.
+            onActivate: (item, _idx, key) => {
+                if (key === ' ' || key === 'click') {
+                    if      (item.kind === 'tone') toneMode = item.idx
+                    else if (item.kind === 'intp') intpMode = item.idx
+                    return null
+                }
+                if (key === '\n') return 'ok'
+                return null
+            },
+        },
+        buttons: [
+            { label: 'OK',     action: 'ok', default: true },
+            { label: 'Cancel', action: 'cancel' },
+        ],
+    })
 
-        con.move(py + ph - 3, px + 2)
-        con.color_pair(colVoiceHdr, colPopupBack); print(`\u008418u `)
-        con.color_pair(colStatus,   colPopupBack); print('Sel ')
-        con.color_pair(colVoiceHdr, colPopupBack); print('sp ')
-        con.color_pair(colStatus,   colPopupBack); print('Tick')
-
-        buttons.repaint()
-
-        con.color_pair(colStatus, 255)
-    }
-
-    repaint()
-
-    let eventJustReceived = true
-
-    pushMousePopup(buttons.regions.concat([
-        // Clickable rows — each maps to a selectable index.
-        { x: px + 2, y: py + 1, w: pw - 4, h: items.length, onClick: (cy, cx, btn) => {
-            if (btn !== 1) return
-            const i = cy - (py + 1)
-            const it = items[i]
-            if (!it || !it.kind) return
-            sel = selectables.indexOf(i)
-            if (sel < 0) sel = 0
-            if (it.kind === 'tone') toneMode = it.idx
-            else if (it.kind === 'intp') intpMode = it.idx
-            repaint()
-        }},
-    ]))
-
-    while (!done) {
-        input.withEvent(ev => {
-            if (eventJustReceived && (ev[0] === 'key_down' || ev[0] === 'mouse_down')) {
-                eventJustReceived = false; return
-            }
-            if (dispatchMouseEvent(ev)) return
-            if (ev[0] !== 'key_down') return
-            const ks = ev[1]
-            const shiftDown = (ev.includes(59) || ev.includes(60))
-
-            if (buttons.keyHandler(ks, shiftDown)) return
-            if (ks === '<ESC>' || ks === 'q' || ks === 'Q') { done = true; return }
-            if (ks === '<UP>'   && sel > 0)                    { sel--; repaint(); return }
-            if (ks === '<DOWN>' && sel < selectables.length-1) { sel++; repaint(); return }
-            if (ks === ' ') {
-                const it = items[selectables[sel]]
-                if (it.kind === 'tone') toneMode = it.idx
-                else if (it.kind === 'intp') intpMode = it.idx
-                repaint()
-                return
-            }
-        })
-    }
-
-    popMousePopup()
-
-    if (confirmed) {
+    if (res.action === 'ok') {
         const newFlags = (initialTrackerMixerflags & ~0x1F) |
                          (toneMode & 3) | ((intpMode & 7) << 2)
         if (newFlags !== initialTrackerMixerflags) {

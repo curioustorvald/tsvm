@@ -181,34 +181,83 @@ function scrollHorz(dx, stringSize, stringViewSize, currentCursorPos, currentScr
 }
 
 // ---------------------------------------------------------------------------
-// Modal dialog with multiple input fields and OK/Cancel-style buttons.
+// Modal dialog with optional body text, input fields, a scrollable selection
+// list, and OK/Cancel-style buttons. Layout from top to bottom:
+//   title bar, message, fields, list, buttons.
 //
 // opts = {
 //   title:   string,
-//   message: string | string[]?              -- optional body text drawn above fields
-//   fields:  [{label, initial?, width}, ...] -- omit / [] for no input field. Label does NOT get auto-colon
+//   message: string | string[]?,             -- optional body text drawn above fields/list
+//   drawFrame: function(wo)?,                -- override for the window-frame painter;
+//                                               same contract as WindowObject's
+//                                               `drawFrame` slot. Useful when the caller
+//                                               wants its own border / title styling.
+//
+//   fields:  [{label, initial?, width, maxLength?}, ...] -- omit / [] for no input
+//                                               field. Label does NOT get auto-colon.
+//                                               `maxLength` caps insertable chars
+//                                               (default: width * 4).
+//
+//   list: {                                  -- optional vertical selection list
+//     items:     [{label, ...}, ...],        -- arbitrary user objects; only `label`
+//                                               is read by the default renderer.
+//     height:    number,                     -- visible row count.
+//     width:     number?,                    -- inner width override (default: popup w-4).
+//     cursor:    number?,                    -- initial cursor row (default: first selectable).
+//     selectable: function(item, i)->bool?,  -- default: every item selectable. Non-
+//                                               selectable rows are skipped by arrow keys.
+//                                               When NO row is selectable, arrow / PgUp
+//                                               / PgDn scroll the view instead.
+//     renderItem: function(ctx)?,            -- per-row painter; ctx exposes
+//                                               { y, x, w, item, idx, isCursor, focused,
+//                                                 listBg, selBg, fg, hlFg, dimFg }.
+//                                               Default prints `item.label`.
+//     onActivate: function(item, i, key)?,   -- fired on Enter ('\n') / Space (' ')
+//                                               / left-click ('click'); return an
+//                                               action string to close the dialog,
+//                                               or null to stay open.
+//     showScrollbar: bool?,                  -- default: auto (true when overflowing).
+//     bg: number?,                           -- list background colour (default 242).
+//   },
+//
 //   buttons: [{label, action, default?}, ...] -- defaults to [OK, Cancel] (+ Delete
 //            if `allowDelete:true`)
 //   allowDelete: bool,                       -- inserts a Delete button (fsh compat)
-//   colours: {fg?, bg?, fieldBg?, dimFg?, hlFg?, focusBg?} -- per-call overrides
+//   colours: {fg?, bg?, fieldBg?, dimFg?, hlFg?, focusBg?, listBg?, listSelBg?}
+//                                            -- per-call overrides
+//   disableKeyRepeat: bool,               -- when true, key won't repeat when held down
+//   onKey: function(ks, shiftDown, ctx)?,    -- escape hatch for callers that need
+//                                               extra key bindings. Runs BEFORE the
+//                                               built-in handlers. Return true to
+//                                               consume the key. `ctx` exposes
+//                                               { render, close(result),
+//                                                 getListCursor, setListCursor }.
 // }
 //
-// Returns {action, values}: `action` is the chosen button's `action`
-// (default "ok"/"cancel"/"delete"), or "cancel" on Esc; `values` is the array
-// of field strings in field order.
+// Returns {action, values, listCursor, listItem}: `action` is the chosen button's
+// `action` or the value returned from `onActivate` (default "ok"/"cancel"/"delete"),
+// or "cancel" on Esc; `values` is the array of field strings in field order;
+// `listCursor` is the final cursor index (-1 if there is no list); `listItem` is
+// the item at that index.
 //
 // Behaviour:
-//   - Tab / Shift+Tab and arrow Down / Up cycle focus across fields and buttons.
-//   - Left / Right inside a field move the caret; on a button they cycle focus.
+//   - Tab / Shift+Tab and arrow Down / Up cycle focus across fields, list, and buttons.
+//     Inside the list, arrow Up / Down move the cursor between selectable rows;
+//     PgUp/PgDn move a page; Home/End jump to the first/last selectable row.
+//   - Left / Right inside a field move the caret; on the list or a button they cycle focus.
 //   - Home / End jump to start / end of the focused field.
 //   - Enter on a field jumps to the next field, then to the first button. Enter
-//     or Space on a button activates it.
+//     or Space on a button activates it. Enter or Space on a list row invokes
+//     `onActivate(item, idx, key)`; if that returns a string, the dialog closes
+//     with that action.
 //   - Insert at caret. Backspace deletes left of caret; Forward-Del deletes right.
 //   - Blinking caret (`con.curs_set(1)`) is positioned on the focused field and
-//     hidden when a button has focus.
+//     hidden when the list or a button has focus.
 //   - Mouse: left-click on a button activates it; click on a field puts focus
-//     on that field and positions the caret under the click. Mouse hover on a
-//     button moves focus to it (the same focus the keyboard uses).
+//     on that field and positions the caret under the click; click on a list row
+//     moves the cursor (and fires `onActivate` if defined); mouse-wheel inside the
+//     list scrolls it. Mouse hover on a button moves focus to it (the same focus
+//     the keyboard uses).
 const _dialogScreen = con.getmaxyx()
 const _dialogPixDim = graphics.getPixelDimension()
 const _CELL_PW = (_dialogPixDim[0] / _dialogScreen[1]) | 0
@@ -238,37 +287,87 @@ function showDialog(opts) {
         : Array.isArray(message) ? message
         : ('' + message).split('\n')
 
-    const c       = opts.colours || {}
-    const fg      = (c.fg      != null) ? c.fg      : 254
-    const bg      = (c.bg      != null) ? c.bg      : 243
-    const fieldBg = (c.fieldBg != null) ? c.fieldBg : 240
-    const dimFg   = (c.dimFg   != null) ? c.dimFg   : 249
-    const hlFg    = (c.hlFg    != null) ? c.hlFg    : 240
-    const focusBg = (c.focusBg != null) ? c.focusBg : 253
+    const c         = opts.colours || {}
+    const fg        = (c.fg        != null) ? c.fg        : 254
+    const bg        = (c.bg        != null) ? c.bg        : 244
+    const fieldBg   = (c.fieldBg   != null) ? c.fieldBg   : 240
+    const dimFg     = (c.dimFg     != null) ? c.dimFg     : 249
+    const hlFg      = (c.hlFg      != null) ? c.hlFg      : 240
+    const focusBg   = (c.focusBg   != null) ? c.focusBg   : 253
+    const listBg    = (c.listBg    != null) ? c.listBg    : 243
+    const listSelBg = (c.listSelBg != null) ? c.listSelBg : focusBg
+
+    // List state
+    const list = opts.list || null
+    const listItems = list ? (list.items || []) : []
+    const listSelectable = list && list.selectable ? list.selectable : (() => true)
+    const listHeight     = list ? (list.height || Math.min(8, listItems.length)) : 0
+    const hasList        = !!list
+    const listOnActivate = list ? list.onActivate : null
+    const listBgColour   = (list && list.bg != null) ? list.bg : listBg
+    function firstSelectable(from, dir) {
+        if (!hasList || listItems.length === 0) return -1
+        let i = from
+        for (let n = 0; n < listItems.length; n++) {
+            if (i >= 0 && i < listItems.length && listSelectable(listItems[i], i)) return i
+            i += dir
+            if (i < 0) i = listItems.length - 1
+            if (i >= listItems.length) i = 0
+        }
+        return -1
+    }
+    let listCursor = hasList
+        ? (list.cursor != null ? list.cursor : firstSelectable(0, +1))
+        : -1
+    let listScroll = 0
 
     // Layout
     const buttonGap = 3
     const maxFieldW = fields.reduce((m, f) => Math.max(m, f.width), 16)
     const longestMsg = messageLines.reduce((m, l) => Math.max(m, l.length), 0)
+    // When the caller pins `list.width`, trust it — string `.length` overcounts
+    // visual width whenever items embed ANSI escapes or TVDOS \x84NNu sequences
+    // (e.g. taut's help popup, whose rows are pre-typeset with fg-colour escapes).
+    const longestItem = hasList && list.width == null
+        ? listItems.reduce((m, it) => Math.max(m, (it.label || '').length), 0)
+        : 0
     const titleW    = title.length + 4
     const btnRowW   = buttons.reduce((s, b) => s + b.label.length + 4, 0) + buttonGap * Math.max(0, buttons.length - 1)
-    const w = Math.max(maxFieldW + 6, titleW + 4, longestMsg + 6, btnRowW + 4, 24)
-    const msgTopOff = (messageLines.length > 0) ? 1 : 0
-    const msgRows   = messageLines.length + (messageLines.length > 0 ? 1 : 0)
+    const listMinW  = hasList
+        ? (list.width != null ? list.width + 4 : longestItem + 6)
+        : 0
+    const w = Math.max(maxFieldW + 6, titleW + 4, longestMsg + 6, btnRowW + 4, listMinW, 24)
+
+    const msgRows      = messageLines.length + (messageLines.length > 0 ? 1 : 0)
     const fieldsBlockH = fields.length * 4
-    const buttonsRowOff = 1 + msgRows + (fields.length > 0 ? fieldsBlockH + 1 : 1)
+    const listBlockH   = hasList ? listHeight + 2 : 0   // top border + rows + bottom border
+
+    let bodyRows = msgRows
+    if (fields.length > 0) bodyRows += fieldsBlockH + 1   // +1 spacing after fields
+    if (hasList)           bodyRows += listBlockH + 1     // +1 spacing after list
+    if (bodyRows === 0)    bodyRows = 1                   // at least one row above buttons
+    const buttonsRowOff = 1 + bodyRows
     const h = buttonsRowOff + 2
+
     const screen = con.getmaxyx()
     const row = Math.max(2, Math.floor((screen[0] - h) / 2))
     const col = Math.max(2, Math.floor((screen[1] - w) / 2))
 
-    // Pick initial focus: explicit default > first field > first button.
+    // Focus layout: 0..fields.length-1 = fields, [+1 = list if present], then buttons.
+    const listFocusIdx = hasList ? fields.length : -1
+    const buttonsFocusBase = fields.length + (hasList ? 1 : 0)
+    const totalFocus = buttonsFocusBase + buttons.length
+
+    // Pick initial focus: explicit default > list > first field > first button.
     let focusIdx = -1
     for (let i = 0; i < buttons.length; i++) {
-        if (buttons[i].default) { focusIdx = fields.length + i; break }
+        if (buttons[i].default) { focusIdx = buttonsFocusBase + i; break }
     }
-    if (focusIdx < 0) focusIdx = fields.length > 0 ? 0 : fields.length
-    const totalFocus = fields.length + buttons.length
+    if (focusIdx < 0) {
+        if (fields.length > 0)  focusIdx = 0
+        else if (hasList)       focusIdx = listFocusIdx
+        else                    focusIdx = buttonsFocusBase
+    }
     let done = null
 
     function fieldScroll(cur, fw) { return cur < fw ? 0 : cur - fw + 1 }
@@ -277,6 +376,22 @@ function showDialog(opts) {
     function fieldContentRow(i) { return fieldLabelRow(i) + 2 }
     function fieldBoxCol() { return col + 2 }
     function fieldContentRegion(i) { return { x: fieldBoxCol() + 1, y: fieldContentRow(i), w: fields[i].width } }
+
+    function listBlockTopRow() {
+        return row + 1 + msgRows + (fields.length > 0 ? fieldsBlockH + 1 : 0)
+    }
+    function listBlockCol()  { return col + 2 }
+    function listBlockWidth() { return w - 4 }      // inner content width incl. borders
+    function listContentRow(i) { return listBlockTopRow() + 1 + (i - listScroll) }
+    function listContentCol()  { return listBlockCol() + 1 }
+    function listScrollbarNeeded() {
+        if (!hasList) return false
+        if (list.showScrollbar != null) return list.showScrollbar
+        return listItems.length > listHeight
+    }
+    function listContentInnerW() {
+        return listBlockWidth() - 2 - (listScrollbarNeeded() ? 1 : 0)
+    }
 
     function buttonRegions() {
         let bx = col + Math.floor((w - btnRowW) / 2)
@@ -293,7 +408,7 @@ function showDialog(opts) {
             con.move(r, col)
             print(' '.repeat(w))
         }
-        const wo = new WindowObject(col, row, w, h, ()=>{}, ()=>{}, title)
+        const wo = new WindowObject(col, row, w, h, ()=>{}, ()=>{}, title, opts.drawFrame)
         wo.isHighlighted = true
         wo.titleBack = bg
         wo.drawFrame()
@@ -348,9 +463,83 @@ function showDialog(opts) {
         con.color_pair(fg, bg)
     }
 
+    function drawList() {
+        if (!hasList) return
+        const lbCol = listBlockCol()
+        const lbRow = listBlockTopRow()
+        const lw    = listBlockWidth()
+        const innerW = listContentInnerW()
+        const focused = (focusIdx === listFocusIdx)
+        const frameFg = focused ? fg : dimFg
+        const sbar = listScrollbarNeeded()
+
+        // Top border (drawField style)
+        con.color_pair(listBgColour, bg)
+        con.move(lbRow, lbCol)
+        print('\u00EC' + '\u00A9'.repeat(lw - 2) + '\u00ED')
+
+        // Side borders + rows
+        for (let r = 0; r < listHeight; r++) {
+            con.color_pair(listBgColour, bg)
+            con.move(lbRow + 1 + r, lbCol)
+            print('\u00AB')
+            con.move(lbRow + 1 + r, lbCol + lw - 1)
+            print('\u00AA')
+
+            const idx = listScroll + r
+            con.move(lbRow + 1 + r, lbCol + 1)
+            if (idx >= listItems.length) {
+                con.color_pair(fg, listBgColour)
+                print(' '.repeat(innerW))
+                continue
+            }
+            const it = listItems[idx]
+            const isCursor = (idx === listCursor)
+            const ctx = {
+                y: lbRow + 1 + r,
+                x: lbCol + 1,
+                w: innerW,
+                item: it,
+                idx: idx,
+                isCursor: isCursor,
+                focused: focused,
+                listBg: listBgColour,
+                selBg: listSelBg,
+                fg: fg,
+                hlFg: hlFg,
+                dimFg: dimFg,
+            }
+            if (list.renderItem) {
+                list.renderItem(ctx)
+            } else {
+                const useFg = (isCursor && focused) ? hlFg : fg
+                const useBg = (isCursor && focused) ? listSelBg : listBgColour
+                con.color_pair(useFg, useBg)
+                const label = (it.label || '').substring(0, innerW - 1)
+                print(' ' + label.padEnd(innerW - 1, ' '))
+            }
+
+            // Scrollbar column
+            if (sbar) {
+                con.color_pair(dimFg, listBgColour)
+                con.move(lbRow + 1 + r, lbCol + lw - 2)
+                const maxScroll = Math.max(1, listItems.length - listHeight)
+                const indPos = (maxScroll <= 0) ? 0 : ((listScroll * (listHeight - 1) / maxScroll) | 0)
+                let trough = (r === 0) ? 0xBA : (r === listHeight - 1) ? 0xBC : 0xBB
+                con.addch(r === indPos ? (trough + 3) : trough)
+            }
+        }
+
+        // Bottom border
+        con.color_pair(listBgColour, bg)
+        con.move(lbRow + 1 + listHeight, lbCol)
+        print('\u00F4' + '\u00AC'.repeat(lw - 2) + '\u00F5')
+        con.color_pair(fg, bg)
+    }
+
     function drawButton(i, regions) {
         const b = buttons[i]
-        const bIdx = fields.length + i
+        const bIdx = buttonsFocusBase + i
         const focused = (focusIdx === bIdx)
         const r = regions[i]
         const useFg = focused ? hlFg : fg
@@ -381,10 +570,59 @@ function showDialog(opts) {
         }
     }
 
+    function ensureListCursorVisible() {
+        if (!hasList) return
+        if (listCursor < 0) return
+        if (listCursor < listScroll) listScroll = listCursor
+        else if (listCursor >= listScroll + listHeight) listScroll = listCursor - listHeight + 1
+        const maxScroll = Math.max(0, listItems.length - listHeight)
+        if (listScroll > maxScroll) listScroll = maxScroll
+        if (listScroll < 0) listScroll = 0
+    }
+
+    function scrollListBy(dir) {
+        const maxScroll = Math.max(0, listItems.length - listHeight)
+        let s = listScroll + dir
+        if (s < 0) s = 0
+        if (s > maxScroll) s = maxScroll
+        listScroll = s
+    }
+
+    function moveListCursor(dir) {
+        if (!hasList || listItems.length === 0) return
+        // Scroll the view when nothing in the list is selectable (e.g. a help text body).
+        if (listCursor < 0) { scrollListBy(dir); return }
+        let next = listCursor
+        for (let n = 0; n < listItems.length; n++) {
+            next += dir
+            if (next < 0 || next >= listItems.length) return
+            if (listSelectable(listItems[next], next)) {
+                listCursor = next
+                ensureListCursorVisible()
+                return
+            }
+        }
+    }
+
+    function pageListCursor(dir) {
+        if (!hasList || listItems.length === 0) return
+        if (listCursor < 0) { scrollListBy(dir * listHeight); return }
+        let target = listCursor + dir * listHeight
+        if (target < 0) target = 0
+        if (target >= listItems.length) target = listItems.length - 1
+        // Snap to nearest selectable
+        let probe = target
+        const step = dir < 0 ? -1 : 1
+        while (probe >= 0 && probe < listItems.length && !listSelectable(listItems[probe], probe)) probe += step
+        if (probe < 0 || probe >= listItems.length) probe = firstSelectable(target, -step)
+        if (probe >= 0) { listCursor = probe; ensureListCursorVisible() }
+    }
+
     function render() {
         drawFrameBox()
         drawMessage()
         for (let i = 0; i < fields.length; i++) drawField(i)
+        drawList()
         const regs = buttonRegions()
         for (let i = 0; i < buttons.length; i++) drawButton(i, regs)
         positionCaret()
@@ -396,7 +634,32 @@ function showDialog(opts) {
     }
 
     function activateButton(i) {
-        done = { action: buttons[i].action, values: values.slice() }
+        done = {
+            action: buttons[i].action,
+            values: values.slice(),
+            listCursor: listCursor,
+            listItem: (hasList && listCursor >= 0) ? listItems[listCursor] : null,
+        }
+    }
+
+    function activateListItem(idx, key) {
+        if (!hasList || !listOnActivate) return false
+        if (idx < 0 || idx >= listItems.length) return false
+        if (!listSelectable(listItems[idx], idx)) return false
+        const result = listOnActivate(listItems[idx], idx, key)
+        if (result == null) {
+            // Callback consumed the event but kept the dialog open (e.g. radio
+            // toggle); reflect any state changes it made.
+            render()
+            return true
+        }
+        done = {
+            action: result,
+            values: values.slice(),
+            listCursor: idx,
+            listItem: listItems[idx],
+        }
+        return true
     }
 
     function hitTestMouse(ev) {
@@ -411,9 +674,42 @@ function showDialog(opts) {
             const r = fieldContentRegion(i)
             if (cy === r.y && cx >= r.x && cx < r.x + r.w) return { kind: 'field', idx: i, cx: cx, region: r }
         }
+        if (hasList) {
+            const lbRow = listBlockTopRow()
+            const lbCol = listBlockCol()
+            const innerW = listContentInnerW()
+            if (cy > lbRow && cy <= lbRow + listHeight && cx >= lbCol + 1 && cx < lbCol + 1 + innerW) {
+                const r = cy - (lbRow + 1)
+                const idx = listScroll + r
+                if (idx >= 0 && idx < listItems.length) return { kind: 'list', idx: idx }
+            }
+            if (cy > lbRow && cy <= lbRow + listHeight && cx >= lbCol && cx < lbCol + listBlockWidth()) {
+                return { kind: 'listblank' }
+            }
+        }
         return null
     }
 
+    const externalCtx = {
+        render: () => render(),
+        close: (result) => {
+            done = Object.assign({
+                action: 'cancel',
+                values: values.slice(),
+                listCursor: listCursor,
+                listItem: (hasList && listCursor >= 0) ? listItems[listCursor] : null,
+            }, result || {})
+        },
+        getListCursor: () => listCursor,
+        setListCursor: (n) => {
+            if (!hasList) return
+            if (n < 0 || n >= listItems.length) return
+            listCursor = n
+            ensureListCursorVisible()
+        },
+    }
+
+    ensureListCursorVisible()
     render()
 
     let eventJustReceived = true
@@ -426,7 +722,7 @@ function showDialog(opts) {
             if (ev[0] === 'mouse_move') {
                 const hit = hitTestMouse(ev)
                 if (hit && hit.kind === 'button') {
-                    const newFocus = fields.length + hit.idx
+                    const newFocus = buttonsFocusBase + hit.idx
                     if (newFocus !== focusIdx) {
                         focusIdx = newFocus
                         render()
@@ -439,7 +735,7 @@ function showDialog(opts) {
                 const hit = hitTestMouse(ev)
                 if (!hit) return
                 if (hit.kind === 'button') {
-                    focusIdx = fields.length + hit.idx
+                    focusIdx = buttonsFocusBase + hit.idx
                     render()
                     activateButton(hit.idx)
                     return
@@ -451,19 +747,76 @@ function showDialog(opts) {
                     const newCur = s + (hit.cx - hit.region.x)
                     cursors[hit.idx] = Math.min(values[hit.idx].length, Math.max(0, newCur))
                     render()
+                    return
+                }
+                if (hit.kind === 'list') {
+                    focusIdx = listFocusIdx
+                    if (listSelectable(listItems[hit.idx], hit.idx)) {
+                        listCursor = hit.idx
+                        ensureListCursorVisible()
+                        render()
+                        if (activateListItem(hit.idx, 'click')) return
+                    } else {
+                        render()
+                    }
+                    return
+                }
+                if (hit.kind === 'listblank') {
+                    focusIdx = listFocusIdx
+                    render()
+                    return
                 }
                 return
             }
+            if (ev[0] === 'mouse_wheel' && hasList) {
+                const hit = hitTestMouse(ev)
+                if (!hit || (hit.kind !== 'list' && hit.kind !== 'listblank')) return
+                const dy = (ev[3] | 0) * 3
+                const maxScroll = Math.max(0, listItems.length - listHeight)
+                let next = listScroll + dy
+                if (next < 0) next = 0
+                if (next > maxScroll) next = maxScroll
+                if (next !== listScroll) { listScroll = next; render() }
+                return
+            }
             if (ev[0] !== 'key_down') return
-            if (1 !== ev[2]) return
+            if (opts.disableKeyRepeat && 1 !== ev[2]) return
             const ks = ev[1]
             const shiftDown = (ev.includes(59) || ev.includes(60))
 
-            if (ks === '<ESC>') { done = { action: 'cancel', values: values.slice() }; return }
+            if (opts.onKey && opts.onKey(ks, shiftDown, externalCtx)) return
+
+            if (ks === '<ESC>') {
+                done = {
+                    action: 'cancel',
+                    values: values.slice(),
+                    listCursor: listCursor,
+                    listItem: (hasList && listCursor >= 0) ? listItems[listCursor] : null,
+                }
+                return
+            }
 
             if (ks === '\t' || ks === '<TAB>') { moveFocus(shiftDown ? -1 : 1); return }
-            if (ks === '<UP>')                 { moveFocus(-1); return }
-            if (ks === '<DOWN>')               { moveFocus(+1); return }
+
+            // Vertical movement: arrows operate within the list when it has focus.
+            if (ks === '<UP>') {
+                if (focusIdx === listFocusIdx) { moveListCursor(-1); render() }
+                else moveFocus(-1)
+                return
+            }
+            if (ks === '<DOWN>') {
+                if (focusIdx === listFocusIdx) { moveListCursor(+1); render() }
+                else moveFocus(+1)
+                return
+            }
+            if (ks === '<PAGE_UP>') {
+                if (focusIdx === listFocusIdx) { pageListCursor(-1); render() }
+                return
+            }
+            if (ks === '<PAGE_DOWN>') {
+                if (focusIdx === listFocusIdx) { pageListCursor(+1); render() }
+                return
+            }
 
             if (ks === '<LEFT>') {
                 if (focusIdx < fields.length) {
@@ -479,16 +832,28 @@ function showDialog(opts) {
             }
             if (ks === '<HOME>') {
                 if (focusIdx < fields.length) { cursors[focusIdx] = 0; render() }
+                else if (focusIdx === listFocusIdx) {
+                    const t = firstSelectable(0, +1)
+                    if (t >= 0) { listCursor = t; ensureListCursorVisible(); render() }
+                    else        { listScroll = 0; render() }
+                }
                 return
             }
             if (ks === '<END>') {
                 if (focusIdx < fields.length) { cursors[focusIdx] = values[focusIdx].length; render() }
+                else if (focusIdx === listFocusIdx) {
+                    const t = firstSelectable(listItems.length - 1, -1)
+                    if (t >= 0) { listCursor = t; ensureListCursorVisible(); render() }
+                    else        { listScroll = Math.max(0, listItems.length - listHeight); render() }
+                }
                 return
             }
 
             if (focusIdx < fields.length) {
                 if (ks === '\n') {
-                    focusIdx = (focusIdx < fields.length - 1) ? focusIdx + 1 : fields.length
+                    if (focusIdx < fields.length - 1) focusIdx = focusIdx + 1
+                    else if (hasList) focusIdx = listFocusIdx
+                    else focusIdx = buttonsFocusBase
                     render()
                     return
                 }
@@ -513,7 +878,10 @@ function showDialog(opts) {
                 }
                 if (typeof ks === 'string' && ks.length === 1) {
                     const code = ks.charCodeAt(0)
-                    if (code >= 32 && code < 256 && values[focusIdx].length < fields[focusIdx].width * 4) {
+                    const cap = fields[focusIdx].maxLength != null
+                        ? fields[focusIdx].maxLength
+                        : fields[focusIdx].width * 4
+                    if (code >= 32 && code < 256 && values[focusIdx].length < cap) {
                         const v = values[focusIdx]
                         const cur = cursors[focusIdx]
                         values[focusIdx] = v.substring(0, cur) + ks + v.substring(cur)
@@ -522,10 +890,31 @@ function showDialog(opts) {
                     }
                     return
                 }
+            } else if (focusIdx === listFocusIdx) {
+                if (ks === '\n' || ks === ' ') {
+                    if (listCursor >= 0 && activateListItem(listCursor, ks)) return
+                }
             } else {
-                if (ks === '\n' || ks === ' ') { activateButton(focusIdx - fields.length); return }
+                if (ks === '\n' || ks === ' ') { activateButton(focusIdx - buttonsFocusBase); return }
             }
         })
+    }
+
+    // Modal-dialog convention: wait for the user to release whatever key closed
+    // the dialog before handing control back. TVDOS's input strobo
+    // (TVDOS.SYS:input.withEvent) keeps re-firing `key_down` for a held key
+    // once its ~250 ms initial-press delay elapses; without this drain a brief
+    // hold on Enter inside a popup would surface as a fresh Enter to whatever
+    // the popup was covering, e.g. activating the file under zfm's More menu.
+    // A mouse close (or any path with no key held) leaves the head key at 0
+    // and skips the wait.
+    sys.poke(-40, 255)
+    const heldHead = sys.peek(-41)
+    if (heldHead !== 0) {
+        while (true) {
+            input.withEvent(() => {})
+            if (sys.peek(-41) !== heldHead) break
+        }
     }
 
     con.curs_set(0)

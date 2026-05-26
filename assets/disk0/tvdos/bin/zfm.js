@@ -600,176 +600,27 @@ function showMessagePopup(title, message) {
 // Vertical-list popup: items are stacked rows, navigable with arrow keys /
 // mouse, selection (Enter / left-click on row) returns that item's action.
 // A single Close button sits below the list; Esc and Close both yield 'close'.
+// Thin wrapper over win.showDialog — see wintex.mjs for the underlying schema.
 function showActionListPopup(opts) {
-    const title = opts.title || ''
     const items = opts.items || []
     const closeLabel = opts.closeLabel || 'Close'
-    const message = opts.message
-    const messageLines = !message ? []
-        : Array.isArray(message) ? message
-        : ('' + message).split('\n')
+    const defaultIdx = items.findIndex(it => it.default)
 
-    const fg = 254
-    const bg = 243
-    const dimFg = 249
-    const hlFg = 230
-    const itemSelBg = 81
+    const res = win.showDialog({
+        title: opts.title || '',
+        message: opts.message,
+        list: {
+            items: items,
+            height: items.length,
+            cursor: defaultIdx >= 0 ? defaultIdx : 0,
+            showScrollbar: false,
+            onActivate: (item) => item.action,
+        },
+        buttons: [{ label: closeLabel, action: 'close' }],
+    })
 
-    const longestItem = items.reduce((m, it) => Math.max(m, it.label.length), 0)
-    const longestMsg  = messageLines.reduce((m, l) => Math.max(m, l.length), 0)
-    const titleW      = title.length + 4
-    const closeBtnW   = closeLabel.length + 4
-    const w = Math.max(longestItem + 8, titleW + 4, longestMsg + 6, closeBtnW + 4, 24)
-
-    const msgRows = messageLines.length + (messageLines.length > 0 ? 1 : 0)
-    const itemsRowOff   = 1 + msgRows
-    const buttonsRowOff = itemsRowOff + items.length + 1
-    const h = buttonsRowOff + 2
-    const screen = con.getmaxyx()
-    const row = Math.max(2, Math.floor((screen[0] - h) / 2))
-    const col = Math.max(2, Math.floor((screen[1] - w) / 2))
-
-    let oldFG = con.get_color_fore()
-    let oldBG = con.get_color_back()
-
-    // Initial focus: first 'default: true' item, otherwise first item, otherwise close button.
-    let focusIdx = -1
-    for (let i = 0; i < items.length; i++) {
-        if (items[i].default) { focusIdx = i; break }
-    }
-    if (focusIdx < 0) focusIdx = (items.length > 0) ? 0 : items.length
-    const totalFocus = items.length + 1
-    let done = null
-
-    function itemRow(i)   { return row + itemsRowOff + i }
-    function itemCol()    { return col + 1 }
-    function itemWidth()  { return w - 2 }
-    function closeBtnRow(){ return row + buttonsRowOff }
-    function closeBtnCol(){ return col + Math.floor((w - closeBtnW) / 2) }
-
-    function drawFrameBox() {
-        con.color_pair(fg, bg)
-        for (let r = row; r < row + h; r++) {
-            con.move(r, col)
-            print(' '.repeat(w))
-        }
-        const wo = new win.WindowObject(col, row, w, h, ()=>{}, ()=>{}, title)
-        wo.isHighlighted = true
-        wo.titleBack = bg
-        wo.drawFrame()
-        con.color_pair(fg, bg)
-    }
-
-    function drawMessage() {
-        if (messageLines.length === 0) return
-        con.color_pair(dimFg, bg)
-        for (let i = 0; i < messageLines.length; i++) {
-            con.move(row + 1 + i, col + 2)
-            print(messageLines[i].padEnd(w - 4, ' '))
-        }
-        con.color_pair(fg, bg)
-    }
-
-    function drawItem(i) {
-        const focused = (focusIdx === i)
-        const useFg = focused ? hlFg : fg
-        const useBg = focused ? itemSelBg : bg
-        con.color_pair(useFg, useBg)
-        con.move(itemRow(i), itemCol())
-        print('  ' + items[i].label.padEnd(itemWidth() - 2, ' '))
-        con.color_pair(fg, bg)
-    }
-
-    function drawCloseBtn() {
-        const focused = (focusIdx === items.length)
-        const useFg = focused ? hlFg : fg
-        con.color_pair(useFg, bg)
-        con.move(closeBtnRow(), closeBtnCol())
-        print('[ ' + closeLabel + ' ]')
-        con.color_pair(fg, bg)
-    }
-
-    function render() {
-        drawFrameBox()
-        drawMessage()
-        for (let i = 0; i < items.length; i++) drawItem(i)
-        drawCloseBtn()
-        con.curs_set(0)
-    }
-
-    function hitTest(ev) {
-        const [cy, cx] = pixelToCell(ev[1], ev[2])
-        for (let i = 0; i < items.length; i++) {
-            if (cy === itemRow(i) && cx >= itemCol() && cx < itemCol() + itemWidth()) {
-                return { kind: 'item', idx: i }
-            }
-        }
-        const cbx = closeBtnCol()
-        if (cy === closeBtnRow() && cx >= cbx && cx < cbx + closeBtnW) {
-            return { kind: 'close' }
-        }
-        return null
-    }
-
-    function moveFocus(dir) {
-        focusIdx = (focusIdx + dir + totalFocus) % totalFocus
-        render()
-    }
-
-    render()
-
-    let eventJustReceived = true
-    while (done === null) {
-        input.withEvent(ev => {
-            if (eventJustReceived && (ev[0] === 'key_down' || ev[0] === 'mouse_down')) {
-                eventJustReceived = false; return
-            }
-
-            if (ev[0] === 'mouse_move') {
-                const hit = hitTest(ev)
-                let newFocus = null
-                if (hit && hit.kind === 'item') newFocus = hit.idx
-                else if (hit && hit.kind === 'close') newFocus = items.length
-                if (newFocus !== null && newFocus !== focusIdx) {
-                    focusIdx = newFocus
-                    for (let i = 0; i < items.length; i++) drawItem(i)
-                    drawCloseBtn()
-                }
-                return
-            }
-            if (ev[0] === 'mouse_down') {
-                if (ev[3] !== 1) return
-                const hit = hitTest(ev)
-                if (!hit) return
-                if (hit.kind === 'item') {
-                    focusIdx = hit.idx; render()
-                    done = { action: items[hit.idx].action }
-                    return
-                }
-                if (hit.kind === 'close') {
-                    focusIdx = items.length; render()
-                    done = { action: 'close' }
-                    return
-                }
-                return
-            }
-            if (ev[0] !== 'key_down') return
-            if (1 !== ev[2]) return
-            const ks = ev[1]
-
-            if (ks === '<ESC>') { done = { action: 'close' }; return }
-            if (ks === '\t' || ks === '<TAB>' || ks === '<DOWN>') { moveFocus(+1); return }
-            if (ks === '<UP>') { moveFocus(-1); return }
-            if (ks === '\n' || ks === ' ') {
-                if (focusIdx < items.length) done = { action: items[focusIdx].action }
-                else done = { action: 'close' }
-                return
-            }
-        })
-    }
-
-    con.color_pair(oldFG, oldBG)
-    return done
+    if (res.action === 'cancel') return { action: 'close' }
+    return { action: res.action }
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
