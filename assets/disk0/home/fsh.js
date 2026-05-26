@@ -442,7 +442,7 @@ _fsh.redrawAll = function() {
 _fsh.openAddTodoDialog = function() {
     let res = win.showDialog({
         title: "New Todo",
-        fields: [{label: "Text", initial: "", width: _fsh.TODO_TEXT_WIDTH}],
+        fields: [{label: "Text:", initial: "", width: _fsh.TODO_TEXT_WIDTH}],
         allowDelete: false
     })
     _fsh.redrawAll()
@@ -459,7 +459,7 @@ _fsh.openEditTodoDialog = function(index) {
     if (!entry) return
     let res = win.showDialog({
         title: "Edit Todo",
-        fields: [{label: "Text", initial: entry[0], width: _fsh.TODO_TEXT_WIDTH}],
+        fields: [{label: "Text:", initial: entry[0], width: _fsh.TODO_TEXT_WIDTH}],
         allowDelete: true
     })
     _fsh.redrawAll()
@@ -479,8 +479,8 @@ _fsh.openAddQaDialog = function() {
     let res = win.showDialog({
         title: "New Quick Access",
         fields: [
-            {label: "Label",   initial: "", width: _fsh.QA_LABEL_WIDTH},
-            {label: "Command", initial: "", width: _fsh.QA_CMD_WIDTH}
+            {label: "Label:",   initial: "", width: _fsh.QA_LABEL_WIDTH},
+            {label: "Command:", initial: "", width: _fsh.QA_CMD_WIDTH}
         ],
         allowDelete: false
     })
@@ -500,8 +500,8 @@ _fsh.openEditQaDialog = function(index) {
     let res = win.showDialog({
         title: "Edit Quick Access",
         fields: [
-            {label: "Label",   initial: entry[0], width: _fsh.QA_LABEL_WIDTH},
-            {label: "Command", initial: entry[1], width: _fsh.QA_CMD_WIDTH}
+            {label: "Label:",   initial: entry[0], width: _fsh.QA_LABEL_WIDTH},
+            {label: "Command:", initial: entry[1], width: _fsh.QA_CMD_WIDTH}
         ],
         allowDelete: true
     })

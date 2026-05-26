@@ -65,12 +65,12 @@ class WindowObject {
             }
             if (this.titleRight !== undefined) {
                 let tt = ''+this.titleRight
-                con.move(this.y, this.x + this.width - tt.length - 2)
+                con.move(this.y + this.height - 1, this.x + this.width - tt.length - 2)
                 print(`\x84${charset[4]}u`)
                 if (this.titleBackRight !== undefined) print(`\x1B[48;5;${this.titleBackRight}m`)
                 print(`\x1B[38;5;${colourText}m${tt}`)
                 if (this.titleBackRight !== undefined) print(`\x1B[48;5;${oldBack}m`)
-                print(`\x1B[38;5;${colour}m\x84${charset[1]}u`)
+                print(`\x1B[38;5;${colour}m\x84${charset[3]}u`)
             }
 
 
@@ -186,7 +186,7 @@ function scrollHorz(dx, stringSize, stringViewSize, currentCursorPos, currentScr
 // opts = {
 //   title:   string,
 //   message: string | string[]?              -- optional body text drawn above fields
-//   fields:  [{label, initial?, width}, ...] -- omit / [] for no input field
+//   fields:  [{label, initial?, width}, ...] -- omit / [] for no input field. Label does NOT get auto-colon
 //   buttons: [{label, action, default?}, ...] -- defaults to [OK, Cancel] (+ Delete
 //            if `allowDelete:true`)
 //   allowDelete: bool,                       -- inserts a Delete button (fsh compat)
@@ -208,7 +208,7 @@ function scrollHorz(dx, stringSize, stringViewSize, currentCursorPos, currentScr
 //     hidden when a button has focus.
 //   - Mouse: left-click on a button activates it; click on a field puts focus
 //     on that field and positions the caret under the click. Mouse hover on a
-//     button highlights it.
+//     button moves focus to it (the same focus the keyboard uses).
 const _dialogScreen = con.getmaxyx()
 const _dialogPixDim = graphics.getPixelDimension()
 const _CELL_PW = (_dialogPixDim[0] / _dialogScreen[1]) | 0
@@ -243,14 +243,15 @@ function showDialog(opts) {
     const bg      = (c.bg      != null) ? c.bg      : 243
     const fieldBg = (c.fieldBg != null) ? c.fieldBg : 240
     const dimFg   = (c.dimFg   != null) ? c.dimFg   : 249
-    const hlFg    = (c.hlFg    != null) ? c.hlFg    : 230
-    const focusBg = (c.focusBg != null) ? c.focusBg : bg
+    const hlFg    = (c.hlFg    != null) ? c.hlFg    : 240
+    const focusBg = (c.focusBg != null) ? c.focusBg : 253
 
     // Layout
+    const buttonGap = 3
     const maxFieldW = fields.reduce((m, f) => Math.max(m, f.width), 16)
     const longestMsg = messageLines.reduce((m, l) => Math.max(m, l.length), 0)
     const titleW    = title.length + 4
-    const btnRowW   = buttons.reduce((s, b) => s + b.label.length + 5, 0) - 1
+    const btnRowW   = buttons.reduce((s, b) => s + b.label.length + 4, 0) + buttonGap * Math.max(0, buttons.length - 1)
     const w = Math.max(maxFieldW + 6, titleW + 4, longestMsg + 6, btnRowW + 4, 24)
     const msgTopOff = (messageLines.length > 0) ? 1 : 0
     const msgRows   = messageLines.length + (messageLines.length > 0 ? 1 : 0)
@@ -268,7 +269,6 @@ function showDialog(opts) {
     }
     if (focusIdx < 0) focusIdx = fields.length > 0 ? 0 : fields.length
     const totalFocus = fields.length + buttons.length
-    let hoverBtn = -1
     let done = null
 
     function fieldScroll(cur, fw) { return cur < fw ? 0 : cur - fw + 1 }
@@ -282,7 +282,7 @@ function showDialog(opts) {
         let bx = col + Math.floor((w - btnRowW) / 2)
         return buttons.map(b => {
             const r = { x: bx, y: row + buttonsRowOff, w: b.label.length + 4 }
-            bx += b.label.length + 5
+            bx += b.label.length + 4 + buttonGap
             return r
         })
     }
@@ -320,27 +320,29 @@ function showDialog(opts) {
         // Label
         con.color_pair(fg, bg)
         con.move(fieldLabelRow(i), fbCol)
-        print(f.label + ':')
+        print(f.label)
 
-        // Top border
+        // Top border (3px padding w/ TSVM chr rom)
         con.color_pair(fieldBg, bg)
         con.move(fbRow, fbCol)
         print('\u00EC' + '\u00A9'.repeat(fw) + '\u00ED')
 
-        // Side borders + content
+        // Left border (3px padding w/ TSVM chr rom)
         con.move(fbRow + 1, fbCol)
         print('\u00AB')
 
+        // the content
         con.color_pair(fg, fieldBg)
         const s = fieldScroll(cursors[i], fw)
         const vis = values[i].substring(s, s + fw)
         print(vis.padEnd(fw, ' '))
 
+        // Right border (3px padding w/ TSVM chr rom)
         con.color_pair(fieldBg, bg)
         con.move(fbRow + 1, fbCol + fw + 1)
         print('\u00AA')
 
-        // Bottom border
+        // Bottom border (3px padding w/ TSVM chr rom)
         con.move(fbRow + 2, fbCol)
         print('\u00F4' + '\u00AC'.repeat(fw) + '\u00F5')
         con.color_pair(fg, bg)
@@ -350,16 +352,21 @@ function showDialog(opts) {
         const b = buttons[i]
         const bIdx = fields.length + i
         const focused = (focusIdx === bIdx)
-        const hovered = (hoverBtn === i)
         const r = regions[i]
-        let useFg, useBg
-        if (focused && hovered)      { useFg = hlFg; useBg = focusBg }
-        else if (focused)            { useFg = hlFg; useBg = focusBg }
-        else if (hovered)            { useFg = hlFg; useBg = bg }
-        else                         { useFg = fg;   useBg = bg }
+        const useFg = focused ? hlFg : fg
+        const useBg = focused ? focusBg : bg
         con.color_pair(useFg, useBg)
-        con.move(r.y, r.x)
-        print('[ ' + b.label + ' ]')
+        con.move(r.y, r.x-1)
+        if (focused) {
+            con.color_pair(useBg, bg)
+            print('\u00DE')
+            con.color_pair(useFg, useBg)
+            print('[ ' + b.label + ' ]')
+            con.color_pair(useBg, bg)
+            print('\u00DD')
+        }
+        else
+            print(' [ ' + b.label + ' ] ')
         con.color_pair(fg, bg)
     }
 
@@ -418,12 +425,12 @@ function showDialog(opts) {
 
             if (ev[0] === 'mouse_move') {
                 const hit = hitTestMouse(ev)
-                const newHover = (hit && hit.kind === 'button') ? hit.idx : -1
-                if (newHover !== hoverBtn) {
-                    hoverBtn = newHover
-                    const regs = buttonRegions()
-                    for (let i = 0; i < buttons.length; i++) drawButton(i, regs)
-                    positionCaret()
+                if (hit && hit.kind === 'button') {
+                    const newFocus = fields.length + hit.idx
+                    if (newFocus !== focusIdx) {
+                        focusIdx = newFocus
+                        render()
+                    }
                 }
                 return
             }
