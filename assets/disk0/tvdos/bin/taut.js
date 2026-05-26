@@ -1529,7 +1529,18 @@ function drawControlHint() {
     ['sep'],
         ['!','Help'],
     ]
-    let hintElems = [hintElemTimeline, hintElemOrders, hintElemPatterns, hintElemSamples, hintElemExternal, hintElemProject, hintElemExternal]
+    const hintElemInstruments = [
+        [`\u008426u\u008427u`,'Nav'],
+        [`\u008428u\u008429u`,'Tab'],
+        [`1${sym.doubledot}5`,'Jump tab'],
+    ['sep'],
+        ['e','Edit'],
+    ['sep'],
+        ['tab','Panel'],
+    ['sep'],
+        ['!','Help'],
+    ]
+    let hintElems = [hintElemTimeline, hintElemOrders, hintElemPatterns, hintElemSamples, hintElemInstruments, hintElemProject, hintElemExternal]
     let hintElemPat = [hintElemEditNoteValue, hintElemEditInstValue, hintElemEditVolEff, hintElemEditPanEff, hintElemEditFxSym, hintElemEditFxVal]
 
     // erase current line
@@ -3438,13 +3449,15 @@ function requestEditorLaunch(progName, args) {
     pendingEditorLaunch = { progName, args: args || [] }
 }
 
-// Stub: instrument viewer will live in taut.js once implemented; until then,
-// VIEW_INSTRMNT still routes through the external taut_instredit editor. The
-// `_G.TAUT.UI.PRELOAD_INST` hand-off is read by whichever piece grows into the
-// viewer first.
+// Jump into the in-process instrument viewer with the cursor parked on `instSlot`.
+// `instSlotToIdx` is the {slot → cache index} map built by refreshInstrumentsCache;
+// when the slot isn't in the cache (rare — empty slot with no name), we fall back
+// to cursor 0 instead of failing the switch.
 function launchInstrumentViewerFor(instSlot) {
-    _G.TAUT.UI.PRELOAD_INST = instSlot
-    // Re-use the panel-switch machinery the Tab key uses.
+    if (instrumentsCache === null) refreshInstrumentsCache()
+    const idx = (instSlotToIdx && instSlotToIdx[instSlot] != null) ? instSlotToIdx[instSlot] : -1
+    if (idx >= 0) instListCursor = idx
+    clampInstrumentsCursor()
     switchToPanel(VIEW_INSTRMNT)
 }
 
@@ -3489,10 +3502,729 @@ function samplesInput(wo, event) {
 // END SAMPLES VIEWER
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-const panelSamples  = new win.WindowObject(1, PTNVIEW_OFFSET_Y, SCRW, PTNVIEW_HEIGHT, samplesInput,       drawSamplesContents,                       undefined, ()=>{})
-const panelInstrmnt = new win.WindowObject(1, PTNVIEW_OFFSET_Y, SCRW, PTNVIEW_HEIGHT, externalPanelInput, makeExternalPanelDraw('taut_instredit'),  undefined, ()=>{})
-const panelProject  = new win.WindowObject(1, PTNVIEW_OFFSET_Y, SCRW, PTNVIEW_HEIGHT, projectInput,       drawProjectContents,                       undefined, ()=>{})
-const panelFile     = new win.WindowObject(1, PTNVIEW_OFFSET_Y, SCRW, PTNVIEW_HEIGHT, externalPanelInput, makeExternalPanelDraw('taut_fileop'),       undefined, ()=>{})
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// INSTRUMENTS VIEWER
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Mirrors the Samples tab skeleton: list on the left, multi-tabbed property pane
+// on the right. Tabs are General / Volume / Panning / Pitch — the latter three
+// each carry an envelope graph rendered through the graphics layer.
+//
+// All field offsets/encodings follow terranmon.txt §"Instrument bin" (offsets
+// 0..196). Envelope nodes (offsets 21 / 71 / 121) are 25 × {value u8, time u8}
+// where the time byte is a 3.5 unsigned minifloat — converted here using the
+// same decoder formula as ThreeFiveMinifloat.kt / taud_common.py MINUFLOAT_LUT.
+
+// 3.5 unsigned minifloat: exp = bits 7..5 (0..7), mant = bits 4..0 (0..31).
+//   exp == 0 : value = mant / 256                        (smallest non-zero step = 1/256 s)
+//   exp >  0 : value = (mant + 32) * 2^(exp - 9)         (max = 15.75 s at 0xFF)
+function envTimeFromByte(b) {
+    const exp  = (b >>> 5) & 7
+    const mant =  b        & 31
+    return (exp === 0) ? (mant / 256) : ((mant + 32) * Math.pow(2, exp - 9))
+}
+
+// Decode one of the three envelopes from the 256-byte instrument record. `kind`
+// selects the node array (vol/pan/pf) and the LOOP/SUSTAIN word locations.
+//   nodes: {value, durByte, durSec} array, truncated at the first dur=0 node
+//          (the terminator — see terranmon.txt §envelope nodes "0 = hold").
+//   terminatorIdx: index of the terminator, or -1 if all 25 slots are walked.
+function decodeEnvelope(rec, kind) {
+    const nodeBase = (kind === 'vol') ? 21  : (kind === 'pan') ? 71  : 121
+    const loopOff  = (kind === 'vol') ? 15  : (kind === 'pan') ? 17  : 19
+    const sustOff  = (kind === 'vol') ? 189 : (kind === 'pan') ? 191 : 193
+    const valMask  = (kind === 'vol') ? 0x3F : 0xFF
+    const loopWord = rec[loopOff] | (rec[loopOff + 1] << 8)
+    const sustWord = rec[sustOff] | (rec[sustOff + 1] << 8)
+    const present    = ((loopWord >>> 13) & 1) === 1
+    const loopEnable = ((loopWord >>> 5)  & 1) === 1
+    const loopStart  =  (loopWord >>> 8)  & 0x1F
+    const loopEnd    =  (loopWord)        & 0x1F
+    const carry      = ((loopWord >>> 6)  & 1) === 1
+    const panUseDef  = (kind === 'pan') && (((loopWord >>> 7) & 1) === 1)
+    const pfFilter   = (kind === 'pf')  && (((loopWord >>> 7) & 1) === 1)
+    const sustEnable = ((sustWord >>> 5)  & 1) === 1
+    const sustStart  =  (sustWord >>> 8)  & 0x1F
+    const sustEnd    =  (sustWord)        & 0x1F
+    const nodes = []
+    let terminatorIdx = -1
+    for (let i = 0; i < 25; i++) {
+        const value   = rec[nodeBase + i * 2]     & valMask
+        const durByte = rec[nodeBase + i * 2 + 1] & 0xFF
+        const durSec  = envTimeFromByte(durByte)
+        nodes.push({ value, durByte, durSec })
+        if (durByte === 0) { terminatorIdx = i; break }
+    }
+    return {
+        kind, present, loopEnable, loopStart, loopEnd, carry,
+        panUseDef, pfFilter, sustEnable, sustStart, sustEnd,
+        nodes, terminatorIdx, valueMax: valMask
+    }
+}
+
+// Decode the full 256-byte instrument record into a structured object suitable
+// for display. Field offsets/encodings track terranmon.txt §"Instrument bin".
+function decodeInstFull(rec) {
+    const samplePtr      = (rec[0]) | (rec[1] << 8) | (rec[2] << 16) | (rec[3] * 0x1000000)
+    const sampleLen      = rec[4]  | (rec[5]  << 8)
+    const c4Rate         = rec[6]  | (rec[7]  << 8)
+    const playStart      = rec[8]  | (rec[9]  << 8)
+    const sLoopStart     = rec[10] | (rec[11] << 8)
+    const sLoopEnd       = rec[12] | (rec[13] << 8)
+    const sampleFlags    = rec[14]
+    const igv            = rec[171]
+    const fadeoutLo      = rec[172]
+    const fadeoutHi      = rec[173]
+    const fadeout        = fadeoutLo | ((fadeoutHi & 0x0F) << 8)
+    const volSwing       = rec[174]
+    const vibSpeed       = rec[175]
+    const vibSweep       = rec[176]
+    const defPan         = rec[177]
+    const pitchPanCenter = rec[178] | (rec[179] << 8)
+    let   pitchPanSep    = rec[180]; if (pitchPanSep >= 128) pitchPanSep -= 256
+    const panSwing       = rec[181]
+    const defCutoff      = rec[182]
+    const defReso        = rec[183]
+    let   detune         = rec[184] | (rec[185] << 8); if (detune >= 0x8000) detune -= 0x10000
+    const instFlag       = rec[186]
+    const nna            = instFlag & 3
+    const vibWaveform    = (instFlag >>> 2) & 7
+    const vibDepth       = rec[187]
+    const vibRate        = rec[188]
+    const dcByte         = rec[195]
+    const dct            = dcByte & 3
+    const dca            = (dcByte >>> 2) & 3
+    const defNoteVol     = rec[196]
+    return {
+        samplePtr, sampleLen, c4Rate, playStart, sLoopStart, sLoopEnd, sampleFlags,
+        igv, fadeout, volSwing, vibSpeed, vibSweep, defPan,
+        pitchPanCenter, pitchPanSep, panSwing, defCutoff, defReso,
+        detune, nna, vibWaveform, vibDepth, vibRate, dct, dca, defNoteVol,
+        volEnv: decodeEnvelope(rec, 'vol'),
+        panEnv: decodeEnvelope(rec, 'pan'),
+        pfEnv:  decodeEnvelope(rec, 'pf')
+    }
+}
+
+// Scan slots 1..255. Keep any slot that either has a non-empty sample length
+// or a project-data INam entry. Returns a flat list — UI cursor walks this,
+// not raw slot numbers — and a {slot → cacheIdx} reverse map for
+// launchInstrumentViewerFor's jump-to-slot path.
+let instrumentsCache = null
+let instSlotToIdx    = null
+
+function buildInstrumentIndex() {
+    const list = []
+    const names = (songsMeta && songsMeta.instNames) || []
+    for (let i = 1; i < TAUT_INST_COUNT; i++) {
+        const rec = readInstRecord(i)
+        const sampleLen = rec[4] | (rec[5] << 8)
+        const nm = names[i] || ''
+        if (sampleLen === 0 && nm === '') continue
+        list.push({ slot: i, name: nm, decoded: decodeInstFull(rec) })
+    }
+    instSlotToIdx = {}
+    for (let i = 0; i < list.length; i++) instSlotToIdx[list[i].slot] = i
+    return list
+}
+
+function refreshInstrumentsCache() { instrumentsCache = buildInstrumentIndex() }
+
+// ── Layout ─────────────────────────────────────────────────────────────────
+const INST_LIST_X        = 1
+const INST_LIST_BODY_W   = 26
+const INST_LIST_W        = INST_LIST_BODY_W + 1
+const INST_LIST_SCROLL_X = INST_LIST_X + INST_LIST_BODY_W
+const INST_LIST_Y        = PTNVIEW_OFFSET_Y
+const INST_LIST_H        = PTNVIEW_HEIGHT
+const INST_SEP_X         = INST_LIST_X + INST_LIST_W
+const INST_RIGHT_X       = INST_SEP_X + 1
+const INST_RIGHT_Y       = PTNVIEW_OFFSET_Y
+const INST_RIGHT_W       = SCRW - INST_RIGHT_X + 1
+const INST_BTN_Y         = SCRH - 1
+const INST_TAB_Y         = INST_RIGHT_Y                       // tab strip row
+const INST_BODY_Y        = INST_RIGHT_Y + 2                   // first content row
+const INST_BODY_H        = INST_BTN_Y - INST_BODY_Y           // content rows (excludes button)
+
+// General tab content does not fit in the 24-row body area of an 80x32 terminal,
+// so it splits into two pages (sample/volume/panning on page 1;
+// filter/vibrato/note-actions/tuning on page 2).
+const INST_TAB_NAMES = ['Gen.1', 'Gen.2', 'Volume', 'Pan', 'Pitch']
+const INST_TAB_GEN1 = 0, INST_TAB_GEN2 = 1, INST_TAB_VOL = 2, INST_TAB_PAN = 3, INST_TAB_PIT = 4
+
+const colInstListBg     = colBackPtn
+const colInstListSel    = colHighlight
+const colInstListNumFg  = colInst
+const colInstListNameFg = colStatus
+const colInstGroupHdr   = colVoiceHdr
+const colInstLabel      = colStatus
+const colInstValue      = colWHITE
+const colInstHighlight  = colVol
+const colInstEnvLine    = 77            // bright cyan-ish, same as sample wave
+const colInstEnvNode    = 198           // pink-ish — node markers stand out from line
+const colInstEnvAxis    = 246           // dim grey for zero/center line
+const colInstEnvHair    = 251           // darker grey — quarter-point hairlines (dashed)
+const colInstEnvLoop    = 220           // muted yellow-orange — loop range band
+const colInstEnvSust    = 161           // muted red — sustain range band
+
+let instListScroll = 0
+let instListCursor = 0
+let instSubTab     = INST_TAB_GEN1
+
+function clampInstrumentsCursor() {
+    const n = instrumentsCache ? instrumentsCache.length : 0
+    if (instListCursor < 0) instListCursor = 0
+    if (instListCursor >= n) instListCursor = Math.max(0, n - 1)
+    if (instListCursor < instListScroll) instListScroll = instListCursor
+    if (instListCursor >= instListScroll + INST_LIST_H)
+        instListScroll = instListCursor - INST_LIST_H + 1
+    if (instListScroll < 0) instListScroll = 0
+}
+
+function drawInstrumentsListColumn() {
+    const n = instrumentsCache ? instrumentsCache.length : 0
+    for (let row = 0; row < INST_LIST_H; row++) {
+        const idx = instListScroll + row
+        const y = INST_LIST_Y + row
+        con.move(y, INST_LIST_X)
+        if (idx >= n) {
+            con.color_pair(colInstListNameFg, colInstListBg)
+            print(' '.repeat(INST_LIST_BODY_W))
+            continue
+        }
+        const e = instrumentsCache[idx]
+        const isSel = (idx === instListCursor)
+        const back  = isSel ? colInstListSel : colInstListBg
+        const numStr = e.slot.toString(16).toUpperCase().padStart(2, '0')
+        const nameRaw = (e.name && e.name.length) ? e.name : '(instrument $' + numStr + ')'
+        const nameW = INST_LIST_BODY_W - 6
+        const nameStr = (nameRaw.length > nameW ? nameRaw.substring(0, nameW) : nameRaw.padEnd(nameW))
+        con.color_pair(colInstListNumFg, back); print(' ' + numStr + ' ')
+        con.color_pair(colInstListNameFg, back); print(' ')
+        con.color_pair(isSel ? colWHITE : colInstListNameFg, back); print(nameStr)
+        con.color_pair(colInstListNameFg, back); print(' ')
+    }
+    // scroll indicator column
+    if (n > INST_LIST_H) {
+        const maxScroll = n - INST_LIST_H
+        const indPos = (maxScroll === 0) ? 0 : ((instListScroll * (INST_LIST_H - 1) / maxScroll) | 0)
+        for (let r = 0; r < INST_LIST_H; r++) {
+            con.move(INST_LIST_Y + r, INST_LIST_SCROLL_X)
+            con.color_pair(colStatus, colInstListBg)
+            print(r === indPos ? sym.ticked : sym.unticked)
+        }
+    } else {
+        for (let r = 0; r < INST_LIST_H; r++) {
+            con.move(INST_LIST_Y + r, INST_LIST_SCROLL_X)
+            con.color_pair(colStatus, colInstListBg); print(' ')
+        }
+    }
+}
+
+function drawInstrumentsSeparator() {
+    con.color_pair(colSep, colBackPtn)
+    for (let y = INST_LIST_Y; y < SCRH; y++) {
+        con.move(y, INST_SEP_X); con.prnch(VERT)
+    }
+}
+
+// Geometry helper for one tab chip in the right-pane tab strip. Tabs partition
+// INST_RIGHT_W into 4 equal-width chips with a 1-col gap at each boundary; the
+// click handler uses the same formula in reverse to map cx → tab index.
+function instTabRect(tabIdx) {
+    const slotW = (INST_RIGHT_W / INST_TAB_NAMES.length) | 0
+    return { x: INST_RIGHT_X + tabIdx * slotW, y: INST_TAB_Y, w: slotW }
+}
+
+function drawInstrumentsTabStrip() {
+    // background row for the tab strip
+    con.move(INST_TAB_Y, INST_RIGHT_X)
+    con.color_pair(colTabBarOrn, colTabBarBack)
+    print(' '.repeat(INST_RIGHT_W))
+    for (let i = 0; i < INST_TAB_NAMES.length; i++) {
+        const r = instTabRect(i)
+        const active = (instSubTab === i)
+        const fg = active ? colTabActive : colTabInactive
+        const bg = active ? colTabBarBack2 : colTabBarBack
+        con.move(r.y, r.x)
+        con.color_pair(fg, bg)
+        const lbl = INST_TAB_NAMES[i]
+        const pad = Math.max(0, r.w - lbl.length)
+        const padL = pad >>> 1
+        const padR = pad - padL
+        print(' '.repeat(padL) + lbl + ' '.repeat(padR))
+    }
+    // 1-row gap under the tabs
+    con.move(INST_TAB_Y + 1, INST_RIGHT_X)
+    con.color_pair(colInstValue, colBackPtn)
+    print(' '.repeat(INST_RIGHT_W))
+}
+
+// Clear the right-pane body area (tab content rows + button row).
+function clearInstrumentsBody() {
+    for (let r = 0; r < INST_BODY_H + 1; r++) {
+        con.move(INST_BODY_Y + r, INST_RIGHT_X)
+        con.color_pair(colInstValue, colBackPtn)
+        print(' '.repeat(INST_RIGHT_W))
+    }
+}
+
+// ── Text helpers ───────────────────────────────────────────────────────────
+function _hex(n, w) { return n.toString(16).toUpperCase().padStart(w, '0') }
+function _signed(n) { return (n >= 0 ? '+' : '') + n }
+
+function loopModeNameInst(flags) {
+    const lp = flags & 3
+    const sus = (flags >>> 2) & 1
+    const names = ['none', 'forward', 'pingpong', 'oneshot']
+    return names[lp] + (sus ? ' (sustain)' : '')
+}
+const NNA_NAMES = ['Cut', 'Off', 'Continue', 'Fade']
+const DCT_NAMES = ['off', 'note', 'sample', 'instrument']
+const DCA_NAMES = ['Cut', 'Off', 'Fade', 'reserved']
+const VIB_WF_NAMES = ['sine', 'ramp-dn', 'square', 'random', 'ramp-up', '?', '?', '?']
+
+// Place a value at column INST_RIGHT_X + labelW. Labels are colour
+// colInstLabel; values are colInstValue. Truncates to fit INST_RIGHT_W.
+function drawLabelRow(y, label, value, labelW) {
+    if (labelW == null) labelW = 12
+    con.move(y, INST_RIGHT_X)
+    con.color_pair(colInstLabel, colBackPtn)
+    print((label + ' '.repeat(labelW)).substring(0, labelW))
+    con.color_pair(colInstValue, colBackPtn)
+    const maxV = INST_RIGHT_W - labelW
+    const v = (value == null) ? '' : String(value)
+    print(v.length > maxV ? v.substring(0, maxV) : v)
+}
+
+function drawGroupHeader(y, title) {
+    con.move(y, INST_RIGHT_X)
+    con.color_pair(colInstGroupHdr, colBackPtn)
+    const txt = title + ' '
+    const dashes = Math.max(0, INST_RIGHT_W - txt.length)
+    print(txt + `\u00FB`.repeat(dashes))
+}
+
+// ── Tab body: General (page 1 + page 2) ───────────────────────────────────
+// Page 1 (Gen.1):
+//   Sample binding   — sample link, length, c4Rate, play/loop positions, loop mode
+//   Volume           — IGV, default note vol, fadeout, vol swing
+//   Panning          — default pan + "use" flag, pitch-pan centre/separation, pan swing
+// Page 2 (Gen.2):
+//   Filter           — default cutoff/resonance
+//   Vibrato          — waveform, speed, depth, sweep, rate
+//   Note actions     — NNA, DCT/DCA
+//   Tuning           — signed 4096-TET detune offset
+//
+// Two pages because the 80x32 terminal's 24-row body cannot hold every field at
+// once; the user explicitly OK'd this split.
+function drawInstTabGeneral1(e) {
+    const d = e.decoded
+    let y = INST_BODY_Y
+    const sampleNames = (songsMeta && songsMeta.sampleNames) || []
+    // Map decoded.samplePtr+len back to a sample-name slot (best-effort: same
+    // dedup convention as buildSampleIndex).
+    let sampleLabel = '(none)'
+    if (d.sampleLen > 0) {
+        // Walk samplesCache if it's been built; otherwise fall back to slot 0.
+        if (samplesCache === null) refreshSamplesCache()
+        let smpIdx = -1
+        for (let i = 0; i < samplesCache.length; i++) {
+            if (samplesCache[i].ptr === d.samplePtr && samplesCache[i].len === d.sampleLen) {
+                smpIdx = i; break
+            }
+        }
+        if (smpIdx >= 0) {
+            const sn = sampleNames[smpIdx + 1] || ''
+            sampleLabel = '$' + _hex(smpIdx + 1, 2) + (sn.length ? '  ' + sn : '  (unnamed)')
+        } else {
+            sampleLabel = '@$' + _hex(d.samplePtr, 6)
+        }
+    }
+
+    drawGroupHeader(y++, 'Sample binding')
+    drawLabelRow(y++, '  Sample:',  sampleLabel)
+    drawLabelRow(y++, '  Length:',  d.sampleLen + ' bytes ($' + _hex(d.sampleLen, 4) + ')  Rate@C4: ' + d.c4Rate + ' Hz')
+    drawLabelRow(y++, '  Play st:', '$' + _hex(d.playStart, 4))
+    drawLabelRow(y++, '  Loop:',    loopModeNameInst(d.sampleFlags) +
+                                    '  [$' + _hex(d.sLoopStart, 4) + '..$' + _hex(d.sLoopEnd, 4) + ']')
+
+    y++
+    drawGroupHeader(y++, 'Volume')
+    drawLabelRow(y++, '  Inst. GV:', _hex(d.igv, 2) + '  (' + d.igv + '/255)')
+    drawLabelRow(y++, '  DefNote:',  _hex(d.defNoteVol, 2) + '  (' + d.defNoteVol + '/255' +
+                                     (d.defNoteVol === 0 ? '  legacy: row default 63' : '') + ')')
+    let fadeStr
+    if (d.fadeout === 0)             fadeStr = '0  (no fade)'
+    else if (d.fadeout >= 1024)      fadeStr = d.fadeout + '  (1-tick cut)'
+    else {
+        const ticks = (1024 / d.fadeout)
+        fadeStr = d.fadeout + '  (~' + ticks.toFixed(1) + ' ticks)'
+    }
+    drawLabelRow(y++, '  Fadeout:', fadeStr)
+    drawLabelRow(y++, '  Swing:',   _hex(d.volSwing, 2))
+
+    y++
+    drawGroupHeader(y++, 'Panning')
+    drawLabelRow(y++, '  Default:', _hex(d.defPan, 2) + '  Use: ' +
+                                    (d.panEnv.panUseDef ? sym.ticked + ' on' : sym.unticked + ' off'))
+    drawLabelRow(y++, '  PPanCtr:', '$' + _hex(d.pitchPanCenter, 4) + '  Sep: ' + _signed(d.pitchPanSep))
+    drawLabelRow(y++, '  Swing:',   _hex(d.panSwing, 2))
+}
+
+function drawInstTabGeneral2(e) {
+    const d = e.decoded
+    let y = INST_BODY_Y
+
+    drawGroupHeader(y++, 'Filter')
+    drawLabelRow(y++, '  Cutoff:',  (d.defCutoff === 0xFF ? 'off' : ('$' + _hex(d.defCutoff, 2) +
+                                    '   (' + d.defCutoff + '/254)')))
+    drawLabelRow(y++, '  Reso:',    (d.defReso   === 0xFF ? 'off' : ('$' + _hex(d.defReso, 2) +
+                                    '   (' + d.defReso + '/254)')))
+
+    y++
+    drawGroupHeader(y++, 'Vibrato')
+    drawLabelRow(y++, '  Waveform:', VIB_WF_NAMES[d.vibWaveform & 7])
+    drawLabelRow(y++, '  Speed:',   _hex(d.vibSpeed, 2) + '   Depth: ' + _hex(d.vibDepth, 2))
+    drawLabelRow(y++, '  Sweep:',   _hex(d.vibSweep, 2) + '   Rate:  ' + _hex(d.vibRate, 2))
+
+    y++
+    drawGroupHeader(y++, 'Note actions')
+    drawLabelRow(y++, '  NNA:',     NNA_NAMES[d.nna & 3])
+    drawLabelRow(y++, '  DCT:',     DCT_NAMES[d.dct & 3])
+    drawLabelRow(y++, '  DCA:',     DCA_NAMES[d.dca & 3])
+
+    y++
+    drawGroupHeader(y++, 'Tuning')
+    const detStr = _signed(d.detune) + '   (' + (d.detune / 0x1000).toFixed(3) + ' octave, 4096-TET)'
+    drawLabelRow(y++, '  Detune:',  detStr)
+}
+
+// ── Envelope rendering (shared by Volume/Panning/Pitch tabs) ───────────────
+
+// Pick a "nice" time-grid interval for `totalTime` (seconds). Aims for at most
+// ~8 vertical hairlines, choosing from a fixed ladder so the number rendered
+// next to "Total:" reads cleanly (no 0.157s grids). The smallest viable step
+// covers fast envelopes (~50 ms); the top of the ladder covers the 15.75 s
+// maximum the 3.5 minifloat can encode.
+function pickEnvTimeGrid(totalTime) {
+    const ladder = [0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0]
+    for (let i = 0; i < ladder.length; i++) {
+        if (totalTime / ladder[i] <= 8) return ladder[i]
+    }
+    return ladder[ladder.length - 1]
+}
+
+// Pixel rect of the envelope-graph area for the given tab content row range.
+// Width spans the full right pane; height is the lower half of the body area.
+function instEnvelopeRect() {
+    const graphRowY = INST_BODY_Y + 7      // 7 rows of text above the graph
+    const x = (INST_RIGHT_X - 1) * CELL_PW
+    const y = (graphRowY - 1) * CELL_PH
+    const w = INST_RIGHT_W * CELL_PW
+    const h = (INST_BTN_Y - graphRowY) * CELL_PH
+    return { x, y, w, h, graphRowY }
+}
+
+// Clear graphics overlay over the right-pane envelope graph. Called by
+// drawInstrumentsContents on every redraw and by switchToPanel when leaving
+// the instrument viewer (mirrors clearSampleWaveformArea for the same reason).
+function clearInstrumentsEnvelopeArea() {
+    const r = instEnvelopeRect()
+    graphics.plotRect(r.x, r.y, r.w, r.h, 255)
+    // Also clear the row of text that the graph overlays would otherwise visually
+    // smudge — the body redraw paints these rows blank anyway, but switchToPanel
+    // bypasses the body redraw on exit.
+}
+
+// Bresenham line via plotPixel. Used to connect envelope nodes.
+function envPlotLine(x0, y0, x1, y1, col) {
+    let dx = Math.abs(x1 - x0), sx = x0 < x1 ? 1 : -1
+    let dy = -Math.abs(y1 - y0), sy = y0 < y1 ? 1 : -1
+    let err = dx + dy
+    // Guard against pathological inputs; envelope coords are screen-bound.
+    let safety = 4096
+    while (safety-- > 0) {
+        graphics.plotPixel(x0, y0, col)
+        if (x0 === x1 && y0 === y1) break
+        const e2 = 2 * err
+        if (e2 >= dy) { err += dy; x0 += sx }
+        if (e2 <= dx) { err += dx; y0 += sy }
+    }
+}
+
+// Draw the envelope chart for one envelope (vol/pan/pf). Plots:
+//   • Quarter-point dashed hairlines as a faint reference grid.
+//   • Solid axis line (bottom for vol, mid for pan/pitch).
+//   • Loop / sustain wrap regions as faint vertical bands behind the curve.
+//   • Polyline through all active nodes; each node a 3×3 marker.
+// Time axis: cumulative durSec across nodes, scaled to fit graph width.
+// Value axis: 0 at bottom, env.valueMax at top.
+function drawEnvelopeGraph(env) {
+    const r = instEnvelopeRect()
+    graphics.plotRect(r.x, r.y, r.w, r.h, 255)  // clear
+
+    // Dashed reference hairlines at quarter points of the value range. Drawn
+    // first so the solid axis line / loop bands / polyline can stack on top.
+    // For pan/pitch the 50% level is the main axis; we skip it here to keep
+    // the solid line visually distinct from the dashes.
+    const hairFracs = (env.kind === 'vol') ? [0.25, 0.5, 0.75] : [0.25, 0.75]
+    for (let fi = 0; fi < hairFracs.length; fi++) {
+        const yy = r.y + r.h - 1 - ((hairFracs[fi] * (r.h - 1)) | 0)
+        for (let xx = r.x; xx < r.x + r.w; xx += 6) {
+            graphics.plotRect(xx, yy, 2, 1, colInstEnvHair)
+        }
+    }
+
+    // Solid axis line — bottom of graph for vol, mid for pan/pitch.
+    if (env.kind !== 'vol') {
+        const midY = r.y + (r.h >>> 1)
+        graphics.plotRect(r.x, midY, r.w, 1, colInstEnvAxis)
+    } else {
+        graphics.plotRect(r.x, r.y + r.h - 1, r.w, 1, colInstEnvAxis)
+    }
+
+    // No envelope to draw when there are zero active nodes (shouldn't happen
+    // for well-formed records, but be defensive).
+    const lastIdx = (env.terminatorIdx >= 0) ? env.terminatorIdx : (env.nodes.length - 1)
+    if (lastIdx < 0) return
+
+    // Cumulative time of each node (node 0 is at t=0; node i is at sum of
+    // dur[0..i-1] for i>=1). The terminator's own dur is 0 so it lands at
+    // the sum of the preceding nodes.
+    const xs = new Array(lastIdx + 1)
+    let acc = 0
+    xs[0] = 0
+    for (let i = 1; i <= lastIdx; i++) {
+        acc += env.nodes[i - 1].durSec
+        xs[i] = acc
+    }
+    // When total time is 0 (single-node held envelope), give the x-axis a
+    // tiny non-zero span so node 0 still renders at the left edge.
+    const totalTime = Math.max(acc, 1e-6)
+
+    const valueMax = env.valueMax || 0xFF
+    const pxX = (t) => r.x + Math.min(r.w - 1, Math.max(0, ((t / totalTime) * (r.w - 1)) | 0))
+    const pxY = (v) => r.y + r.h - 1 - Math.min(r.h - 1, Math.max(0, ((v / valueMax) * (r.h - 1)) | 0))
+
+    // Vertical time-grid hairlines. Same dashed style as the value-axis
+    // hairlines (2 px on, 4 px off) but oriented vertically; spacing comes
+    // from pickEnvTimeGrid so we never spam more than ~8 lines across the
+    // graph regardless of envelope duration.
+    if (acc > 0) {
+        const grid = pickEnvTimeGrid(totalTime)
+        for (let t = grid; t < totalTime; t += grid) {
+            const xx = pxX(t)
+            for (let yy = r.y; yy < r.y + r.h; yy += 6) {
+                graphics.plotRect(xx, yy, 1, 2, colInstEnvHair)
+            }
+        }
+    }
+
+    // Loop / sustain bands behind the polyline.
+    if (env.loopEnable && env.loopStart <= lastIdx && env.loopEnd <= lastIdx) {
+        const x0 = pxX(xs[env.loopStart])
+        const x1 = pxX(xs[env.loopEnd])
+        const bw = Math.max(1, x1 - x0)
+        graphics.plotRect(x0, r.y, bw, r.h, colInstEnvLoop)
+    }
+    if (env.sustEnable && env.sustStart <= lastIdx && env.sustEnd <= lastIdx) {
+        const x0 = pxX(xs[env.sustStart])
+        const x1 = pxX(xs[env.sustEnd])
+        const bw = Math.max(1, x1 - x0)
+        graphics.plotRect(x0, r.y, bw, r.h, colInstEnvSust)
+    }
+
+    // Polyline through the envelope.
+    for (let i = 0; i < lastIdx; i++) {
+        envPlotLine(pxX(xs[i]), pxY(env.nodes[i].value),
+                    pxX(xs[i + 1]), pxY(env.nodes[i + 1].value), colInstEnvLine)
+    }
+    // Node markers (3×3 squares centred on the node coordinate).
+    for (let i = 0; i <= lastIdx; i++) {
+        const cx = pxX(xs[i]), cy = pxY(env.nodes[i].value)
+        graphics.plotRect(cx - 1, cy - 1, 3, 3, colInstEnvNode)
+    }
+}
+
+// Common envelope-tab body: a few lines of summary text above the graph.
+// `extra` is an array of additional [label, value] rows specific to this kind
+// (e.g. pan's "Use default pan" flag).
+function drawInstTabEnvelope(e, env, kindLabel, extra) {
+    let y = INST_BODY_Y
+    drawGroupHeader(y++, kindLabel + ' envelope')
+    drawLabelRow(y++, '  Present:', (env.present ? sym.ticked + ' yes (P=1)' : sym.unticked + ' no  (P=0)'))
+    const realCount = (env.terminatorIdx >= 0) ? (env.terminatorIdx + 1) : env.nodes.length
+    drawLabelRow(y++, '  Nodes:',   realCount + ' / 25' +
+                                    (env.carry ? '   Carry: ' + sym.ticked : '   Carry: ' + sym.unticked))
+    drawLabelRow(y++, '  Loop:',    env.loopEnable
+                                    ? (sym.ticked + ' [' + env.loopStart + '..' + env.loopEnd + ']')
+                                    : (sym.unticked + ' off'))
+    drawLabelRow(y++, '  Sustain:', env.sustEnable
+                                    ? (sym.ticked + ' [' + env.sustStart + '..' + env.sustEnd + ']')
+                                    : (sym.unticked + ' off'))
+    if (extra) {
+        for (let i = 0; i < extra.length; i++) {
+            drawLabelRow(y++, '  ' + extra[i][0], extra[i][1])
+        }
+    }
+    // Total envelope length + the time-grid step the graph below uses, so the
+    // dashed vertical hairlines have a readable scale.
+    const lastIdx = (env.terminatorIdx >= 0) ? env.terminatorIdx : (env.nodes.length - 1)
+    let totalSec = 0
+    for (let i = 0; i < lastIdx; i++) totalSec += env.nodes[i].durSec
+    const gridStep = pickEnvTimeGrid(Math.max(totalSec, 1e-6))
+    drawLabelRow(y++, '  Length:', totalSec.toFixed(3) + ' s   (grid ' + gridStep + ' s)')
+
+    drawEnvelopeGraph(env)
+}
+
+function drawInstTabVolume(e)  { drawInstTabEnvelope(e, e.decoded.volEnv, 'Volume') }
+function drawInstTabPanning(e) {
+    drawInstTabEnvelope(e, e.decoded.panEnv, 'Panning', [
+        ['UseDef:', (e.decoded.panEnv.panUseDef ? sym.ticked + ' on' : sym.unticked + ' off') +
+                    '  (chan-pan source: byte $B1)']
+    ])
+}
+function drawInstTabPitch(e) {
+    const env = e.decoded.pfEnv
+    drawInstTabEnvelope(e, env, env.pfFilter ? 'Filter' : 'Pitch', [
+        ['Mode:', env.pfFilter ? 'filter cutoff' : 'pitch']
+    ])
+}
+
+// ── Edit button (bottom row) ───────────────────────────────────────────────
+function drawInstrumentsEditButton() {
+    const y = INST_BTN_Y
+    con.move(y, INST_RIGHT_X)
+    con.color_pair(colInstGroupHdr, colBackPtn); print('[ E ]')
+    con.color_pair(colInstValue,    colBackPtn)
+    const label = ' Edit instrument'
+    print(label)
+    const rest = INST_RIGHT_W - (5 + label.length)
+    if (rest > 0) print(' '.repeat(rest))
+}
+
+function clearInstrumentsPanel() {
+    for (let y = PTNVIEW_OFFSET_Y; y < SCRH; y++) fillLine(y, colInstValue, colBackPtn)
+}
+
+function drawInstrumentsContents(wo) {
+    if (instrumentsCache === null) refreshInstrumentsCache()
+    clampInstrumentsCursor()
+    clearInstrumentsPanel()
+    drawInstrumentsListColumn()
+    drawInstrumentsSeparator()
+    drawInstrumentsTabStrip()
+
+    const n = instrumentsCache ? instrumentsCache.length : 0
+    if (n === 0) {
+        con.move(INST_BODY_Y, INST_RIGHT_X)
+        con.color_pair(colInstGroupHdr, colBackPtn)
+        print('No instruments in this project.')
+        // wipe any old envelope graph
+        clearInstrumentsEnvelopeArea()
+        drawInstrumentsEditButton()
+        return
+    }
+    const e = instrumentsCache[instListCursor]
+    // Body redraw wipes its rows before re-rendering, so don't paint the graph
+    // until after the text tabs are drawn — otherwise plotRect-555 fill at the
+    // end of the body redraw would erase the graph again.
+    clearInstrumentsEnvelopeArea()
+    if      (instSubTab === INST_TAB_GEN1) drawInstTabGeneral1(e)
+    else if (instSubTab === INST_TAB_GEN2) drawInstTabGeneral2(e)
+    else if (instSubTab === INST_TAB_VOL)  drawInstTabVolume(e)
+    else if (instSubTab === INST_TAB_PAN)  drawInstTabPanning(e)
+    else                                   drawInstTabPitch(e)
+    drawInstrumentsEditButton()
+}
+
+function instrumentsInput(wo, event) {
+    if (event[0] !== 'key_down') return
+    const keysym     = event[1]
+    const keyJustHit = (1 == event[2])
+    const shiftDown  = (event.includes(59) || event.includes(60))
+    const moveDelta  = shiftDown ? 8 : 1
+
+    const n = instrumentsCache ? instrumentsCache.length : 0
+    if (n === 0) {
+        if (keysym === 'e' || keysym === 'E') {
+            requestEditorLaunch('taut_instredit', [fullPathObj.full, VIEW_INSTRMNT, -1])
+        }
+        return
+    }
+    if (keysym === '<UP>')        { instListCursor -= moveDelta; clampInstrumentsCursor(); drawInstrumentsContents(); return }
+    if (keysym === '<DOWN>')      { instListCursor += moveDelta; clampInstrumentsCursor(); drawInstrumentsContents(); return }
+    if (keysym === '<PAGE_UP>')   { instListCursor -= INST_LIST_H; clampInstrumentsCursor(); drawInstrumentsContents(); return }
+    if (keysym === '<PAGE_DOWN>') { instListCursor += INST_LIST_H; clampInstrumentsCursor(); drawInstrumentsContents(); return }
+    if (keysym === '<HOME>')      { instListCursor = 0; clampInstrumentsCursor(); drawInstrumentsContents(); return }
+    if (keysym === '<END>')       { instListCursor = n - 1; clampInstrumentsCursor(); drawInstrumentsContents(); return }
+    // Tab cycling. <LEFT>/<RIGHT> walk subtab, mirroring the IT mouse-tab feel.
+    if (keysym === '<LEFT>')      { instSubTab = (instSubTab + INST_TAB_NAMES.length - 1) % INST_TAB_NAMES.length; drawInstrumentsContents(); return }
+    if (keysym === '<RIGHT>')     { instSubTab = (instSubTab + 1) % INST_TAB_NAMES.length; drawInstrumentsContents(); return }
+    // Number keys 1..5 jump directly to a tab. Convenient when arrow keys are taken.
+    if (keysym === '1') { instSubTab = INST_TAB_GEN1; drawInstrumentsContents(); return }
+    if (keysym === '2') { instSubTab = INST_TAB_GEN2; drawInstrumentsContents(); return }
+    if (keysym === '3') { instSubTab = INST_TAB_VOL;  drawInstrumentsContents(); return }
+    if (keysym === '4') { instSubTab = INST_TAB_PAN;  drawInstrumentsContents(); return }
+    if (keysym === '5') { instSubTab = INST_TAB_PIT;  drawInstrumentsContents(); return }
+    if (keysym === 'e' || keysym === 'E') {
+        const e = instrumentsCache[instListCursor]
+        if (e) requestEditorLaunch('taut_instredit', [fullPathObj.full, VIEW_INSTRMNT, e.slot])
+        return
+    }
+}
+
+function registerInstrumentsMouse() {
+    // Left list
+    addPanelMouseRegion(INST_LIST_X, INST_LIST_Y, INST_SEP_X - INST_LIST_X, INST_LIST_H, {
+        onClick: (cy, cx, btn) => {
+            if (btn !== 1) return
+            const n = instrumentsCache ? instrumentsCache.length : 0
+            const target = instListScroll + (cy - INST_LIST_Y)
+            if (target < 0 || target >= n) return
+            instListCursor = target
+            clampInstrumentsCursor()
+            drawInstrumentsContents()
+        },
+        onWheel: (cy, cx, dy) => {
+            instListCursor += dy * 3
+            clampInstrumentsCursor()
+            drawInstrumentsContents()
+        }
+    })
+    // Right-pane tab strip: clicking a chip selects that tab.
+    for (let i = 0; i < INST_TAB_NAMES.length; i++) {
+        const idx = i
+        const r = instTabRect(i)
+        addPanelMouseRegion(r.x, r.y, r.w, 1, {
+            onClick: (cy, cx, btn) => {
+                if (btn !== 1) return
+                instSubTab = idx
+                drawInstrumentsContents()
+            }
+        })
+    }
+    // Edit button
+    addPanelMouseRegion(INST_RIGHT_X, INST_BTN_Y, 22, 1, {
+        onClick: (cy, cx, btn) => {
+            if (btn !== 1) return
+            const n = instrumentsCache ? instrumentsCache.length : 0
+            const slot = (n > 0) ? instrumentsCache[instListCursor].slot : -1
+            requestEditorLaunch('taut_instredit', [fullPathObj.full, VIEW_INSTRMNT, slot])
+        }
+    })
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// END INSTRUMENTS VIEWER
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+const panelSamples  = new win.WindowObject(1, PTNVIEW_OFFSET_Y, SCRW, PTNVIEW_HEIGHT, samplesInput,    drawSamplesContents,    undefined, ()=>{})
+const panelInstrmnt = new win.WindowObject(1, PTNVIEW_OFFSET_Y, SCRW, PTNVIEW_HEIGHT, instrumentsInput, drawInstrumentsContents, undefined, ()=>{})
+const panelProject  = new win.WindowObject(1, PTNVIEW_OFFSET_Y, SCRW, PTNVIEW_HEIGHT, projectInput,    drawProjectContents,    undefined, ()=>{})
+const panelFile     = new win.WindowObject(1, PTNVIEW_OFFSET_Y, SCRW, PTNVIEW_HEIGHT, externalPanelInput, makeExternalPanelDraw('taut_fileop'), undefined, ()=>{})
 
 const panels = [panelTimeline, panelOrders, panelPatterns, panelSamples, panelInstrmnt, panelProject, panelFile]
 
@@ -4182,7 +4914,7 @@ let initialGlobalVolume = audio.getSongGlobalVolume(PLAYHEAD)
 let initialMixingVolume = audio.getSongMixingVolume(PLAYHEAD)
 
 function isExternalPanel(p) {
-    return p === VIEW_INSTRMNT || p === VIEW_FILE
+    return p === VIEW_FILE
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -4278,10 +5010,12 @@ function switchToPanel(newPanel) {
     if (newPanel === currentPanel) return
     const wasTimeline = (currentPanel === VIEW_TIMELINE)
     const wasSamples  = (currentPanel === VIEW_SAMPLES)
+    const wasInstrmnt = (currentPanel === VIEW_INSTRMNT)
     currentPanel = newPanel
     applyMuteTransition(currentPanel)
     if (wasTimeline && currentPanel !== VIEW_TIMELINE) clearVoiceMeters()
     if (wasSamples  && currentPanel !== VIEW_SAMPLES)  clearSampleWaveformArea()
+    if (wasInstrmnt && currentPanel !== VIEW_INSTRMNT) clearInstrumentsEnvelopeArea()
     if (isExternalPanel(currentPanel)) {
         clearPanelMouseRegions()
         con.clear(); drawAlwaysOnElems(); drawControlHint()
@@ -4342,6 +5076,7 @@ function rebuildPanelMouseRegions() {
     else if (currentPanel === VIEW_CUES)            registerOrdersMouse()
     else if (currentPanel === VIEW_PATTERN_DETAILS) registerPatternsMouse()
     else if (currentPanel === VIEW_SAMPLES)         registerSamplesMouse()
+    else if (currentPanel === VIEW_INSTRMNT)        registerInstrumentsMouse()
     else if (currentPanel === VIEW_PROJECT)         registerProjectMouse()
 }
 
