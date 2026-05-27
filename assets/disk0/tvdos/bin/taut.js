@@ -3356,7 +3356,7 @@ function sampleWaveformRect() {
 
 function clearSampleWaveformArea() {
     const r = sampleWaveformRect()
-    graphics.plotRect(r.x-1, r.y-1, r.w+1, r.h+1, 255)   // 255 = transparent
+    graphics.plotRect(r.x-2, r.y-2, r.w+4, r.h+4, 255)   // 255 = transparent
 }
 
 function drawSampleWaveform() {
@@ -3665,7 +3665,9 @@ const colInstEnvNode    = 198           // pink-ish — node markers stand out f
 const colInstEnvAxis    = 246           // dim grey for zero/center line
 const colInstEnvHair    = 251           // darker grey — quarter-point hairlines (dashed)
 const colInstEnvLoop    = 220           // muted yellow-orange — loop range band
-const colInstEnvSust    = 161           // muted red — sustain range band
+const colInstEnvSust    = 145           // muted yellow-green — loop range band
+const colInstEnvLoopSuper= 230           // muted yellow-orange — loop range band
+const colInstEnvSustSuper= 155           // muted yellow-green — loop range band
 
 let instListScroll = 0
 let instListCursor = 0
@@ -3931,7 +3933,7 @@ function instEnvelopeRect() {
 // the instrument viewer (mirrors clearSampleWaveformArea for the same reason).
 function clearInstrumentsEnvelopeArea() {
     const r = instEnvelopeRect()
-    graphics.plotRect(r.x-1, r.y-1, r.w+1, r.h+1, 255)
+    graphics.plotRect(r.x-2, r.y-2, r.w+4, r.h+4, 255)
     // Also clear the row of text that the graph overlays would otherwise visually
     // smudge — the body redraw paints these rows blank anyway, but switchToPanel
     // bypasses the body redraw on exit.
@@ -4027,12 +4029,18 @@ function drawEnvelopeGraph(env) {
         const x1 = pxX(xs[env.loopEnd])
         const bw = Math.max(1, x1 - x0)
         graphics.plotRect(x0, r.y, bw, r.h, colInstEnvLoop, 2)
+        // start & end hairline
+        graphics.plotRect(x0, r.y, 1, r.h, colInstEnvLoopSuper)
+        graphics.plotRect(x1, r.y, 1, r.h, colInstEnvLoopSuper)
     }
     if (env.sustEnable && env.sustStart <= lastIdx && env.sustEnd <= lastIdx) {
         const x0 = pxX(xs[env.sustStart])
         const x1 = pxX(xs[env.sustEnd])
         const bw = Math.max(1, x1 - x0)
         graphics.plotRect(x0, r.y, bw, r.h, colInstEnvSust, 2)
+        // start & end hairline
+        graphics.plotRect(x0, r.y, 1, r.h, colInstEnvSustSuper)
+        graphics.plotRect(x1, r.y, 1, r.h, colInstEnvSustSuper)
     }
 
     // Polyline through the envelope.
@@ -4621,8 +4629,8 @@ function openConfirmQuit() {
         colours: popupColours,
         message: messageLines,
         buttons: [
-            { label: 'Yes', action: 'yes', default: true },
-            { label: 'No',  action: 'no' },
+            { label: 'Yes', action: 'yes' },
+            { label: 'No',  action: 'no', default: true },
         ],
         onKey: (ks, _shift, ctx) => {
             if (ks === 'y' || ks === 'Y') { ctx.close({ action: 'yes' }); return true }
@@ -4644,9 +4652,9 @@ function openGotoPopup() {
         title: 'Go To',
         drawFrame: popupDrawFrame,
         colours: popupColours,
-        fields: [{ label: promptStr, width: 3, maxLength: 3 }],
+        fields: [{ label: promptStr, width: 4, maxLength: 3 }],
         buttons: [
-            { label: 'OK',     action: 'ok', default: true },
+            { label: 'OK',     action: 'ok' },
             { label: 'Cancel', action: 'cancel' },
         ],
     })
@@ -4714,7 +4722,7 @@ function openRetunePopup() {
             },
         },
         buttons: [
-            { label: 'OK',     action: 'ok', default: true },
+            { label: 'OK',     action: 'ok' },
             { label: 'Cancel', action: 'cancel' },
         ],
         onKey: (ks, _shift, ctx) => {
@@ -4803,7 +4811,7 @@ function openFlagsPopup() {
             },
         },
         buttons: [
-            { label: 'OK',     action: 'ok', default: true },
+            { label: 'OK',     action: 'ok' },
             { label: 'Cancel', action: 'cancel' },
         ],
     })

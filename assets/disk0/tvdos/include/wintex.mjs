@@ -336,7 +336,7 @@ function showDialog(opts) {
     const listMinW  = hasList
         ? (list.width != null ? list.width + 4 : longestItem + 6)
         : 0
-    const w = Math.max(maxFieldW + 6, titleW + 4, longestMsg + 6, btnRowW + 4, listMinW, 24)
+    const w = 2+Math.max(maxFieldW + 6, titleW + 4, longestMsg + 6, btnRowW + 4, listMinW, 22)
 
     const msgRows      = messageLines.length + (messageLines.length > 0 ? 1 : 0)
     const fieldsBlockH = fields.length * 4
