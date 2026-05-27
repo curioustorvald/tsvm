@@ -3356,7 +3356,7 @@ function sampleWaveformRect() {
 
 function clearSampleWaveformArea() {
     const r = sampleWaveformRect()
-    graphics.plotRect(r.x, r.y, r.w, r.h, 255)   // 255 = transparent
+    graphics.plotRect(r.x-1, r.y-1, r.w+1, r.h+1, 255)   // 255 = transparent
 }
 
 function drawSampleWaveform() {
@@ -3364,7 +3364,7 @@ function drawSampleWaveform() {
     const wx0 = r.x, wy0 = r.y, wW = r.w, wH = r.h
 
     // Clear waveform area to transparent (255 = transparent against text bg)
-    graphics.plotRect(wx0, wy0, wW, wH, 255)
+    clearSampleWaveformArea()
 
     const s = (samplesCache && samplesCache[smpListCursor]) || null
     if (!s || s.len === 0) return
@@ -3931,7 +3931,7 @@ function instEnvelopeRect() {
 // the instrument viewer (mirrors clearSampleWaveformArea for the same reason).
 function clearInstrumentsEnvelopeArea() {
     const r = instEnvelopeRect()
-    graphics.plotRect(r.x, r.y, r.w, r.h, 255)
+    graphics.plotRect(r.x-1, r.y-1, r.w+1, r.h+1, 255)
     // Also clear the row of text that the graph overlays would otherwise visually
     // smudge — the body redraw paints these rows blank anyway, but switchToPanel
     // bypasses the body redraw on exit.
@@ -3962,7 +3962,7 @@ function envPlotLine(x0, y0, x1, y1, col) {
 // Value axis: 0 at bottom, env.valueMax at top.
 function drawEnvelopeGraph(env) {
     const r = instEnvelopeRect()
-    graphics.plotRect(r.x, r.y, r.w, r.h, 255)  // clear
+    clearInstrumentsEnvelopeArea()  // clear
 
     // Dashed reference hairlines at quarter points of the value range. Drawn
     // first so the solid axis line / loop bands / polyline can stack on top.
@@ -4026,13 +4026,13 @@ function drawEnvelopeGraph(env) {
         const x0 = pxX(xs[env.loopStart])
         const x1 = pxX(xs[env.loopEnd])
         const bw = Math.max(1, x1 - x0)
-        graphics.plotRect(x0, r.y, bw, r.h, colInstEnvLoop)
+        graphics.plotRect(x0, r.y, bw, r.h, colInstEnvLoop, 2)
     }
     if (env.sustEnable && env.sustStart <= lastIdx && env.sustEnd <= lastIdx) {
         const x0 = pxX(xs[env.sustStart])
         const x1 = pxX(xs[env.sustEnd])
         const bw = Math.max(1, x1 - x0)
-        graphics.plotRect(x0, r.y, bw, r.h, colInstEnvSust)
+        graphics.plotRect(x0, r.y, bw, r.h, colInstEnvSust, 2)
     }
 
     // Polyline through the envelope.

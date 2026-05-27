@@ -149,17 +149,41 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
     }
 
-    fun plotRect(x: Int, y: Int, w: Int, h: Int, colour: Int) {
+    fun plotRect(x: Int, y: Int, w: Int, h: Int, colour: Int) = plotRect(x, y, w, h, colour, 0)
+
+    /**
+     * @param eff plot effect. 0 — solid, 1 — 50% checkerboard, 2 — 25% checkerboard
+     */
+    fun plotRect(x: Int, y: Int, w: Int, h: Int, colour: Int, eff: Int) {
         val xs = min(x, x+w).toLong()
         val xe = max(x, x+w).toLong()
         val ys = min(y, y+h).toLong()
         val ye = max(y, y+h).toLong()
 
         getFirstGPU()?.let {
-            for (py in ys until ye) {
-                for (px in xs until xe) {
-                    if (px in 0 until it.config.width && py in 0 until it.config.height) {
-                        it.poke(py * it.config.width + px, colour.toByte())
+            val forYcond = if (eff == 2) (ys until ye step 2) else (ys until ye)
+
+            for (py in forYcond) {
+                when (eff) {
+                    0 -> for (px in xs until xe) {
+                        if (px in 0 until it.config.width && py in 0 until it.config.height) {
+                            it.poke(py * it.config.width + px, colour.toByte())
+                        }
+                    }
+                    1 -> {
+                        val parity = py % 2
+                        val forXcond = if (parity == 0L) (xs until xe step 2) else ((xs+1) until xe step 2)
+
+                        for (px in forXcond) {
+                            if (px in 0 until it.config.width && py in 0 until it.config.height) {
+                                it.poke(py * it.config.width + px, colour.toByte())
+                            }
+                        }
+                    }
+                    2 -> for (px in xs until xe step 2) {
+                        if (px in 0 until it.config.width && py in 0 until it.config.height) {
+                            it.poke(py * it.config.width + px, colour.toByte())
+                        }
                     }
                 }
             }
@@ -167,17 +191,41 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
     }
 
-    fun plotRect2(x: Int, y: Int, w: Int, h: Int, colour: Int) {
+    fun plotRect2(x: Int, y: Int, w: Int, h: Int, colour: Int) = plotRect2(x, y, w, h, colour, 0)
+
+    /**
+     * @param eff plot effect. 0 — solid, 1 — 50% checkerboard, 2 — 25% checkerboard
+     */
+    fun plotRect2(x: Int, y: Int, w: Int, h: Int, colour: Int, eff: Int) {
         val xs = min(x, x+w).toLong()
         val xe = max(x, x+w).toLong()
         val ys = min(y, y+h).toLong()
         val ye = max(y, y+h).toLong()
 
         getFirstGPU()?.let {
-            for (py in ys until ye) {
-                for (px in xs until xe) {
-                    if (px in 0 until it.config.width && py in 0 until it.config.height) {
-                        it.poke(262144 + py * it.config.width + px, colour.toByte())
+            val forYcond = if (eff == 2) (ys until ye step 2) else (ys until ye)
+
+            for (py in forYcond) {
+                when (eff) {
+                    0 -> for (px in xs until xe) {
+                        if (px in 0 until it.config.width && py in 0 until it.config.height) {
+                            it.poke(262144 + py * it.config.width + px, colour.toByte())
+                        }
+                    }
+                    1 -> {
+                        val parity = py % 2
+                        val forXcond = if (parity == 0L) (xs until xe step 2) else ((xs+1) until xe step 2)
+
+                        for (px in forXcond) {
+                            if (px in 0 until it.config.width && py in 0 until it.config.height) {
+                                it.poke(py * it.config.width + px, colour.toByte())
+                            }
+                        }
+                    }
+                    2 -> for (px in xs until xe step 2) {
+                        if (px in 0 until it.config.width && py in 0 until it.config.height) {
+                            it.poke(py * it.config.width + px, colour.toByte())
+                        }
                     }
                 }
             }
@@ -195,7 +243,12 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
     }
 
-    fun plotRectMode1(x: Int, y: Int, w: Int, h: Int, colour: Int, plane: Int) {
+    fun plotRectMode1(x: Int, y: Int, w: Int, h: Int, colour: Int, plane: Int) = plotRectMode1(x, y, w, h, colour, plane, 0)
+
+    /**
+     * @param eff plot effect. 0 — solid, 1 — 50% checkerboard, 2 — 25% checkerboard
+     */
+    fun plotRectMode1(x: Int, y: Int, w: Int, h: Int, colour: Int, plane: Int, eff: Int) {
         val xs = min(x, x+w).toLong()
         val xe = max(x, x+w).toLong()
         val ys = min(y, y+h).toLong()
@@ -205,10 +258,29 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             val halfW = it.config.width / 2
             val halfH = it.config.height / 2
             val planesize = it.config.width * it.config.height / 4
-            for (py in ys until ye) {
-                for (px in xs until xe) {
-                    if (px in 0 until halfW && py in 0 until halfH) {
-                        it.poke(py * halfW + px + planesize * plane, colour.toByte())
+            val forYcond = if (eff == 2) (ys until ye step 2) else (ys until ye)
+
+            for (py in forYcond) {
+                when (eff) {
+                    0 -> for (px in xs until xe) {
+                        if (px in 0 until halfW && py in 0 until halfH) {
+                            it.poke(py * halfW + px + planesize * plane, colour.toByte())
+                        }
+                    }
+                    1 -> {
+                        val parity = py % 2
+                        val forXcond = if (parity == 0L) (xs until xe step 2) else ((xs+1) until xe step 2)
+
+                        for (px in forXcond) {
+                            if (px in 0 until halfW && py in 0 until halfH) {
+                                it.poke(py * halfW + px + planesize * plane, colour.toByte())
+                            }
+                        }
+                    }
+                    2 -> for (px in xs until xe step 2) {
+                        if (px in 0 until halfW && py in 0 until halfH) {
+                            it.poke(py * halfW + px + planesize * plane, colour.toByte())
+                        }
                     }
                 }
             }
