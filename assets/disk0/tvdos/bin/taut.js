@@ -67,20 +67,49 @@ panri:"\u008416u",
 panfinele:"\u008427u",
 panfineri:"\u008426u",
 
-/* Fx/Vx/Px */
-fx:'\u00F8',
-px:'\u00AC',
-vx:'\u00AD',
-
 /* transport control */
 playall:'\u00E1',
 playcue:'\u00E2',
 playrow:'\u00E3',
 stop:'\u00E4',
 
+/* GUI stuffs */
+slider1: '\u00E4', // slider knob fitting in 7px cell snugly
+slider2: '\u00E5\u00E6', // slider knob fitting in right 6px then 1px to the next cell
+slider3: '\u00E7\u00E8', // slider knob fitting in right 5px then 2px to the next cell
+slider4: '\u00E9\u00EA', // slider knob fitting in right 4px then 3px to the next cell
+slider5: '\u00EB\u00EE', // slider knob fitting in right 3px then 4px to the next cell
+slider6: '\u00EF\u00F0', // slider knob fitting in right 2px then 5px to the next cell
+slider7: '\u00F1\u00F2', // slider knob fitting in right 1px then 6px to the next cell
+
+vhairline1: '\u00AD', // vertical line on left 1px
+vhairline2: '\u00AE', // vertical line on left 2px
+vhairline3: '\u00AF', // vertical line on left 3px
+vhairline4: '\u00DA', // vertical line on the centre
+vhairline5: '\u00F6', // vertical line on left 5px
+vhairline6: '\u00F7', // vertical line on left 6px
+vhairline7: '\u00F8', // vertical line on left 7px
+
+taut_scrollgutter_top: 0xBA,
+taut_scrollgutter_mid: 0xBB,
+taut_scrollgutter_bot: 0xBC,
+taut_scrollgutter_top_full: 0xBD,
+taut_scrollgutter_mid_full: 0xBE,
+taut_scrollgutter_bot_full: 0xBF,
+
+blob0: '\u00840u',
+blob1: '\u00841u',
+blob2: '\u00842u',
+blob3: '\u00843u',
+blob4: '\u00844u',
+blob5: '\u00845u',
+blob6: '\u00846u',
+blob7: '\u00847u',
+blob8: '\u00848u',
+blob9: '\u00849u',
+blob10: '\u008410u',
+
 /* miscellaneous */
-unticked:"\u00AE",
-ticked:"\u00AF",
 middot:MIDDOT,
 doubledot:"\u008419u",
 statusstop:"\u008420u\u008421u",
@@ -220,7 +249,7 @@ sym:[`C${sym.accnull}`,`C${sym.sharp}`,`D${sym.accnull}`,`D${sym.sharp}`,`E${sym
 10122:{index:10122,name:"Pythagorean aug. 4th",table:[0x0,0x134,0x2B8,0x3EC,0x570,0x6A4,0x828,0x95C,0xA90,0xC14,0xD48,0xECC],interval:0x1000,t:'d',
 sym:[`C${sym.accnull}`,`C${sym.sharp}`,`D${sym.accnull}`,`D${sym.sharp}`,`E${sym.accnull}`,`F${sym.accnull}`,`F${sym.sharp}`,`G${sym.accnull}`,`G${sym.sharp}`,`A${sym.accnull}`,`A${sym.sharp}`,`B${sym.accnull}`]},
 10123:{index:10123,name:"\u00FC\u00FD\u00FE (shi'er lu)",         table:[0x0,0x184,0x2B8,0x43C,0x570,0x6F4,0x828,0x95C,0xAE0,0xC14,0xD98,0xECC],interval:0x1000,t:'d',
-sym:[` \u00E0\u00E1`,` \u00E2\u00E3`,` \u00E4\u00E5`,` \u00E6\u00E7`,` \u00E8\u00E9`,` \u00EA\u00EB`,` \u00EC\u00ED`,` \u00EE\u00EF`,` \u00F0\u00F1`,` \u00F2\u00F3`,` \u00F4\u00F5`,` \u00F6\u00F7`]},
+sym:[` \u00C0\u00C1`,` \u00C2\u00C3`,` \u00C4\u00C5`,` \u00C6\u00C7`,` \u00C8\u00C9`,` \u00CA\u00CB`,` \u00CC\u00CD`,` \u00CE\u00CF`,` \u00D0\u00D1`,` \u00D2\u00D3`,` \u00D4\u00D5`,` \u00D6\u00D7`]},
 /* non-octave */
 35130:{index:35130,name:"Equal-Tempered Bohlen-Pierce",table:[0x0,0x1F3,0x3E7,0x5DA,0x7CE,0x9C1,0xBB4,0xDA8,0xF9B,0x118E,0x1382,0x1575,0x1769],interval:0x195C,t:'M',
 sym:[`C${sym.accnull}`,`C${sym.sharp}`,`D${sym.accnull}`,`E${sym.accnull}`,`F${sym.accnull}`,`F${sym.sharp}`,`G${sym.accnull}`,`H${sym.accnull}`,`H${sym.sharp}`,`J${sym.accnull}`,`A${sym.accnull}`,`A${sym.sharp}`,`B${sym.accnull}`]},
@@ -1127,7 +1156,7 @@ function drawStatusBar() {
     let beatCursorRow = cursorRow
     while (beatCursorRow >= beatDivSecondary) { beatCursorRow -= beatDivSecondary }
     let beatInd = (playbackMode != PLAYMODE_NONE && beatCursorRow % beatDivPrimary < (beatDivPrimary >>> 1)) ?
-     ((beatCursorRow % beatDivSecondary < (beatDivPrimary >>> 1)) ? '\u00846u' : '\u00847u') :
+     ((beatCursorRow % beatDivSecondary < (beatDivPrimary >>> 1)) ? sym.blob8 : sym.blob5) :
      ''
 
     // cue row
@@ -3229,7 +3258,10 @@ function drawSamplesListColumn() {
         for (let r = 0; r < SMP_LIST_H; r++) {
             con.move(SMP_LIST_Y + r, SMP_LIST_SCROLL_X)
             con.color_pair(colStatus, colSmpListBg)
-            print(r === indPos ? sym.ticked : sym.unticked)
+
+            let scrollChar = (r == 0) ? sym.taut_scrollgutter_top : (r == SMP_LIST_H - 1) ? sym.taut_scrollgutter_bot : sym.taut_scrollgutter_mid
+            if (r == indPos) scrollChar += 3;
+            con.addch(scrollChar)
         }
     } else {
         for (let r = 0; r < SMP_LIST_H; r++) {
@@ -3713,8 +3745,10 @@ function drawInstrumentsListColumn() {
         for (let r = 0; r < INST_LIST_H; r++) {
             con.move(INST_LIST_Y + r, INST_LIST_SCROLL_X)
             con.color_pair(colStatus, colInstListBg)
-            print(r === indPos ? sym.ticked : sym.unticked)
-        }
+
+            let scrollChar = (r == 0) ? sym.taut_scrollgutter_top : (r == INST_LIST_H - 1) ? sym.taut_scrollgutter_bot : sym.taut_scrollgutter_mid
+            if (r == indPos) scrollChar += 3;
+            con.addch(scrollChar)        }
     } else {
         for (let r = 0; r < INST_LIST_H; r++) {
             con.move(INST_LIST_Y + r, INST_LIST_SCROLL_X)
