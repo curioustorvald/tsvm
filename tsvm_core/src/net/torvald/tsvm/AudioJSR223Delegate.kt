@@ -140,6 +140,29 @@ class AudioJSR223Delegate(private val vm: VM) {
     fun getVoiceActive(playhead: Int, voice: Int): Boolean =
         getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19))?.active == true
 
+    /** Active-note counts per instrument id (index 0..255): how many notes are sounding *right
+     *  now* for each instrument, counting ~~BOTH~~ the live foreground voices ~~and the NNA background
+     *  ghosts in the mixer-private pool~~~. Lets visualisers colour by polyphony. The ghost pool is
+     *  mutated by the render thread, so it is read defensively by index and any transient
+     *  inconsistency is tolerated (a single best-effort frame). */
+    fun getActiveNoteCounts(playhead: Int): IntArray {
+        val counts = IntArray(256)
+        val ts = getPlayhead(playhead)?.trackerState ?: return counts
+        for (v in ts.voices) {
+            if (v.active) counts[v.instrumentId and 0xFF]++
+        }
+        // disabling NNA for now
+        /*try {
+            val bg = ts.backgroundVoices
+            for (i in 0 until bg.size) {
+                val v = bg.getOrNull(i) ?: continue
+                if (v.active) counts[v.instrumentId and 0xFF]++
+            }
+        } catch (_: Exception) { /* ghost pool mutated mid-read — counts are best-effort */ }
+        */
+        return counts
+    }
+
     /** Live noteVal (0..65535, 4096-TET) of the foreground voice — the value the mixer is using
      *  *right now* including any in-flight vibrato / arpeggio / portamento delta. Returns 0 for
      *  inactive voices. */

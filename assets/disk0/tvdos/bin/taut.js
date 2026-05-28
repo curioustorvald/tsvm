@@ -4299,12 +4299,32 @@ function registerInstrumentsMouse() {
 // Per-row marker painted in column 1 of the Samples / Instruments list while a
 // voice is actively sounding the corresponding sample / instrument. The glyph
 // (sym.blob1..blob10) tracks the loudest active voice that references the row;
-// sym.blob0 wipes the cell. Per-row last-drawn level is cached so the per-frame
-// repaint only redraws rows whose level actually changed — mirrors the bounded-
-// work pattern used by drawVoiceMeters().
+// sym.blob0 wipes the cell. The glyph FOREGROUND is colour-coded by polyphony —
+// the number of notes (live voices + NNA ghosts) currently sounding the row —
+// via a green→yellow→orange→red heat ramp. Per-row last-drawn (level, colour
+// bucket) is cached so the per-frame repaint only redraws rows that changed —
+// mirrors the bounded-work pattern used by drawVoiceMeters().
 
 const smpBlobPrev  = new Array(SMP_LIST_H).fill(-1)
 const instBlobPrev = new Array(INST_LIST_H).fill(-1)
+
+// Polyphony heat ramp for the blob foreground: more simultaneously-sounding notes → hotter.
+const colBlobPoly1 = 34   // blue  — 1 note
+const colBlobPoly2 = 76   // green  — 2 note
+const colBlobPoly3 = 230  // yellow — 3 notes
+const colBlobPoly4 = 221  // orange — 4 notes
+const colBlobPoly5 = 211  // red    — 5+ notes
+const blobPolyCols = [colBlobPoly1, colBlobPoly2, colBlobPoly3, colBlobPoly4, colBlobPoly5]
+
+// Note count → ramp bucket: 0 (silent), 1..3 verbatim, 4+ saturates at 4.
+function blobPolyBucket(count) {
+    if (count <= 0) return 0
+    return count >= 5 ? 5 : count
+}
+
+// getActiveNoteCounts (the foreground+ghost polyphony API) ships with this feature; on an
+// un-rebuilt host VM it's absent and blobs fall back to the plain number-column colour.
+const hasNoteCountAPI = (typeof audio !== 'undefined' && typeof audio.getActiveNoteCounts === 'function')
 
 function invalidateSamplesBlob()     { for (let i = 0; i < smpBlobPrev.length;  i++) smpBlobPrev[i]  = -1 }
 function invalidateInstrumentsBlob() { for (let i = 0; i < instBlobPrev.length; i++) instBlobPrev[i] = -1 }
@@ -4338,26 +4358,34 @@ function drawSamplesPlayBlobs() {
     if (currentPanel !== VIEW_SAMPLES || !samplesCache) return
     const playing  = (playbackMode !== PLAYMODE_NONE)
     const instVols = playing ? activeInstVolumes() : null
+    const counts   = (playing && hasNoteCountAPI) ? audio.getActiveNoteCounts(PLAYHEAD) : null
     const n = samplesCache.length
     for (let row = 0; row < SMP_LIST_H; row++) {
         const idx = smpListScroll + row
-        let level = 0
+        let level = 0, poly = 0
         if (playing && idx < n) {
             const ub = samplesCache[idx].usedBy
-            let m = 0
+            let m = 0, c = 0
             for (let j = 0; j < ub.length; j++) {
                 const w = instVols[ub[j]] || 0
                 if (w > m) m = w
+                if (counts) c += counts[ub[j]] || 0
             }
             level = blobLevelForVolume(m)
+            poly  = blobPolyBucket(c)
         }
-        if (smpBlobPrev[row] === level) continue
+        // Ghost-only rows have notes sounding but no exposed foreground volume — floor the glyph
+        // to blob1 so the colour-coded marker is still visible.
+        if (poly > 0 && level === 0) level = 1
+        const key = level * 8 + poly   // cache combines glyph level + colour bucket
+        if (smpBlobPrev[row] === key) continue
         const isSel = (idx === smpListCursor)
         const back  = isSel ? colSmpListSel : colSmpListBg
+        const fg    = (poly > 0) ? blobPolyCols[poly - 1] : colSmpListNumFg
         con.move(SMP_LIST_Y + row, SMP_LIST_X)
-        con.color_pair(colSmpListNumFg, back)
+        con.color_pair(fg, back)
         print(sym['blob' + level])
-        smpBlobPrev[row] = level
+        smpBlobPrev[row] = key
     }
 }
 
@@ -4365,43 +4393,54 @@ function drawInstrumentsPlayBlobs() {
     if (currentPanel !== VIEW_INSTRMNT || !instrumentsCache) return
     const playing  = (playbackMode !== PLAYMODE_NONE)
     const instVols = playing ? activeInstVolumes() : null
+    const counts   = (playing && hasNoteCountAPI) ? audio.getActiveNoteCounts(PLAYHEAD) : null
     const n = instrumentsCache.length
     for (let row = 0; row < INST_LIST_H; row++) {
         const idx = instListScroll + row
-        let level = 0
+        let level = 0, poly = 0
         if (playing && idx < n) {
             const slot = instrumentsCache[idx].slot
             level = blobLevelForVolume(instVols[slot] || 0)
+            poly  = blobPolyBucket(counts ? (counts[slot] || 0) : 0)
         }
-        if (instBlobPrev[row] === level) continue
+        // Ghost-only rows sound but expose no foreground volume — floor to blob1 so the colour shows.
+        if (poly > 0 && level === 0) level = 1
+        const key = level * 8 + poly
+        if (instBlobPrev[row] === key) continue
         const isSel = (idx === instListCursor)
         const back  = isSel ? colInstListSel : colInstListBg
+        const fg    = (poly > 0) ? blobPolyCols[poly - 1] : colInstListNumFg
         con.move(INST_LIST_Y + row, INST_LIST_X)
-        con.color_pair(colInstListNumFg, back)
+        con.color_pair(fg, back)
         print(sym['blob' + level])
-        instBlobPrev[row] = level
+        instBlobPrev[row] = key
     }
 }
 
 // ── Playback-position cursor (sample waveform + vol/pan/pitch envelope graphs) ───────────────
 // Vertical hairline glyph painted in the text layer at the column closest to the live
-// playback position of the loudest voice that's sounding the displayed sample / instrument.
-// Sub-pixel offset within the cell picks between vhairline1..vhairline7 (vhairlineN draws
-// the line N pixels from the cell's left edge; vhairline4 is the cell centre on a 7-px cell).
+// playback position of EVERY voice that's sounding the displayed sample / instrument — one
+// hairline per voice. Sub-pixel offset within the cell picks between vhairline1..vhairline7
+// (vhairlineN draws the line N pixels from the cell's left edge; vhairline4 is the cell centre
+// on a 7-px cell). When several voices want the same text column they are resolved quiet→loud,
+// so the loudest voice's hairline wins the shared column.
 
 const colPlayCursor = 215 // same hue used for the timeline play row
 
-// Last-drawn state so each frame only repaints when something actually moved.
-// envCursorPrev{Col,Tab,Inst}: the column where the inst-envelope hairline sits, plus the
-// (tab, instrument-slot) it belongs to — invalidate when either changes.
-let envCursorPrevCol  = -1
+// Last-drawn state so each frame only repaints when something actually moved. Now that we draw
+// one hairline per voice, *Cols is the list of text columns currently stamped and *Sig is a
+// signature of the resolved per-column glyphs (so we can detect when any hairline moved).
+// envCursorPrev{Tab,Inst}: the (tab, instrument-slot) the env hairlines belong to.
+let envCursorPrevCols = []
+let envCursorPrevSig  = ''
 let envCursorPrevTab  = -1
 let envCursorPrevInst = -1
-let smpCursorPrevCol  = -1
+let smpCursorPrevCols = []
+let smpCursorPrevSig  = ''
 let smpCursorPrevIdx  = -1
 
-function invalidateEnvCursor() { envCursorPrevCol = -1; envCursorPrevTab = -1; envCursorPrevInst = -1 }
-function invalidateSmpCursor() { smpCursorPrevCol = -1; smpCursorPrevIdx = -1 }
+function invalidateEnvCursor() { envCursorPrevCols = []; envCursorPrevSig = ''; envCursorPrevTab = -1; envCursorPrevInst = -1 }
+function invalidateSmpCursor() { smpCursorPrevCols = []; smpCursorPrevSig = ''; smpCursorPrevIdx = -1 }
 
 // Map a pixel-space X coordinate to (text-column, vhairline glyph) such that the glyph's
 // drawn line lands within ±½ a sub-pixel of xPix. Cell pixels are 1-indexed positions
@@ -4414,32 +4453,43 @@ function pixelToHairline(xPix) {
     return { col: col0 + 1, hair: sym['vhairline' + pos] }
 }
 
-// Loudest active voice that's currently bound to `slot` (1..255). Returns -1 if none.
-function findLoudestVoiceForInstSlot(slot) {
-    let best = -1, bestVol = -1
+// All active voices currently bound to `slot` (1..255), as {voice, vol}. Empty if none.
+function activeVoicesForInstSlot(slot) {
+    const out = []
     const numVox = (song && song.numVoices) ? song.numVoices : NUM_VOICES
     for (let v = 0; v < numVox; v++) {
         if (!audio.getVoiceActive(PLAYHEAD, v)) continue
         if (audio.getVoiceInstrument(PLAYHEAD, v) !== slot) continue
-        const vol = audio.getVoiceEffectiveVolume(PLAYHEAD, v) || 0
-        if (vol > bestVol) { bestVol = vol; best = v }
+        out.push({ voice: v, vol: audio.getVoiceEffectiveVolume(PLAYHEAD, v) || 0 })
     }
-    return best
+    return out
 }
 
-// Loudest active voice whose instrument is in `usedBy` (the inst-slot list attached to a
-// samplesCache entry — multiple instruments may share one sample). Returns -1 if none.
-function findLoudestVoiceForSampleEntry(usedBy) {
-    let best = -1, bestVol = -1
+// All active voices whose instrument is in `usedBy` (the inst-slot list attached to a
+// samplesCache entry — multiple instruments may share one sample), as {voice, vol}.
+function activeVoicesForSampleEntry(usedBy) {
+    const out = []
     const numVox = (song && song.numVoices) ? song.numVoices : NUM_VOICES
     for (let v = 0; v < numVox; v++) {
         if (!audio.getVoiceActive(PLAYHEAD, v)) continue
         const inst = audio.getVoiceInstrument(PLAYHEAD, v)
         if (usedBy.indexOf(inst) < 0) continue
-        const vol = audio.getVoiceEffectiveVolume(PLAYHEAD, v) || 0
-        if (vol > bestVol) { bestVol = vol; best = v }
+        out.push({ voice: v, vol: audio.getVoiceEffectiveVolume(PLAYHEAD, v) || 0 })
     }
-    return best
+    return out
+}
+
+// Collapse a list of {col, hair, vol} hairline hits into a per-column glyph map, resolving
+// shared columns quiet→loud so the loudest voice's hairline wins. Returns { cols, colMap, sig }
+// where cols is the sorted column list, colMap maps col→glyph, and sig detects visual changes.
+function resolveHairlineHits(hits) {
+    hits.sort((a, b) => a.vol - b.vol)
+    const colMap = {}
+    for (let i = 0; i < hits.length; i++) colMap[hits[i].col] = hits[i].hair
+    const cols = Object.keys(colMap).map(Number).sort((a, b) => a - b)
+    let sig = ''
+    for (let i = 0; i < cols.length; i++) sig += cols[i] + ':' + colMap[cols[i]] + ','
+    return { cols, colMap, sig }
 }
 
 // Pull the envelope object + JSR223 getter pair for the active inst sub-tab. Returns null
@@ -4476,14 +4526,18 @@ function paintEnvCursorAt(col, hairSym) {
 }
 
 function eraseEnvCursorIfAny() {
-    if (envCursorPrevCol < 0) return
+    if (envCursorPrevCols.length === 0) return
     const rng = envGraphTextRows()
     con.color_pair(colInstValue, 255)
-    for (let y = rng.y0; y <= rng.y1; y++) {
-        con.move(y, envCursorPrevCol)
-        print(' ')
+    for (let k = 0; k < envCursorPrevCols.length; k++) {
+        const col = envCursorPrevCols[k]
+        for (let y = rng.y0; y <= rng.y1; y++) {
+            con.move(y, col)
+            print(' ')
+        }
     }
-    envCursorPrevCol  = -1
+    envCursorPrevCols = []
+    envCursorPrevSig  = ''
     envCursorPrevTab  = -1
     envCursorPrevInst = -1
 }
@@ -4498,15 +4552,19 @@ function paintSmpCursorAt(col, hairSym) {
 }
 
 function eraseSmpCursorIfAny() {
-    if (smpCursorPrevCol < 0) return
+    if (smpCursorPrevCols.length === 0) return
     const rng = smpWaveTextRows()
     con.color_pair(colSmpPropValue, 255)
-    for (let y = rng.y0; y <= rng.y1; y++) {
-        con.move(y, smpCursorPrevCol)
-        print(' ')
+    for (let k = 0; k < smpCursorPrevCols.length; k++) {
+        const col = smpCursorPrevCols[k]
+        for (let y = rng.y0; y <= rng.y1; y++) {
+            con.move(y, col)
+            print(' ')
+        }
     }
-    smpCursorPrevCol = -1
-    smpCursorPrevIdx = -1
+    smpCursorPrevCols = []
+    smpCursorPrevSig  = ''
+    smpCursorPrevIdx  = -1
 }
 
 function drawEnvelopeCursor() {
@@ -4521,39 +4579,41 @@ function drawEnvelopeCursor() {
     const lastIdx = (env.terminatorIdx >= 0) ? env.terminatorIdx : (env.nodes.length - 1)
     if (lastIdx < 0) { eraseEnvCursorIfAny(); return }
 
-    let newCol = -1, newHair = null
+    const hits = []
     if (playbackMode !== PLAYMODE_NONE) {
-        const v = findLoudestVoiceForInstSlot(e.slot)
-        if (v >= 0) {
+        // Cumulative time at each node (mirrors xs[] in drawEnvelopeGraph) — shared by all voices.
+        let acc = 0
+        const xs = new Array(lastIdx + 1)
+        xs[0] = 0
+        for (let i = 1; i <= lastIdx; i++) { acc += env.nodes[i - 1].durSec; xs[i] = acc }
+        const totalTime = Math.max(acc, 1e-6)
+        const r = instEnvelopeRect()
+        const voices = activeVoicesForInstSlot(e.slot)
+        for (let k = 0; k < voices.length; k++) {
+            const v = voices[k].voice
             const envIdx  = audio[bundle.idxFn](PLAYHEAD, v)
             const envTime = audio[bundle.timeFn](PLAYHEAD, v)
-            if (envIdx >= 0) {
-                // Cumulative time at each node (mirrors xs[] in drawEnvelopeGraph).
-                let acc = 0
-                const xs = new Array(lastIdx + 1)
-                xs[0] = 0
-                for (let i = 1; i <= lastIdx; i++) { acc += env.nodes[i - 1].durSec; xs[i] = acc }
-                const totalTime = Math.max(acc, 1e-6)
-                const ei = Math.max(0, Math.min(lastIdx, envIdx))
-                const segLen = (ei < lastIdx) ? env.nodes[ei].durSec : 0
-                const tInto  = Math.max(0, Math.min(segLen, envTime))
-                const elapsed = xs[ei] + tInto
-                const r = instEnvelopeRect()
-                const xPix = r.x + Math.min(r.w - 1, Math.max(0, ((elapsed / totalTime) * (r.w - 1)) | 0))
-                const sel = pixelToHairline(xPix)
-                newCol = sel.col; newHair = sel.hair
-            }
+            if (envIdx < 0) continue
+            const ei = Math.max(0, Math.min(lastIdx, envIdx))
+            const segLen = (ei < lastIdx) ? env.nodes[ei].durSec : 0
+            const tInto  = Math.max(0, Math.min(segLen, envTime))
+            const elapsed = xs[ei] + tInto
+            const xPix = r.x + Math.min(r.w - 1, Math.max(0, ((elapsed / totalTime) * (r.w - 1)) | 0))
+            const sel = pixelToHairline(xPix)
+            hits.push({ col: sel.col, hair: sel.hair, vol: voices[k].vol })
         }
     }
+    const res = resolveHairlineHits(hits)
 
-    if (newCol === envCursorPrevCol &&
+    if (res.sig === envCursorPrevSig &&
         envCursorPrevTab  === instSubTab &&
         envCursorPrevInst === e.slot) return
 
     eraseEnvCursorIfAny()
-    if (newCol > 0 && newHair) {
-        paintEnvCursorAt(newCol, newHair)
-        envCursorPrevCol  = newCol
+    if (res.cols.length > 0) {
+        for (let i = 0; i < res.cols.length; i++) paintEnvCursorAt(res.cols[i], res.colMap[res.cols[i]])
+        envCursorPrevCols = res.cols
+        envCursorPrevSig  = res.sig
         envCursorPrevTab  = instSubTab
         envCursorPrevInst = e.slot
     }
@@ -4565,28 +4625,29 @@ function drawSampleCursor() {
     const s = samplesCache[smpListCursor]
     if (!s || s.len <= 0) { eraseSmpCursorIfAny(); return }
 
-    let newCol = -1, newHair = null
+    const hits = []
     if (playbackMode !== PLAYMODE_NONE) {
-        const v = findLoudestVoiceForSampleEntry(s.usedBy)
-        if (v >= 0) {
-            const pos = audio.getVoiceSamplePos(PLAYHEAD, v)
-            if (pos >= 0) {
-                const r = sampleWaveformRect()
-                const norm = Math.max(0, Math.min(1, pos / s.len))
-                const xPix = r.x + Math.min(r.w - 1, Math.max(0, (norm * (r.w - 1)) | 0))
-                const sel = pixelToHairline(xPix)
-                newCol = sel.col; newHair = sel.hair
-            }
+        const r = sampleWaveformRect()
+        const voices = activeVoicesForSampleEntry(s.usedBy)
+        for (let k = 0; k < voices.length; k++) {
+            const pos = audio.getVoiceSamplePos(PLAYHEAD, voices[k].voice)
+            if (pos < 0) continue
+            const norm = Math.max(0, Math.min(1, pos / s.len))
+            const xPix = r.x + Math.min(r.w - 1, Math.max(0, (norm * (r.w - 1)) | 0))
+            const sel = pixelToHairline(xPix)
+            hits.push({ col: sel.col, hair: sel.hair, vol: voices[k].vol })
         }
     }
+    const res = resolveHairlineHits(hits)
 
-    if (newCol === smpCursorPrevCol && smpCursorPrevIdx === smpListCursor) return
+    if (res.sig === smpCursorPrevSig && smpCursorPrevIdx === smpListCursor) return
 
     eraseSmpCursorIfAny()
-    if (newCol > 0 && newHair) {
-        paintSmpCursorAt(newCol, newHair)
-        smpCursorPrevCol = newCol
-        smpCursorPrevIdx = smpListCursor
+    if (res.cols.length > 0) {
+        for (let i = 0; i < res.cols.length; i++) paintSmpCursorAt(res.cols[i], res.colMap[res.cols[i]])
+        smpCursorPrevCols = res.cols
+        smpCursorPrevSig  = res.sig
+        smpCursorPrevIdx  = smpListCursor
     }
 }
 
