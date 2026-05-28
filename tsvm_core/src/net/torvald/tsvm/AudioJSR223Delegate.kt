@@ -156,6 +156,54 @@ class AudioJSR223Delegate(private val vm: VM) {
         return v.instrumentId and 0xFF
     }
 
+    /** Current sample-frame playback position (fractional double) of the voice. Returns -1.0
+     *  when the voice is inactive so visualisers can distinguish "no cursor" from "cursor at 0". */
+    fun getVoiceSamplePos(playhead: Int, voice: Int): Double {
+        val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19)) ?: return -1.0
+        if (!v.active) return -1.0
+        return v.samplePos
+    }
+
+    /** Volume-envelope segment index — i.e. the node the voice is currently moving *away* from
+     *  (the next node it will hit is index + 1). Returns -1 when inactive. */
+    fun getVoiceEnvVolIndex(playhead: Int, voice: Int): Int {
+        val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19)) ?: return -1
+        if (!v.active) return -1
+        return v.envIndex
+    }
+    /** Seconds elapsed *into* the current volume-envelope segment (0 ≤ t < segment.offset). */
+    fun getVoiceEnvVolTime(playhead: Int, voice: Int): Double {
+        val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19)) ?: return 0.0
+        if (!v.active) return 0.0
+        return v.envTimeSec
+    }
+
+    /** Pan-envelope segment index — see [getVoiceEnvVolIndex]. */
+    fun getVoiceEnvPanIndex(playhead: Int, voice: Int): Int {
+        val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19)) ?: return -1
+        if (!v.active) return -1
+        return v.envPanIndex
+    }
+    /** Seconds elapsed into the current pan-envelope segment. */
+    fun getVoiceEnvPanTime(playhead: Int, voice: Int): Double {
+        val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19)) ?: return 0.0
+        if (!v.active) return 0.0
+        return v.envPanTimeSec
+    }
+
+    /** Pitch/filter-envelope segment index — see [getVoiceEnvVolIndex]. */
+    fun getVoiceEnvPitchIndex(playhead: Int, voice: Int): Int {
+        val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19)) ?: return -1
+        if (!v.active) return -1
+        return v.envPfIndex
+    }
+    /** Seconds elapsed into the current pitch/filter-envelope segment. */
+    fun getVoiceEnvPitchTime(playhead: Int, voice: Int): Double {
+        val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19)) ?: return 0.0
+        if (!v.active) return 0.0
+        return v.envPfTimeSec
+    }
+
     /** Set the starting row for the next play call, resetting per-row timing and silencing active voices. */
     fun setTrackerRow(playhead: Int, row: Int) {
         getPlayhead(playhead)?.trackerState?.let { ts ->

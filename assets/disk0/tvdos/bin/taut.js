@@ -109,6 +109,9 @@ blob8: '\u00848u',
 blob9: '\u00849u',
 blob10: '\u008410u',
 
+unticked: '\u009E',
+ticked: '\u009F',
+
 /* miscellaneous */
 middot:MIDDOT,
 doubledot:"\u008419u",
@@ -3188,7 +3191,7 @@ function refreshSamplesCache() { samplesCache = buildSampleIndex() }
 // Panel area is rows PTNVIEW_OFFSET_Y .. SCRH-1 (the hint bar lives at SCRH).
 // Columns mirror the Patterns tab: list body | scroll-bar col | VERT separator | right pane.
 const SMP_LIST_X      = 1
-const SMP_LIST_BODY_W = 26                              // text width of one list row
+const SMP_LIST_BODY_W = 27                              // text width of one list row
 const SMP_LIST_W      = SMP_LIST_BODY_W + 1             // body + 1-col scroll indicator
 const SMP_LIST_SCROLL_X = SMP_LIST_X + SMP_LIST_BODY_W  // scroll-indicator column
 const SMP_LIST_Y    = PTNVIEW_OFFSET_Y
@@ -3473,6 +3476,15 @@ function drawSamplesContents(wo) {
     drawSamplesUsedBy()
     drawSampleWaveform()
     drawSamplesEditButton()
+    // The list column just repainted col 1 with a leading space on every row,
+    // so any prior blob is gone — invalidate the cache, then re-stamp blobs
+    // immediately when playback is live so the user does not see a one-frame gap.
+    invalidateSamplesBlob()
+    if (playbackMode !== PLAYMODE_NONE) drawSamplesPlayBlobs()
+    // Same reasoning for the waveform playhead cursor — drawSampleWaveform just
+    // wiped the area, so its prior column is irrelevant. Re-stamp if playing.
+    invalidateSmpCursor()
+    if (playbackMode !== PLAYMODE_NONE) drawSampleCursor()
 }
 
 let pendingEditorLaunch = null   // { progName, args[] }
@@ -3664,7 +3676,7 @@ function refreshInstrumentsCache() { instrumentsCache = buildInstrumentIndex() }
 
 // ── Layout ─────────────────────────────────────────────────────────────────
 const INST_LIST_X        = 1
-const INST_LIST_BODY_W   = 26
+const INST_LIST_BODY_W   = 27
 const INST_LIST_W        = INST_LIST_BODY_W + 1
 const INST_LIST_SCROLL_X = INST_LIST_X + INST_LIST_BODY_W
 const INST_LIST_Y        = PTNVIEW_OFFSET_Y
@@ -3788,7 +3800,17 @@ function drawInstrumentsTabStrip() {
         const pad = Math.max(0, r.w - lbl.length)
         const padL = pad >>> 1
         const padR = pad - padL
-        print(' '.repeat(padL) + lbl + ' '.repeat(padR))
+
+        let colFore = active ? colTabActive : colTabInactive
+        let colBack = active ? colTabBarBack2 : colTabBarBack
+        let colFore2 = active ? colTabBarBack2 : colTabBarBack
+        let colBack2 = active ? colTabBarBack : colTabBarBack
+        let spcL = active ? sym.leftshade : ' '
+        let spcR = active ? sym.rightshade : ' '
+
+        con.color_pair(colFore2, colBack2); print(spcL)
+        con.color_pair(colFore, colBack); print(' '.repeat(padL-1) + lbl + ' '.repeat(padR-1))
+        con.color_pair(colFore2, colBack2); print(spcR)
     }
     // 1-row gap under the tabs
     con.move(INST_TAB_Y + 1, INST_RIGHT_X)
@@ -4180,6 +4202,14 @@ function drawInstrumentsContents(wo) {
     else if (instSubTab === INST_TAB_PAN)  drawInstTabPanning(e)
     else                                   drawInstTabPitch(e)
     drawInstrumentsEditButton()
+    // List redraw wiped col 1 across every row — invalidate, then re-stamp
+    // immediately while playing so the live indicator isn't blank for a frame.
+    invalidateInstrumentsBlob()
+    if (playbackMode !== PLAYMODE_NONE) drawInstrumentsPlayBlobs()
+    // Envelope-graph cursor: the panel rebuild wiped any prior hairline; invalidate
+    // and re-stamp so the user doesn't see it blink off on tab / inst switches.
+    invalidateEnvCursor()
+    if (playbackMode !== PLAYMODE_NONE) drawEnvelopeCursor()
 }
 
 function instrumentsInput(wo, event) {
@@ -4262,6 +4292,303 @@ function registerInstrumentsMouse() {
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // END INSTRUMENTS VIEWER
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// LIVE-PLAY BLOB (Samples / Instruments column 1)
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Per-row marker painted in column 1 of the Samples / Instruments list while a
+// voice is actively sounding the corresponding sample / instrument. The glyph
+// (sym.blob1..blob10) tracks the loudest active voice that references the row;
+// sym.blob0 wipes the cell. Per-row last-drawn level is cached so the per-frame
+// repaint only redraws rows whose level actually changed — mirrors the bounded-
+// work pattern used by drawVoiceMeters().
+
+const smpBlobPrev  = new Array(SMP_LIST_H).fill(-1)
+const instBlobPrev = new Array(INST_LIST_H).fill(-1)
+
+function invalidateSamplesBlob()     { for (let i = 0; i < smpBlobPrev.length;  i++) smpBlobPrev[i]  = -1 }
+function invalidateInstrumentsBlob() { for (let i = 0; i < instBlobPrev.length; i++) instBlobPrev[i] = -1 }
+
+// Walks the live voice slots and returns {instrumentId → loudest effective volume}.
+// Silent / inactive voices are skipped. Volumes are 0.0..1.0.
+function activeInstVolumes() {
+    const out = {}
+    const numVox = (song && song.numVoices) ? song.numVoices : NUM_VOICES
+    for (let v = 0; v < numVox; v++) {
+        if (!audio.getVoiceActive(PLAYHEAD, v)) continue
+        const inst = audio.getVoiceInstrument(PLAYHEAD, v)
+        if (!inst) continue
+        const vol = audio.getVoiceEffectiveVolume(PLAYHEAD, v) || 0
+        if (!(vol > 0)) continue
+        if (!(inst in out) || out[inst] < vol) out[inst] = vol
+    }
+    return out
+}
+
+// 0.0 → 0 (clear); (0, 1] → 1..10 via ceil so the quietest audible voice still shows blob1.
+function blobLevelForVolume(v) {
+    if (!(v > 0)) return 0
+    let lvl = Math.ceil(v * 10)
+    if (lvl < 1)  lvl = 1
+    if (lvl > 10) lvl = 10
+    return lvl
+}
+
+function drawSamplesPlayBlobs() {
+    if (currentPanel !== VIEW_SAMPLES || !samplesCache) return
+    const playing  = (playbackMode !== PLAYMODE_NONE)
+    const instVols = playing ? activeInstVolumes() : null
+    const n = samplesCache.length
+    for (let row = 0; row < SMP_LIST_H; row++) {
+        const idx = smpListScroll + row
+        let level = 0
+        if (playing && idx < n) {
+            const ub = samplesCache[idx].usedBy
+            let m = 0
+            for (let j = 0; j < ub.length; j++) {
+                const w = instVols[ub[j]] || 0
+                if (w > m) m = w
+            }
+            level = blobLevelForVolume(m)
+        }
+        if (smpBlobPrev[row] === level) continue
+        const isSel = (idx === smpListCursor)
+        const back  = isSel ? colSmpListSel : colSmpListBg
+        con.move(SMP_LIST_Y + row, SMP_LIST_X)
+        con.color_pair(colSmpListNumFg, back)
+        print(sym['blob' + level])
+        smpBlobPrev[row] = level
+    }
+}
+
+function drawInstrumentsPlayBlobs() {
+    if (currentPanel !== VIEW_INSTRMNT || !instrumentsCache) return
+    const playing  = (playbackMode !== PLAYMODE_NONE)
+    const instVols = playing ? activeInstVolumes() : null
+    const n = instrumentsCache.length
+    for (let row = 0; row < INST_LIST_H; row++) {
+        const idx = instListScroll + row
+        let level = 0
+        if (playing && idx < n) {
+            const slot = instrumentsCache[idx].slot
+            level = blobLevelForVolume(instVols[slot] || 0)
+        }
+        if (instBlobPrev[row] === level) continue
+        const isSel = (idx === instListCursor)
+        const back  = isSel ? colInstListSel : colInstListBg
+        con.move(INST_LIST_Y + row, INST_LIST_X)
+        con.color_pair(colInstListNumFg, back)
+        print(sym['blob' + level])
+        instBlobPrev[row] = level
+    }
+}
+
+// ── Playback-position cursor (sample waveform + vol/pan/pitch envelope graphs) ───────────────
+// Vertical hairline glyph painted in the text layer at the column closest to the live
+// playback position of the loudest voice that's sounding the displayed sample / instrument.
+// Sub-pixel offset within the cell picks between vhairline1..vhairline7 (vhairlineN draws
+// the line N pixels from the cell's left edge; vhairline4 is the cell centre on a 7-px cell).
+
+const colPlayCursor = 215 // same hue used for the timeline play row
+
+// Last-drawn state so each frame only repaints when something actually moved.
+// envCursorPrev{Col,Tab,Inst}: the column where the inst-envelope hairline sits, plus the
+// (tab, instrument-slot) it belongs to — invalidate when either changes.
+let envCursorPrevCol  = -1
+let envCursorPrevTab  = -1
+let envCursorPrevInst = -1
+let smpCursorPrevCol  = -1
+let smpCursorPrevIdx  = -1
+
+function invalidateEnvCursor() { envCursorPrevCol = -1; envCursorPrevTab = -1; envCursorPrevInst = -1 }
+function invalidateSmpCursor() { smpCursorPrevCol = -1; smpCursorPrevIdx = -1 }
+
+// Map a pixel-space X coordinate to (text-column, vhairline glyph) such that the glyph's
+// drawn line lands within ±½ a sub-pixel of xPix. Cell pixels are 1-indexed positions
+// (left edge = pos 1), matching the vhairlineN naming.
+function pixelToHairline(xPix) {
+    const col0 = Math.floor(xPix / CELL_PW)
+    let pos    = xPix - col0 * CELL_PW + 1   // 1..CELL_PW
+    if (pos < 1) pos = 1
+    if (pos > 7) pos = 7
+    return { col: col0 + 1, hair: sym['vhairline' + pos] }
+}
+
+// Loudest active voice that's currently bound to `slot` (1..255). Returns -1 if none.
+function findLoudestVoiceForInstSlot(slot) {
+    let best = -1, bestVol = -1
+    const numVox = (song && song.numVoices) ? song.numVoices : NUM_VOICES
+    for (let v = 0; v < numVox; v++) {
+        if (!audio.getVoiceActive(PLAYHEAD, v)) continue
+        if (audio.getVoiceInstrument(PLAYHEAD, v) !== slot) continue
+        const vol = audio.getVoiceEffectiveVolume(PLAYHEAD, v) || 0
+        if (vol > bestVol) { bestVol = vol; best = v }
+    }
+    return best
+}
+
+// Loudest active voice whose instrument is in `usedBy` (the inst-slot list attached to a
+// samplesCache entry — multiple instruments may share one sample). Returns -1 if none.
+function findLoudestVoiceForSampleEntry(usedBy) {
+    let best = -1, bestVol = -1
+    const numVox = (song && song.numVoices) ? song.numVoices : NUM_VOICES
+    for (let v = 0; v < numVox; v++) {
+        if (!audio.getVoiceActive(PLAYHEAD, v)) continue
+        const inst = audio.getVoiceInstrument(PLAYHEAD, v)
+        if (usedBy.indexOf(inst) < 0) continue
+        const vol = audio.getVoiceEffectiveVolume(PLAYHEAD, v) || 0
+        if (vol > bestVol) { bestVol = vol; best = v }
+    }
+    return best
+}
+
+// Pull the envelope object + JSR223 getter pair for the active inst sub-tab. Returns null
+// for tabs without a graph (Gen.1 / Gen.2).
+function envBundleForCurrentTab(e) {
+    if (instSubTab === INST_TAB_VOL) return { env: e.decoded.volEnv,
+        idxFn: 'getVoiceEnvVolIndex',   timeFn: 'getVoiceEnvVolTime' }
+    if (instSubTab === INST_TAB_PAN) return { env: e.decoded.panEnv,
+        idxFn: 'getVoiceEnvPanIndex',   timeFn: 'getVoiceEnvPanTime' }
+    if (instSubTab === INST_TAB_PIT) return { env: e.decoded.pfEnv,
+        idxFn: 'getVoiceEnvPitchIndex', timeFn: 'getVoiceEnvPitchTime' }
+    return null
+}
+
+// First/last text row covered by the inst-tab envelope graph. Mirrors instEnvelopeRect()
+// in text-coord units so we know which rows to stamp / erase the hairline on.
+function envGraphTextRows() {
+    const graphRowY = INST_BODY_Y + 7
+    return { y0: graphRowY, y1: INST_BTN_Y - 1 }
+}
+
+// Same idea for the Samples-tab waveform.
+function smpWaveTextRows() {
+    return { y0: SMP_WAVE_Y, y1: SMP_BTN_Y - 1 }
+}
+
+function paintEnvCursorAt(col, hairSym) {
+    const rng = envGraphTextRows()
+    con.color_pair(colPlayCursor, 255)
+    for (let y = rng.y0; y <= rng.y1; y++) {
+        con.move(y, col)
+        print(hairSym)
+    }
+}
+
+function eraseEnvCursorIfAny() {
+    if (envCursorPrevCol < 0) return
+    const rng = envGraphTextRows()
+    con.color_pair(colInstValue, 255)
+    for (let y = rng.y0; y <= rng.y1; y++) {
+        con.move(y, envCursorPrevCol)
+        print(' ')
+    }
+    envCursorPrevCol  = -1
+    envCursorPrevTab  = -1
+    envCursorPrevInst = -1
+}
+
+function paintSmpCursorAt(col, hairSym) {
+    const rng = smpWaveTextRows()
+    con.color_pair(colPlayCursor, 255)
+    for (let y = rng.y0; y <= rng.y1; y++) {
+        con.move(y, col)
+        print(hairSym)
+    }
+}
+
+function eraseSmpCursorIfAny() {
+    if (smpCursorPrevCol < 0) return
+    const rng = smpWaveTextRows()
+    con.color_pair(colSmpPropValue, 255)
+    for (let y = rng.y0; y <= rng.y1; y++) {
+        con.move(y, smpCursorPrevCol)
+        print(' ')
+    }
+    smpCursorPrevCol = -1
+    smpCursorPrevIdx = -1
+}
+
+function drawEnvelopeCursor() {
+    if (currentPanel !== VIEW_INSTRMNT) { invalidateEnvCursor(); return }
+    if (!instrumentsCache || instrumentsCache.length === 0) { eraseEnvCursorIfAny(); return }
+    const e = instrumentsCache[instListCursor]
+    if (!e) { eraseEnvCursorIfAny(); return }
+    const bundle = envBundleForCurrentTab(e)
+    // Gen.1 / Gen.2 have no envelope graph — wipe any stale hairline and bail.
+    if (!bundle) { eraseEnvCursorIfAny(); return }
+    const env = bundle.env
+    const lastIdx = (env.terminatorIdx >= 0) ? env.terminatorIdx : (env.nodes.length - 1)
+    if (lastIdx < 0) { eraseEnvCursorIfAny(); return }
+
+    let newCol = -1, newHair = null
+    if (playbackMode !== PLAYMODE_NONE) {
+        const v = findLoudestVoiceForInstSlot(e.slot)
+        if (v >= 0) {
+            const envIdx  = audio[bundle.idxFn](PLAYHEAD, v)
+            const envTime = audio[bundle.timeFn](PLAYHEAD, v)
+            if (envIdx >= 0) {
+                // Cumulative time at each node (mirrors xs[] in drawEnvelopeGraph).
+                let acc = 0
+                const xs = new Array(lastIdx + 1)
+                xs[0] = 0
+                for (let i = 1; i <= lastIdx; i++) { acc += env.nodes[i - 1].durSec; xs[i] = acc }
+                const totalTime = Math.max(acc, 1e-6)
+                const ei = Math.max(0, Math.min(lastIdx, envIdx))
+                const segLen = (ei < lastIdx) ? env.nodes[ei].durSec : 0
+                const tInto  = Math.max(0, Math.min(segLen, envTime))
+                const elapsed = xs[ei] + tInto
+                const r = instEnvelopeRect()
+                const xPix = r.x + Math.min(r.w - 1, Math.max(0, ((elapsed / totalTime) * (r.w - 1)) | 0))
+                const sel = pixelToHairline(xPix)
+                newCol = sel.col; newHair = sel.hair
+            }
+        }
+    }
+
+    if (newCol === envCursorPrevCol &&
+        envCursorPrevTab  === instSubTab &&
+        envCursorPrevInst === e.slot) return
+
+    eraseEnvCursorIfAny()
+    if (newCol > 0 && newHair) {
+        paintEnvCursorAt(newCol, newHair)
+        envCursorPrevCol  = newCol
+        envCursorPrevTab  = instSubTab
+        envCursorPrevInst = e.slot
+    }
+}
+
+function drawSampleCursor() {
+    if (currentPanel !== VIEW_SAMPLES) { invalidateSmpCursor(); return }
+    if (!samplesCache || samplesCache.length === 0) { eraseSmpCursorIfAny(); return }
+    const s = samplesCache[smpListCursor]
+    if (!s || s.len <= 0) { eraseSmpCursorIfAny(); return }
+
+    let newCol = -1, newHair = null
+    if (playbackMode !== PLAYMODE_NONE) {
+        const v = findLoudestVoiceForSampleEntry(s.usedBy)
+        if (v >= 0) {
+            const pos = audio.getVoiceSamplePos(PLAYHEAD, v)
+            if (pos >= 0) {
+                const r = sampleWaveformRect()
+                const norm = Math.max(0, Math.min(1, pos / s.len))
+                const xPix = r.x + Math.min(r.w - 1, Math.max(0, (norm * (r.w - 1)) | 0))
+                const sel = pixelToHairline(xPix)
+                newCol = sel.col; newHair = sel.hair
+            }
+        }
+    }
+
+    if (newCol === smpCursorPrevCol && smpCursorPrevIdx === smpListCursor) return
+
+    eraseSmpCursorIfAny()
+    if (newCol > 0 && newHair) {
+        paintSmpCursorAt(newCol, newHair)
+        smpCursorPrevCol = newCol
+        smpCursorPrevIdx = smpListCursor
+    }
+}
 
 const panelSamples  = new win.WindowObject(1, PTNVIEW_OFFSET_Y, SCRW, PTNVIEW_HEIGHT, samplesInput,    drawSamplesContents,    undefined, ()=>{})
 const panelInstrmnt = new win.WindowObject(1, PTNVIEW_OFFSET_Y, SCRW, PTNVIEW_HEIGHT, instrumentsInput, drawInstrumentsContents, undefined, ()=>{})
@@ -4425,6 +4752,12 @@ function stopPlayback() {
     playbackMode = PLAYMODE_NONE
     clampPatternGrid()
     clearVoiceMeters()
+    // updatePlayback no longer fires after this point — paint the final clear
+    // pass ourselves so stale blobs / hairlines don't linger on Samples / Instruments.
+    drawSamplesPlayBlobs()
+    drawInstrumentsPlayBlobs()
+    drawSampleCursor()
+    drawEnvelopeCursor()
 }
 
 function updatePlayback() {
@@ -4437,10 +4770,19 @@ function updatePlayback() {
         else if (currentPanel === VIEW_PATTERN_DETAILS && song.numPats > 0) { simStateKey = ''; redrawPanel() }
         drawAlwaysOnElems()
         clearVoiceMeters()
+        // playbackMode is NONE now → these paint a final blob0 / clear-cursor pass.
+        drawSamplesPlayBlobs()
+        drawInstrumentsPlayBlobs()
+        drawSampleCursor()
+        drawEnvelopeCursor()
         return
     }
 
     drawVoiceMeters()
+    drawSamplesPlayBlobs()
+    drawInstrumentsPlayBlobs()
+    drawSampleCursor()
+    drawEnvelopeCursor()
 
     const nowCue = audio.getCuePosition(PLAYHEAD)
     const nowRow = audio.getTrackerRow(PLAYHEAD)
