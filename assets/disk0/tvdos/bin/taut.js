@@ -3217,6 +3217,13 @@ const colSmpUsedHdr    = colVoiceHdr
 const colSmpUsedFg     = colInst
 const colSmpWaveLine   = 77        // bright cyan-ish; visible on dark bg
 const colSmpWaveMid    = 246       // dim grey for zero-line
+const colSmpWaveFunk   = 221       // orange — loop bytes live-inverted by funk repeat (S$Fx)
+
+// Funk-repeat introspection API (getVoiceFunkSpeed / getInstrumentFunkMask) ships with this
+// feature; on an un-rebuilt host VM it's absent and the waveform stays the stored sample.
+const hasFunkAPI = (typeof audio !== 'undefined' &&
+    typeof audio.getVoiceFunkSpeed === 'function' &&
+    typeof audio.getInstrumentFunkMask === 'function')
 
 let smpListScroll = 0
 let smpListCursor = 0
@@ -3394,6 +3401,25 @@ function clearSampleWaveformArea() {
     graphics.plotRect(r.x-2, r.y-2, r.w+4, r.h+4, 255)   // 255 = transparent
 }
 
+// Instrument slot of an active voice that's funk-repeating (S$Fx) one of the sample's `usedBy`
+// instruments, or -1. Returns -1 when not playing / no funking voice / API absent — so the
+// overlay (and its realtime redraw) only engages while a note is actually being funk-repeated.
+function findFunkInstForSample(usedBy) {
+    if (!hasFunkAPI) return -1
+    const numVox = (song && song.numVoices) ? song.numVoices : NUM_VOICES
+    for (let v = 0; v < numVox; v++) {
+        if (!audio.getVoiceActive(PLAYHEAD, v)) continue
+        if (audio.getVoiceFunkSpeed(PLAYHEAD, v) <= 0) continue
+        const inst = audio.getVoiceInstrument(PLAYHEAD, v)
+        if (usedBy.indexOf(inst) >= 0) return inst
+    }
+    return -1
+}
+
+// Whether the last drawSampleWaveform() painted a live funk overlay. Lets the per-frame driver
+// (tickFunkWaveform) repaint once more when funk stops, restoring the stored waveform.
+let funkWaveLast = false
+
 function drawSampleWaveform() {
     const r = sampleWaveformRect()
     const wx0 = r.x, wy0 = r.y, wW = r.w, wH = r.h
@@ -3402,7 +3428,25 @@ function drawSampleWaveform() {
     clearSampleWaveformArea()
 
     const s = (samplesCache && samplesCache[smpListCursor]) || null
-    if (!s || s.len === 0) return
+    if (!s || s.len === 0) { funkWaveLast = false; return }
+
+    // Funk-repeat live overlay: only while playing AND a voice is funk-repeating this sample.
+    // The mask flips loop-region bytes by 0xFF; we apply it to the displayed bytes and tint the
+    // affected columns so it's visibly the live effect, not the stored sample. funkLE is clamped
+    // to the snapshot mask's coverage so the bit lookup can never run off the (host) array.
+    let funkMask = null, funkLS = 0, funkLE = 0
+    if (playbackMode !== PLAYMODE_NONE) {
+        const fi = findFunkInstForSample(s.usedBy)
+        if (fi > 0) {
+            const m = audio.getInstrumentFunkMask(fi)
+            if (m && m.length > 0 && s.loopEnd > s.loopStart) {
+                funkMask = m
+                funkLS = s.loopStart
+                funkLE = Math.min(s.loopEnd, funkLS + m.length * 8)
+            }
+        }
+    }
+    funkWaveLast = (funkMask !== null)
 
     const bankIdxFirst = (s.ptr / TAUT_SBANK_SIZE) | 0
     const bankOff      = s.ptr - bankIdxFirst * TAUT_SBANK_SIZE
@@ -3423,7 +3467,7 @@ function drawSampleWaveform() {
         const end   = Math.min(s.len, (((col + 1) * s.len / wW) | 0))
         if (end <= start) continue
 
-        let mn = 255, mx = 0
+        let mn = 255, mx = 0, flipped = false
         // Step in coarse strides for speed when samples are long.
         const step = Math.max(1, ((end - start) / 8) | 0)
         for (let p = start; p < end; p += step) {
@@ -3434,7 +3478,11 @@ function drawSampleWaveform() {
                 curBank = bank
             }
             const off = abs - bank * TAUT_SBANK_SIZE
-            const v = sys.peek(memBase - off) & 0xFF
+            let v = sys.peek(memBase - off) & 0xFF
+            if (funkMask !== null && p >= funkLS && p < funkLE) {
+                const k = p - funkLS
+                if ((funkMask[k >>> 3] >>> (k & 7)) & 1) { v ^= 0xFF; flipped = true }
+            }
             if (v < mn) mn = v
             if (v > mx) mx = v
         }
@@ -3442,11 +3490,22 @@ function drawSampleWaveform() {
         const yTop = wy0 + ((wH * (255 - mx)) / 255) | 0
         const yBot = wy0 + ((wH * (255 - mn)) / 255) | 0
         const h = Math.max(1, yBot - yTop + 1)
-        graphics.plotRect(wx0 + col, yTop, 1, h, colSmpWaveLine)
+        graphics.plotRect(wx0 + col, yTop, 1, h, flipped ? colSmpWaveFunk : colSmpWaveLine)
     }
 
     // Restore bank 0 for playback (engine expects bank 0 as default)
     audio.setSampleBank(prevBank)
+}
+
+// Per-frame driver: while a voice is funk-repeating the displayed sample, repaint the waveform
+// each frame so the overlay tracks the live mask. One extra repaint fires after funk stops
+// (funkWaveLast) to restore the stored waveform.
+function tickFunkWaveform() {
+    if (currentPanel !== VIEW_SAMPLES) { funkWaveLast = false; return }
+    const s = (samplesCache && samplesCache[smpListCursor]) || null
+    const funking = !!(s && s.len > 0 && playbackMode !== PLAYMODE_NONE &&
+                       findFunkInstForSample(s.usedBy) > 0)
+    if (funking || funkWaveLast) drawSampleWaveform()
 }
 
 function drawSamplesEditButton() {
@@ -4817,6 +4876,7 @@ function stopPlayback() {
     // pass ourselves so stale blobs / hairlines don't linger on Samples / Instruments.
     drawSamplesPlayBlobs()
     drawInstrumentsPlayBlobs()
+    tickFunkWaveform()   // restore the stored waveform now that funk repeat has stopped
     drawSampleCursor()
     drawEnvelopeCursor()
 }
@@ -4834,6 +4894,7 @@ function updatePlayback() {
         // playbackMode is NONE now → these paint a final blob0 / clear-cursor pass.
         drawSamplesPlayBlobs()
         drawInstrumentsPlayBlobs()
+        tickFunkWaveform()   // restore the stored waveform now that playback has stopped
         drawSampleCursor()
         drawEnvelopeCursor()
         return
@@ -4842,6 +4903,7 @@ function updatePlayback() {
     drawVoiceMeters()
     drawSamplesPlayBlobs()
     drawInstrumentsPlayBlobs()
+    tickFunkWaveform()   // realtime funk-repeat overlay (no-op unless funking this sample)
     drawSampleCursor()
     drawEnvelopeCursor()
 

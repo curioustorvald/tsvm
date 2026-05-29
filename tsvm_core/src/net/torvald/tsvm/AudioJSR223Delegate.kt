@@ -163,6 +163,24 @@ class AudioJSR223Delegate(private val vm: VM) {
         return counts
     }
 
+    /** Funk-repeat (S$Fx) speed currently driving the voice: 0 = off, otherwise the per-tick
+     *  accumulator increment. A non-zero value on an active voice means the voice is live-inverting
+     *  its instrument's loop region right now — visualisers can use this to gate the funk overlay. */
+    fun getVoiceFunkSpeed(playhead: Int, voice: Int): Int {
+        val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19)) ?: return 0
+        if (!v.active) return 0
+        return v.funkSpeed
+    }
+
+    /** Snapshot of an instrument's funk-repeat XOR mask (one bit per loop-region byte; a set bit
+     *  flips that byte by 0xFF during playback). Returns the mask bytes as ints (0..255), or an
+     *  empty array when the instrument has never been funk-repeated. The render thread mutates the
+     *  live mask, so this returns a copy — the caller gets a stable single-frame view. */
+    fun getInstrumentFunkMask(slot: Int): IntArray {
+        val mask = getFirstSnd()?.instruments?.get(slot and 0xFF)?.funkMask ?: return IntArray(0)
+        return IntArray(mask.size) { mask[it].toInt() and 0xFF }
+    }
+
     /** Live noteVal (0..65535, 4096-TET) of the foreground voice — the value the mixer is using
      *  *right now* including any in-flight vibrato / arpeggio / portamento delta. Returns 0 for
      *  inactive voices. */
