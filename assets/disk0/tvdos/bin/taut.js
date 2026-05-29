@@ -3379,10 +3379,11 @@ function drawSamplesUsedBy() {
 }
 
 // ── Waveform rendering ──────────────────────────────────────────────────────
-// Renders one sample under the right panel as a min/max envelope, using the
-// graphics layer. Samples are unsigned 8-bit; bank-switch is required because
-// only 512 K of the 8 MB pool is mapped at a time. We restore bank 0 (the
-// playback-expected default) when done.
+// Renders one sample under the right panel as baseline-filled bars (each bar is
+// a plotRect anchored at the zero line, extending to the sample amplitude),
+// using the graphics layer. Samples are unsigned 8-bit; bank-switch is required
+// because only 512 K of the 8 MB pool is mapped at a time. We restore bank 0
+// (the playback-expected default) when done.
 
 // Pixel rect occupied by the waveform inside the Samples viewer. Both the
 // waveform painter and the leave-Samples cleanup need to reach for the same
@@ -3402,8 +3403,9 @@ function clearSampleWaveformArea() {
 }
 
 // Instrument slot of an active voice that's funk-repeating (S$Fx) one of the sample's `usedBy`
-// instruments, or -1. Returns -1 when not playing / no funking voice / API absent — so the
-// overlay (and its realtime redraw) only engages while a note is actually being funk-repeated.
+// instruments, or -1. Returns -1 when not playing / no funking voice / API absent. Drives the
+// per-frame repaint cadence only — the *displayed* mask comes from funkMaskForSample, which also
+// honours masks that persist after the funking voice has gone idle.
 function findFunkInstForSample(usedBy) {
     if (!hasFunkAPI) return -1
     const numVox = (song && song.numVoices) ? song.numVoices : NUM_VOICES
@@ -3416,8 +3418,28 @@ function findFunkInstForSample(usedBy) {
     return -1
 }
 
-// Whether the last drawSampleWaveform() painted a live funk overlay. Lets the per-frame driver
-// (tickFunkWaveform) repaint once more when funk stops, restoring the stored waveform.
+// Funk XOR mask to DISPLAY for this sample, or null. The per-instrument mask persists in the engine
+// for the whole playback session (cleared only on stop-and-replay), so once a loop has been
+// funk-inverted the overlay must stay even after the funking voice goes idle — matching ProTracker,
+// whose destructive EFx edits never revert until the song is reloaded. Prefer an actively-funking
+// instrument (its mask is live this frame); otherwise show any usedBy instrument that still carries
+// a non-empty mask from earlier in the session.
+function funkMaskForSample(usedBy, activeInst) {
+    if (!hasFunkAPI) return null
+    if (activeInst > 0) {
+        const m = audio.getInstrumentFunkMask(activeInst)
+        if (m && m.length > 0) return m
+    }
+    for (let i = 0; i < usedBy.length; i++) {
+        const m = audio.getInstrumentFunkMask(usedBy[i])
+        if (m && m.length > 0) return m
+    }
+    return null
+}
+
+// Whether a voice was actively funk-repeating the displayed sample on the last paint. Drives the
+// per-frame repaint cadence in tickFunkWaveform (repaint while the live mask changes, plus one
+// settling frame after it stops). The painted overlay itself persists — the engine keeps the mask.
 let funkWaveLast = false
 
 function drawSampleWaveform() {
@@ -3430,67 +3452,85 @@ function drawSampleWaveform() {
     const s = (samplesCache && samplesCache[smpListCursor]) || null
     if (!s || s.len === 0) { funkWaveLast = false; return }
 
-    // Funk-repeat live overlay: only while playing AND a voice is funk-repeating this sample.
-    // The mask flips loop-region bytes by 0xFF; we apply it to the displayed bytes and tint the
-    // affected columns so it's visibly the live effect, not the stored sample. funkLE is clamped
-    // to the snapshot mask's coverage so the bit lookup can never run off the (host) array.
+    // Funk-repeat overlay. The per-instrument XOR mask flips loop-region bytes by 0xFF and persists
+    // in the engine until stop-and-replay, so the overlay must remain even after the voice that
+    // funked the sample goes idle — matching ProTracker's destructive EFx, whose inverted bytes
+    // never revert until the song is reloaded. We therefore key the overlay off the persisted mask,
+    // not off a currently-active funking voice. funkLE is clamped to the snapshot mask's coverage so
+    // the bit lookup can never run off the (host) array.
     let funkMask = null, funkLS = 0, funkLE = 0
-    if (playbackMode !== PLAYMODE_NONE) {
-        const fi = findFunkInstForSample(s.usedBy)
-        if (fi > 0) {
-            const m = audio.getInstrumentFunkMask(fi)
-            if (m && m.length > 0 && s.loopEnd > s.loopStart) {
-                funkMask = m
-                funkLS = s.loopStart
-                funkLE = Math.min(s.loopEnd, funkLS + m.length * 8)
-            }
+    let activeFunk = false
+    if (playbackMode !== PLAYMODE_NONE && s.loopEnd > s.loopStart) {
+        const activeInst = findFunkInstForSample(s.usedBy)
+        activeFunk = (activeInst > 0)
+        const m = funkMaskForSample(s.usedBy, activeInst)
+        if (m) {
+            funkMask = m
+            funkLS = s.loopStart
+            funkLE = Math.min(s.loopEnd, funkLS + m.length * 8)
         }
     }
-    funkWaveLast = (funkMask !== null)
+    funkWaveLast = activeFunk
 
-    const bankIdxFirst = (s.ptr / TAUT_SBANK_SIZE) | 0
-    const bankOff      = s.ptr - bankIdxFirst * TAUT_SBANK_SIZE
-    const memBase      = audio.getMemAddr()
-    const prevBank     = audio.getSampleBank() || 0
-
-    // Centre line
-    graphics.plotRect(wx0, wy0 + (wH >>> 1), wW, 1, colSmpWaveMid)
-
-    // Walk the sample at one column per output pixel. For each column we read
-    // a chunk and reduce to min/max; vertical extent comes from (max-min).
-    // Bank switching is per-step: each output column may straddle banks.
-    const samplesPerCol = Math.max(1, (s.len / wW) | 0)
-    let pos = 0  // byte offset into the sample, 0..len-1
+    const memBase  = audio.getMemAddr()
+    const prevBank = audio.getSampleBank() || 0
     let curBank = -1
-    for (let col = 0; col < wW; col++) {
-        const start = (col * s.len / wW) | 0
-        const end   = Math.min(s.len, (((col + 1) * s.len / wW) | 0))
-        if (end <= start) continue
 
-        let mn = 255, mx = 0, flipped = false
-        // Step in coarse strides for speed when samples are long.
-        const step = Math.max(1, ((end - start) / 8) | 0)
-        for (let p = start; p < end; p += step) {
-            const abs = s.ptr + p
-            const bank = (abs / TAUT_SBANK_SIZE) | 0
-            if (bank !== curBank) {
-                audio.setSampleBank(bank)
-                curBank = bank
-            }
-            const off = abs - bank * TAUT_SBANK_SIZE
-            let v = sys.peek(memBase - off) & 0xFF
-            if (funkMask !== null && p >= funkLS && p < funkLE) {
-                const k = p - funkLS
-                if ((funkMask[k >>> 3] >>> (k & 7)) & 1) { v ^= 0xFF; flipped = true }
-            }
-            if (v < mn) mn = v
-            if (v > mx) mx = v
+    // Zero line and value→y mapping (unsigned 8-bit: 255 → top, 0 → bottom).
+    const baseY = wy0 + (wH >>> 1)
+    const yOf = (v) => wy0 + (((wH * (255 - v)) / 255) | 0)
+
+    // Read sample byte p (0..len-1) applying the live funk-flip overlay; sets the
+    // shared `flippedAny` flag whenever a byte was inverted by the funk mask.
+    let flippedAny = false
+    const readByte = (p) => {
+        const abs = s.ptr + p
+        const bank = (abs / TAUT_SBANK_SIZE) | 0
+        if (bank !== curBank) { audio.setSampleBank(bank); curBank = bank }
+        let v = sys.peek(memBase - (abs - bank * TAUT_SBANK_SIZE)) & 0xFF
+        if (funkMask !== null && p >= funkLS && p < funkLE) {
+            const k = p - funkLS
+            if ((funkMask[k >>> 3] >>> (k & 7)) & 1) { v ^= 0xFF; flippedAny = true }
         }
-        // unsigned 8-bit → centred around 128
-        const yTop = wy0 + ((wH * (255 - mx)) / 255) | 0
-        const yBot = wy0 + ((wH * (255 - mn)) / 255) | 0
-        const h = Math.max(1, yBot - yTop + 1)
-        graphics.plotRect(wx0 + col, yTop, 1, h, flipped ? colSmpWaveFunk : colSmpWaveLine)
+        return v
+    }
+
+    // Zero/baseline line
+    graphics.plotRect(wx0, baseY, wW, 1, colSmpWaveMid)
+
+    // Per-sample bar width: how many pixels each sample spans, at least 1px.
+    const rectW = Math.max(1, Math.ceil(wW / s.len))
+
+    if (s.len <= wW) {
+        // Fewer samples than pixels: one baseline-filled bar per sample.
+        for (let i = 0; i < s.len; i++) {
+            flippedAny = false
+            const yv = yOf(readByte(i))
+            const top = Math.min(baseY, yv)
+            graphics.plotRect(wx0 + ((i * wW / s.len) | 0), top, rectW,
+                              Math.max(1, Math.abs(baseY - yv)),
+                              flippedAny ? colSmpWaveFunk : colSmpWaveLine)
+        }
+    } else {
+        // More samples than pixels: reduce each 1px column to its min/max and
+        // fill from the baseline through the envelope (a solid filled waveform).
+        for (let col = 0; col < wW; col++) {
+            const start = (col * s.len / wW) | 0
+            const end   = Math.min(s.len, (((col + 1) * s.len / wW) | 0))
+            if (end <= start) continue
+            const step = Math.max(1, ((end - start) / 8) | 0)
+            let mn = 255, mx = 0
+            flippedAny = false
+            for (let p = start; p < end; p += step) {
+                const v = readByte(p)
+                if (v < mn) mn = v
+                if (v > mx) mx = v
+            }
+            const yTop = Math.min(baseY, yOf(mx))
+            const yBot = Math.max(baseY, yOf(mn))
+            graphics.plotRect(wx0 + col, yTop, 1, Math.max(1, yBot - yTop + 1),
+                              flippedAny ? colSmpWaveFunk : colSmpWaveLine)
+        }
     }
 
     // Restore bank 0 for playback (engine expects bank 0 as default)
@@ -3498,8 +3538,8 @@ function drawSampleWaveform() {
 }
 
 // Per-frame driver: while a voice is funk-repeating the displayed sample, repaint the waveform
-// each frame so the overlay tracks the live mask. One extra repaint fires after funk stops
-// (funkWaveLast) to restore the stored waveform.
+// each frame so the overlay tracks the live mask. One settling repaint fires after funk stops
+// (funkWaveLast); the persisted overlay then stays until the engine clears the mask on replay.
 function tickFunkWaveform() {
     if (currentPanel !== VIEW_SAMPLES) { funkWaveLast = false; return }
     const s = (samplesCache && samplesCache[smpListCursor]) || null
