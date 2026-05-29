@@ -3344,15 +3344,15 @@ function drawSamplesProperties() {
 let smpUsedScroll = 0
 
 function drawSamplesUsedBy() {
-    const rightW = SCRW - SMP_RIGHT_X + 1
-    con.move(SMP_USED_Y, SMP_RIGHT_X)
-    con.color_pair(colSmpUsedHdr, colBackPtn)
-    print('Used by instruments:'.padEnd(rightW))
-
     const s = (samplesCache && samplesCache[smpListCursor]) || null
     const used = s ? s.usedBy : []
     const names = (songsMeta && songsMeta.instNames) || []
     const visible = SMP_USED_LIST_H
+
+    const rightW = SCRW - SMP_RIGHT_X + 1
+    con.move(SMP_USED_Y, SMP_RIGHT_X)
+    con.color_pair(colSmpUsedHdr, colBackPtn)
+    print(`Used by instruments (${used.length}):`.padEnd(rightW))
 
     if (smpUsedScroll > Math.max(0, used.length - visible))
         smpUsedScroll = Math.max(0, used.length - visible)

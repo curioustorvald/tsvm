@@ -138,7 +138,11 @@ def parse_instruments(data: bytes, h: S3MHeader) -> list:
             continue
         inst = S3MInstrument()
         inst.itype    = data[ptr]
-        inst.filename = data[ptr+1:ptr+13].rstrip(b'\x00').decode('latin-1', errors='replace')
+        # 12-byte DOS filename field; null-terminated with possible trailing
+        # garbage after the terminator (ST3 doesn't zero the tail). Truncate at
+        # the first null. This field carries the per-sample short name (e.g.
+        # 'HIT1') as distinct from the 28-byte title at 0x30.
+        inst.filename = data[ptr+1:ptr+13].split(b'\x00', 1)[0].decode('latin-1', errors='replace')
         # memseg: 3 bytes at offsets 0x0D,0x0E,0x0F — high byte first (quirk)
         memseg_hi  = data[ptr + 0x0D]
         memseg_lo  = struct.unpack_from('<H', data, ptr + 0x0E)[0]
@@ -939,17 +943,21 @@ def assemble_taud(h: S3MHeader, instruments: list, patterns: list,
         cur_off += len(pat_comp) + len(cue_comp)
 
     # ── Project Data (optional) ──────────────────────────────────────────────
-    # S3M instruments and samples share the same slot space, so the names go
-    # into both INam and SNam (1-based; slot 0 empty).
+    # S3M instruments and samples share the same slot space, but carry two
+    # distinct name fields: the 28-byte title (inst.name → INam) and the
+    # 12-byte DOS filename (inst.filename → SNam). e.g. WHEN.s3m instrument #1
+    # is titled "(c) Purple Motion / 1994" with sample name 'HIT1'.
     proj_data = b''
     proj_off  = 0
     if with_project_data:
-        names = [''] + [(inst.name if inst is not None else '')
-                        for inst in instruments[:255]]
+        inst_names   = [''] + [(inst.name     if inst is not None else '')
+                               for inst in instruments[:255]]
+        sample_names = [''] + [(inst.filename if inst is not None else '')
+                               for inst in instruments[:255]]
         proj_data = build_project_data(
             project_name=h.title,
-            instrument_names=names,
-            sample_names=names,
+            instrument_names=inst_names,
+            sample_names=sample_names,
         )
         if proj_data:
             proj_off = cur_off

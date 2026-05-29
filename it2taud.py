@@ -1190,13 +1190,29 @@ def build_sample_inst_bin_it(samples_or_proxy: list,
     sample_bin = bytearray(SAMPLEBIN_SIZE)
     offsets    = {}
     pos        = 0
+    # IT use_instruments mode points many Taud instrument slots at the same
+    # underlying sample object (e.g. seven "ChipBass.*" instruments all play
+    # "ChipBass.looped"). Write each distinct sample's PCM into the pool once and
+    # let every referencing slot share the offset, rather than emitting one
+    # identical copy per slot. `pool_order` records the distinct samples in
+    # ascending-offset order — the order taut.js's sample viewer expects SNam to
+    # follow (it dedupes instrument records by (ptr,len), sorts by ptr, and
+    # matches SNam[i+1] positionally — see taut.js buildSampleIndex).
+    written    = {}     # id(sample) -> pool offset already written
+    pool_order = []     # distinct sample objects, in pool (ascending-offset) order
     for idx, s in pcm_list:
+        shared = written.get(id(s))
+        if shared is not None:
+            offsets[idx] = shared
+            continue
         n = min(len(s.sample_data), SAMPLEBIN_SIZE - pos)
         if n <= 0:
             vprint(f"  warning: sample bin full, dropping '{s.name}'")
             offsets[idx] = 0; s.length = 0; continue
         sample_bin[pos:pos+n] = s.sample_data[:n]
         offsets[idx] = pos
+        written[id(s)] = pos
+        pool_order.append(s)
         if n < len(s.sample_data):
             vprint(f"  warning: '{s.name}' truncated {len(s.sample_data)} → {n}")
             s.length = n
@@ -1384,7 +1400,7 @@ def build_sample_inst_bin_it(samples_or_proxy: list,
 
         vprint(f"  instrument[{taud_idx}] '{s.name}' ptr:{ptr} c5spd:{s.c5_speed}")
 
-    return bytes(sample_bin) + bytes(inst_bin), offsets, ratio
+    return bytes(sample_bin) + bytes(inst_bin), offsets, ratio, pool_order
 
 
 # ── Pattern builder ───────────────────────────────────────────────────────────
@@ -1899,7 +1915,7 @@ def assemble_taud(h: ITHeader, samples: list, instruments: list,
                 'dct':        inst.dct,
                 'dca':        inst.dca,
             }
-        sampleinst_raw, _, sample_ratio = build_sample_inst_bin_it(proxy, instr_data_by_slot)
+        sampleinst_raw, _, sample_ratio, pool_order = build_sample_inst_bin_it(proxy, instr_data_by_slot)
     else:
         # Samples referenced directly; proxy is samples list (0-based, slot 0 unused)
         proxy = [None] + list(samples)
@@ -1908,7 +1924,7 @@ def assemble_taud(h: ITHeader, samples: list, instruments: list,
             for i, s in enumerate(samples)
             if s is not None
         }
-        sampleinst_raw, _, sample_ratio = build_sample_inst_bin_it(proxy)
+        sampleinst_raw, _, sample_ratio, pool_order = build_sample_inst_bin_it(proxy)
 
     assert len(sampleinst_raw) == SAMPLEINST_SIZE
 
@@ -1961,8 +1977,14 @@ def assemble_taud(h: ITHeader, samples: list, instruments: list,
     if with_project_data:
         inst_names = [''] + [(inst.name if inst is not None else '')
                              for inst in instruments[:255]]
-        smp_names  = [''] + [(s.name if s is not None else '')
-                             for s in samples[:255]]
+        # SNam mirrors the deduplicated sample pool: one entry per distinct
+        # sample, in pool order, named after the sample itself. taut.js dedupes
+        # instrument records by (ptr,len), sorts ascending by ptr, and matches
+        # SNam[i+1] positionally to that list, so this ordering labels every
+        # sample correctly and a shared sample (e.g. "ChipBass.looped") appears
+        # exactly once instead of once per referencing instrument slot.
+        smp_names  = [''] + [(getattr(s, 'name', '') or '')
+                             for s in pool_order[:255]]
         proj_data = build_project_data(
             project_name=h.title,
             instrument_names=inst_names,
