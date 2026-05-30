@@ -4829,10 +4829,19 @@ function nudgeTickRate(delta) {
     drawAlwaysOnElems()
 }
 
+// Drop accumulated funk-repeat (S$Fx) run-state and loop-inversion masks so a fresh play
+// starts deterministic instead of inheriting a prior session's funkSpeed / inverted bytes.
+// Engine still keeps PT2-style persistence across a natural loop; older runtimes lacking the
+// API simply retain the inversions.
+function clearFunkState() {
+    if (typeof audio.resetFunkState === 'function') audio.resetFunkState(PLAYHEAD)
+}
+
 function startPlaySong() {
     restoreFullSongParams()
     reuploadPatternsIfNeeded()
     audio.stop(PLAYHEAD)
+    clearFunkState()
     audio.setCuePosition(PLAYHEAD, cueIdx)
     audio.setTrackerRow(PLAYHEAD, 0)
     cursorRow = 0
@@ -4847,6 +4856,7 @@ function startPlayCue() {
     restoreFullSongParams()
     reuploadPatternsIfNeeded()
     audio.stop(PLAYHEAD)
+    clearFunkState()
     audio.setCuePosition(PLAYHEAD, cueIdx)
     audio.setTrackerRow(PLAYHEAD, 0)
     playStartCue = cueIdx
@@ -4864,6 +4874,7 @@ function startPlayRow(fromRow, fromCue) {
     if (fromRow === undefined) fromRow = cursorRow
     if (fromCue === undefined) fromCue = cueIdx
     audio.stop(PLAYHEAD)
+    clearFunkState()
     audio.setCuePosition(PLAYHEAD, fromCue)
     audio.setTrackerRow(PLAYHEAD, fromRow)
     playStartCue = fromCue
@@ -4880,6 +4891,7 @@ function startPlayPattern() {
     audio.stop(PLAYHEAD)
     audio.setBPM(PLAYHEAD, song.bpm)
     audio.uploadCue(PREVIEW_CUE_IDX, buildPreviewCue(patternIdx))
+    clearFunkState()
     audio.setCuePosition(PLAYHEAD, PREVIEW_CUE_IDX)
     audio.setTrackerRow(PLAYHEAD, 0)
     playStartCue = PREVIEW_CUE_IDX
@@ -4896,6 +4908,7 @@ function startPlayPatternRow() {
     audio.stop(PLAYHEAD)
     audio.setBPM(PLAYHEAD, song.bpm)
     audio.uploadCue(PREVIEW_CUE_IDX, buildPreviewCue(patternIdx))
+    clearFunkState()
     audio.setCuePosition(PLAYHEAD, PREVIEW_CUE_IDX)
     audio.setTrackerRow(PLAYHEAD, patternGridRow)
     playStartCue = PREVIEW_CUE_IDX

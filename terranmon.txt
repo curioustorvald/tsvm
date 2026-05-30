@@ -2409,8 +2409,9 @@ TODO:
     [x] expose song table on UI (test with `insaniq2.taud`)
     [x] 0x0000 - no-op; 0x0001 - key-off; 0x0002 - note-cut 0x0010..0x001F - INT0..INTF
         [ ] establish hooks for the interrupts
-    [ ] Samples and Instruments view (viewer on taut.js; editor on separate .js)
+    [x] Samples and Instruments view (viewer on taut.js; editor on separate .js)
         follow the ImpulseTracker design first, then improve from there
+    [ ] Sample desig for instrument in Pitch-Volume space (one rectangle = one patch). If undefined, the old sample pointer falls thru
 
 TODO - list of demo songs that MUST ship with Microtone:
     * 4THSYM (rename to Fourth Symmetriad) — excellent piece for demonstrating NNAs and filter envelopes

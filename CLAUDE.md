@@ -165,6 +165,14 @@ Peripheral memories can be accessed using `vm.peek()` and `vm.poke()` functions,
 
 - The 'gzip' namespace in TSVM's JS programs is a misnomer: the actual 'gzip' functions (defined in CompressorDelegate.kt) call Zstd functions.
 
+## Taud Tracker Engine
+
+The Taud playback engine lives in `tsvm_core/src/net/torvald/tsvm/peripheral/AudioAdapter.kt`.
+
+### Critical Implementation Notes
+
+**Re-bind the local `inst` after any mid-tick `triggerNote`.** `applyTrackerTick` binds `var inst = instruments[voice.instrumentId]` once at the top of the per-voice loop. When the note-delay (`S$Dx`) deferred trigger fires mid-tick, `triggerNote` swaps the voice's `instrumentId` — but the rest of that tick (playback-rate recompute at the `computePlaybackRate(inst, finalPitch)` line, `advanceEnvelope`, `advancePfEnvelope`, `advanceAutoVibrato`, and the fadeout / filter-env reads of `inst.*`) keeps using the captured binding. The damage on a **never-triggered voice** (`instrumentId == 0` → stale `inst = instruments[0]`, whose `samplingRate == 0`) is that `playbackRate` is overwritten with `0.0`, freezing the sample at its start for the trigger tick — perceived as "the first delayed note on a fresh channel doesn't fire" (canonical: WHEN.taud cue 0 voice 13 pattern 0x0A row 16, inst `0x11` SD2 on a fresh play). On a warm voice the stale `inst` is a real instrument with non-zero rate, so the note sounds (at the wrong rate for one tick — a sub-perceptual glitch). Re-bind `inst = instruments[voice.instrumentId]` immediately after the note-delay fire block. Any future in-tick trigger paths (currently only S$Dx) must do the same.
+
 ## TVDOS
 
 ### TVDOS Movie Formats

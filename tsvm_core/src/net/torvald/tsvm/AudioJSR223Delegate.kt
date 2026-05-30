@@ -315,6 +315,13 @@ class AudioJSR223Delegate(private val vm: VM) {
         getPlayhead(playhead)?.resetParams()
     }
 
+    /** Clear funk-repeat (S$Fx) state (per-voice run-state + per-instrument loop-inversion masks)
+     *  without disturbing tempo / volume / position. Call on a fresh play-from-start so stale funk
+     *  state from a prior playback doesn't bleed into the replay. */
+    fun resetFunkState(playhead: Int) {
+        getPlayhead(playhead)?.resetFunkState()
+    }
+
     fun purgeQueue(playhead: Int) {
         getPlayhead(playhead)?.purgeQueue()
     }

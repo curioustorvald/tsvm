@@ -2905,7 +2905,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         for (vi in 0 until ts.voices.size) {
             val voice = ts.voices[vi]
             if (!voice.active && voice.noteDelayTick < 0) continue
-            val inst = instruments[voice.instrumentId]
+            var inst = instruments[voice.instrumentId]
 
             // Note cut. Zero noteVolume / rowVolume (silence this note) but leave channelVolume
             // alone — IT's note cut stops the sample, it doesn't reset chan->global_volume.
@@ -2921,6 +2921,13 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 maybeSpawnBackgroundForNNA(ts, voice, vi)
                 triggerNote(voice, voice.delayedNote, voice.delayedInst, voice.delayedVol)
                 voice.noteDelayTick = -1
+                // triggerNote may have swapped in a new instrument; re-bind so the rest of this
+                // tick's per-voice work (playbackRate at L3090, envelope/fadeout/auto-vibrato)
+                // uses the instrument that just fired, not the one the voice held on entry. On a
+                // never-triggered voice the stale binding is instruments[0] (samplingRate 0),
+                // which would zero playbackRate and freeze the sample — the "first note on a
+                // fresh channel via S$Dx is silent" bug.
+                inst = instruments[voice.instrumentId]
             }
 
             if (!voice.active) {
@@ -4092,6 +4099,20 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 // without needing to reload the song from disk.
                 parent.instruments.forEach { it.funkMask = null }
             }
+        }
+
+        /** Clear funk-repeat (S$Fx) state only — per-voice run-state plus the per-instrument
+         *  loop-inversion masks — without touching tempo / volume / position. taut calls this on
+         *  every fresh play-from-start so accumulated inversions and a stale funkSpeed don't bleed
+         *  from a prior session into the replay; full resetParams would also clobber bpm / tickRate /
+         *  volume, which a replay must preserve. Masks still persist across a natural song loop. */
+        fun resetFunkState() {
+            trackerState?.voices?.forEach {
+                it.funkSpeed = 0
+                it.funkAccumulator = 0
+                it.funkWritePos = 0
+            }
+            parent.instruments.forEach { it.funkMask = null }
         }
 
         fun purgeQueue() {
