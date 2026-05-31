@@ -1357,9 +1357,55 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         const val OP_Z = 0x23
     }
 
-    private fun computePlaybackRate(inst: TaudInst, noteVal: Int): Double =
-        inst.samplingRate.toDouble() / SAMPLING_RATE *
-        2.0.pow((noteVal - MIDDLE_C + inst.sampleDetuneSigned) / 4096.0)
+    // Active-sample-aware playback rate. Reads from the Voice's snapshotted sample
+    // view (set by [applyActiveSample]) so Ixmp-overlaid instruments use the patch's
+    // samplingRate / detune, not the base inst's.
+    private fun computePlaybackRate(voice: Voice, noteVal: Int): Double =
+        voice.activeSamplingRate.toDouble() / SAMPLING_RATE *
+        2.0.pow((noteVal - MIDDLE_C + voice.activeSampleDetune) / 4096.0)
+
+    /**
+     * Snapshot the sample-scope state for [voice] from either the base instrument
+     * or a resolved Ixmp patch. Called by every fresh trigger; the per-tick read
+     * sites then go through voice.active* instead of inst.* so multi-sample
+     * (IT/XM keyboard table) instruments select the right sample per note.
+     *
+     * Sentinels on the patch: defaultPan == 0xFF, defaultNoteVolume == 0,
+     * vibratoWaveform == 0xFF all defer to the base instrument. Other fields
+     * are always carried by the patch (converter responsibility).
+     */
+    private fun applyActiveSample(voice: Voice, inst: TaudInst, patch: TaudInstPatch?) {
+        if (patch == null) {
+            voice.activeSamplePtr        = inst.samplePtr
+            voice.activeSampleLength     = inst.sampleLength
+            voice.activeSamplePlayStart  = inst.samplePlayStart
+            voice.activeSampleLoopStart  = inst.sampleLoopStart
+            voice.activeSampleLoopEnd    = inst.sampleLoopEnd
+            voice.activeSamplingRate     = inst.samplingRate
+            voice.activeSampleDetune     = inst.sampleDetuneSigned
+            voice.activeLoopMode         = inst.loopMode
+            voice.activeVibratoSpeed     = inst.vibratoSpeed
+            voice.activeVibratoSweep     = inst.vibratoSweep
+            voice.activeVibratoDepth     = inst.vibratoDepth
+            voice.activeVibratoRate      = inst.vibratoRate
+            voice.activeVibratoWaveform  = inst.vibratoWaveform
+        } else {
+            voice.activeSamplePtr        = patch.samplePtr
+            voice.activeSampleLength     = patch.sampleLength
+            voice.activeSamplePlayStart  = patch.playStart
+            voice.activeSampleLoopStart  = patch.loopStart
+            voice.activeSampleLoopEnd    = patch.loopEnd
+            voice.activeSamplingRate     = patch.samplingRate
+            voice.activeSampleDetune     = patch.sampleDetune
+            voice.activeLoopMode         = patch.loopMode
+            voice.activeVibratoSpeed     = patch.vibratoSpeed
+            voice.activeVibratoSweep     = patch.vibratoSweep
+            voice.activeVibratoDepth     = patch.vibratoDepth
+            voice.activeVibratoRate      = patch.vibratoRate
+            voice.activeVibratoWaveform  =
+                if (patch.vibratoWaveform == 0xFF) inst.vibratoWaveform else patch.vibratoWaveform
+        }
+    }
 
     // Convert a 4096-TET noteVal to its Amiga-period equivalent (Double, no rounding).
     private fun noteValToAmigaPeriod(noteVal: Int): Double =
@@ -1754,16 +1800,19 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
      * 0 means full depth immediately).
      */
     private fun advanceAutoVibrato(voice: Voice, inst: TaudInst): Int {
-        // Depth from byte 187 (full 0..255). Speed from byte 175 (FT2 0..255 scale).
-        val depth0 = inst.vibratoDepth
-        if (depth0 == 0 || inst.vibratoSpeed == 0) return 0
+        // Reads come from the voice's active-sample snapshot (patch-aware) so multi-sample
+        // IT/XM instruments use the per-sample auto-vibrato that the trigger resolved to.
+        // [inst] is retained in the signature for callsite continuity but only the voice's
+        // active fields are consulted here.
+        val depth0 = voice.activeVibratoDepth
+        if (depth0 == 0 || voice.activeVibratoSpeed == 0) return 0
 
         // Two ramp-in semantics:
         //   FT2 vibratoSweep (byte 176): "ticks to fully ramp" — depth = depth0 * t / sweep.
         //   IT vibratoRate   (byte 188): "ramp acceleration" — accumulator += rate per tick,
         //                                 capped at depth0 * 256, then divided by 256.
-        val ftSweep  = inst.vibratoSweep
-        val itRate   = inst.vibratoRate
+        val ftSweep  = voice.activeVibratoSweep
+        val itRate   = voice.activeVibratoRate
         val t        = voice.autoVibTicksSinceTrigger
         val rampDepth = when {
             ftSweep != 0 -> ((depth0 * t / ftSweep).coerceAtMost(depth0))
@@ -1772,17 +1821,17 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         }
         voice.autoVibTicksSinceTrigger++
 
-        // Vibrato waveform selector lives in instrumentFlag bits 2-4.
+        // Vibrato waveform selector lives in instrumentFlag bits 2-4 (snapshotted onto voice).
         // 0=sine, 1=ramp-down, 2=square, 3=random, 4=ramp-up (FT2 only).
         // lfoSample handles 0..3; treat 4 (ramp-up) as negated ramp-down.
-        val wave = inst.vibratoWaveform
+        val wave = voice.activeVibratoWaveform
         val rawSample = if (wave == 4) -lfoSample(voice.autoVibPhase, 1)
                         else            lfoSample(voice.autoVibPhase, wave and 3)
         // 4096-TET delta. depth0 is now 0..255 (was 0..15 in old layout); the
         // shift compensates so depth ≈255 yields a similar musical excursion
         // (~±9 cents) to the old depth ≈15.
         val pitchDelta = (rawSample * rampDepth) shr 10
-        voice.autoVibPhase = (voice.autoVibPhase + inst.vibratoSpeed * 2) and 0xFF
+        voice.autoVibPhase = (voice.autoVibPhase + voice.activeVibratoSpeed * 2) and 0xFF
         return pitchDelta
     }
 
@@ -1790,10 +1839,14 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
      * Read one PCM sample (in [-1, 1]) at integer index [idx], honouring the instrument's
      * funk-repeat mask.  Out-of-range indices are clamped to the sample bounds; the
      * caller is responsible for wrapping into a loop region first if loop semantics apply.
+     *
+     * Sample-geometry reads come from the voice's active-sample snapshot so Ixmp-patched
+     * voices read the right bytes. The funk-mask continues to live on the base instrument
+     * (PT2 effect; doesn't combine with multi-sample IT/XM in practice).
      */
-    private fun readSamplePoint(inst: TaudInst, idx: Int, sampleLen: Int, binMax: Int): Double {
+    private fun readSamplePoint(voice: Voice, inst: TaudInst, idx: Int, sampleLen: Int, binMax: Int): Double {
         val i = idx.coerceIn(0, sampleLen - 1)
-        var b = sampleBin[(inst.samplePtr + i).coerceAtMost(binMax).toLong()].toUint()
+        var b = sampleBin[(voice.activeSamplePtr + i).coerceAtMost(binMax).toLong()].toUint()
         if (inst.funkMask != null && inst.sampleLoopEnd > inst.sampleLoopStart) {
             val ls = inst.sampleLoopStart
             if (i in ls until inst.sampleLoopEnd && inst.funkBit(i - ls)) b = b xor 0xFF
@@ -1804,9 +1857,9 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     private fun fetchTrackerSample(voice: Voice, inst: TaudInst, interpMode: Int): Double {
         if (inst.index == 0) return 0.0
 
-        val sampleLen = inst.sampleLength.coerceAtLeast(1)
-        val loopStart = inst.sampleLoopStart.toDouble()
-        val loopEnd = inst.sampleLoopEnd.toDouble().coerceAtLeast(1.0)
+        val sampleLen = voice.activeSampleLength.coerceAtLeast(1)
+        val loopStart = voice.activeSampleLoopStart.toDouble()
+        val loopEnd = voice.activeSampleLoopEnd.toDouble().coerceAtLeast(1.0)
         val binMax = (SAMPLE_BIN_TOTAL - 1).toInt()  // 8 MB pool, addressed via samplePtr directly (not banked)
 
         val i0 = voice.samplePos.toInt().coerceIn(0, sampleLen - 1)
@@ -1826,7 +1879,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 // Taps span [i0 - WIDTH, i0 + WIDTH], with the kernel centred on i0+frac.
                 for (j in -SINC_WIDTH .. SINC_WIDTH) {
                     val coeff = sincTap(frac, j)
-                    if (coeff != 0.0) acc += readSamplePoint(inst, i0 + j, sampleLen, binMax) * coeff
+                    if (coeff != 0.0) acc += readSamplePoint(voice, inst, i0 + j, sampleLen, binMax) * coeff
                 }
                 acc
             }
@@ -1837,10 +1890,10 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 // formula in integer arithmetic, then map (out >> 1) back to [-1, 1].
                 // The (out & 0xffff) → int16 cast after the third tap reproduces the
                 // SNES hardware mid-sum overflow (the famous gauss "chirp").
-                val oldest = (readSamplePoint(inst, i0 - 1, sampleLen, binMax) * 32767.0).toInt()
-                val olders = (readSamplePoint(inst, i0,     sampleLen, binMax) * 32767.0).toInt()
-                val olds   = (readSamplePoint(inst, i0 + 1, sampleLen, binMax) * 32767.0).toInt()
-                val news   = (readSamplePoint(inst, i0 + 2, sampleLen, binMax) * 32767.0).toInt()
+                val oldest = (readSamplePoint(voice, inst, i0 - 1, sampleLen, binMax) * 32767.0).toInt()
+                val olders = (readSamplePoint(voice, inst, i0,     sampleLen, binMax) * 32767.0).toInt()
+                val olds   = (readSamplePoint(voice, inst, i0 + 1, sampleLen, binMax) * 32767.0).toInt()
+                val news   = (readSamplePoint(voice, inst, i0 + 2, sampleLen, binMax) * 32767.0).toInt()
                 val offset = (frac * 256.0).toInt().coerceIn(0, 255)
                 var out = (SNES_GAUSS[0xff  - offset] * oldest) shr 10
                 out    += (SNES_GAUSS[0x1ff - offset] * olders) shr 10
@@ -1868,7 +1921,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 // a mid-rail seed), reproducing DMC's coarse quantisation. Per-voice
                 // counter persists across samples and is reseeded to mid-rail on note
                 // trigger (see triggerNote).
-                val target = readSamplePoint(inst, i0, sampleLen, binMax)
+                val target = readSamplePoint(voice, inst, i0, sampleLen, binMax)
                 val targetLevel = ((target + 1.0) * 63.5).toInt().coerceIn(0, 127)
                 when {
                     targetLevel > voice.nesDpcmCounter && voice.nesDpcmCounter <= 125 ->
@@ -1881,8 +1934,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             INTERP_NONE, INTERP_A500, INTERP_A1200 ->
                 // Paula-style ZOH — emit the integer-indexed sample byte without
                 // sub-sample fade. Aliasing is removed by the post-mix Amiga LPFs.
-                readSamplePoint(inst, i0, sampleLen, binMax)
-            else -> readSamplePoint(inst, i0, sampleLen, binMax)
+                readSamplePoint(voice, inst, i0, sampleLen, binMax)
+            else -> readSamplePoint(voice, inst, i0, sampleLen, binMax)
         }
 
         // While ramping out at sample end, hold position so the mixer keeps emitting the
@@ -1895,7 +1948,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             // When the sustain bit is set, key-off escapes the loop: the sample plays past
             // loopEnd until it ends naturally (loopMode 0 semantics).
             val effectiveLoopMode =
-                if (inst.sampleLoopSustain && voice.keyOff) 0 else (inst.loopMode and 3)
+                if (voice.activeSampleLoopSustain && voice.keyOff) 0 else (voice.activeLoopMode and 3)
             when (effectiveLoopMode) {
                 0 -> if (voice.samplePos >= sampleLen) {
                     voice.samplePos = (sampleLen - 1).toDouble().coerceAtLeast(0.0)
@@ -1977,16 +2030,27 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
      * unconditionally on inst-column rows, regardless of porta). Sets
      * noteVolume only — channelVolume (IT chan->global_volume) survives.
      */
-    private fun rowVolumeFromDefault(inst: TaudInst): Int {
-        val dnv = inst.defaultNoteVolume
+    private fun rowVolumeFromDefault(inst: TaudInst, patch: TaudInstPatch? = null): Int {
+        // Patch overrides the base inst's DNV unless the sentinel (0 = no override).
+        val dnv = patch?.defaultNoteVolume?.takeIf { it != 0 } ?: inst.defaultNoteVolume
         return if (dnv == 0) 0x3F else (dnv * 63 + 127) / 255
     }
 
     private fun triggerNote(voice: Voice, noteVal: Int, instId: Int, volOverride: Int) {
         if (instId != 0) voice.instrumentId = instId
         val inst = instruments[voice.instrumentId]
+        // Resolve the Ixmp patch (if any) for this trigger. Volume axis uses the
+        // pre-patch seed so the rectangle test is well-defined; the patch's own
+        // DNV is then layered onto the final voice.noteVolume below.
+        val seedVolForLookup = when {
+            volOverride >= 0 -> volOverride.coerceIn(0, 0x3F)
+            instId != 0      -> rowVolumeFromDefault(inst, null)
+            else             -> voice.noteVolume.coerceIn(0, 0x3F)
+        }
+        val patch = inst.resolvePatch(noteVal, seedVolForLookup)
+        applyActiveSample(voice, inst, patch)
         voice.tonePortaTarget = -1   // fresh note trigger cancels any running porta
-        voice.samplePos = inst.samplePlayStart.toDouble()
+        voice.samplePos = voice.activeSamplePlayStart.toDouble()
         voice.forward = true
         voice.active = true
         voice.keyOff = false
@@ -2042,8 +2106,11 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         if (instId != 0) {
             // Default pan: applied unless the pattern row has already overridden channelPan.
             // The pan envelope's 'p' flag ("use default pan") lives in the pan LOOP word at bit 7.
+            // An Ixmp patch's defaultPan (when non-sentinel, i.e. != 0xFF) takes precedence over
+            // the base instrument's defaultPan.
             if ((inst.panEnvLoop ushr 7) and 1 != 0) {
-                voice.channelPan = inst.defaultPan
+                val patchPan = patch?.defaultPan?.takeIf { it != 0xFF }
+                voice.channelPan = patchPan ?: inst.defaultPan
                 voice.rowPan = (voice.channelPan ushr 2).coerceIn(0, 63)
             }
             // Pitch-pan separation: when PPS != 0, played notes far from PPC drift in pan.
@@ -2066,7 +2133,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         voice.basePitch = noteVal
         voice.amigaPeriod = -1.0   // fresh trigger: period state must reseed from the new noteVal
         voice.linearFreq  = -1.0   // ditto for linear-freq mode (toneMode == 2)
-        voice.playbackRate = computePlaybackRate(inst, noteVal)
+        voice.playbackRate = computePlaybackRate(voice, noteVal)
         // Fresh trigger seeds noteVolume from the per-instrument "default note volume"
         // (byte 196) when the row carried an instrument byte but no explicit V column —
         // matching IT's `chan->volume = psmp->volume` rule (Schism player/effects.c:1302
@@ -2078,9 +2145,10 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         // chan->global_volume across sample changes, so M / N writes persist.
         // Continuous per-instrument scaling lives in instGlobalVolume (byte 171), which the
         // mixer applies independently of this seed.
+        // When an Ixmp patch overrides DNV (non-sentinel), the patch wins via rowVolumeFromDefault.
         voice.noteVolume = when {
             volOverride >= 0 -> volOverride.coerceIn(0, 0x3F)
-            instId != 0     -> rowVolumeFromDefault(inst)
+            instId != 0     -> rowVolumeFromDefault(inst, patch)
             else            -> voice.noteVolume
         }
         voice.rowVolume = voice.noteVolume
@@ -2126,14 +2194,21 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     private fun applyDuplicateCheck(ts: TrackerState, channel: Int, newInstId: Int, newNote: Int) {
         if (newInstId == 0) return
         val newInst = instruments[newInstId]
+        // For DCT=2 (sample match) we compare canonical sample identity. With Ixmp, the
+        // new note's effective sample is the patch's (or the base inst's if no patch).
+        // Volume axis defaults to full (0x3F) at this resolution point — the actual
+        // trigger volume isn't known yet and the IT DCT model is volume-agnostic anyway.
+        val newPatch = newInst.resolvePatch(newNote, 0x3F)
+        val newSmpPtr = newPatch?.samplePtr ?: newInst.samplePtr
+        val newSmpLen = newPatch?.sampleLength ?: newInst.sampleLength
 
         fun isDuplicate(v: Voice): Boolean {
             val existInst = instruments[v.instrumentId]
             return when (existInst.duplicateCheckType) {
                 1 -> v.noteVal == newNote && v.instrumentId == newInstId
                 2 -> v.instrumentId == newInstId &&
-                     existInst.samplePtr == newInst.samplePtr &&
-                     existInst.sampleLength == newInst.sampleLength
+                     v.activeSamplePtr == newSmpPtr &&
+                     v.activeSampleLength == newSmpLen
                 3 -> v.instrumentId == newInstId
                 else -> false
             }
@@ -2254,6 +2329,22 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         v.bitcrusherHeld = src.bitcrusherHeld
         v.overdriveAmp = src.overdriveAmp
         v.sourceChannel = channel
+        // Active-sample snapshot must follow the foreground voice so the ghost's per-tick
+        // playback (samplingRate, loop bounds, auto-vibrato) keeps using the patch the
+        // foreground had bound — not the base instrument it would otherwise re-derive.
+        v.activeSamplePtr        = src.activeSamplePtr
+        v.activeSampleLength     = src.activeSampleLength
+        v.activeSamplePlayStart  = src.activeSamplePlayStart
+        v.activeSampleLoopStart  = src.activeSampleLoopStart
+        v.activeSampleLoopEnd    = src.activeSampleLoopEnd
+        v.activeSamplingRate     = src.activeSamplingRate
+        v.activeSampleDetune     = src.activeSampleDetune
+        v.activeLoopMode         = src.activeLoopMode
+        v.activeVibratoSpeed     = src.activeVibratoSpeed
+        v.activeVibratoSweep     = src.activeVibratoSweep
+        v.activeVibratoDepth     = src.activeVibratoDepth
+        v.activeVibratoRate      = src.activeVibratoRate
+        v.activeVibratoWaveform  = src.activeVibratoWaveform
         return v
     }
 
@@ -2433,7 +2524,15 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 0x0000 -> {
                     if (row.instrment != 0) {
                         voice.instrumentId = row.instrment
-                        val seedVol = rowVolumeFromDefault(instruments[voice.instrumentId])
+                        // Re-resolve the patch on the new instrument against the voice's
+                        // current note so multi-sample IT/XM instruments pick up the right
+                        // sample (and per-patch DNV) even on a continue row. samplePos is
+                        // preserved — Schism csf_instrument_change reloads sample geometry
+                        // but does not retrigger.
+                        val newInst = instruments[voice.instrumentId]
+                        val newPatch = newInst.resolvePatch(voice.noteVal, voice.noteVolume)
+                        applyActiveSample(voice, newInst, newPatch)
+                        val seedVol = rowVolumeFromDefault(newInst, newPatch)
                         voice.noteVolume = seedVol
                         voice.rowVolume = seedVol
                         voice.keyOff = false
@@ -2470,7 +2569,14 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                         // and the bump persisted through the following vibrato rows).
                         if (row.instrment != 0) {
                             voice.instrumentId = row.instrment
-                            val seedVol = rowVolumeFromDefault(instruments[voice.instrumentId])
+                            // Porta + inst-byte: re-resolve the patch on the new instrument
+                            // against the voice's current note (Schism evaluates the keyboard
+                            // table at csf_instrument_change time; the porta target row.note
+                            // is only the slide destination, not the sample selector).
+                            val newInst = instruments[voice.instrumentId]
+                            val newPatch = newInst.resolvePatch(voice.noteVal, voice.noteVolume)
+                            applyActiveSample(voice, newInst, newPatch)
+                            val seedVol = rowVolumeFromDefault(newInst, newPatch)
                             voice.noteVolume = seedVol
                             voice.rowVolume = seedVol
                             voice.keyOff = false
@@ -2609,7 +2715,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                     voice.basePitch = voice.noteVal
                     voice.amigaPeriod = -1.0   // reseed on next per-tick slide
                     voice.linearFreq  = -1.0
-                    voice.playbackRate = computePlaybackRate(instruments[voice.instrumentId], voice.noteVal)
+                    voice.playbackRate = computePlaybackRate(voice, voice.noteVal)
                 } else {
                     voice.slideMode = 1; voice.slideArg = -arg
                     voice.amigaPeriod = -1.0   // reseed at the start of a fresh multi-tick slide
@@ -2628,7 +2734,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                     voice.basePitch = voice.noteVal
                     voice.amigaPeriod = -1.0
                     voice.linearFreq  = -1.0
-                    voice.playbackRate = computePlaybackRate(instruments[voice.instrumentId], voice.noteVal)
+                    voice.playbackRate = computePlaybackRate(voice, voice.noteVal)
                 } else {
                     voice.slideMode = 2; voice.slideArg = arg
                     voice.amigaPeriod = -1.0
@@ -2741,12 +2847,15 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 }
             }
             EffectOp.OP_O -> {
+                // Sample-offset O: clamps into the active sample's loop region when an O$xx
+                // value lands past loopEnd. Reads from the patch-aware active-sample view.
                 val arg = resolveArg(rawArg, voice.mem.o).also { if (rawArg != 0) voice.mem.o = it }
-                val inst = instruments[voice.instrumentId]
                 var off = arg
-                if ((inst.loopMode and 3) != 0 && inst.sampleLoopEnd > inst.sampleLoopStart && off > inst.sampleLoopEnd) {
-                    val loopLen = (inst.sampleLoopEnd - inst.sampleLoopStart).coerceAtLeast(1)
-                    off = inst.sampleLoopStart + ((off - inst.sampleLoopStart) % loopLen)
+                if ((voice.activeLoopMode and 3) != 0 &&
+                    voice.activeSampleLoopEnd > voice.activeSampleLoopStart &&
+                    off > voice.activeSampleLoopEnd) {
+                    val loopLen = (voice.activeSampleLoopEnd - voice.activeSampleLoopStart).coerceAtLeast(1)
+                    off = voice.activeSampleLoopStart + ((off - voice.activeSampleLoopStart) % loopLen)
                 }
                 voice.samplePos = off.toDouble()
             }
@@ -2837,7 +2946,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 voice.basePitch = voice.noteVal
                 voice.amigaPeriod = -1.0
                 voice.linearFreq  = -1.0
-                voice.playbackRate = computePlaybackRate(instruments[voice.instrumentId], voice.noteVal)
+                voice.playbackRate = computePlaybackRate(voice, voice.noteVal)
             }
             0x3 -> { voice.vibratoWave = x and 3; voice.vibratoRetrig = (x and 4) == 0 }
             0x4 -> { voice.tremoloWave = x and 3; voice.tremoloRetrig = (x and 4) == 0 }
@@ -3066,7 +3175,10 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 if (voice.retrigCounter >= voice.retrigInterval) {
                     voice.retrigCounter = 0
                     val retrigInst = instruments[voice.instrumentId]
-                    voice.samplePos = retrigInst.samplePlayStart.toDouble()
+                    // Use the voice's active sample's playStart (patch-aware) — without this
+                    // a Q retrigger on a multi-sample instrument would jump to the base sample
+                    // even though the voice is bound to a patch.
+                    voice.samplePos = voice.activeSamplePlayStart.toDouble()
                     voice.keyOff = false
                     voice.envIndex = 0; voice.envTimeSec = 0.0
                     voice.envPanIndex = 0; voice.envPanTimeSec = 0.0
@@ -3094,7 +3206,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             else 0
 
             val finalPitch = (pitchToMixer + autoVibDelta + pitchEnvDelta).coerceIn(0x20, 0xFFFF)
-            voice.playbackRate = computePlaybackRate(inst, finalPitch)
+            voice.playbackRate = computePlaybackRate(voice, finalPitch)
 
             // Filter envelope (filter mode): scale baseCut by envValue (0..1, 0.5 = unity).
             // Schism filters.c:80-86 computes `cutoff_used = chan->cutoff * (flt_modifier+256)/256`
@@ -3198,7 +3310,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 ((bg.envPfValue - 0.5) * 2.0 * 16.0 * 4096.0 / 12.0).toInt()
             else 0
             val finalPitch = (bg.noteVal + autoVibDelta + pitchEnvDelta).coerceIn(0x20, 0xFFFF)
-            bg.playbackRate = computePlaybackRate(inst, finalPitch)
+            bg.playbackRate = computePlaybackRate(bg, finalPitch)
             // Filter-mode pf envelope: same scaling rule as foreground.
             if (bg.hasPfEnv && bg.pfEnvOn && bg.envPfIsFilter) {
                 val baseCut = if (inst.defaultCutoff < 255) inst.defaultCutoff else 254
@@ -3690,6 +3802,27 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         var autoVibPhase = 0               // 8-bit phase counter
         var autoVibTicksSinceTrigger = 0   // for sweep ramp-up
 
+        // Active-sample view — snapshot of either the base instrument's sample-scope
+        // fields or, when an Ixmp patch covers (noteVal, rowVolume) at trigger time,
+        // the matching TaudInstPatch overlay. Per-tick and per-row code reads from
+        // these instead of `inst.*` so multi-sample (IT keyboard table) instruments
+        // play the correct sample for the triggered note. Snapshotted by triggerNote
+        // and the equivalent paths (Q retrigger, NNA ghosting).
+        var activeSamplePtr        = 0
+        var activeSampleLength     = 0
+        var activeSamplePlayStart  = 0
+        var activeSampleLoopStart  = 0
+        var activeSampleLoopEnd    = 0
+        var activeSamplingRate     = 0
+        var activeSampleDetune     = 0     // signed 4096-TET
+        var activeLoopMode         = 0     // bits 0-1 = direction, bit 2 = sustain (matches inst byte 14)
+        var activeVibratoSpeed     = 0
+        var activeVibratoSweep     = 0
+        var activeVibratoDepth     = 0
+        var activeVibratoRate      = 0
+        var activeVibratoWaveform  = 0     // bits 0-2 only
+        val activeSampleLoopSustain: Boolean get() = (activeLoopMode and 0x04) != 0
+
         // NES 2A03 DMC counter for INTERP_NES_DPCM (interpolation mode 5).
         // 7-bit unsigned (0..127), slews ±2 per output sample as the sigma-delta
         // bitstream is generated on the fly. Seeded to mid-rail (63) on every
@@ -4173,6 +4306,41 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     }
 
     data class TaudInstEnvPoint(var value: Int, var offset: ThreeFiveMiniUfloat)
+
+    /**
+     * One Ixmp "extra sample" patch — overlays sample-scope state on a base instrument
+     * for a (noteVal, rowVolume) rectangle. See terranmon.txt "Ixmp. Instrument extra
+     * samples" for the on-wire layout. Envelopes, fadeout, NNA / DCT / DCA, filter,
+     * pitch-pan, IGV and other instrument-scope fields stay on the base TaudInst —
+     * only the fields below override.
+     *
+     * Sentinels: defaultPan == 0xFF, defaultNoteVolume == 0, vibratoWaveform == 0xFF
+     * all mean "inherit the base instrument's value". samplingRate == 0 would silence
+     * the patch (same semantics as base inst), so converters must always supply it.
+     */
+    data class TaudInstPatch(
+        val pitchStart: Int,
+        val pitchEnd: Int,
+        val volumeStart: Int,
+        val volumeEnd: Int,
+        val samplePtr: Int,
+        val sampleLength: Int,
+        val playStart: Int,
+        val loopStart: Int,
+        val loopEnd: Int,
+        val samplingRate: Int,
+        val sampleDetune: Int,            // signed 4096-TET
+        val loopMode: Int,                // matches base inst byte 14 (bits 0-1 = mode, bit 2 = sustain)
+        val defaultPan: Int,              // 0..255; 0xFF = no override
+        val defaultNoteVolume: Int,       // 0..255 IT-scaled; 0 = no override
+        val vibratoSpeed: Int,
+        val vibratoSweep: Int,
+        val vibratoDepth: Int,
+        val vibratoRate: Int,
+        val vibratoWaveform: Int          // 0..7; 0xFF = no override
+    ) {
+        val sampleLoopSustain: Boolean get() = (loopMode and 0x04) != 0
+    }
     /**
      * 256-byte instrument record (terranmon.txt:2001+).
      *
@@ -4297,12 +4465,31 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         // Byte 196 is the new "default note volume" field — see triggerNote.
         private val reserved = ByteArray(59)
 
+        // Optional Ixmp "extra sample" patches — non-null when an Ixmp block was uploaded
+        // for this instrument. Patches are scanned in order at trigger time; first hit on
+        // (noteVal, rowVolume) wins (overlapping rectangles are INVALID per spec).
+        var extraPatches: Array<TaudInstPatch>? = null
+
+        /** Walk [extraPatches] and return the first patch whose pitch+volume rectangle
+         *  contains the given trigger. Returns null when no patches are bound or none match. */
+        fun resolvePatch(noteVal: Int, rowVolume: Int): TaudInstPatch? {
+            val patches = extraPatches ?: return null
+            for (p in patches) {
+                if (noteVal in p.pitchStart..p.pitchEnd &&
+                    rowVolume in p.volumeStart..p.volumeEnd) return p
+            }
+            return null
+        }
+
         // Funk repeat (S$Fx00) bit-mask — non-destructive XOR overlay across the loop region.
         // Lazily allocated; a 1-bit flips the byte, a 0-bit leaves it intact.
         // Mask is sized for the loop length at allocation time; if the loop bounds change
         // (e.g. a new song reuses this instrument slot with different sample data) the old
         // mask is stale and must be discarded — otherwise indexing past its end crashes the
         // render thread with ArrayIndexOutOfBoundsException.
+        // Note: with Ixmp patches active the mask still indexes the BASE instrument's loop
+        // region, not the active patch's. Funk repeat (S$Fx) is a PT2 effect and doesn't
+        // coexist with multi-sample IT/XM instruments in practice.
         var funkMask: ByteArray? = null
         fun toggleFunkBit(loopOffset: Int) {
             val len = (sampleLoopEnd - sampleLoopStart).coerceAtLeast(1)

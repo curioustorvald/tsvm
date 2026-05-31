@@ -265,6 +265,64 @@ class AudioJSR223Delegate(private val vm: VM) {
         }
     }
 
+    /** Upload an Ixmp "extra samples" block for instrument [slot] (0-255). The payload is
+     *  a flat byte array of `count × 31` patch records — see terranmon.txt "Ixmp. Instrument
+     *  extra samples" for the on-wire field layout. Passing an empty array clears any
+     *  previously-installed patches on this instrument. */
+    fun uploadInstrumentPatches(slot: Int, bytes: IntArray) {
+        val inst = getFirstSnd()?.instruments?.get(slot and 0xFF) ?: return
+        val recordSize = 31
+        if (bytes.isEmpty() || bytes.size < recordSize) {
+            inst.extraPatches = null
+            return
+        }
+        val count = bytes.size / recordSize
+        if (count == 0) { inst.extraPatches = null; return }
+        fun u8 (o: Int) = bytes[o] and 0xFF
+        fun u16(o: Int) = (bytes[o] and 0xFF) or ((bytes[o + 1] and 0xFF) shl 8)
+        fun s16(o: Int): Int { val v = u16(o); return if (v >= 0x8000) v - 0x10000 else v }
+        fun u32(o: Int) =  (bytes[o]     and 0xFF)        or
+                          ((bytes[o + 1] and 0xFF) shl 8) or
+                          ((bytes[o + 2] and 0xFF) shl 16) or
+                          ((bytes[o + 3] and 0xFF) shl 24)
+        val patches = Array(count) { i ->
+            val o = i * recordSize
+            // Patch version byte at offset 0 is parsed but only version 1 is recognised;
+            // a future version bump would gate alternate field layouts here.
+            AudioAdapter.TaudInstPatch(
+                pitchStart        = u16(o + 1),
+                pitchEnd          = u16(o + 3),
+                volumeStart       = u8 (o + 5),
+                volumeEnd         = u8 (o + 6),
+                samplePtr         = u32(o + 7),
+                sampleLength      = u16(o + 11),
+                playStart         = u16(o + 13),
+                loopStart         = u16(o + 15),
+                loopEnd           = u16(o + 17),
+                samplingRate      = u16(o + 19),
+                sampleDetune      = s16(o + 21),
+                loopMode          = u8 (o + 23),
+                defaultPan        = u8 (o + 24),
+                defaultNoteVolume = u8 (o + 25),
+                vibratoSpeed      = u8 (o + 26),
+                vibratoSweep      = u8 (o + 27),
+                vibratoDepth      = u8 (o + 28),
+                vibratoRate       = u8 (o + 29),
+                vibratoWaveform   = u8 (o + 30)
+            )
+        }
+        inst.extraPatches = patches
+    }
+
+    /** Number of Ixmp patches currently installed on instrument [slot], or 0 if none. */
+    fun getInstrumentPatchCount(slot: Int): Int =
+        getFirstSnd()?.instruments?.get(slot and 0xFF)?.extraPatches?.size ?: 0
+
+    /** Clear any Ixmp patches previously uploaded to instrument [slot]. */
+    fun clearInstrumentPatches(slot: Int) {
+        getFirstSnd()?.instruments?.get(slot and 0xFF)?.extraPatches = null
+    }
+
     /** Upload 512 bytes (64 rows × 8 bytes) defining pattern `slot` (0-4094). */
     fun uploadPattern(slot: Int, bytes: IntArray) {
         getFirstSnd()?.playdata?.get(slot and 0xFFF)?.let { pat ->

@@ -16,6 +16,11 @@ Limits:
     - Multi-sample instruments use the sample selected by the *current
       note's* keymap entry; the converter materialises one Taud
       instrument slot per (XM instrument, sample-in-instrument) pair.
+      (Note: it2taud uses the alternate Ixmp project-data extension
+      instead — one Taud instrument per IT instrument, plus an Ixmp
+      patch list for the keyboard mapping. XM could be retrofitted the
+      same way to conserve Taud instrument slots; deferred until any
+      real XM file actually hits the 255-slot cap.)
 
 Pattern length policy:
     - XM patterns ≤ 64 rows → 1 Taud cue with the LEN ($02xx)

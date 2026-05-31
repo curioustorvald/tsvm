@@ -83,11 +83,13 @@ function uploadTaudFile(inFile, songIndex, playhead) {
     pos = 8
 
     // -- 3. Parse header ------------------------------------------------------
-    // version(1) + numSongs(1) + compressedSize(4) + rsvd(2) + signature(16) = 24 bytes
+    // magic(8) + version(1) + numSongs(1) + compSize(4) + projOff(4) + signature(14)
+    // = 32 bytes (terranmon.txt §Header).
     let version        = sys.peek(filePtr + pos) & 0xFF;  pos++
     let numSongs       = sys.peek(filePtr + pos) & 0xFF;  pos++
     let compressedSize = _peekU32LE(filePtr, pos);         pos += 4
-    pos += 18  // skip reserved(2) + signature(16)
+    let projOff        = _peekU32LE(filePtr, pos);         pos += 4
+    pos += 14  // signature
     // pos == 32 == TAUD_HEADER_SIZE
 
     if (songIndex < 0 || songIndex >= numSongs) {
@@ -154,6 +156,50 @@ function uploadTaudFile(inFile, songIndex, playhead) {
     audio.setTrackerMixerFlags(playhead, mixerflags)
     audio.setSongGlobalVolume(playhead, songGlobalVolume)
     audio.setSongMixingVolume(playhead, songMixingVolume)
+
+    // -- 9. Project Data — walk Ixmp blocks for multi-sample instruments -----
+    // Terranmon spec: Project Data starts at `projOff` (zero = absent), magic is
+    // \x1ETaudPrJ + 8 reserved bytes, then a stream of FourCC + Uint32-length
+    // sections. We only consume "Ixmp" here; other sections (PNam, INam, sMet,
+    // etc.) are skipped so the player apps remain free to parse them.
+    if (projOff !== 0 && projOff + 16 <= fileSize) {
+        const projMagic = [0x1E,0x54,0x61,0x75,0x64,0x50,0x72,0x4A]  // \x1ETaudPrJ
+        let prjOk = true
+        for (let i = 0; i < 8; i++) {
+            if ((sys.peek(filePtr + projOff + i) & 0xFF) !== projMagic[i]) { prjOk = false; break }
+        }
+        if (prjOk) {
+            const PATCH_SIZE = 31
+            let p = projOff + 16  // skip magic(8) + reserved(8)
+            while (p + 8 <= fileSize) {
+                const fc = String.fromCharCode(
+                    sys.peek(filePtr + p)     & 0xFF, sys.peek(filePtr + p + 1) & 0xFF,
+                    sys.peek(filePtr + p + 2) & 0xFF, sys.peek(filePtr + p + 3) & 0xFF)
+                const secLen = _peekU32LE(filePtr, p + 4)
+                const payload = p + 8
+                if (payload + secLen > fileSize) break
+                if (fc === 'Ixmp') {
+                    // Each entry: Uint8 instId + Uint24 patchCount + (patchCount × PATCH_SIZE) bytes.
+                    let q = payload
+                    const qEnd = payload + secLen
+                    while (q + 4 <= qEnd) {
+                        const instId   = sys.peek(filePtr + q) & 0xFF; q++
+                        const cntLo    = sys.peek(filePtr + q) & 0xFF; q++
+                        const cntMid   = sys.peek(filePtr + q) & 0xFF; q++
+                        const cntHi    = sys.peek(filePtr + q) & 0xFF; q++
+                        const patchCnt = cntLo | (cntMid << 8) | (cntHi << 16)
+                        const blobLen  = patchCnt * PATCH_SIZE
+                        if (q + blobLen > qEnd) break
+                        let buf = new Array(blobLen)
+                        for (let k = 0; k < blobLen; k++) buf[k] = sys.peek(filePtr + q + k) & 0xFF
+                        audio.uploadInstrumentPatches(instId, buf)
+                        q += blobLen
+                    }
+                }
+                p = payload + secLen
+            }
+        }
+    }
 
 
     fileHandle.close()

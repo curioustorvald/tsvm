@@ -57,6 +57,7 @@ from taud_common import (
     normalise_sample, encode_song_entry, nearest_minifloat, compress_blob,
     CUE_INST_NOP, CUE_INST_HALT, CUE_INST_LEN, cue_instruction_len,
     build_project_data, detect_subsongs,
+    IXMP_PAN_NO_OVERRIDE,
 )
 
 
@@ -435,7 +436,10 @@ class ITInstrument:
                  'vol_env_loop', 'pan_env_loop', 'pf_env_loop',
                  'vol_env_sus', 'pan_env_sus', 'pf_env_sus',
                  'ifc', 'ifr', 'fadeout', 'pps', 'ppc', 'rv', 'rp', 'nna',
-                 'dct', 'dca')
+                 'dct', 'dca', 'keyboard')
+    # keyboard: list[int], 120 entries — keyboard[it_note] = sample_1based (0 = none).
+    # Carried verbatim from the IT file so the Ixmp emitter can build patches that
+    # cover non-canonical-sample note ranges. terranmon.txt "Ixmp" + Schism iti.c:80.
     # vol_envelope / pan_envelope / pf_envelope: list of 25 (value, minifloat_idx) tuples, or None
     # *_env_sustain: int (16-bit, 0b 0ut sssss pcb eeeee), 0 = no envelope
     # pf_is_filter: bool — pf envelope mode (False = pitch, True = filter)
@@ -478,6 +482,7 @@ def parse_instruments(data: bytes, h: ITHeader) -> list:
             kb_note = data[ptr + 0x44 + n*2]
             kb_smp  = data[ptr + 0x44 + n*2 + 1]
             keyboard.append(kb_smp)  # 0 = no sample
+        inst.keyboard = keyboard
 
         # Pick C-5 (note 60) sample; fall back to most-frequent non-zero
         c5_smp = keyboard[60] if 60 < len(keyboard) else 0
@@ -1117,6 +1122,133 @@ def _remap_bc_effects(chunks: list, chunk_map: list,
     if crossings and warn_label:
         vprint(f"  warning: {warn_label}: {crossings} Bxx target(s) cross "
                f"subsong boundary; clamped to cue {default_target}")
+
+
+# ── Ixmp patch builder (multi-sample IT instruments) ─────────────────────────
+
+def _it_note_to_taud(note: int, clamp_low: bool = False, clamp_high: bool = False) -> int:
+    """IT note (0..119, C-5 = 60) → Taud 4096-TET noteVal anchored at TAUD_C4.
+    `clamp_low`/`clamp_high` expand the bottom/top of the keyboard to cover the
+    full Taud playable range, so patches at the keyboard's edges don't leave
+    notes outside the trigger rectangle unmatched."""
+    if clamp_low:  return 0x0000
+    if clamp_high: return 0xFFFF
+    val = round(TAUD_C4 + (note - 60) * 4096 / 12)
+    return max(0x0020, min(0xFFFF, val))
+
+
+def _build_it_ixmp_patches(inst, samples, extras_offsets) -> list:
+    """For one IT instrument, return a list of Ixmp patch dicts covering every
+    keyboard cell that maps to a NON-canonical sample. The canonical sample is
+    served by the base instrument record so no patch is emitted for it (the
+    engine falls through to the base inst when no patch matches).
+
+    Note ranges are contiguous runs of keyboard cells that point at the same
+    sample. Per the Ixmp spec each (pitch_start..pitch_end, volume_start..end)
+    rectangle MUST NOT overlap any other patch on the same instrument; this is
+    guaranteed here because the keyboard mapping itself is a partition."""
+    canonical = inst.canonical_sample
+    kbd = getattr(inst, 'keyboard', None)
+    if not kbd:
+        return []
+    # Distinct non-canonical samples referenced.
+    distinct = []
+    seen = set()
+    for kb_smp in kbd:
+        if kb_smp == 0 or kb_smp == canonical:
+            continue
+        if kb_smp not in seen and 1 <= kb_smp <= len(samples) and samples[kb_smp - 1] is not None:
+            seen.add(kb_smp); distinct.append(kb_smp)
+    if not distinct:
+        return []
+
+    patches = []
+    for smp_1based in distinct:
+        si = smp_1based - 1
+        s = samples[si]
+        if not s.sample_data:
+            continue
+        sample_ptr = extras_offsets.get(('it_smp', si))
+        if sample_ptr is None:
+            continue   # not in the pool — bin overflow or corrupt source
+
+        # Per-sample loop / sustain encoding (mirrors build_sample_inst_bin_it).
+        if s.flags & IT_SMP_SUS_LOOP:
+            ls = min(s.sus_beg, 65535); le = min(s.sus_end, 65535)
+            sustain_bit = 0x4
+            pingpong = bool(s.flags & IT_SMP_PINGPONG_SUS)
+            has_loop = True
+        elif s.has_loop:
+            ls = min(s.loop_beg, 65535); le = min(s.loop_end, 65535)
+            sustain_bit = 0x0
+            pingpong = bool(s.flags & IT_SMP_PINGPONG)
+            has_loop = True
+        else:
+            ls = 0; le = 0
+            sustain_bit = 0x0
+            pingpong = False
+            has_loop = False
+        loop_mode = (2 if (has_loop and pingpong) else (1 if has_loop else 0)) | sustain_bit
+
+        # Per-sample default volume / pan / auto-vibrato — mirrors the
+        # use_instruments inst-record path so behaviour is identical when the
+        # patch sample matches what the base instrument would have stored.
+        smp_vol  = min(getattr(s, 'vol', 64), 64)
+        dnv      = min(255, round(smp_vol * 255 / 64))
+        smp_dfp  = getattr(s, 'dfp', 0)
+        default_pan = (min(255, max(0, round((smp_dfp & 0x7F) * 255 / 64)))
+                       if (smp_dfp & 0x80) else IXMP_PAN_NO_OVERRIDE)
+        vib_speed_taud = min(255, round(getattr(s, 'av_speed', 0) * 255 / 64))
+        vib_depth_taud = min(255, round(getattr(s, 'av_depth', 0) * 255 / 64))
+        vib_rate_taud  = getattr(s, 'av_sweep', 0) & 0xFF
+        vib_wave_taud  = getattr(s, 'av_wave',  0) & 0x07
+
+        # Find contiguous IT-note ranges where the keyboard points at this sample.
+        run_start = None
+        for n in range(120):
+            if kbd[n] == smp_1based:
+                if run_start is None:
+                    run_start = n
+            else:
+                if run_start is not None:
+                    _emit_patch(patches, run_start, n - 1, sample_ptr, s,
+                                ls, le, loop_mode, default_pan, dnv,
+                                vib_speed_taud, vib_depth_taud, vib_rate_taud, vib_wave_taud)
+                    run_start = None
+        if run_start is not None:
+            _emit_patch(patches, run_start, 119, sample_ptr, s,
+                        ls, le, loop_mode, default_pan, dnv,
+                        vib_speed_taud, vib_depth_taud, vib_rate_taud, vib_wave_taud)
+    return patches
+
+
+def _emit_patch(patches, it_lo, it_hi, sample_ptr, s,
+                ls, le, loop_mode, default_pan, dnv,
+                vib_speed, vib_depth, vib_rate, vib_wave):
+    """Append one patch dict covering IT-note range [it_lo, it_hi] inclusive."""
+    taud_lo = _it_note_to_taud(it_lo, clamp_low=(it_lo == 0))
+    taud_hi = _it_note_to_taud(it_hi, clamp_high=(it_hi == 119))
+    patches.append({
+        'pitch_start':         taud_lo,
+        'pitch_end':           taud_hi,
+        'volume_start':        0,
+        'volume_end':          63,
+        'sample_ptr':          sample_ptr,
+        'sample_length':       min(s.length, 65535),
+        'play_start':          0,
+        'loop_start':          ls,
+        'loop_end':            le,
+        'sampling_rate':       min(getattr(s, 'c5_speed', 8363), 65535),
+        'sample_detune':       0,
+        'loop_mode':           loop_mode,
+        'default_pan':         default_pan,
+        'default_note_volume': dnv,
+        'vibrato_speed':       vib_speed,
+        'vibrato_sweep':       0,                  # IT-side; FT2 sweep stays 0
+        'vibrato_depth':       vib_depth,
+        'vibrato_rate':        vib_rate,
+        'vibrato_waveform':    vib_wave,
+    })
 
 
 # ── Sample / instrument bin (same as s3m2taud) ────────────────────────────────
@@ -1821,6 +1953,10 @@ def assemble_taud(h: ITHeader, samples: list, instruments: list,
     # Pattern cells carry IT instrument numbers; for use_instruments mode, those
     # are instrument indices; we remap to samples below.
     # Taud only knows "instrument" slots (1-based, 8-bit). We lay samples in order.
+    # Map IT sample (0-based) → IXMP patch dict template used when building the
+    # per-instrument patch list. Populated by the use_instruments branch below.
+    it_sample_patch_meta = {}
+
     if h.use_instruments:
         # Build a proxy sample list where Taud inst slot = IT inst index,
         # resolved to the canonical sample. Slot 0 unused.
@@ -1915,16 +2051,60 @@ def assemble_taud(h: ITHeader, samples: list, instruments: list,
                 'dct':        inst.dct,
                 'dca':        inst.dca,
             }
-        sampleinst_raw, _, sample_ratio, pool_order = build_sample_inst_bin_it(proxy, instr_data_by_slot)
+        # ── Ixmp: pool keyboard-referenced extra samples beyond slot 255 ───────
+        # IT instruments can map different IT notes to different samples via the
+        # keyboard table (IMPI+0x44). The canonical sample is already in the proxy
+        # at the instrument's Taud slot; extras (any other sample referenced in
+        # the keyboard) get appended past index 256 so build_sample_inst_bin_it
+        # pools them (its inst-record loop skips i >= 256 — see the same file).
+        # We then look up their bin offsets via the returned offsets dict and
+        # emit one Ixmp patch per (sample, contiguous-note-range) pair.
+        extras_keys = []   # ordered list of ('it_smp', si) — index into the proxy is 256 + position
+        for ii, inst in enumerate(instruments):
+            if inst is None: continue
+            canonical = inst.canonical_sample
+            kbd = getattr(inst, 'keyboard', None) or []
+            for kb_smp in kbd:
+                if kb_smp == 0 or kb_smp == canonical:
+                    continue
+                si = kb_smp - 1
+                if 0 <= si < len(samples) and samples[si] is not None and samples[si].sample_data:
+                    key = ('it_smp', si)
+                    if key not in extras_keys:
+                        extras_keys.append(key)
+        extras_base = len(proxy)
+        for key in extras_keys:
+            proxy.append(samples[key[1]])
+
+        sampleinst_raw, bin_offsets, sample_ratio, pool_order = build_sample_inst_bin_it(proxy, instr_data_by_slot)
+        # Map ('it_smp', si) → sample-bin offset.
+        extras_offsets = {key: bin_offsets.get(extras_base + j, 0)
+                          for j, key in enumerate(extras_keys)}
+        # Also include each canonical sample at its taud-slot offset so the patch
+        # builder can reuse them when an instrument's keyboard cell references the
+        # canonical sample at a non-canonical note range.
+        for ii, inst in enumerate(instruments):
+            if inst is None: continue
+            taud_slot = ii + 1
+            if taud_slot >= 256: continue
+            canon = inst.canonical_sample
+            if canon == 0: continue
+            si = canon - 1
+            if 0 <= si < len(samples) and samples[si] is not None and ('it_smp', si) not in extras_offsets:
+                # Look up the pool offset for the canonical via the proxy slot.
+                if taud_slot in bin_offsets:
+                    extras_offsets[('it_smp', si)] = bin_offsets[taud_slot]
     else:
-        # Samples referenced directly; proxy is samples list (0-based, slot 0 unused)
+        # Samples referenced directly; proxy is samples list (0-based, slot 0 unused).
+        # No instruments in the file → no multi-sample mapping → no Ixmp patches.
         proxy = [None] + list(samples)
         inst_vols = {
             i+1: min(s.vol, 0x3F)
             for i, s in enumerate(samples)
             if s is not None
         }
-        sampleinst_raw, _, sample_ratio, pool_order = build_sample_inst_bin_it(proxy)
+        sampleinst_raw, bin_offsets, sample_ratio, pool_order = build_sample_inst_bin_it(proxy)
+        extras_offsets = {}
 
     assert len(sampleinst_raw) == SAMPLEINST_SIZE
 
@@ -1985,10 +2165,28 @@ def assemble_taud(h: ITHeader, samples: list, instruments: list,
         # exactly once instead of once per referencing instrument slot.
         smp_names  = [''] + [(getattr(s, 'name', '') or '')
                              for s in pool_order[:255]]
+
+        # Ixmp patches — only the use_instruments branch maps IT notes to multiple
+        # samples; the sample-mode branch has nothing to emit because there's no
+        # keyboard table on a raw IT sample.
+        ixmp_patches = {}
+        if h.use_instruments and extras_offsets:
+            for ii, inst in enumerate(instruments):
+                if inst is None: continue
+                taud_slot = ii + 1
+                if taud_slot >= 256: continue
+                patches = _build_it_ixmp_patches(inst, samples, extras_offsets)
+                if patches:
+                    ixmp_patches[taud_slot] = patches
+            if ixmp_patches:
+                vprint(f"  ixmp: {sum(len(p) for p in ixmp_patches.values())} "
+                       f"patches across {len(ixmp_patches)} instruments")
+
         proj_data = build_project_data(
             project_name=h.title,
             instrument_names=inst_names,
             sample_names=smp_names,
+            ixmp_patches=ixmp_patches or None,
         )
         if proj_data:
             proj_off = cur_off

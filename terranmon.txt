@@ -2411,7 +2411,8 @@ TODO:
         [ ] establish hooks for the interrupts
     [x] Samples and Instruments view (viewer on taut.js; editor on separate .js)
         follow the ImpulseTracker design first, then improve from there
-    [ ] Sample desig for instrument in Pitch-Volume space (one rectangle = one patch). If undefined, the old sample pointer falls thru
+    [?] Sample desig for instrument in Pitch-Volume space (one rectangle = one patch). If undefined, the old sample pointer falls thru
+        [ ] Needs .it and .xm test file to complete it2taud and xm2taud
 
 TODO - list of demo songs that MUST ship with Microtone:
     * 4THSYM (rename to Fourth Symmetriad) — excellent piece for demonstrating NNAs and filter envelopes
@@ -2470,7 +2471,7 @@ Audio Adapter MMIO
     Write 16 to initialise the MP2 context (call this before the decoding of NEW music)
     Write 1 to decode the frame as MP2
 
-    Calling with more than one bit set will result in UNDEFINED BEHAVIOUR
+    Calling with more than one bit set will result in UNDEFINED BEHAVIOUR — except for the flag 0x11, in which the hardware must initialise then immediately start decoding.
 
 41 RO: MP2 Decoder Status
     Non-zero value indicates the decoder is busy. Different value may indicate different decoder status.
@@ -2620,6 +2621,17 @@ This is a file format for Taud tracker data. Taud can be extended with Microtone
 
 Endianness: Little
 
+# Conformance language
+(RFC 2119+8174)
+- **MUST** / **MUST NOT** / **REQUIRED** / **SHALL** / **SHALL NOT** — absolute requirements / prohibitions. A conforming implementation **SHALL** observe every such rule; an implementation that violates one is non-conforming.
+- **SHOULD** / **SHOULD NOT** / **RECOMMENDED** / **NOT RECOMMENDED** — strong guidance. An implementation **MAY** deviate in particular circumstances, but the full implications **MUST** be understood and weighed before doing so.
+- **MAY** / **OPTIONAL** — truly optional. Implementations that include the feature and implementations that omit it are equally conforming, and each **MUST** be prepared to interoperate with the other (with reduced functionality where the optional feature is the means of interoperation).
+(IMPLEMENTATION DETAILS)
+- **INVALID.** Blame the encoder; decoder MUST stop decoding with appropriate errors.
+- **UNDEFINED BEHAVIOUR.** Encoder MAY encode it; decoder MAY do whatever it wants to, including spawning a daemon out of your nose.
+- **IGNORED.** Encoder MAY encode it; decoder MUST skip past it.
+- **RESERVED.** Encoder MUST NOT encode it. Decoder MUST skip past it.
+
 # File Structure
 \x1F T S V M a u d
 [HEADER]
@@ -2657,7 +2669,7 @@ Endianness: Little
     Float32 Frequency at the base note. Tracker default is 8363.0. If zero, assume the tracker default
     Uint8   Flags for Global Behaviour (effect symbol '1')
         0b 000 rrr ff
-            ff: tone mode          (0: linear pitch slides, 1: Amiga period slides, 2: linear-frequency slides, 3: reserved)
+            ff: tone mode          (0: linear pitch slides, 1: Amiga period slides, 2: linear-frequency slides, 3: RESERVED)
             rrr: interpolation mode (0: default, 1: none, 2: Amiga 500, 3: Amiga 1200, 4: SNES 4-tap Gaussian, 5: NES DPCM simulation)
     Uint8   Song global volume
         * ImpulseTracker has range of 0..128; multiply by (255/128) then round to int
@@ -2665,7 +2677,7 @@ Endianness: Little
         * ImpulseTracker has range of 0..128; multiply by (255/128) then round to int
     Uint32  Compressed size of PATTERN BIN for this song
     Uint32  Compressed size of CUE SHEET for this song
-    Byte[6] Reserved
+    Byte[6] RESERVED
 
     Taud device can queue up to 2 "playdata" in its buffer, which can be interpreted as a song.
 
@@ -2687,7 +2699,7 @@ Endianness: Little
 Project Data is just a concatenation of blocks identified by their FourCC.
 
     Byte[8] Magic (\x1E T a u d P r J)
-    Byte[8] Reserved
+    Byte[8] RESERVED
     * Repetition of
     Byte[4] Title of the section (fourcc)
     Uint32  Section length
@@ -2738,11 +2750,11 @@ prefixes:
     * Repetition of:
     Uint8   Notation index (starting from zero) used by songs
     Uint32  Size of this notation following this field
-    Uint16  Reserved for flags
+    Uint16  RESERVED for flags
     Uint16  Interval size in 4096-TET lattice (octave = 0x1000, tritave = 0x195C). If you are not using an interval system (which means you are responsible for defining every note expressible), this must be 0.
-    Uint16  Reserved for float32 interval size (should it be in 4096-TET which is inexact or frequency multiplier which is exact but difficult to implement?)
+    Uint16  RESERVED for float32 interval size (should it be in 4096-TET which is inexact or frequency multiplier which is exact but difficult to implement?)
     Uint16  Notes between interval (or octave) MINUS ONE; 12-TET will have value 11
-    Byte[8] Reserved
+    Byte[8] RESERVED
     Byte[*]     Name, null terminated. Encoding: UTF-8
     Byte[*]     Notation table. 0xFF-separated and null-terminated. Encoding: Taud charset
     Uint16[*]  Frequency table. Size of the table is defined by "Notes between interval MINUS ONE". This is a lookup table of relative pitch offsets (against the base tuning note) in 4096-TET space. Index zero of this table will be 0x0 if you read the spec right
@@ -2762,6 +2774,45 @@ prefixes:
     Byte[8] Magic (\x1E T a u d n o t)
     Uint8   Version (Ascii 'a')
     Bytes   Notation definitions (see above)
+
+* Ixmp. Instrument extra samples
+    * Repetition of:
+    Uint8   Instrument ID
+    Uint24  Count of patches
+        ** Repetition of:
+        Uint8  Patch definition version (always 1)
+        Uint16 Pitch start                 ; Taud 4096-TET noteVal (same scale as pattern-cell note)
+        Uint16 Pitch end (inclusive)
+        Uint8  Volume start                ; 0..63
+        Uint8  Volume end (inclusive)      ; 0..63
+            - Above four parameters define a rectangle over the Pitch-Volume space. See Notes 4 and 5
+        Uint32 Sample pointer
+        Uint16 Sample length
+        Uint16 Play Start (usually 0 but not always)
+        Uint16 Loop Start (can be smaller than Play Start)
+        Uint16 Loop End
+        Uint16 samplingRate                ; per-sample C-5 speed; same encoding as base instrument byte 6-7
+        Int16  sampleDetune                ; per-sample fine detune in signed 4096-TET units (XM finetune; IT samples leave 0)
+        Uint8  loopMode                    ; same encoding as base instrument byte 14 (bits 0-1 = mode, bit 2 = sustain loop)
+        Uint8  defaultPan                  ; per-sample default pan (0..255; 0x80 = centre); 0xFF = "no override"
+        Uint8  defaultNoteVolume           ; per-sample default note volume (0..255 scaled from IT 0..64); 0 = "no override"
+        Uint8  vibratoSpeed                ; per-sample auto-vibrato (mirrors base inst byte 175)
+        Uint8  vibratoSweep                ; per-sample auto-vibrato (mirrors base inst byte 176)
+        Uint8  vibratoDepth                ; per-sample auto-vibrato (mirrors base inst byte 187)
+        Uint8  vibratoRate                 ; per-sample auto-vibrato (mirrors base inst byte 188)
+        Uint8  vibratoWaveform             ; bits 0-2 only (mirrors instrumentFlag bits 2-4); 0xFF = "no override"
+
+    Notes:
+    0. this extension is made to support IT/XM instrument spec as well as partial compatibility to SF2 (Soundfont format two)
+    1. Envelopes (vol/pan/pf), fadeout, NNA / DCT / DCA, pitch-pan, filter, IGV and any other "instrument-scope" parameters all follow the base instrument definition. Only sample-scope parameters (the patch fields listed above) override.
+    2. overlapping regions are considered INVALID
+    3. multiple Ixmp blocks pointing the same instrument are considered INVALID
+    4. IT and XM does not define volumes. Keep the Volume rectangle at 0..63 — the engine clamps to that range when matching.
+    5. SF2 does define volumes (because MIDI). Convert it using `round(velocity * (63/127))`
+        On import, `initialAttenuation`, filters and ADSR shall be ignored
+    6. Patch selection at trigger time walks the patch list in order; the first patch whose rectangle contains the trigger's (noteVal, rowVolume) wins. When no patch matches, the base instrument's sample fields are used unchanged.
+    7. Sentinel values listed above ("no override") let a patch defer to the base instrument for a given field — used by converters that don't carry per-sample data for one of the dimensions (e.g. SF2 ignoring per-sample pan).
+    8. Total per-patch payload is 31 bytes.
 
 --------------------------------------------------------------------------------
 

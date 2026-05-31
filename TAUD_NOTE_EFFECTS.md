@@ -1,10 +1,22 @@
 # Taud Tracker Effect Command Reference
 
-Taud is a tracker-style music format derived from ScreamTracker 3's pattern command set, extended to 16-bit effect arguments and a 4096-tone equal-temperament pitch grid. This document defines every effect command a Taud engine must implement. Each command entry has three parts: a plain explanation for composers, compatibility notes for converting patterns from ScreamTracker 3 (ST3), ImpulseTracker (IT), FastTracker 2 (FT2) or ProTracker (PT), and implementation details for engine writers.
+Taud is a tracker-style music format derived from ScreamTracker 3's pattern command set, extended to 16-bit effect arguments and a 4096-tone equal-temperament pitch grid. This document defines every effect command a Taud engine **MUST** implement. Each command entry has three parts: a plain explanation for composers, compatibility notes for converting patterns from ScreamTracker 3 (ST3), ImpulseTracker (IT), FastTracker 2 (FT2) or ProTracker (PT), and implementation details for engine writers.
+
+## Conformance language
+
+The key words **MUST**, **MUST NOT**, **REQUIRED**, **SHALL**, **SHALL NOT**, **SHOULD**, **SHOULD NOT**, **RECOMMENDED**, **NOT RECOMMENDED**, **MAY**, and **OPTIONAL** in this document are to be interpreted as described in [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119) and [RFC 8174](https://www.rfc-editor.org/rfc/rfc8174) when, and only when, they appear in all capitals and bold. Lowercase uses of these words carry their ordinary English meaning and impose no normative requirement.
+
+In short:
+
+- **MUST** / **MUST NOT** / **REQUIRED** / **SHALL** / **SHALL NOT** — absolute requirements / prohibitions. A conforming implementation **SHALL** observe every such rule; an implementation that violates one is non-conforming.
+- **SHOULD** / **SHOULD NOT** / **RECOMMENDED** / **NOT RECOMMENDED** — strong guidance. An implementation **MAY** deviate in particular circumstances, but the full implications **MUST** be understood and weighed before doing so.
+- **MAY** / **OPTIONAL** — truly optional. Implementations that include the feature and implementations that omit it are equally conforming, and each **MUST** be prepared to interoperate with the other (with reduced functionality where the optional feature is the means of interoperation).
+
+The "Plain" paragraph of each effect description is non-normative tutorial text; the **Compatibility** and **Implementation** paragraphs carry the normative requirements, expressed through the keywords above.
 
 ---
 
-## 0. Tracker Terminologies
+## 0. Tracker terminologies
 
 This manual extensively uses "tracker lingo" that may not sound intuitive to the modern DAW users. This section covers some of the tracker lingo to get the concepts better understood for those who have never used trackers.
 
@@ -16,7 +28,7 @@ This manual extensively uses "tracker lingo" that may not sound intuitive to the
 
 * **Row.** One horizontal slot within a pattern, at most one note event per channel. A row's duration is `speed × tick_duration` — see Speed and Tempo below.
 
-* **Ticks.** A row spans several ticks dictated by a "tick rate". All note effects happen on those ticks while playing. Some effects (notably sliding effects, excluding fine slides) require more than one ticks for operation, and **they will not get applied when tick rate is set to 1.**
+* **Ticks.** A row spans several ticks dictated by a "tick rate". All note effects happen on those ticks while playing. Some effects (notably sliding effects, excluding fine slides) require more than one tick for operation, and **MUST NOT** be applied when the tick rate is set to 1.
 
 * **Speed vs. Tempo.** Two independent timing knobs. **Speed** (effect A) is the number of ticks per row; **tempo** (effect T) sets the duration of one tick, conventionally expressed as BPM. To slow the song globally without changing how often per-tick effects update, lower the tempo. To give per-tick effects more iterations per row (denser vibrato, longer slides per row), raise the speed. The default is speed 6, tempo $64 → 125 BPM → 50 Hz tick rate → 120 ms per row.
 
@@ -34,7 +46,7 @@ This manual extensively uses "tracker lingo" that may not sound intuitive to the
 
 * **Note off, note cut, note fade.** Three distinct ways a note ends. **Note cut** (`^^^` or S$Cx) silences instantly. **Note off** (`===` or an NNA = NoteOff) releases the sustain loop and lets the volume envelope's release segment play out, then fades. **Note fade** keeps the sustain loop running but begins the fadeout decay — for soft tail-offs that still sound sustained.
 
-* **NNA — New Note Action.** What happens to a still-playing note when a fresh note arrives on the same channel. Options are Cut (drop the old voice), Continue (let it ring through), Note Off (release it), or Note Fade (begin fadeout). The displaced voice becomes a background **ghost** voice — still audible but no longer addressable from the pattern. This is the tracker's substitute for polyphony across DAW MIDI clips.
+* **NNA — New Note Action.** What happens to a still-playing note when a fresh note arrives on the same channel. Options are Cut (drop the old voice), Continue (let it ring through), Note Off (release it), or Note Fade (begin fadeout). The displaced voice becomes a background *ghost* voice — still audible but no longer addressable from the pattern. This is the tracker's substitute for polyphony across DAW MIDI clips.
 
 * **Portamento.** Automatic pitch glide toward a target note (effect G). A row carrying both a note *and* a G does **not** re-trigger the sample; instead the note becomes the target and the already-sounding sample slides into it. Distinct from generic pitch slides (E/F), which move pitch by a fixed amount per tick with no target.
 
@@ -52,15 +64,15 @@ This manual extensively uses "tracker lingo" that may not sound intuitive to the
 
 ## 1. Sound device
 
-- **Bit depth:** 8-bit unsigned throughout, including the final mixdown.
-- **Sample rate:** fixed at 32000 Hz.
-- **Output channels:** strictly stereo; the mix bus always produces a two-channel frame even for mono-source samples.
+- **Bit depth:** 8-bit unsigned throughout, including the final mixdown. Conforming implementations **MUST** deliver 8-bit unsigned samples at the output stage.
+- **Sample rate:** fixed at 32000 Hz. Conforming implementations **MUST** produce output at exactly this rate; resampling to another playback rate is the responsibility of the host environment, not of the Taud engine.
+- **Output channels:** strictly stereo; the mix bus **MUST** always produce a two-channel frame, even for mono-source samples.
 
-Internal accumulators may widen to 16 or 32 bits during mixing and effect computation, but stored samples and final output are 8-bit.
+Internal accumulators **MAY** widen to 16 or 32 bits during mixing and effect computation, but stored samples and final output **MUST** be 8-bit.
 
 ## 2. Pitch system — 4096-TET
 
-One octave spans **4096 pitch units** ($1000 exactly). A 12-TET semitone therefore equals **4096 ÷ 12 ≈ 341.333 units** (≈ $0155.55), which is not an integer; this irrationality is a deliberate consequence of choosing a microtonal native grid. Implementations store channel pitch as a signed integer in Taud units, and convert to playback rate using
+One octave spans **4096 pitch units** ($1000 exactly). A 12-TET semitone therefore equals **4096 ÷ 12 ≈ 341.333 units** (≈ $0155.55), which is not an integer; this irrationality is a deliberate consequence of choosing a microtonal native grid. Implementations **MUST** store channel pitch as a signed integer in Taud units, and **MUST** convert to playback rate using
 
 ```
 playback_rate = reference_rate × 2 ^ (pitch_units / 4096)
@@ -83,13 +95,13 @@ Commonly used intervals in Taud units are listed below; all are rounded to the n
 
 ## 3. Volume system
 
-Per-note and per-channel volume runs from **$00 (silent) to $3F (full)**, a 6-bit range narrower than ST3's 0..$40. Global volume (effect V) runs 0..$FF; this wider range lets the mix bus scale the summed channel output without disturbing individual note volumes. The per-frame mix chain per channel is
+Per-note and per-channel volume runs from **$00 (silent) to $3F (full)**, a 6-bit range narrower than ST3's 0..$40. Global volume (effect V) runs 0..$FF; this wider range lets the mix bus scale the summed channel output without disturbing individual note volumes. Conforming engines **MUST** implement the per-frame mix chain per channel as
 
 ```
 mix = sample × note_vol × channel_vol × global_vol >> normalisation_shift
 ```
 
-with saturation applied before the 8-bit stereo output.
+with saturation applied before the 8-bit stereo output. Internal accumulators **MAY** widen during this computation (see §1), but the saturating clip to the 8-bit range **MUST** be performed at the boundary.
 
 `note_vol` and `channel_vol` are **two independent multiplicative axes** mirroring IT's `chan->volume` and `chan->global_volume`:
 
@@ -127,7 +139,7 @@ Most effects recall their last non-zero argument when re-issued with $0000. Unli
 
 Every other memory-carrying effect (D, I, J, K, L, N, O, P, Q, and others) has a private slot.
 
-**Effects without recall (literal zero).** A few effects do *not* recall on $0000 — the argument is taken at face value. **M** (set channel volume), **V** (set global volume), and the volume- / panning-column SET selectors all behave this way: writing `M $0000` or `V $0000` is a literal "set to silence", not a memory recall. Converters lifting from source trackers that *do* share memory (notably ST3, where the `$00` argument may cohabit with D/E/F/etc.'s shared slot) MUST eagerly resolve the recall to an explicit value before emitting, since the Taud engine takes M / V arguments verbatim.
+**Effects without recall (literal zero).** A few effects do *not* recall on $0000 — the argument **MUST** be taken at face value. **M** (set channel volume), **V** (set global volume), and the volume- / panning-column SET selectors all behave this way: writing `M $0000` or `V $0000` is a literal "set to silence", not a memory recall. Converters lifting from source trackers that *do* share memory (notably ST3, where the `$00` argument may cohabit with D/E/F/etc.'s shared slot) **MUST** eagerly resolve the recall to an explicit value before emitting, since the Taud engine takes M / V arguments verbatim.
 
 ## 7. Opcode and argument format
 
@@ -143,7 +155,7 @@ Opcodes are single base-36 digits (0-9, then A-Z); arguments are 16-bit hexadeci
 
 **Compatibility.** ST3 `Axx` maps one-to-one: Taud `A $xx00`. ST3 `A00` is a no-op; Taud `A $0000` is likewise ignored. ProTracker `Fxx` with `xx < $20` maps to Taud `A $xx00`; `Fxx` with `xx ≥ $20` maps to T instead (see T).
 
-**Implementation.** If the high byte is non-zero, write it to `ticks_per_row`; the low byte is reserved and must be zero. The change takes effect from the row on which the A command appears. There is no memory for A.
+**Implementation.** If the high byte is non-zero, the engine **MUST** write it to `ticks_per_row`; the low byte is reserved and **MUST** be zero. The change takes effect from the row on which the A command appears. There is no memory for A.
 
 ---
 
@@ -151,11 +163,11 @@ Opcodes are single base-36 digits (0-9, then A-Z); arguments are 16-bit hexadeci
 
 **Plain.** Finishes the current row, then continues playback at row 0 of the pattern at cue position $xxyy. Use this to create song-level jumps, loops, or branching structures.
 
-**Compatibility.** ST3 `Bxx` jumps to an 8-bit cue and maps to Taud `B $00xx`. The extended 16-bit range means Taud songs may have up to $10000 cue entries.
+**Compatibility.** ST3 `Bxx` jumps to an 8-bit cue and maps to Taud `B $00xx`. The extended 16-bit range means Taud songs **MAY** have up to $10000 cue entries.
 
-**Implementation.** On the last tick of the current row, set the next cue index to the argument and the next row to 0. If the argument exceeds the song length, wrap to the song's defined restart position (cue $0000 by default). Jumps are detected by a visited `(cue, row)` set so that pathological loops do not prevent song-length computation, though they do not interrupt actual playback. There is no memory for B.
+**Implementation.** On the last tick of the current row, the engine **MUST** set the next cue index to the argument and the next row to 0. If the argument exceeds the song length, the engine **MUST** wrap to the song's defined restart position (cue $0000 by default). Jumps **SHOULD** be detected by a visited `(cue, row)` set so that pathological loops do not prevent song-length computation, though they **MUST NOT** interrupt actual playback. There is no memory for B.
 
-**Simultaneous B and C on the same row.** If a B command appears in the same row as a C command (on any channel), both fire: B chooses the cue, C chooses the row within that cue. If the two commands appear on different channels, channel priority is **ascending channel index** — the lowest-numbered channel carrying either effect wins its parameter. If both appear on the same channel row (only possible if one is a volume-column equivalent), the effect column takes precedence.
+**Simultaneous B and C on the same row.** If a B command appears in the same row as a C command (on any channel), both **MUST** fire: B chooses the cue, C chooses the row within that cue. If the two commands appear on different channels, channel priority is **ascending channel index** — the lowest-numbered channel carrying either effect wins its parameter. If both appear on the same channel row (only possible if one is a volume-column equivalent), the effect column **MUST** take precedence.
 
 ---
 
@@ -163,9 +175,9 @@ Opcodes are single base-36 digits (0-9, then A-Z); arguments are 16-bit hexadeci
 
 **Plain.** Finishes the current row, then skips ahead to row $xxyy of the **next** pattern in the cue sequence.
 
-**Compatibility.** ST3 stores `Cxx` as **BCD** (so on-disk `$10` means decimal row 10); Taud stores the argument as plain binary. When converting from ST3, decode with `row = (byte >> 4) × 10 + (byte & $0F)`. Valid ST3 source bytes are those representing decimal 0..63; out-of-range BCD bytes should clamp to row 0 on import. When exporting back to ST3, encode with `byte = ((row / 10) << 4) | (row % 10)`, clamped at row 63.
+**Compatibility.** ST3 stores `Cxx` as **BCD** (so on-disk `$10` means decimal row 10); Taud stores the argument as plain binary. When converting from ST3, converters **MUST** decode with `row = (byte >> 4) × 10 + (byte & $0F)`. Valid ST3 source bytes are those representing decimal 0..63; out-of-range BCD bytes **SHOULD** clamp to row 0 on import. When exporting back to ST3, converters **MUST** encode with `byte = ((row / 10) << 4) | (row % 10)`, clamped at row 63.
 
-**Implementation.** On the last tick of the current row, advance the cue index by 1 (or honour a co-occurring B), then set the next row to the argument. If the argument exceeds the destination pattern's row count, start the destination pattern at row 0. There is no memory for C.
+**Implementation.** On the last tick of the current row, the engine **MUST** advance the cue index by 1 (or honour a co-occurring B), then set the next row to the argument. If the argument exceeds the destination pattern's row count, the engine **MUST** start the destination pattern at row 0. There is no memory for C.
 
 ---
 
@@ -237,9 +249,9 @@ Coarse and fine modes are distinguished by the high nibble of the argument:
 - **MONOTONE source** (Taud `ff = 2`):
   - MONOTONE `2xx` → Taud `E $00xx` **verbatim** (Hz/tick). The engine converts the stored pitch to frequency, subtracts the argument, and converts back. MONOTONE has no fine-slide form; converters never emit `E $Fxxx` for ff=2 sources.
 
-The mode flag therefore controls **two** decoder behaviours simultaneously: (a) which numeric scale the converter should have used when emitting coarse arguments, and (b) which arithmetic the engine performs on those arguments per tick. Converters MUST set bits 0-1 (`ff`) of the song-table flags byte to match the units they emit, and MUST NOT mix scales within one Taud song.
+The mode flag therefore controls **two** decoder behaviours simultaneously: (a) which numeric scale the converter ought to have used when emitting coarse arguments, and (b) which arithmetic the engine performs on those arguments per tick. Converters **MUST** set bits 0-1 (`ff`) of the song-table flags byte to match the units they emit, and **MUST NOT** mix scales within one Taud song.
 
-Because E and F share memory in Taud (narrower than ST3's broad shared memory), an ST3 song that used `E00` or `F00` to recall a D, G, or Q argument will break on import; the converter must eagerly resolve ST3 recalls into explicit Taud arguments rather than relying on memory.
+Because E and F share memory in Taud (narrower than ST3's broad shared memory), an ST3 song that used `E00` or `F00` to recall a D, G, or Q argument will break on import; the converter **MUST** eagerly resolve ST3 recalls into explicit Taud arguments rather than relying on memory.
 
 **Implementation.** Per-tick processing:
 
@@ -299,10 +311,10 @@ Glissando control (S $1x) snaps the output pitch to the nearest semitone after e
 
 The unit of `$xxxx` depends on the song-table tone mode (effect `1`, bits 0-1):
 
-- `ff = 0` (linear) and `ff = 1` (Amiga): 4096-TET pitch units per tick. Amiga sources should be converted to linear units on G, since the original PT G slide already operated semi-linearly within a small range and the shared-memory pitfall of E/F does not apply here.
+- `ff = 0` (linear) and `ff = 1` (Amiga): 4096-TET pitch units per tick. Amiga sources **SHOULD** be converted to linear units on G, since the original PT G slide already operated semi-linearly within a small range and the shared-memory pitfall of E/F does not apply here.
 - `ff = 2` (linear-frequency): Hz/tick. The engine walks the channel's *frequency* toward the target note's frequency by `±$xxxx` Hz each non-first tick. This is MONOTONE's `3xx` behaviour verbatim (MTSRC/MT_PLAY.PAS:620-630).
 
-**Compatibility.** ST3 `Gxx` uses an 8-bit value in period-table units; convert to Taud using the same `round(× 64/3)` scale as E/F coarse (1/16 semitone per ST3 slide unit). Amiga-mode G sources should be treated as linear. MONOTONE `3xx` → Taud `G $00xx` verbatim under ff=2. G has its **own** memory slot in both ST3 and Taud, so conversion is straightforward and does not suffer the shared-memory problem of E/F.
+**Compatibility.** ST3 `Gxx` uses an 8-bit value in period-table units; converters **MUST** convert to Taud using the same `round(× 64/3)` scale as E/F coarse (1/16 semitone per ST3 slide unit). Amiga-mode G sources **SHOULD** be treated as linear. MONOTONE `3xx` → Taud `G $00xx` verbatim under ff=2. G has its **own** memory slot in both ST3 and Taud, so conversion is straightforward and does not suffer the shared-memory problem of E/F.
 
 **Implementation.**
 
@@ -464,9 +476,9 @@ The `tick_within_row mod 3` counter resets every row start (so every row begins 
 
 ## K $xy00 — Dual: vibrato continuation and volume slide $xy
 
-**Plain.** Continues the previously started vibrato (H or U) without retriggering it, while applying a volume slide of `$xy` per non-first tick. Fine volume slides are not available in this form. The K command is implemented sorely for tracker compatibility — new compositions should prefer an explicit `H $0000` (vibrato recall) plus a volume-column slide (`1.$xy` / `2.$xy`), which carries the same semantics with one less hidden dependency.
+**Plain.** Continues the previously started vibrato (H or U) without retriggering it, while applying a volume slide of `$xy` per non-first tick. Fine volume slides are not available in this form. The K command is implemented solely for tracker compatibility — new compositions **SHOULD** prefer an explicit `H $0000` (vibrato recall) plus a volume-column slide (`1.$xy` / `2.$xy`), which carries the same semantics with one less hidden dependency.
 
-**Compatibility.** ST3 / IT `Kxy` map directly to Taud `K $xy00`: the source's `xy` argument byte goes verbatim into the high byte of the Taud argument. ProTracker / FT2 / XM `6xy` map identically. Source-tracker memory cohorts that share K's argument with D (notably the ST3 single-slot shared memory and IT's D/K/L vol-slide cohort) MUST be resolved eagerly by the converter — emit explicit arguments rather than relying on cohort sharing, since Taud's K has its own private slot.
+**Compatibility.** ST3 / IT `Kxy` map directly to Taud `K $xy00`: the source's `xy` argument byte goes verbatim into the high byte of the Taud argument. ProTracker / FT2 / XM `6xy` map identically. Source-tracker memory cohorts that share K's argument with D (notably the ST3 single-slot shared memory and IT's D/K/L vol-slide cohort) **MUST** be resolved eagerly by the converter — converters **MUST** emit explicit arguments rather than relying on cohort sharing, since Taud's K has its own private slot.
 
 **Implementation.** On row parse:
 
@@ -500,9 +512,9 @@ The slide writes the per-note axis (same as D); `channel_vol` is untouched. K ha
 
 ## L $xy00 — Dual: tone portamento continuation and volume slide $xy
 
-**Plain.** Continues the previously started tone portamento (G) without retriggering, while applying a volume slide of `$xy` per non-first tick. Fine volume slides are not available here. Like K, L is implemented sorely for tracker compatibility — new compositions should prefer an explicit `G $0000` plus a volume-column slide.
+**Plain.** Continues the previously started tone portamento (G) without retriggering, while applying a volume slide of `$xy` per non-first tick. Fine volume slides are not available here. Like K, L is implemented solely for tracker compatibility — new compositions **SHOULD** prefer an explicit `G $0000` plus a volume-column slide.
 
-**Compatibility.** ST3 / IT `Lxy` map directly to Taud `L $xy00`. ProTracker / FT2 / XM `5xy` map identically. As with K, source cohort recalls (ST3 shared memory; IT D/K/L vol-slide cohort) MUST be resolved eagerly by the converter; Taud's L has its own private slot.
+**Compatibility.** ST3 / IT `Lxy` map directly to Taud `L $xy00`. ProTracker / FT2 / XM `5xy` map identically. As with K, source cohort recalls (ST3 shared memory; IT D/K/L vol-slide cohort) **MUST** be resolved eagerly by the converter; Taud's L has its own private slot.
 
 **Implementation.** Identical machinery to K with `G` swapped for the LFO update:
 
@@ -535,7 +547,7 @@ The slide writes the per-note axis (same as D); `channel_vol` is untouched. L ha
 
 **Plain.** Sets the per-channel volume axis (`channel_vol`, see §3) to `$xx`, in the same 6-bit `$00..$3F` range as a note's default volume. M is the analog of IT's `Mxx`, which writes `chan->global_volume` — it does **not** disturb the per-note volume (`note_vol`) set by the volume column or seeded from the instrument default. A vol-col SET of $02 on a note row followed by an `M $4000` on the next row therefore plays the channel at `2/63 × $3F/63 ≈ 3%` of full, *not* at full — exactly as IT would.
 
-**Compatibility.** IT `Mxx` maps directly: the source byte is taken **verbatim** with a clamp to `$3F` (IT's $40 cap snaps down by one). ST3 has no native M; OpenMPT/Schism's S3M-with-IT-extensions does, and the same verbatim-with-clamp rule applies on import. M has **no memory** — `M $0000` is a literal "set channel volume to silence", not a recall. Source-tracker shared-memory recalls (e.g., ST3's single-slot shared memory) MUST be eagerly resolved by the converter before emit.
+**Compatibility.** IT `Mxx` maps directly: the source byte **MUST** be taken **verbatim** with a clamp to `$3F` (IT's $40 cap snaps down by one). ST3 has no native M; OpenMPT/Schism's S3M-with-IT-extensions does, and the same verbatim-with-clamp rule applies on import. M has **no memory** — `M $0000` is a literal "set channel volume to silence", not a recall. Source-tracker shared-memory recalls (e.g., ST3's single-slot shared memory) **MUST** be eagerly resolved by the converter before emit.
 
 **Implementation.**
 
@@ -651,9 +663,9 @@ The volume modifier table, **computed with arithmetic (no LUT)**, is:
 | 6 | vol × 2 / 3 | E | vol × 3 / 2 |
 | 7 | vol × 1 / 2 | F | vol × 2 |
 
-Multiplicative cases use integer arithmetic: `vol × 2 / 3` is `(vol × 2) / 3` (truncated); `vol × 3 / 2` is `(vol × 3) / 2`; `vol × 1 / 2` is `vol >> 1`; `vol × 2` is `vol << 1`. All results clip to $00..$3F after.
+Multiplicative cases **MUST** use integer arithmetic: `vol × 2 / 3` is `(vol × 2) / 3` (truncated); `vol × 3 / 2` is `(vol × 3) / 2`; `vol × 1 / 2` is `vol >> 1`; `vol × 2` is `vol << 1`. All results **MUST** clip to $00..$3F after.
 
-A note previously silenced by a cut (`^^^` or `SCx` earlier in the row) is not retriggered, matching ST3's `kST3RetrigAfterNoteCut` rule.
+A note previously silenced by a cut (`^^^` or `SCx` earlier in the row) **MUST NOT** be retriggered, matching ST3's `kST3RetrigAfterNoteCut` rule.
 
 ---
 
@@ -661,7 +673,7 @@ A note previously silenced by a cut (`^^^` or `SCx` earlier in the row) is not r
 
 **Plain.** Modulates volume with an LFO, symmetrically with H's pitch modulation. `$xx` is LFO speed, `$yy` depth; the waveform is selected by S $4x.
 
-**Compatibility.** ST3 `Rxy` uses nibbles; convert by nibble-repeat. ST3's volume cap is $40; Taud's is $3F — very deep tremolo that would have briefly clipped at $40 in ST3 may clip slightly earlier in Taud. R has its own memory slot (not shared with H/U).
+**Compatibility.** ST3 `Rxy` uses nibbles; converters **MUST** convert by nibble-repeat. ST3's volume cap is $40; Taud's is $3F — very deep tremolo that would have briefly clipped at $40 in ST3 **MAY** clip slightly earlier in Taud. R has its own memory slot (not shared with H/U).
 
 **Implementation.** Identical machinery to H with a larger shift to fit the narrower volume range:
 
@@ -691,7 +703,7 @@ Taud splits T by which byte carries the value:
 
 **Plain.** Sets the Taud tempo byte to `$xx`. The resulting BPM is `$xx + $19`: Taud byte $00 → 25 BPM, $64 → 125 BPM (default), $FF → 280 BPM.
 
-**Compatibility.** ST3 `Txx` (where `xx ∈ $20..$FF`) stores BPM directly; convert with `taud_byte = xx − $18`. Taud byte $07 corresponds to ST3's minimum BPM of 32; Taud bytes below $07 are inexpressible in ST3 and should round up to $07 (BPM 32) when exporting. OpenMPT's extended tempo slides (`T $0x` down, `T $1x` up) in S3M files map to Taud T $00xx — see below.
+**Compatibility.** ST3 `Txx` (where `xx ∈ $20..$FF`) stores BPM directly; converters **MUST** convert with `taud_byte = xx − $18`. Taud byte $07 corresponds to ST3's minimum BPM of 32; Taud bytes below $07 are inexpressible in ST3 and **SHOULD** round up to $07 (BPM 32) when exporting. OpenMPT's extended tempo slides (`T $0x` down, `T $1x` up) in S3M files map to Taud T $00xx — see below.
 
 ProTracker `Fxx` with `xx ≥ $20` maps to Taud `T $(xx − $19)00`; `Fxx` with `xx < $20` maps to A (speed) instead.
 
@@ -701,7 +713,7 @@ ProTracker `Fxx` with `xx ≥ $20` maps to Taud `T $(xx − $19)00`; `Fxx` with 
 
 **Plain.** Adjusts the tempo continuously during the row. `$00_0y` (low nibble under a zero high nibble within the low byte) slides BPM down by `$y` per non-first tick; `$00_1y` slides up. Out-of-range encodings ($00_20 through $00_FF) are reserved and behave as no-ops.
 
-**Compatibility.** ST3 itself has only the set form; the slide forms originate in the OpenMPT/Schism extension of S3M. On export to strict ST3, slide forms are unrepresentable and should be approximated as an equivalent set-tempo on a later row.
+**Compatibility.** ST3 itself has only the set form; the slide forms originate in the OpenMPT/Schism extension of S3M. On export to strict ST3, slide forms are unrepresentable and **SHOULD** be approximated as an equivalent set-tempo on a later row.
 
 **Implementation.**
 
@@ -731,9 +743,9 @@ A tempo slide's memory slot is separate from the set-tempo path and is private t
 
 **Plain.** Sets the global mix bus volume (0..$FF). $00 is silence; $FF is full. The default is $80.
 
-**Compatibility.** ST3's global volume is 0..$40; convert with `taud_v = st3_v × 4`, clamped at $FF. On export, `st3_v = taud_v >> 2`, clamped at $40. IT's global volume is 0..$80; convert with `taud_v = it_v × 2`, clamped at $FF. On IT, the very first `V 00` command must be resolved as the song's initial global volume.
+**Compatibility.** ST3's global volume is 0..$40; converters **MUST** convert with `taud_v = st3_v × 4`, clamped at $FF. On export, `st3_v = taud_v >> 2`, clamped at $40. IT's global volume is 0..$80; converters **MUST** convert with `taud_v = it_v × 2`, clamped at $FF. On IT, the very first `V 00` command **MUST** be resolved as the song's initial global volume.
 
-**Implementation.** Write the high byte to `global_volume` on the row the command appears. The low byte is reserved. ST3's `kST3NoMutedChannels` rule applies: V on a muted channel is ignored by ST3; for strict-compatible playback Taud follows suit, but new Taud compositions should avoid muting channels that carry global effects.
+**Implementation.** The engine **MUST** write the high byte to `global_volume` on the row the command appears. The low byte is reserved. ST3's `kST3NoMutedChannels` rule applies: V on a muted channel is ignored by ST3; for strict-compatible playback Taud **MUST** follow suit, but new Taud compositions **SHOULD NOT** mute channels that carry global effects.
 
 ---
 
@@ -761,7 +773,7 @@ A tempo slide's memory slot is separate from the set-tempo path and is private t
 
 **Plain.** Modulates panning with an LFO, symmetrically with H's pitch modulation. `$xx` is LFO speed, `$yy` depth; the waveform is selected by S $5x.
 
-**Compatibility.** IT `Yxy` uses nibbles; convert by nibble-repeat. IT's panning cap is $40; Taud's is $3F — very deep vibrato that would have briefly clipped at $40 in IT may clip slightly earlier in Taud. Y has its own memory slot.
+**Compatibility.** IT `Yxy` uses nibbles; converters **MUST** convert by nibble-repeat. IT's panning cap is $40; Taud's is $3F — very deep vibrato that would have briefly clipped at $40 in IT **MAY** clip slightly earlier in Taud. Y has its own memory slot.
 
 **Implementation.** Identical machinery to H with a larger shift to fit the narrower volume range:
 
@@ -792,7 +804,7 @@ Boundary rules:
 - The block stops at the end of the pattern: a ditto whose nominal span would overflow the pattern's row count clips silently at the final row.
 - `$xx = $00`, `$yy = $00`, and any `$xx` greater than the row index on which the ditto sits are all treated as no-ops — there is nothing valid to copy from.
 - A `7` cell appearing inside a source block is **not** recursively expanded: when that source row is pasted into a destination, its effect column is treated as empty. This keeps expansion single-pass and prevents unbounded nesting.
-- Flow-control effects (B, C, S$Bx, S$Ex) that fall inside a source block still fire when their copy lands on a destination row, since the engine sees them as ordinary effect cells after expansion. Composers and converters should avoid placing S$Bx loop bounds wholly inside a ditto'd range — the loop counter is per-voice and the same destination row would be revisited twice with the same state.
+- Flow-control effects (B, C, S$Bx, S$Ex) that fall inside a source block still fire when their copy lands on a destination row, since the engine sees them as ordinary effect cells after expansion. Composers and converters **SHOULD NOT** place S$Bx loop bounds wholly inside a ditto'd range — the loop counter is per-voice and the same destination row would be revisited twice with the same state.
 
 **Compatibility.** Unique to Taud — no ST3/IT/PT equivalent. The effect has no memory.
 
@@ -872,7 +884,7 @@ Effect dispatch sees the synthesised effect, never the literal `7` opcode of the
 - `8 $0000` disables both stages and resets the shared clipping mode to clamp.
 - `8 $x000` updates only the shared clipping mode and leaves the active depth/skip undisturbed — useful for switching between clamp/fold/wrap mid-pattern without retyping the whole argument. The same form on effect 9 has identical semantics.
 
-**Compatibility.** Unique to Taud — no ST3/IT/PT equivalent. The effect has no memory: every cell that names effect 8 must spell out its full argument (apart from the `$x000` shorthand described above). `8 $1100` ⇒ 1-bit, no skip, fold-clipped — a useful sanity check pattern.
+**Compatibility.** Unique to Taud — no ST3/IT/PT equivalent. The effect has no memory: every cell that names effect 8 **MUST** spell out its full argument (apart from the `$x000` shorthand described above). `8 $1100` ⇒ 1-bit, no skip, fold-clipped — a useful sanity check pattern.
 
 **Implementation.** Per-voice state: `bitcrusherDepth` (0..15; 0 = quantiser off), `bitcrusherSkip` (0..255), `bitcrusherCounter` (mod skip+1), `bitcrusherHeld` (last emitted sample), and `clipMode` (0..2, shared with effect 9). On row parse:
 
@@ -931,7 +943,7 @@ The voice-FX state is preserved verbatim by the NNA-ghost copier, so the post-NN
 
 ## 9 $x0zz — Overdrive
 
-**Plain.** Amplifies the voice's post-filter signal and routes it through the shared clipper. With `x = 0` (clamp) the effect is a hard-knee soft-clipping distortion; with `x = 1` (fold) it becomes a wave-folder; with `x = 2` (wrap) it produces aggressive aliased fuzz with sawtooth-style discontinuities at the rails. Volume is *not* re-normalised after clipping — `9 $00FF` clamp-clipped plays at roughly the same loudness as the dry voice once everything saturates. The middle nibble is reserved and must be zero.
+**Plain.** Amplifies the voice's post-filter signal and routes it through the shared clipper. With `x = 0` (clamp) the effect is a hard-knee soft-clipping distortion; with `x = 1` (fold) it becomes a wave-folder; with `x = 2` (wrap) it produces aggressive aliased fuzz with sawtooth-style discontinuities at the rails. Volume **MUST NOT** be re-normalised after clipping — `9 $00FF` clamp-clipped plays at roughly the same loudness as the dry voice once everything saturates. The middle nibble is reserved and **MUST** be zero.
 
 - **x — clipping mode** (shared with effect 8): `0` clamp, `1` fold, `2` wrap (see effect 8 for the precise transfer functions). Values 3..F are reserved and treated as clamp.
 - **zz — amplification index**, range $00..$FF. The applied gain is `(16 + zz) / 16`, so `$00` is 1.0× (effect inactive), `$10` is 2.0× (+6 dBFS), `$F0` is 16.0× (+24 dBFS), and `$FF` is 16.9375× (≈ +24.55 dBFS).
@@ -975,7 +987,7 @@ S is a multiplexing opcode; the **high nibble of the high byte** selects the sub
 
 **Plain.** `$0100` turns filter off; `$0000` turns it on. The parameter of the filter is dependent on the current interpolation mode: follows Amiga 1200 LPF on 1200 mode, Amiga 500 LPF on 500 mode. For other interpolation modes, this command is no-op. (see § Effects that modifies global behaviour)
 
-**Compatibility.** ST3/IT `S00`/`S01` and PT `E00`/`E01` maps directly. To actually hear the effect, the interpolation mode must be set to one of the two Amiga modes.
+**Compatibility.** ST3/IT `S00`/`S01` and PT `E00`/`E01` map directly. To actually hear the effect, the interpolation mode **MUST** be set to one of the two Amiga modes.
 
 **Implementation.** Per-playhead boolean `ledFilterOn` (default off). Writes from row are gated on `interpolationMode ∈ {Amiga 500, Amiga 1200}`; in linear / no-interp / default modes the filter chain is bypassed entirely so the toggle is a silent no-op. The post-mix LPF chain runs on the stereo bus (left/right state per playhead) before dithering: in Amiga 500 mode a 1-pole RC LPF (R = 360 Ω, C = 0.1 µF, fc ≈ 4421 Hz) is always applied; in Amiga 1200 mode that LPF is bypassed (cutoff ~34 kHz, well above 32 kHz Nyquist — matches `pt2_paula.c`). When the LED toggle is on, an additional 2-pole Sallen-Key LPF (R1=R2=10 kΩ, C1=6800 pF, C2=3900 pF, fc ≈ 3091 Hz, Q ≈ 0.660) is run after the mode LPF. Coefficients precomputed once at SAMPLING_RATE; recurrence follows musicdsp.org #38 with `pt2_rcfilters.c` parameter mapping.
 
@@ -983,7 +995,7 @@ S is a multiplexing opcode; the **high nibble of the high byte** selects the sub
 
 ## S $1x00 — PT/ST3/IT Glissando control
 
-**Plain.** `$1000` turns glissando off; `$1100` turns it on. When on, tone portamento (G) output is quantised to the nearest semitone ($0155 approximation) before being sent to the mixer. The internal G pitch counter still advances smoothly; only the audible pitch steps. **This command is implemented sorely for ST3/IT compatibility** and therefore only works in 12-TET context.
+**Plain.** `$1000` turns glissando off; `$1100` turns it on. When on, tone portamento (G) output **MUST** be quantised to the nearest semitone ($0155 approximation) before being sent to the mixer. The internal G pitch counter **MUST** still advance smoothly; only the audible pitch steps. **This command is implemented solely for ST3/IT compatibility** and therefore only works in 12-TET context.
 
 **Compatibility.** ST3/IT `S10`/`S11` and PT `E30`/`E31` maps directly. In Taud, "nearest semitone" uses the best integer approximation: round `pitch / $155` to the nearest integer, multiply by $155; equivalently, `snapped = (pitch + $AB) / $155 × $155`. Because $155 is an approximation of 4096/12, accumulated rounding across many octaves will drift by up to a few cents; this is documented behaviour and intentional given the microtonal grid.
 
@@ -995,7 +1007,7 @@ S is a multiplexing opcode; the **high nibble of the high byte** selects the sub
 
 **Plain.** Overrides the current note's fine-tune by applying a fixed 4096-TET offset. The index `$x` selects one of sixteen predefined pitch offsets, following ScreamTracker 3's Hz-based fine-tune table but expressed directly in Taud units. This command is implemented for ST3 compatibility.
 
-**Compatibility.** The index scheme matches ST3 exactly: `$8` is the baseline (no change), `$0..$7` are progressively flatter, `$9..$F` are progressively sharper. The Hz reference values come from the ST3 User's Manual and are reproduced here for auditability; the Taud offset is `log2(Hz / 8363) × 4096`, rounded to the nearest integer. **Format converters are advised to apply offset to the note value directly.**
+**Compatibility.** The index scheme matches ST3 exactly: `$8` is the baseline (no change), `$0..$7` are progressively flatter, `$9..$F` are progressively sharper. The Hz reference values come from the ST3 User's Manual and are reproduced here for auditability; the Taud offset is `log2(Hz / 8363) × 4096`, rounded to the nearest integer. **Format converters SHOULD apply the offset to the note value directly.**
 
 | $x | Reference Hz | Taud offset |
 |---|---|---|
@@ -1140,7 +1152,7 @@ The background pool is reaped when a ghost's `fadeoutVolume` drops to zero or it
 
 **Compatibility.** ST3 `SBx` maps directly. ProTracker `E6x` maps to Taud `S $Bx00`.
 
-ST3 has a long-documented bug where pattern delay (SEx) inside a pattern-loop range causes the loop counter to decrement multiple times per visit, producing unintended behaviour. **Taud fixes this bug.** On import, ST3 songs that relied on the bug will loop fewer times in Taud. Converters that want bit-exact ST3 playback should emit a warning when SBx and SEx appear in the same channel within a loop range, or optionally flatten loops by duplicating rows.
+ST3 has a long-documented bug where pattern delay (SEx) inside a pattern-loop range causes the loop counter to decrement multiple times per visit, producing unintended behaviour. **Taud fixes this bug.** On import, ST3 songs that relied on the bug will loop fewer times in Taud. Converters that want bit-exact ST3 playback **SHOULD** emit a warning when SBx and SEx appear in the same channel within a loop range, and **MAY** flatten loops by duplicating rows.
 
 **Implementation.** State per channel: `loop_start_row` (defaulting to 0 at each pattern entry) and `loop_count` (defaulting to 0).
 
@@ -1162,7 +1174,7 @@ on row event (S $Bx00):
 on pattern change: loop_start_row = 0; loop_count = 0
 ```
 
-The crucial bug fix relative to ST3: the loop-counter decrement happens **once per actual row playback**, not once per tick-0 invocation. When SBx shares a row with SEx (pattern delay), the pattern-delay machinery replays the row as a unit, but the SBx state machine treats the whole delay group as a single visit. Implement this by gating the SBx decrement on `pattern_delay_repetition == 0`.
+The crucial bug fix relative to ST3: the loop-counter decrement **MUST** happen **once per actual row playback**, not once per tick-0 invocation. When SBx shares a row with SEx (pattern delay), the pattern-delay machinery replays the row as a unit, but the SBx state machine **MUST** treat the whole delay group as a single visit. Engines **SHOULD** implement this by gating the SBx decrement on `pattern_delay_repetition == 0`.
 
 ---
 
@@ -1172,7 +1184,7 @@ The crucial bug fix relative to ST3: the loop-counter decrement happens **once p
 
 **Compatibility.** ST3 `SCx` maps directly. ProTracker `ECx` also maps directly. ST3 ignores `SC0` (treats it as no cut at all); Taud preserves this.
 
-**Implementation.** On tick `$x`, set `output_volume = 0` but leave `base_volume` unchanged. If `$x ≥ speed`, the cut never fires. If `$x == 0`, the command is ignored. Set the `note_was_cut` flag so a later Q retrigger on the same row is suppressed.
+**Implementation.** On tick `$x`, the engine **MUST** set `output_volume = 0` but **MUST** leave `base_volume` unchanged. If `$x ≥ speed`, the cut **MUST NOT** fire. If `$x == 0`, the command **MUST** be ignored. The engine **MUST** set the `note_was_cut` flag so that a later Q retrigger on the same row is suppressed.
 
 ---
 
@@ -1180,9 +1192,9 @@ The crucial bug fix relative to ST3: the loop-counter decrement happens **once p
 
 **Plain.** Delays the triggering of the note (and any co-row instrument, offset, and volume event) until tick `$x`. Until then, any currently playing note continues.
 
-**Compatibility.** ST3 `SDx` maps directly. ProTracker `EDx` also maps directly. `SD0` plays the note normally on tick 0. If `$x ≥ speed`, the note never plays on this row and does not carry over to the next row. Some trackers allow playback of "malformed" note delays (`$x` greater than current tick speed). Taud discards those notes. If such note events have been encountered during conversion, they must be corrected on the converter.
+**Compatibility.** ST3 `SDx` maps directly. ProTracker `EDx` also maps directly. `SD0` plays the note normally on tick 0. If `$x ≥ speed`, the note **MUST NOT** play on this row and **MUST NOT** carry over to the next row. Some trackers allow playback of "malformed" note delays (`$x` greater than current tick speed); Taud **MUST** discard those notes. If such note events have been encountered during conversion, they **MUST** be corrected by the converter.
 
-**Implementation.** On row parse, defer the note-trigger event (including sample selection, volume, offset, and any volume-column effect) until tick `$x`. On tick `$x`, execute the deferred trigger. When combined with pattern delay (S $Ex00), the deferred trigger re-fires at the start of each row repetition — matching ST3's `kRowDelayWithNoteDelay` behaviour. If `$x` is greater than current tick speed, the note must be discarded (see compatibility notes above)
+**Implementation.** On row parse, the engine **MUST** defer the note-trigger event (including sample selection, volume, offset, and any volume-column effect) until tick `$x`. On tick `$x`, the engine **MUST** execute the deferred trigger. When combined with pattern delay (S $Ex00), the deferred trigger **MUST** re-fire at the start of each row repetition — matching ST3's `kRowDelayWithNoteDelay` behaviour. If `$x` is greater than the current tick speed, the note **MUST** be discarded (see compatibility notes above).
 
 ---
 
@@ -1190,7 +1202,7 @@ The crucial bug fix relative to ST3: the loop-counter decrement happens **once p
 
 **Plain.** Repeats the current row `$x` additional times (so `$x = 0` means no repeat and the row plays once; `$x = 3` means the row plays four times total). Notes do not retrigger across repetitions, but per-tick effects re-run and tick-0 events (fine slides, delayed notes) re-fire on each repetition.
 
-**Compatibility.** ST3 `SEx` maps directly. ProTracker `EEx` also maps directly. Simultaneous SEx on multiple channels: ST3 uses the first SEx in **pan order** (L1..L8 then R1..R8); **Taud uses the first SEx in ascending channel-index order** for predictability. Converters that encounter ST3 songs relying on the pan-order rule should emit a warning.
+**Compatibility.** ST3 `SEx` maps directly. ProTracker `EEx` also maps directly. Simultaneous SEx on multiple channels: ST3 uses the first SEx in **pan order** (L1..L8 then R1..R8); **Taud uses the first SEx in ascending channel-index order** for predictability. Converters that encounter ST3 songs relying on the pan-order rule **SHOULD** emit a warning.
 
 Q retrigger counters do **not** reset between SEx repetitions.
 
@@ -1202,7 +1214,7 @@ Q retrigger counters do **not** reset between SEx repetitions.
 
 **Plain.** Produces a hiss-like progressive inversion of the sample loop, toggling individual bytes over time for a gritty textural effect. Setting `$x = 0` turns the effect off; higher `$x` advances the inversion faster.
 
-**Compatibility.** ProTracker `EFx` is destructive — it XORs bytes directly in the sample data, permanently corrupting the sample. **Taud's implementation is non-destructive**: the XOR is applied at playback time through a per-instrument bit-mask, leaving source samples pristine. ST3 does not implement SFx at all and will parse Taud's S $Fx00 as a no-op; converters targeting ST3 should drop the effect. ProTracker `EFx` imports as Taud `S $Fyyy`, where `yyy = funk_table[x]`.
+**Compatibility.** ProTracker `EFx` is destructive — it XORs bytes directly in the sample data, permanently corrupting the sample. **Taud's implementation MUST be non-destructive**: the XOR **MUST** be applied at playback time through a per-instrument bit-mask, leaving source samples pristine. ST3 does not implement SFx at all and will parse Taud's S $Fx00 as a no-op; converters targeting ST3 **SHOULD** drop the effect. ProTracker `EFx` imports as Taud `S $Fyyy`, where `yyy = funk_table[x]`.
 
 **Implementation.** Each instrument carries a `funk_mask` bit array, one bit per byte of the loop region, all zero at song start. A per-channel counter `funk_accumulator` and a per-channel `funk_write_pos` track progress.
 
@@ -1224,7 +1236,7 @@ on sample byte read during loop playback:
         output_byte = raw_byte
 ```
 
-`S $F000` clears `funk_accumulator` but leaves `funk_mask` intact (the accumulated inversion pattern persists). **On every fresh note trigger**, `funk_write_pos` resets to 0 (matching PT2's `n_wavestart = n_loopstart`); `funk_accumulator` and `funk_speed` persist across notes. The `funk_mask` itself is **only cleared on cue-start reset** (i.e. song-start / stop-and-replay) — within a single playback session it accumulates as PT2's destructive in-place edits would, but a clean replay always reproduces the same audio without needing to reload the song from disk.
+`S $F000` **MUST** clear `funk_accumulator` but **MUST** leave `funk_mask` intact (the accumulated inversion pattern persists). **On every fresh note trigger**, `funk_write_pos` **MUST** reset to 0 (matching PT2's `n_wavestart = n_loopstart`); `funk_accumulator` and `funk_speed` **MUST** persist across notes. The `funk_mask` itself **MUST** be cleared only on cue-start reset (i.e. song-start / stop-and-replay) — within a single playback session it accumulates as PT2's destructive in-place edits would, but a clean replay **MUST** reproduce the same audio without needing to reload the song from disk.
 
 ---
 
@@ -1239,7 +1251,7 @@ Each cell carries a 6-bit value field plus a 2-bit selector field for the volume
 
 Volume-column effects do not consume the main effect slot; a cell can carry both (for instance, a tone portamento in the effect slot and a volume slide in the volume column). Because the volume column writes the per-note axis, an `M $xx00` on the same or following row sets the per-channel axis independently — the two multiply at the mixer (see §3 / §M).
 
-When the converter folds an ST3 K, L, M, or N effect into the volume column, the slide-up / slide-down nibbles map to selectors 1 / 2 (clamped to 6 bits — values above $3F clip). Note that *converted* M and N still target `note_vol` here (vol-col semantics) — to preserve the original per-channel intent, emit them in the main effect column instead.
+When the converter folds an ST3 K, L, M, or N effect into the volume column, the slide-up / slide-down nibbles map to selectors 1 / 2 (clamped to 6 bits — values above $3F clip). Note that *converted* M and N still target `note_vol` here (vol-col semantics) — to preserve the original per-channel intent, converters **MUST** emit them in the main effect column instead.
 
 NOTE: **`3.00` — is No-op**
 
@@ -1254,7 +1266,7 @@ The panning column uses the same 6-bit value + 2-bit selector layout:
 - **`2.$xx` — Pan slide left** by `$xx` per non-first tick (4-bit).
 - **`3.$Sx` — Fine pan slide** on tick 0 only, same direction-bit encoding as the volume column's selector 3.
 
-NOTE: **`3.00` — is No-op**. When Set Pan and S $80xx are both present, S-command takes precedence.
+NOTE: **`3.00` — is No-op**. When Set Pan and S $80xx are both present, S-command **MUST** take precedence.
 
 ---
 
@@ -1272,7 +1284,7 @@ Effects in this section modifies the behaviour of the mixer. Primary intention o
 - ff = 1: Amiga (cycle-based) tone mode. Pitch shift will behave like ProTracker/ScreamTracker. **Coarse and fine E/F arguments are stored as raw tracker period units** (the unscaled byte/nibble from the source PT/S3M/IT file) and applied in Amiga period space. Tone portamento (G) remains linear regardless of mode.
 - ff = 2: Linear-frequency tone mode (MONOTONE compat). **E, F, and G arguments are stored as Hz/tick** (a signed change in audible frequency per song tick), and the engine converts the channel's stored 4096-TET pitch back to a frequency, adds/subtracts the argument, then converts back to 4096-TET. Reference is fixed at 12-TET A4 = 440 Hz / C4 ≈ 261.6256 Hz, which matches MONOTONE's MT_PLAY.PAS `notesHz` table (A0 = 27.5 Hz, equal-temperament). Unlike Amiga mode, *all three* slide effects use the new arithmetic — Monotone's `1xx`, `2xx`, and `3xx` are all in Hz/tick (see MTSRC/MT_PLAY.PAS:606-630).
 
-- rrr = 0: Yes interpolation. Actual interpolation algorithm is implementation-dependent, but recommended to use either Fast Sinc or Linear.
+- rrr = 0: Yes interpolation. The actual interpolation algorithm is implementation-dependent; Fast Sinc or Linear is **RECOMMENDED**.
 - rrr = 1: No interpolation.
 - rrr = 2: Amiga 500 interpolation.
 - rrr = 3: Amiga 1200 interpolation.
@@ -1326,30 +1338,30 @@ This table maps each PT effect to its Taud equivalent. Arguments follow PT's two
 
 These quirks of ST3 are worth preserving or flagging when importing S3M files into Taud:
 
-**Shared memory across effects.** In ST3, a single memory slot backs D, E, F, I, J, K, L, Q, R, and S. A `$00` argument on any of these recalls whichever effect last wrote a non-zero argument. Taud narrows this to four cohorts (EF / G / HU / R) plus private slots. The converter must **eagerly resolve ST3 recalls** — walking the pattern in playback order, tracking the shared memory value, and emitting explicit Taud arguments wherever an ST3 recall crosses a cohort boundary. Otherwise a Taud player will either recall the wrong value or recall $0000.
+**Shared memory across effects.** In ST3, a single memory slot backs D, E, F, I, J, K, L, Q, R, and S. A `$00` argument on any of these recalls whichever effect last wrote a non-zero argument. Taud narrows this to four cohorts (EF / G / HU / R) plus private slots. The converter **MUST** **eagerly resolve ST3 recalls** — walking the pattern in playback order, tracking the shared memory value, and emitting explicit Taud arguments wherever an ST3 recall crosses a cohort boundary. Otherwise a Taud player will either recall the wrong value or recall $0000.
 
 **M / N / P (channel volume and panning).** S3M files produced by IT-aware tools embed M (set channel volume), N (channel volume slide), and P (channel panning slide) using the IT semantics described in §M / §N / §P. These are emitted verbatim into Taud (with M's argument byte clamped to $3F). N and P each have private memory; M is literal-zero. ST3 itself never wrote M / N / P, so legacy S3M files contain none.
 
-**Cxx BCD encoding.** ST3 stores pattern-break row numbers as BCD on disk (`$10` means decimal 10). Taud uses binary. Decode on import; encode on export. Out-of-range BCD bytes (decimal 64 or higher) clamp to row 0.
+**Cxx BCD encoding.** ST3 stores pattern-break row numbers as BCD on disk (`$10` means decimal 10). Taud uses binary. Converters **MUST** decode on import and encode on export. Out-of-range BCD bytes (decimal 64 or higher) **SHOULD** clamp to row 0.
 
-**Tempo range.** ST3 accepts tempos $20..$FF (BPM 32..255); Taud accepts bytes $00..$FF (BPM 25..280). Imported ST3 tempos must be shifted down by $19; Taud tempos below $07 and above $E6 cannot be represented in ST3 and should clamp on export.
+**Tempo range.** ST3 accepts tempos $20..$FF (BPM 32..255); Taud accepts bytes $00..$FF (BPM 25..280). Imported ST3 tempos **MUST** be shifted down by $19; Taud tempos below $07 and above $E6 cannot be represented in ST3 and **SHOULD** clamp on export.
 
-**SBx + SEx interaction.** ST3 miscounts loop iterations when pattern delay is active inside a pattern loop; Taud fixes this. Songs that depended on the bug for their intended playback will loop fewer times in Taud. Flag such songs on import.
+**SBx + SEx interaction.** ST3 miscounts loop iterations when pattern delay is active inside a pattern loop; Taud fixes this. Songs that depended on the bug for their intended playback will loop fewer times in Taud. Converters **SHOULD** flag such songs on import.
 
-**Simultaneous SEx priority.** ST3 uses pan order (L1..L8, R1..R8); Taud uses ascending channel-index order. Rare; flag on import if multiple channels carry SEx in the same row.
+**Simultaneous SEx priority.** ST3 uses pan order (L1..L8, R1..R8); Taud uses ascending channel-index order. Rare; converters **SHOULD** flag on import if multiple channels carry SEx in the same row.
 
-**Muted channels.** ST3 skips all effect processing on muted channels (no volume change, no tempo change, no jumps); Taud follows this rule for strict compatibility but recommends that new compositions avoid muting channels that carry global effects.
+**Muted channels.** ST3 skips all effect processing on muted channels (no volume change, no tempo change, no jumps); Taud **MUST** follow this rule for strict compatibility, but new compositions **SHOULD NOT** mute channels that carry global effects.
 
 **Volume cap.** ST3's volume caps at $40; Taud's at $3F. Notes that reached $40 in ST3 (a rare edge) will play marginally quieter in Taud.
 
-**Global volume scale.** ST3's 0..$40 maps to Taud's 0..$FF with a ×4 scale on import, truncated ÷4 on export.
+**Global volume scale.** ST3's 0..$40 maps to Taud's 0..$FF with a ×4 scale on import and a truncated ÷4 on export. Converters **MUST** apply these scales.
 
 **Linear pitch slides.** ST3's slide arithmetic is period-based; Taud supports both linear and period-based and selects between them via the song-table `f` flag. Conversion rules:
 
 - Clear `linear_slides`. Both coarse (Exx/Fxx) and fine/extra-fine (EFx/EEx/FFx/FEx) are stored **verbatim** as raw ST3 period units — coarse as `E/F $00xx`, fine as `E/F $F00x` — with no scaling. Taud `f` flag is **set**; the engine applies both forms in Amiga period space at playback, exactly recovering the source's period-step count and the non-linear pitch character.
-- G (tone portamento) is always converted with `round(× 64/3)` and treated as linear, regardless of mode.
+- G (tone portamento) **MUST** always be converted with `round(× 64/3)` and treated as linear, regardless of mode.
 
-**Default tempo byte.** Taud's default $64 equals 125 BPM under the $19 offset; this is not the same as ST3's `$7D` default, which maps to Taud `$64` after subtracting $19. Converters must remap on both import and export.
+**Default tempo byte.** Taud's default $64 equals 125 BPM under the $19 offset; this is not the same as ST3's `$7D` default, which maps to Taud `$64` after subtracting $19. Converters **MUST** remap on both import and export.
 
 ---
 
@@ -1361,7 +1373,7 @@ This section documents important implementation details that are not covered by 
 
 Taud's volume fadeout is a single linear decay applied per song tick after key-off (or NNA Note-Fade). It is **the only retirement mechanism** for sustained voices when the volume envelope holds non-zero or has no terminating zero node — without a non-zero stored fadeout, such voices play forever.
 
-The 12-bit stored fadeout lives at instrument-record bytes 172 (low 8 bits) and 173 (low nibble = high 4 bits; high nibble reserved). Range 0..4095. The engine maintains a per-voice `fadeoutVolume ∈ [0, 1]` initialised to 1.0 on note-on, and once per song tick while the voice is keyed off:
+The 12-bit stored fadeout lives at instrument-record bytes 172 (low 8 bits) and 173 (low nibble = high 4 bits; high nibble reserved). Range 0..4095. The engine **MUST** maintain a per-voice `fadeoutVolume ∈ [0, 1]` initialised to 1.0 on note-on, and once per song tick while the voice is keyed off **MUST**:
 
 ```
 fadeoutVolume -= storedFadeout / 1024.0
@@ -1386,7 +1398,7 @@ There is no separate "use fadeout" flag — both extremes share the same field, 
 - `storedFadeout = 32` → fade ≈ 640 ms
 - `storedFadeout = 1024` → ~20 ms (one tick)
 
-**Converter unit conversion.** Source trackers each expose fadeout in their own unit; converters scale the source value into Taud's 0..4095 field.
+**Converter unit conversion.** Source trackers each expose fadeout in their own unit; converters **MUST** scale the source value into Taud's 0..4095 field.
 
 - **IT** (`it2taud.py`): IT files store fadeout as a 16-bit field at instrument-record offset `0x14`, range 0..1024 per ITTECH (some loaders accept up to 2048). Schism's per-tick decrement is `stored / 1024` — identical to Taud's unit. **Pass-through with clamp:**
   ```python
@@ -1416,7 +1428,7 @@ There is no separate "use fadeout" flag — both extremes share the same field, 
   - For tone portamento (G), `tonePortaSpeed` is also in Hz/tick: each tick walks `freq` toward `noteValToFreq(target)` by `±tonePortaSpeed` until the target frequency is reached.
   - Like Amiga mode, the per-voice intermediate frequency is cached across ticks (no round-trip rounding) and reseeded on note trigger, S$2x finetune, fine slides, and the start of a fresh multi-tick coarse slide.
 
-**Initialisation from the song table.** The same flags byte is stored in the song-table entry (see file format §Song Table). A Taud player should write this byte to MMIO playhead register 7 before starting playback; the mixer then applies it as the initial state on every reset, and subsequent in-pattern `1` effects may override it.
+**Initialisation from the song table.** The same flags byte is stored in the song-table entry (see file format §Song Table). A Taud player **MUST** write this byte to MMIO playhead register 7 before starting playback; the mixer then applies it as the initial state on every reset, and subsequent in-pattern `1` effects **MAY** override it.
 
 ---
 

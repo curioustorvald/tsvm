@@ -543,13 +543,93 @@ def _name_table_blob(names) -> bytes:
     return b'\x1E'.join((n or '').encode('utf-8', 'replace') for n in names[:end])
 
 
+# ── Ixmp encoder (terranmon.txt §Project Data → Ixmp) ───────────────────────
+
+# Per-patch byte layout. Field offsets must match AudioJSR223Delegate.uploadInstrumentPatches
+# (Kotlin parser) and terranmon.txt "Ixmp. Instrument extra samples".
+IXMP_PATCH_SIZE     = 31
+IXMP_PAN_NO_OVERRIDE = 0xFF
+IXMP_DNV_NO_OVERRIDE = 0
+IXMP_VIBWAVE_NO_OVERRIDE = 0xFF
+
+
+def encode_ixmp_patch(p: dict) -> bytes:
+    """Encode a single patch dict into 31 bytes.
+
+    Expected keys (numeric values; defaults are applied for missing optional fields):
+        pitch_start, pitch_end        : Taud 4096-TET noteVal (Uint16)
+        volume_start, volume_end      : 0..63 (Uint8)
+        sample_ptr                    : Uint32 (sample bin offset)
+        sample_length                 : Uint16
+        play_start, loop_start, loop_end : Uint16
+        sampling_rate                 : Uint16 (same encoding as base inst byte 6-7)
+        sample_detune                 : Int16, signed 4096-TET (default 0)
+        loop_mode                     : Uint8 (default 0)
+        default_pan                   : Uint8, 0xFF = no override (default 0xFF)
+        default_note_volume           : Uint8 IT-scaled (0 = no override, default 0)
+        vibrato_speed/sweep/depth/rate: Uint8 (default 0)
+        vibrato_waveform              : Uint8 (0..7 or 0xFF for no override, default 0xFF)
+    """
+    pitch_start = max(0, min(0xFFFF, int(p['pitch_start'])))
+    pitch_end   = max(0, min(0xFFFF, int(p['pitch_end'])))
+    vol_start   = max(0, min(63,     int(p.get('volume_start', 0))))
+    vol_end     = max(0, min(63,     int(p.get('volume_end', 63))))
+    sample_ptr  = int(p['sample_ptr']) & 0xFFFFFFFF
+    sample_len  = max(0, min(0xFFFF, int(p['sample_length'])))
+    play_start  = max(0, min(0xFFFF, int(p.get('play_start', 0))))
+    loop_start  = max(0, min(0xFFFF, int(p.get('loop_start', 0))))
+    loop_end    = max(0, min(0xFFFF, int(p.get('loop_end',   0))))
+    rate        = max(0, min(0xFFFF, int(p.get('sampling_rate', 0))))
+    detune      = max(-0x8000, min(0x7FFF, int(p.get('sample_detune', 0))))
+    return struct.pack(
+        '<BHHBBIHHHHHhBBBBBBBB',
+        1,                                       # patch version
+        pitch_start, pitch_end,
+        vol_start,   vol_end,
+        sample_ptr,
+        sample_len,
+        play_start, loop_start, loop_end,
+        rate,
+        detune,
+        int(p.get('loop_mode', 0))            & 0x07,
+        int(p.get('default_pan', IXMP_PAN_NO_OVERRIDE))     & 0xFF,
+        int(p.get('default_note_volume', IXMP_DNV_NO_OVERRIDE)) & 0xFF,
+        int(p.get('vibrato_speed', 0))        & 0xFF,
+        int(p.get('vibrato_sweep', 0))        & 0xFF,
+        int(p.get('vibrato_depth', 0))        & 0xFF,
+        int(p.get('vibrato_rate',  0))        & 0xFF,
+        int(p.get('vibrato_waveform', IXMP_VIBWAVE_NO_OVERRIDE)) & 0xFF,
+    )
+
+
+def encode_ixmp_payload(patches_by_inst: dict) -> bytes:
+    """Encode a dict {instrument_id: [patch_dict, ...]} as one Ixmp section payload
+    (the body that follows the FourCC + length header). Instruments are written in
+    ascending id order. Overlapping pitch+volume rectangles within one instrument
+    are INVALID per spec and the caller is responsible for keeping them disjoint."""
+    if not patches_by_inst:
+        return b''
+    out = bytearray()
+    for inst_id in sorted(patches_by_inst):
+        patches = patches_by_inst[inst_id]
+        if not patches:
+            continue
+        out.append(int(inst_id) & 0xFF)
+        cnt = len(patches)
+        out += bytes([cnt & 0xFF, (cnt >> 8) & 0xFF, (cnt >> 16) & 0xFF])  # Uint24 LE
+        for patch in patches:
+            out += encode_ixmp_patch(patch)
+    return bytes(out)
+
+
 def build_project_data(*, project_name: str = '',
                        author: str = '',
                        copyright_str: str = '',
                        sample_names=None,
                        instrument_names=None,
                        pattern_names=None,
-                       song_metadata=None) -> bytes:
+                       song_metadata=None,
+                       ixmp_patches=None) -> bytes:
     """Build the optional PROJECT DATA section payload.
 
     Returns the full block (8-byte magic + 8 reserved bytes + concatenated
@@ -603,6 +683,9 @@ def build_project_data(*, project_name: str = '',
             smet += struct.pack('<I', len(payload))
             smet += payload
         add(b'sMet', bytes(smet))
+
+    if ixmp_patches:
+        add(b'Ixmp', encode_ixmp_payload(ixmp_patches))
 
     if not sections:
         return b''
