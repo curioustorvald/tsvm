@@ -332,12 +332,6 @@ const AG_BX_TL = 0xC9, AG_BX_TR = 0xBB, AG_BX_BL = 0xC8, AG_BX_BR = 0xBC
 const AG_BX_V  = 0xBA, AG_BX_H  = 0xCD
 const AG_SEP_L = 0xC7, AG_SEP_R = 0xB6
 
-// Half-block glyphs for wavescope
-const AG_HB_NONE = 0x20  // ' '
-const AG_HB_TOP  = 0xDF  // '▀'
-const AG_HB_BOT  = 0xDC  // '▄'
-const AG_HB_BOTH = 0xDB  // '█'
-
 // Density stairs for visualiser + stereo bar
 const AG_STAIRS = [0x20, 0xB0, 0xB1, 0xB2, 0xDB]   // ' ', ░, ▒, ▓, █
 
@@ -596,17 +590,358 @@ function ag_analyseHaar() {
     ag_bassEnergy = bassRms > 1 ? 1 : bassRms
 }
 
+// ── Mini-AAlib (embedded, for the wavescope) ───────────────────────────────
+//
+// Stripped port of `disk0/hopper/include/aa.mjs`, sized to one job: convert a
+// small pixel-space brightness buffer into ASCII glyphs with three monochrome
+// intensities (DIM / NORMAL / BOLD).  No dither.  No brightness / contrast /
+// gamma / inversion.  No REVERSE / SPECIAL / BOLDFONT attribute support.
+// See aa.mjs for the full algorithm, credits (Jan Hubicka & the AA-group,
+// 1997), and the long-form comments — those are not duplicated here.
+//
+// Tables (params + 65536-entry LUT + filltable) are built once on first use
+// from the TSVM 7×14 font ROM, so the wavescope's glyph-selection matches the
+// brightness profile of the cells the hardware text mode actually paints.
+
+const AA_FONT_PATH = "A:/tvdos/tsvm.chr"
+const AA_NORMAL = 0
+const AA_DIM    = 1
+const AA_BOLD   = 2
+const AA_NATTRS = 3
+const AA_NCHARS = 256 * AA_NATTRS
+const AA_DIMMUL  = 5.3
+const AA_BOLDMUL = 2.7
+const AA_MUL = 8
+const AA_VAL = 13                          // uniform-cell threshold
+const AA_PRIORITY = [4, 5, 3]              // NORMAL, DIM, BOLD (matches aalib)
+
+let aa_font = null                         // { width, height, data }
+let aa_params = null                       // Uint16Array((NCHARS+1)*5)
+let aa_table = null                        // Uint16Array(65536)
+let aa_filltable = null                    // Uint16Array(256)
+
+function aa_loadFont() {
+    if (aa_font) return aa_font
+    const fh = files.open(AA_FONT_PATH)
+    if (!fh.exists) throw Error("playgui: font ROM not found: " + AA_FONT_PATH)
+    const blob = fh.bread()
+    const FW = 7, FH = 14, ROM = 1920
+    if (blob.length !== ROM && blob.length !== ROM * 2) {
+        throw Error("playgui: bad font ROM size " + blob.length)
+    }
+    const data = new Uint8Array(256 * FW * FH)
+    const halves = blob.length / ROM
+    const startHalf = (halves === 2) ? 0 : 1
+    for (let h = 0; h < halves; h++) {
+        const romStart = h * ROM
+        const charBase = (startHalf + h) * 128
+        for (let c = 0; c < 128; c++) {
+            const srcBase = romStart + c * FH
+            const dstBase = (charBase + c) * FW * FH
+            for (let r = 0; r < FH; r++) {
+                const b = blob[srcBase + r] & 0xFF
+                for (let x = 0; x < FW; x++) {
+                    data[dstBase + r * FW + x] = ((b >> (6 - x)) & 1) ? 0xFF : 0x00
+                }
+            }
+        }
+    }
+    aa_font = { width: FW, height: FH, data: data }
+    return aa_font
+}
+
+function aa_alowed(i) {
+    const c = i & 0xff
+    const attr = (i >>> 8)
+    if (attr >= AA_NATTRS) return false
+    // printable ASCII, space, or extended (>160) — keep AA_EIGHT chars so the
+    // glyph palette includes the TSVM ROM's box-drawing / shade / dot range.
+    if (!(c >= 33 && c <= 126) && c !== 0x20 && !(c > 160)) return false
+    return true
+}
+
+// (NE, NW, SE, SW) brightness for glyph `code` under `attr`. Quadrant labelling
+// follows aalib's bit-numbering quirk; the LUT lookup later swaps the halves
+// back to natural orientation. See aa.mjs:_glyphValues for the long-form note.
+function aa_glyphValues(code, attr, out) {
+    const fd = aa_font.data
+    const fw = aa_font.width
+    const fh = aa_font.height
+    const base = code * fw * fh
+    const halfW = fw >> 1
+    const halfH = fh >> 1
+    const leftW = halfW
+    const topH  = halfH
+    let v1 = 0, v2 = 0, v3 = 0, v4 = 0
+    for (let r = 0; r < topH; r++) {
+        const rowBase = base + r * fw
+        for (let x = 0; x < leftW; x++) if (fd[rowBase + x]) v2++
+        for (let x = leftW; x < fw;   x++) if (fd[rowBase + x]) v1++
+    }
+    for (let r = topH; r < fh; r++) {
+        const rowBase = base + r * fw
+        for (let x = 0; x < leftW; x++) if (fd[rowBase + x]) v4++
+        for (let x = leftW; x < fw;   x++) if (fd[rowBase + x]) v3++
+    }
+    v1 *= AA_MUL; v2 *= AA_MUL; v3 *= AA_MUL; v4 *= AA_MUL
+    if (attr === AA_DIM) {
+        v1 = (v1 + 1) / AA_DIMMUL
+        v2 = (v2 + 1) / AA_DIMMUL
+        v3 = (v3 + 1) / AA_DIMMUL
+        v4 = (v4 + 1) / AA_DIMMUL
+    } else if (attr === AA_BOLD) {
+        v1 *= AA_BOLDMUL
+        v2 *= AA_BOLDMUL
+        v3 *= AA_BOLDMUL
+        v4 *= AA_BOLDMUL
+    }
+    out[0] = v1; out[1] = v2; out[2] = v3; out[3] = v4
+}
+
+function aa_calcparams() {
+    aa_loadFont()
+    aa_params = new Uint16Array((AA_NCHARS + 1) * 5)
+    const tmp = new Float64Array(4)
+    let ma1 = 0, ma2 = 0, ma3 = 0, ma4 = 0, msum = 0
+    let mi1 = 50000, mi2 = 50000, mi3 = 50000, mi4 = 50000, misum = 50000
+    for (let i = 0; i < AA_NCHARS; i++) {
+        if (!aa_alowed(i)) continue
+        aa_glyphValues(i & 0xff, i >>> 8, tmp)
+        const v1 = tmp[0], v2 = tmp[1], v3 = tmp[2], v4 = tmp[3]
+        if (v1 > ma1) ma1 = v1
+        if (v2 > ma2) ma2 = v2
+        if (v3 > ma3) ma3 = v3
+        if (v4 > ma4) ma4 = v4
+        const s = v1 + v2 + v3 + v4
+        if (s > msum) msum = s
+        if (v1 < mi1) mi1 = v1
+        if (v2 < mi2) mi2 = v2
+        if (v3 < mi3) mi3 = v3
+        if (v4 < mi4) mi4 = v4
+        if (s < misum) misum = s
+    }
+    msum -= misum
+    mi1 = misum / 4; mi2 = misum / 4; mi3 = misum / 4; mi4 = misum / 4
+    ma1 = msum / 4;  ma2 = msum / 4;  ma3 = msum / 4;  ma4 = msum / 4
+    for (let i = 0; i < AA_NCHARS; i++) {
+        aa_glyphValues(i & 0xff, i >>> 8, tmp)
+        const v1r = tmp[0], v2r = tmp[1], v3r = tmp[2], v4r = tmp[3]
+        const sr = v1r + v2r + v3r + v4r
+        let sum = Math.floor((sr - misum) * (1020 / msum) + 0.5)
+        let v1 = Math.floor((v1r - mi1) * (255 / ma1) + 0.5)
+        let v2 = Math.floor((v2r - mi2) * (255 / ma2) + 0.5)
+        let v3 = Math.floor((v3r - mi3) * (255 / ma3) + 0.5)
+        let v4 = Math.floor((v4r - mi4) * (255 / ma4) + 0.5)
+        if (v1 > 255) v1 = 255; else if (v1 < 0) v1 = 0
+        if (v2 > 255) v2 = 255; else if (v2 < 0) v2 = 0
+        if (v3 > 255) v3 = 255; else if (v3 < 0) v3 = 0
+        if (v4 > 255) v4 = 255; else if (v4 < 0) v4 = 0
+        if (sum > 1020) sum = 1020; else if (sum < 0) sum = 0
+        aa_params[i * 5 + 0] = v1
+        aa_params[i * 5 + 1] = v2
+        aa_params[i * 5 + 2] = v3
+        aa_params[i * 5 + 3] = v4
+        aa_params[i * 5 + 4] = sum
+    }
+}
+
+function aa_pow2(x) { return x * x }
+function aa_pos(i1, i2, i3, i4) { return (i1 << 12) + (i2 << 8) + (i3 << 4) + i4 }
+function aa_dist(i1, i2, i3, i4, i5, y1, y2, y3, y4, y5) {
+    return 2 * (aa_pow2(i1 - y1) + aa_pow2(i2 - y2) + aa_pow2(i3 - y3) + aa_pow2(i4 - y4))
+           + aa_pow2(i5 - y5)
+}
+function aa_dist1(i1, i2, i3, i4, i5, y1, y2, y3, y4, y5) {
+    return aa_pow2(i1 - y1) + aa_pow2(i2 - y2) + aa_pow2(i3 - y3) + aa_pow2(i4 - y4)
+           + 2 * aa_pow2(i5 - y5)
+}
+
+function aa_mktable() {
+    if (!aa_params) aa_calcparams()
+    aa_table = new Uint16Array(65536)
+    aa_filltable = new Uint16Array(256)
+    const next = new Int32Array(65536)
+    for (let i = 0; i < 65536; i++) next[i] = i
+    let first = -1, last = -1
+    function add(i) {
+        if (next[i] === i && last !== i) {
+            if (last !== -1) { next[last] = i; last = i }
+            else { last = first = i }
+        }
+    }
+    for (let i = 0; i < AA_NCHARS; i++) {
+        if (!aa_alowed(i)) continue
+        const i1 = aa_params[i * 5 + 0]
+        const i2 = aa_params[i * 5 + 1]
+        const i3 = aa_params[i * 5 + 2]
+        const i4 = aa_params[i * 5 + 3]
+        const i5 = aa_params[i * 5 + 4]
+        const p1 = i1 >> 4, p2 = i2 >> 4, p3 = i3 >> 4, p4 = i4 >> 4
+        const p = aa_pos(p1, p2, p3, p4)
+        if (aa_table[p]) {
+            const ex = aa_table[p]
+            const ex1 = aa_params[ex * 5 + 0]
+            const ex2 = aa_params[ex * 5 + 1]
+            const ex3 = aa_params[ex * 5 + 2]
+            const ex4 = aa_params[ex * 5 + 3]
+            const ex5 = aa_params[ex * 5 + 4]
+            const pp1 = (p1 << 4) | p1
+            const pp2 = (p2 << 4) | p2
+            const pp3 = (p3 << 4) | p3
+            const pp4 = (p4 << 4) | p4
+            const ppsum = pp1 + pp2 + pp3 + pp4
+            const dNew = aa_dist(i1, i2, i3, i4, i5,  pp1, pp2, pp3, pp4, ppsum)
+            const dOld = aa_dist(ex1, ex2, ex3, ex4, ex5,  pp1, pp2, pp3, pp4, ppsum)
+            if (dNew > dOld) continue
+            if (dNew === dOld && AA_PRIORITY[(i >>> 8)] <= AA_PRIORITY[(ex >>> 8)]) continue
+        }
+        aa_table[p] = i
+        add(p)
+    }
+    for (let q = 0; q < 256; q++) {
+        let mindist = Infinity
+        let best = 0
+        for (let i = 0; i < AA_NCHARS; i++) {
+            if (!aa_alowed(i)) continue
+            const d1 = aa_dist1(aa_params[i * 5 + 0], aa_params[i * 5 + 1],
+                                aa_params[i * 5 + 2], aa_params[i * 5 + 3],
+                                aa_params[i * 5 + 4],
+                                q, q, q, q, q * 4)
+            if (d1 < mindist ||
+                (d1 === mindist && AA_PRIORITY[(i >>> 8)] > AA_PRIORITY[(best >>> 8)])) {
+                aa_filltable[q] = i
+                mindist = d1
+                best = i
+            }
+        }
+    }
+    // BFS propagation: claim neighbour slots that we cover better than whoever
+    // got there first.  Lifted verbatim from aamktabl.c via aa.mjs.
+    while (true) {
+        if (last !== -1) next[last] = last
+        else break
+        const blocked = last
+        let i = first
+        if (i === -1) break
+        first = -1; last = -1
+        let prev
+        do {
+            const m0 = (i >> 12) & 15
+            const m1 = (i >> 8) & 15
+            const m2 = (i >> 4) & 15
+            const m3 = i & 15
+            const c = aa_table[i]
+            const cp0 = aa_params[c * 5 + 0]
+            const cp1 = aa_params[c * 5 + 1]
+            const cp2 = aa_params[c * 5 + 2]
+            const cp3 = aa_params[c * 5 + 3]
+            const cp4 = aa_params[c * 5 + 4]
+            for (let dm = 0; dm < 4; dm++) {
+                for (let sgn = -1; sgn <= 1; sgn += 2) {
+                    let n0 = m0, n1 = m1, n2 = m2, n3 = m3
+                    if (dm === 0)      { n0 += sgn; if (n0 < 0 || n0 >= 16) continue }
+                    else if (dm === 1) { n1 += sgn; if (n1 < 0 || n1 >= 16) continue }
+                    else if (dm === 2) { n2 += sgn; if (n2 < 0 || n2 >= 16) continue }
+                    else               { n3 += sgn; if (n3 < 0 || n3 >= 16) continue }
+                    const index = aa_pos(n0, n1, n2, n3)
+                    const ch = aa_table[index]
+                    if (ch === c || index === blocked) continue
+                    let replace = !ch
+                    if (!replace) {
+                        const ii1 = (n0 << 4) | n0
+                        const ii2 = (n1 << 4) | n1
+                        const ii3 = (n2 << 4) | n2
+                        const ii4 = (n3 << 4) | n3
+                        const iisum = ii1 + ii2 + ii3 + ii4
+                        const dNew = aa_dist(ii1, ii2, ii3, ii4, iisum,
+                                             cp0, cp1, cp2, cp3, cp4)
+                        const dOld = aa_dist(ii1, ii2, ii3, ii4, iisum,
+                                             aa_params[ch * 5 + 0],
+                                             aa_params[ch * 5 + 1],
+                                             aa_params[ch * 5 + 2],
+                                             aa_params[ch * 5 + 3],
+                                             aa_params[ch * 5 + 4])
+                        if (dNew < dOld) replace = true
+                    }
+                    if (replace) { aa_table[index] = c; add(index) }
+                }
+            }
+            prev = i
+            i = next[i]
+            next[prev] = prev
+        } while (i !== prev)
+    }
+}
+
+// Render an imgW × imgH brightness buffer (imgW = scrW*2, imgH = scrH*2) into
+// per-cell (glyph, attr) outputs.  No dither, no params.
+function aa_render(img, scrW, scrH, tbOut, attrOut) {
+    if (!aa_table) aa_mktable()
+    const tbl = aa_table
+    const fill = aa_filltable
+    const wi = scrW * 2
+    for (let y = 0; y < scrH; y++) {
+        let pos  = 2 * y * wi
+        let pos1 = y * scrW
+        for (let x = 0; x < scrW; x++) {
+            const i1 = img[pos + 1]       // NE
+            const i2 = img[pos]           // NW
+            const i3 = img[pos + wi + 1]  // SE
+            const i4 = img[pos + wi]      // SW
+            const s = i1 + i2 + i3 + i4
+            const avg = s >> 2
+            let val
+            if (Math.abs(i1 - avg) < AA_VAL &&
+                Math.abs(i2 - avg) < AA_VAL &&
+                Math.abs(i3 - avg) < AA_VAL &&
+                Math.abs(i4 - avg) < AA_VAL) {
+                val = fill[avg]
+            } else {
+                val = tbl[((i2 >> 4) << 12) | ((i1 >> 4) << 8) |
+                          ((i4 >> 4) << 4)  |  (i3 >> 4)]
+            }
+            attrOut[pos1] = val >> 8
+            tbOut[pos1]   = val & 0xff
+            pos  += 2
+            pos1 += 1
+        }
+    }
+}
+
 // ── Wavescope (rows 3..5) ──────────────────────────────────────────────────
 //
-// Peak-detected envelope: each column shows the range [min, max] of its slice
-// of the snapshot using half-block characters for 6 vertical sub-positions.
-// Mid-signal only — for stereo information you read the bottom bar.
+// Peak-detected envelope plotted into a 156×6 pixel buffer (2× cell res),
+// then converted to ASCII glyphs by the mini-AAlib above.  Mid-signal only —
+// stereo info lives on the bottom bar.
+//
+// Three monochrome intensities pick out the wave's body / peaks: DIM cells
+// are the dim trace, NORMAL cells are the bulk of the waveform, BOLD cells
+// land on the brightest patches (full-blocked peaks).  Amber → white ramp
+// mimics phosphor bloom.
+
+const AA_WAVE_W = AG_LANE_W                  // 78 cells
+const AA_WAVE_H = AG_ROW_WAVE_BOT - AG_ROW_WAVE_TOP + 1   // 3 cells
+const AA_WAVE_IW = AA_WAVE_W * 2             // 156 px
+const AA_WAVE_IH = AA_WAVE_H * 2             //   6 px
+
+const ag_waveImg  = new Uint8Array(AA_WAVE_IW * AA_WAVE_IH)
+const ag_waveTb   = new Uint8Array(AA_WAVE_W * AA_WAVE_H)
+const ag_waveAttr = new Uint8Array(AA_WAVE_W * AA_WAVE_H)
+
+// AA_NORMAL=0, AA_DIM=1, AA_BOLD=2  → amber phosphor palette.
+const AG_WAVE_FG = [166, 130, AG_COL_LABEL]
 
 function ag_drawWavescope() {
-    const N = AG_SNAPSHOT_N
-    const samplesPerCol = N / AG_LANE_W
-    // 6 sub-positions: 0..5 from top to bottom.
-    for (let c = 0; c < AG_LANE_W; c++) {
+    const N  = AG_SNAPSHOT_N
+    const IW = AA_WAVE_IW
+    const IH = AA_WAVE_IH
+    const img = ag_waveImg
+    img.fill(0)
+
+    // Per-pixel-column envelope: vertical line from max to min sample value.
+    const samplesPerCol = N / IW
+    const yScale = (IH - 1) * 0.5
+    for (let c = 0; c < IW; c++) {
         const s = (c * samplesPerCol) | 0
         const e = (((c + 1) * samplesPerCol) | 0)
         let mn = 1.0, mx = -1.0
@@ -615,26 +950,27 @@ function ag_drawWavescope() {
             if (v < mn) mn = v
             if (v > mx) mx = v
         }
-        // Map [-1, 1] → [0, 5] (top..bottom).  +1 → 0, -1 → 5.
-        let yMax = ((1 - mx) * 0.5 * 6) | 0
-        let yMin = ((1 - mn) * 0.5 * 6) | 0
-        if (yMax < 0) yMax = 0; if (yMax > 5) yMax = 5
-        if (yMin < 0) yMin = 0; if (yMin > 5) yMin = 5
-        // yMax is the top of the bar (smaller y = higher up), yMin is bottom.
-        for (let row = 0; row < 3; row++) {
-            const subTop = row * 2
-            const subBot = row * 2 + 1
-            const hitTop = (yMax <= subTop) && (yMin >= subTop)
-            const hitBot = (yMax <= subBot) && (yMin >= subBot)
-            let g = AG_HB_NONE
-            if (hitTop && hitBot) g = AG_HB_BOTH
-            else if (hitTop)      g = AG_HB_TOP
-            else if (hitBot)      g = AG_HB_BOT
-            const idx = row * AG_LANE_W + c
-            if (ag_waveGlyph[idx] === g) continue
-            ag_waveGlyph[idx] = g
-            ag_color(AG_COL_LABEL, AG_COL_BG)
-            ag_mvprn(AG_ROW_WAVE_TOP + row, AG_COL_INSIDE_L + c, g)
+        // [-1, 1] → [0, IH-1]; +1 sits at the top, -1 at the bottom.
+        let yT = ((1 - mx) * yScale + 0.5) | 0
+        let yB = ((1 - mn) * yScale + 0.5) | 0
+        if (yT < 0) yT = 0; else if (yT > IH - 1) yT = IH - 1
+        if (yB < 0) yB = 0; else if (yB > IH - 1) yB = IH - 1
+        for (let y = yT; y <= yB; y++) img[y * IW + c] = 0xFF
+    }
+
+    aa_render(img, AA_WAVE_W, AA_WAVE_H, ag_waveTb, ag_waveAttr)
+
+    // Blit, skipping cells whose packed (attr<<8 | glyph) key is unchanged.
+    for (let r = 0; r < AA_WAVE_H; r++) {
+        for (let c = 0; c < AA_WAVE_W; c++) {
+            const idx = r * AA_WAVE_W + c
+            const att = ag_waveAttr[idx]
+            const ch  = ag_waveTb[idx]
+            const key = (att << 8) | ch
+            if (ag_waveGlyph[idx] === key) continue
+            ag_waveGlyph[idx] = key
+            ag_color(AG_WAVE_FG[att] || AG_COL_LABEL, AG_COL_BG)
+            ag_mvprn(AG_ROW_WAVE_TOP + r, AG_COL_INSIDE_L + c, ch)
         }
     }
 }
