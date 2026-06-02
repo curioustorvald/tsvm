@@ -1048,6 +1048,7 @@ const colTabBarBack2 = 136
 const colTabBarOrn = 136
 const colBrand = 211
 const colPopupBack = 244
+const colPopupBack2 = 243
 const colTabActive = 239
 const colTabInactive = 45
 
@@ -2909,9 +2910,9 @@ function makeExternalPanelDraw(progName) {
 }
 
 // Row offsets (within the meta block at the top of the Project panel) of the editable rows.
-const PROJ_META_ROW_FLAGS = 5
-const PROJ_META_ROW_GVOL  = 6
-const PROJ_META_ROW_MVOL  = 7
+const PROJ_META_ROW_FLAGS = 6
+const PROJ_META_ROW_GVOL  = 7
+const PROJ_META_ROW_MVOL  = 8
 const PROJ_META_VALUE_X   = 12
 
 function drawProjectContents(wo) {
@@ -2922,6 +2923,8 @@ function drawProjectContents(wo) {
     let toneModeStr = ['Linear pitch','Amiga pitch','Linear freq',''][mixerflag & 3]
     let intpModeStr = ['Default','None','A500','A1200','SNES','DPCM','',''][(mixerflag >>> 2) & 7]
     let flagStrSelected = [toneModeStr, intpModeStr]
+    const sampleCount = (samplesCache || []).length
+    const sampleKStr  = formatSampleRamK(computeSampleRAMBytes())
 
 
     let projMeta = {
@@ -2929,6 +2932,7 @@ function drawProjectContents(wo) {
         ProjName: songsMeta.projectName || '(unnamed)',
         Patterns: `${song.numPats}/4095 ($${song.numPats.hex03()})`,
         Cues: `${song.lastActiveCue}/1024 ($${song.lastActiveCue.hex03()})`,
+        Samples: `${sampleCount} (${sampleKStr}k/${SMP_RAM_MAX_K}k)`,
         Notation: pitchTablePresets[PITCH_PRESET_IDX].name,
         Flags: `${flagStrSelected.join(', ')} ($${mixerflag.hex02()})`,
         GlobalVol: `$${initialGlobalVolume.hex02()}`,
@@ -2961,7 +2965,7 @@ function drawProjectContents(wo) {
     con.color_pair(colStatus, 255) // reset colour
 }
 
-const PROJ_SONGLIST_Y = PTNVIEW_OFFSET_Y + 9   // header row of the song list
+const PROJ_SONGLIST_Y = PTNVIEW_OFFSET_Y + 10   // header row of the song list
 const PROJ_SONGLIST_X = 2
 
 function projectSongListRowsVisible() {
@@ -3548,6 +3552,34 @@ function tickFunkWaveform() {
     if (funking || funkWaveLast) drawSampleWaveform()
 }
 
+function computeSampleRAMBytes() {
+    if (!samplesCache) return 0
+    let total = 0
+    for (let i = 0; i < samplesCache.length; i++) total += samplesCache[i].len
+    return total
+}
+
+// 16 banks x 524288 = 8 MB = 8192k. Hardcoded to match the user-visible budget.
+const SMP_RAM_MAX_K = 8192
+
+function formatSampleRamK(bytes) {
+    const k = bytes / 1024
+    return (k < 10  ? k.toFixed(2)
+         :  k < 100 ? k.toFixed(1)
+         :           Math.round(k).toString())
+}
+
+function drawSamplesRamFooter() {
+    const bytes = computeSampleRAMBytes()
+    const ramStr = formatSampleRamK(bytes) + 'k / ' + SMP_RAM_MAX_K + 'k'
+    const y = PTNVIEW_OFFSET_Y//SMP_RIGHT_Y + SMP_PROP_H - 1
+    con.move(y, SCRW - 13)
+    // con.color_pair(colSmpPropLabel, colBackPtn)
+    // print(('Sample RAM' + '         ').substring(0, 10))
+    con.color_pair(colSmpPropValue, colBackPtn)
+    print(ramStr)
+}
+
 function drawSamplesEditButton() {
     const y = SMP_BTN_Y
     con.move(y, SMP_RIGHT_X)
@@ -3572,6 +3604,7 @@ function drawSamplesContents(wo) {
     drawSamplesListColumn()
     drawSamplesSeparator()
     drawSamplesProperties()
+    drawSamplesRamFooter()
     drawSamplesUsedBy()
     drawSampleWaveform()
     drawSamplesEditButton()
@@ -5327,6 +5360,7 @@ function openFlagsPopup() {
             items: items,
             height: items.length,
             width: 22,
+            drawWell: false,
             showScrollbar: false,
             selectable: (it) => it.kind === 'tone' || it.kind === 'intp',
             renderItem: (ctx) => {

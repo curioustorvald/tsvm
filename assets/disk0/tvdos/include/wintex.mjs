@@ -217,6 +217,7 @@ function scrollHorz(dx, stringSize, stringViewSize, currentCursorPos, currentScr
 //                                               action string to close the dialog,
 //                                               or null to stay open.
 //     showScrollbar: bool?,                  -- default: auto (true when overflowing).
+//     drawWell: bool?,                       -- draw the list background
 //     bg: number?,                           -- list background colour (default 242).
 //   },
 //
@@ -287,6 +288,8 @@ function showDialog(opts) {
         : Array.isArray(message) ? message
         : ('' + message).split('\n')
 
+    const list = opts.list || null
+    const drawWell = list?.drawWell ?? true
     const c         = opts.colours || {}
     const fg        = (c.fg        != null) ? c.fg        : 254
     const bg        = (c.bg        != null) ? c.bg        : 244
@@ -294,11 +297,10 @@ function showDialog(opts) {
     const dimFg     = (c.dimFg     != null) ? c.dimFg     : 249
     const hlFg      = (c.hlFg      != null) ? c.hlFg      : 240
     const focusBg   = (c.focusBg   != null) ? c.focusBg   : 253
-    const listBg    = (c.listBg    != null) ? c.listBg    : 243
+    const listBg    = (c.listBg    != null) ? c.listBg    : (drawWell) ? 243 : bg
     const listSelBg = (c.listSelBg != null) ? c.listSelBg : focusBg
 
     // List state
-    const list = opts.list || null
     const listItems = list ? (list.items || []) : []
     const listSelectable = list && list.selectable ? list.selectable : (() => true)
     const listHeight     = list ? (list.height || Math.min(8, listItems.length)) : 0
@@ -474,17 +476,21 @@ function showDialog(opts) {
         const sbar = listScrollbarNeeded()
 
         // Top border (drawField style)
-        con.color_pair(listBgColour, bg)
-        con.move(lbRow, lbCol)
-        print('\u00EC' + '\u00A9'.repeat(lw - 2) + '\u00ED')
+        if (drawWell) {
+            con.color_pair(listBgColour, bg)
+            con.move(lbRow, lbCol)
+            print('\u00EC' + '\u00A9'.repeat(lw - 2) + '\u00ED')
+        }
 
         // Side borders + rows
         for (let r = 0; r < listHeight; r++) {
-            con.color_pair(listBgColour, bg)
-            con.move(lbRow + 1 + r, lbCol)
-            print('\u00AB')
-            con.move(lbRow + 1 + r, lbCol + lw - 1)
-            print('\u00AA')
+            if (drawWell) {
+                con.color_pair(listBgColour, bg)
+                con.move(lbRow + 1 + r, lbCol)
+                print('\u00AB')
+                con.move(lbRow + 1 + r, lbCol + lw - 1)
+                print('\u00AA')
+            }
 
             const idx = listScroll + r
             con.move(lbRow + 1 + r, lbCol + 1)
@@ -531,10 +537,12 @@ function showDialog(opts) {
         }
 
         // Bottom border
-        con.color_pair(listBgColour, bg)
-        con.move(lbRow + 1 + listHeight, lbCol)
-        print('\u00F4' + '\u00AC'.repeat(lw - 2) + '\u00F5')
-        con.color_pair(fg, bg)
+        if (drawWell) {
+            con.color_pair(listBgColour, bg)
+            con.move(lbRow + 1 + listHeight, lbCol)
+            print('\u00F4' + '\u00AC'.repeat(lw - 2) + '\u00F5')
+            con.color_pair(fg, bg)
+        }
     }
 
     function drawButton(i, regions) {
