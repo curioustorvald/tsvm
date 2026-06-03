@@ -986,6 +986,180 @@ Object.freeze(shell)
 _G.shell = shell
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// TAB AUTOCOMPLETION
+//
+// Invoked by TAB at the interactive prompt. Only active when BOTH:
+//   1. wintex.mjs is available (provides the selection popup), AND
+//   2. goFancy == true.
+// One candidate  -> expand immediately (no popup).
+// Many candidates -> wintex popup; user scrolls and selects, or Esc/Cancel to
+//                    discard. The popup over-draws the screen without saving
+//                    what was beneath it, so we snapshot the text plane before
+//                    and copy it back after (the shell can't just redraw like a
+//                    full-screen TUI — there's scrollback above the prompt).
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// Lazily-resolved wintex module. undefined = not probed yet, null = unavailable.
+let _acWin = undefined
+function getAutocompleteWin() {
+    if (_acWin !== undefined) return _acWin
+    _acWin = null
+    try {
+        let w = require("wintex") // resolved through INCLPATH (\tvdos\include\wintex.mjs)
+        if (w && typeof w.showDialog === "function") _acWin = w
+    } catch (e) {
+        debugprintln("command.js > autocomplete: wintex unavailable: " + e)
+    }
+    return _acWin
+}
+
+// List a directory's entries, swallowing any IO error.
+function _acListDir(fullPath) {
+    try {
+        let f = files.open(fullPath)
+        if (!f.exists || !f.isDirectory) return []
+        return f.list() || []
+    } catch (e) { return [] }
+}
+
+// Strip a trailing PATHEXT extension so command names show without ".js" etc.
+function _acStripExt(name) {
+    let lower = name.toLowerCase()
+    let exts = (_TVDOS.variables.PATHEXT || "").split(';').filter(function(e){ return e.length > 0 })
+    for (let i = 0; i < exts.length; i++) {
+        let e = exts[i].toLowerCase()
+        if (lower.endsWith(e)) return name.substring(0, name.length - e.length)
+    }
+    return name
+}
+
+// Candidates for the command position (first word, no path separators):
+// shell built-ins + runnable files found along the current dir, drive root and PATH.
+function _acCommandCandidates(prefix) {
+    let lower = prefix.toLowerCase()
+    let seen = {}
+    let out = []
+    function add(name) {
+        let k = name.toLowerCase()
+        if (seen[k]) return
+        seen[k] = true
+        out.push({ label: name, value: name + ' ', isDir: false })
+    }
+
+    // shell built-ins (and their aliases)
+    Object.keys(shell.coreutils).forEach(function(k) {
+        if (k.toLowerCase().startsWith(lower)) add(k)
+    })
+
+    // runnable files: search the same places shell.execute does, in the same order
+    let exts = (_TVDOS.variables.PATHEXT || "").split(';')
+        .filter(function(e){ return e.length > 0 }).map(function(e){ return e.toLowerCase() })
+    let dirFulls = [shell.resolvePathInput('.').full] // current directory first
+    _TVDOS.getPath().forEach(function(d) {
+        dirFulls.push((d === '' || d === undefined) ? `${CURRENT_DRIVE}:\\` : shell.resolvePathInput(d).full)
+    })
+    dirFulls.forEach(function(full) {
+        _acListDir(full).forEach(function(it) {
+            if (it.isDirectory) return
+            let nameLower = (it.name || '').toLowerCase()
+            if (!exts.some(function(e){ return nameLower.endsWith(e) })) return // only runnables
+            let stripped = _acStripExt(it.name)
+            if (stripped.toLowerCase().startsWith(lower)) add(stripped)
+        })
+    })
+    return out
+}
+
+// Candidates for a path argument. The word may carry a directory prefix
+// (kept verbatim) and a partial basename that we match against the directory.
+function _acPathCandidates(word) {
+    let sepIdx = Math.max(word.lastIndexOf('\\'), word.lastIndexOf('/'))
+    let dirPart, basePart, listArg
+    if (sepIdx >= 0) {
+        dirPart  = word.substring(0, sepIdx + 1) // includes the trailing separator
+        basePart = word.substring(sepIdx + 1)
+        listArg  = dirPart
+    } else {
+        dirPart  = ''
+        basePart = word
+        listArg  = '.'
+    }
+    let resolved = shell.resolvePathInput(listArg)
+    if (resolved === undefined) return []
+    let sep = (dirPart.length > 0 && dirPart.charAt(dirPart.length - 1) === '/') ? '/' : '\\'
+    let lower = basePart.toLowerCase()
+    let out = []
+    _acListDir(resolved.full).forEach(function(it) {
+        let name = it.name || ''
+        if (!name.toLowerCase().startsWith(lower)) return
+        out.push({
+            // directories get a trailing separator so completion can continue into them;
+            // files get a trailing space so the next argument can be typed straight away.
+            label: name + (it.isDirectory ? '\\' : ''),
+            value: dirPart + name + (it.isDirectory ? sep : ' '),
+            isDir: it.isDirectory
+        })
+    })
+    return out
+}
+
+// Work out what is being completed at `caret` within `line`.
+// Returns { wordStart, word, candidates } (candidates sorted by label).
+function computeCompletion(line, caret) {
+    let wordStart = caret
+    while (wordStart > 0 && line.charAt(wordStart - 1) !== ' ') wordStart -= 1
+    let word = line.substring(wordStart, caret)
+    let isFirstWord = (line.substring(0, wordStart).trim().length === 0)
+    let hasPathSep = (word.indexOf('\\') >= 0 || word.indexOf('/') >= 0 || word.indexOf(':') >= 0)
+    let candidates = (isFirstWord && !hasPathSep) ? _acCommandCandidates(word) : _acPathCandidates(word)
+    candidates.sort(function(a, b) { return (a.label < b.label) ? -1 : (a.label > b.label) ? 1 : 0 })
+    return { wordStart: wordStart, word: word, candidates: candidates }
+}
+
+// --- text-plane snapshot/restore (so the popup leaves no artefacts) ---------
+// In a vtmgr pane the shimmed con/print draw into the pane buffer
+// (globalThis.VT_TEXT_PLANE, forward layout); on the physical console they
+// draw into the GPU text area (mapped at getGpuMemBase()-253950). vaddr(0) is
+// that base in either case; sys.memcpy reads/writes it forward-native.
+// NOTE: 7681, not the full 7682-byte text area: relPtrInDev() bounds-checks
+// `from+len` inclusively, so the final byte (bottom-right char cell, never
+// touched by a centred popup) is unreachable by a single memcpy.
+const _AC_TEXTAREA_BYTES = 7681
+let _acTextBase = null
+let _acScratchPtr = 0
+function _acTextAreaBase() {
+    if (_acTextBase === null) {
+        _acTextBase = (typeof globalThis.VT_TEXT_PLANE !== 'undefined')
+            ? globalThis.VT_TEXT_PLANE
+            : (graphics.getGpuMemBase() - 253950)
+    }
+    return _acTextBase
+}
+function _acSnapshotScreen() {
+    if (_acScratchPtr === 0) _acScratchPtr = sys.malloc(_AC_TEXTAREA_BYTES)
+    sys.memcpy(_acTextAreaBase(), _acScratchPtr, _AC_TEXTAREA_BYTES)
+}
+function _acRestoreScreen() {
+    if (_acScratchPtr === 0) return
+    sys.memcpy(_acScratchPtr, _acTextAreaBase(), _AC_TEXTAREA_BYTES)
+}
+
+// Modal popup of candidates. Returns the chosen item, or null if discarded.
+function _acShowPopup(win, candidates) {
+    let res = win.showDialog({
+        title: `Complete (${candidates.length})`,
+        list: {
+            items: candidates,
+            height: Math.min(12, candidates.length),
+            onActivate: function(item, idx, key) { return 'select' }
+        },
+        buttons: [{ label: 'Cancel', action: 'cancel' }]
+    })
+    if (res && res.action === 'select' && res.listItem) return res.listItem
+    return null
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 // ensure USERCONFIGPATH directory exists
 try {
@@ -1080,6 +1254,49 @@ if (goInteractive) {
             refresh(0, Math.max(0, oldLen - cmdbuf.length))
         }
 
+        // Replace the word [wordStart, caret) with `value`, keeping any text to
+        // the right of the caret, then reprint the line from `wordStart`.
+        function applyCompletion(wordStart, value) {
+            let oldLen = cmdbuf.length
+            cmdbuf = cmdbuf.substring(0, wordStart) + value + cmdbuf.substring(caret)
+            caret = wordStart + value.length
+            con.color_pair(shell.usrcfg.textCol, 255)
+            refresh(wordStart, Math.max(0, oldLen - cmdbuf.length))
+        }
+
+        // TAB handler. No-op unless fancy mode is on and wintex is installed.
+        function tryAutocomplete() {
+            if (!goFancy) return
+            let win = getAutocompleteWin()
+            if (!win) return
+
+            let comp = computeCompletion(cmdbuf, caret)
+            let cands = comp.candidates
+            if (cands.length === 0) return
+            if (cands.length === 1) { applyCompletion(comp.wordStart, cands[0].value); return }
+
+            _acSnapshotScreen()
+            let chosen = _acShowPopup(win, cands)
+            _acRestoreScreen()
+
+            // The popup drives input through input.withEvent (physical held-key
+            // state), which bypasses the buffer con.getch reads. Inside a vtmgr
+            // pane the dispatcher keeps draining physical keystrokes into this
+            // pane's input ring the whole time the popup is open, so the navigation
+            // keys (and the closing Enter) would otherwise surface as phantom input
+            // afterwards. Flush them. (On the physical console readKey self-clears,
+            // so this is harmless there.)
+            con.resetkeybuf()
+
+            // The popup hid the caret and clobbered colours; restore the prompt
+            // editing state. The screen content is already back from the snapshot.
+            con.curs_set(1)
+            con.color_pair(shell.usrcfg.textCol, 255)
+            gotoCaret()
+
+            if (chosen) applyCompletion(comp.wordStart, chosen.value)
+        }
+
         while (true) {
             let key = con.getch()
 
@@ -1091,6 +1308,10 @@ if (goInteractive) {
                 caret += 1
                 if (atEnd) print(s) // fast path: simple append
                 else refresh(caret - 1, 0)
+            }
+            // TAB: autocomplete (fancy mode + wintex only; otherwise a no-op)
+            else if (key === con.KEY_TAB) {
+                tryAutocomplete()
             }
             // backspace: delete the char to the left of the caret
             else if (key === con.KEY_BACKSPACE && caret > 0) {

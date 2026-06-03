@@ -217,6 +217,13 @@ function scrollHorz(dx, stringSize, stringViewSize, currentCursorPos, currentScr
 //                                               action string to close the dialog,
 //                                               or null to stay open.
 //     showScrollbar: bool?,                  -- default: auto (true when overflowing).
+//     scrollbarChars: number[6]?,            -- glyph codes for the scrollbar:
+//                                               [troughTopEmpty, troughMidEmpty,
+//                                                troughBotEmpty, troughTopFilled,
+//                                                troughMidFilled, troughBotFilled].
+//                                               Default [0xBA,0xBA,0xBA,0xDB,0xDB,0xDB]
+//                                               (CP437-safe). Callers with a custom
+//                                               charset (e.g. taut) pass their own.
 //     drawWell: bool?,                       -- draw the list background
 //     bg: number?,                           -- list background colour (default 242).
 //   },
@@ -307,6 +314,12 @@ function showDialog(opts) {
     const hasList        = !!list
     const listOnActivate = list ? list.onActivate : null
     const listBgColour   = (list && list.bg != null) ? list.bg : listBg
+    // Scrollbar glyphs: [trough top/mid/bottom empty, then top/mid/bottom filled].
+    // Default is CP437-safe (0xBA track, 0xDB thumb); callers with their own
+    // charset (e.g. taut's 0xBA..0xBF) pass a 6-item override.
+    const listScrollbarChars = (list && Array.isArray(list.scrollbarChars) && list.scrollbarChars.length >= 6)
+        ? list.scrollbarChars
+        : [0xBA, 0xBA, 0xBA, 0xDB, 0xDB, 0xDB]
     function firstSelectable(from, dir) {
         if (!hasList || listItems.length === 0) return -1
         let i = from
@@ -531,8 +544,10 @@ function showDialog(opts) {
                 con.move(lbRow + 1 + r, lbCol + lw - 2)
                 const maxScroll = Math.max(1, listItems.length - listHeight)
                 const indPos = (maxScroll <= 0) ? 0 : ((listScroll * (listHeight - 1) / maxScroll) | 0)
-                let trough = (r === 0) ? 0xBA : (r === listHeight - 1) ? 0xBC : 0xBB
-                con.addch(r === indPos ? (trough + 3) : trough)
+                // seg: 0 = top cap, 1 = middle, 2 = bottom cap; +3 selects the
+                // filled (thumb) variant over the empty (trough) one.
+                const seg = (r === 0) ? 0 : (r === listHeight - 1) ? 2 : 1
+                con.addch(listScrollbarChars[(r === indPos) ? seg + 3 : seg])
             }
         }
 

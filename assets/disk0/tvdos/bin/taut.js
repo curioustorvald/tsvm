@@ -1042,6 +1042,7 @@ const colVoiceHdr  = 230
 const colVoiceHdrMuted = 249
 const colVoiceHdrMutedCursorUp = 180
 const colSep       = 252
+const colScrollBar = 249
 const colPushBtnBack = 143
 const colTabBarBack = 187
 const colTabBarBack2 = 136
@@ -3282,7 +3283,7 @@ function drawSamplesListColumn() {
         const indPos = (maxScroll === 0) ? 0 : ((smpListScroll * (SMP_LIST_H - 1) / maxScroll) | 0)
         for (let r = 0; r < SMP_LIST_H; r++) {
             con.move(SMP_LIST_Y + r, SMP_LIST_SCROLL_X)
-            con.color_pair(colStatus, colSmpListBg)
+            con.color_pair(colScrollBar, colSmpListBg)
 
             let scrollChar = (r == 0) ? sym.taut_scrollgutter_top : (r == SMP_LIST_H - 1) ? sym.taut_scrollgutter_bot : sym.taut_scrollgutter_mid
             if (r == indPos) scrollChar += 3;
@@ -3899,7 +3900,7 @@ function drawInstrumentsListColumn() {
         const indPos = (maxScroll === 0) ? 0 : ((instListScroll * (INST_LIST_H - 1) / maxScroll) | 0)
         for (let r = 0; r < INST_LIST_H; r++) {
             con.move(INST_LIST_Y + r, INST_LIST_SCROLL_X)
-            con.color_pair(colStatus, colInstListBg)
+            con.color_pair(colScrollBar, colInstListBg)
 
             let scrollChar = (r == 0) ? sym.taut_scrollgutter_top : (r == INST_LIST_H - 1) ? sym.taut_scrollgutter_bot : sym.taut_scrollgutter_mid
             if (r == indPos) scrollChar += 3;
@@ -5144,6 +5145,7 @@ function openHelpPopup() {
             bg: colPopupBack,
             height: HELP_CONTENT_H,
             width: HELP_CONTENT_W+4,
+            scrollbarChars: popupScrollbarChars,
             selectable: () => false,
             renderItem: (ctx) => {
                 con.color_pair(colText, ctx.listBg)
@@ -5187,6 +5189,12 @@ const popupDrawFrame = (wo) => {
         print(' '.repeat(wo.width))
     }
 }
+
+// Taut's charset carries dedicated scrollbar glyphs at 0xBA..0xBF (empty
+// top/mid/bottom caps 0xBA..0xBC, filled top/mid/bottom thumb 0xBD..0xBF).
+// wintex defaults to the CP437-safe 0xBA/0xDB pair, so pass these to every
+// list popup to render the scrollbar in taut's style.
+const popupScrollbarChars = [0xBA, 0xBB, 0xBC, 0xBD, 0xBE, 0xBF]
 
 // Standard colour palette shared by every taut popup so wintex's defaults blend
 // with taut's popup chrome.
@@ -5302,6 +5310,7 @@ function openRetunePopup() {
             height: listH,
             width: 36,
             cursor: selIdx,
+            scrollbarChars: popupScrollbarChars,
             renderItem: (ctx) => {
                 const e = ctx.item.preset
                 const isCur = (e.index === PITCH_PRESET_IDX)
@@ -5373,6 +5382,7 @@ function openFlagsPopup() {
             width: 22,
             drawWell: false,
             showScrollbar: false,
+            scrollbarChars: popupScrollbarChars,
             selectable: (it) => it.kind === 'tone' || it.kind === 'intp',
             renderItem: (ctx) => {
                 const it = ctx.item
