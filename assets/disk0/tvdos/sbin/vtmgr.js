@@ -72,25 +72,23 @@ const TVDOS_SYS_SRC = files.open("A:/tvdos/TVDOS.SYS").sread()
 // _BIOS is visible) and re-declare it in every pane bootstrap.
 const BIOS_FIRST_BOOTABLE_PORT = JSON.stringify(_BIOS.FIRST_BOOTABLE_PORT)
 
-// Snapshot the live environment from the main context. vtmgr runs after
-// AUTOEXEC.BAT, so _TVDOS.variables already holds the fully expanded PATH,
-// INCLPATH, HELPPATH, KEYBOARD, etc. Each pane is a fresh context whose
-// TVDOS.SYS only sets the bare defaults, so we replay this snapshot over the
-// pane's defaults — giving panes the same path/variable resolution as the
-// boot shell without re-running AUTOEXEC (which would relaunch the GUI shell).
-const ENV_JSON = JSON.stringify(_TVDOS.variables)
+// Environment no longer needs snapshotting/replaying: each pane re-evaluates
+// TVDOS.SYS, whose boot block runs \commandrc in every context, so the pane
+// gets the same PATH / KEYBOARD / etc. natively. The pane then runs
+// \AUTOEXEC.BAT (the per-console launch script: IME + interactive shell).
 
 function makePaneBootstrap(vtNum) {
     const TP_BASE = vtTextPlaneAddr(vtNum)
     const VT_BLK = vtBlockAddr(vtNum)
 
-    // Shell-launcher code runs after TVDOS.SYS in the SAME eval scope, so
-    // `files`, `eval`, `_TVDOS` etc. resolve via lexical closure. Apply the
-    // captured environment before launching the shell.
+    // Launcher code runs after TVDOS.SYS in the SAME eval scope, so `files`,
+    // `eval`, `_TVDOS` etc. resolve via lexical closure. TVDOS.SYS's boot
+    // block already ran \commandrc (env) and skipped its own AUTOEXEC because
+    // the pane sets _TVDOS_IS_VT_PANE; here we run \AUTOEXEC.BAT to launch the
+    // per-console shell.
     const SHELL_START = ";\n"
-        + "Object.assign(_TVDOS.variables, " + ENV_JSON + ");\n"
         + "var _cmdfileSrc = files.open('A:/tvdos/bin/command.js').sread();\n"
-        + "eval('var _VTSHELL=function(exec_args){' + _cmdfileSrc + '\\n};_VTSHELL')(['', '-fancy']);\n"
+        + "eval('var _VTSHELL=function(exec_args){' + _cmdfileSrc + '\\n};_VTSHELL')(['', '-c', '\\\\AUTOEXEC.BAT']);\n"
 
     const combined = TVDOS_SYS_SRC + SHELL_START
 
@@ -407,10 +405,9 @@ con.poll_keys = function() { return [0,0,0,0,0,0,0,0] }
 
 // ── TVDOS.SYS init flags + BIOS stub ───────────────────────────────────────
 globalThis._TVDOS_IS_VT_PANE = true
-globalThis._TVDOS_SKIP_AUTOEXEC = true
 globalThis._BIOS = { FIRST_BOOTABLE_PORT: ${BIOS_FIRST_BOOTABLE_PORT} }
 
-// ── load TVDOS.SYS and start command -fancy in one direct-eval call ─────
+// ── load TVDOS.SYS and run AUTOEXEC.BAT (the per-console shell) in one direct-eval ─────
 // Strict-mode direct eval is scope-isolated, so TVDOS.SYS's \`const _TVDOS\`
 // only survives within the eval scope. The shell launcher must run inside
 // the same eval to access it (via lexical closure into nested evals).

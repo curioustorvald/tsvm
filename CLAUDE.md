@@ -445,8 +445,9 @@ Implemented entirely in JS — **no tsvm_core changes**.
 
 ### Architecture
 
-- **Dispatcher**: `assets/disk0/tvdos/sbin/vtmgr.js`. Launched as the boot shell
-  from `AUTOEXEC.BAT` (replaces the old `fsh` / `command -fancy` tail). Owns the
+- **Dispatcher**: `assets/disk0/tvdos/sbin/vtmgr.js`. Launched directly by the
+  `TVDOS.SYS` boot block (only when `!_TVDOS_IS_VT_PANE`); when it exits (Alt-0)
+  the boot block runs `AUTOEXEC.BAT` as the bare fallback shell. Owns the
   physical keyboard and screen. Each VT runs in its own GraalVM context/thread
   via the existing `parallel.spawnNewContext` / `attachProgram` / `launch` API
   (see `VMJSR223Delegate.kt` `class Parallel`). VT 1 spawns at boot; VT 2-6 are
@@ -462,15 +463,22 @@ Implemented entirely in JS — **no tsvm_core changes**.
 - **Compositor** (30 Hz): blits the active VT's text plane to the physical GPU
   text area via `sys.memcpy`, and pushes that VT's cursor-visibility into the GPU
   blink bit (MMIO attribute byte 6, addressed at `-1 - (131072*gpuSlot + 6)`).
-- **Per-pane bootstrap**: each pane re-evals `TVDOS.SYS` (with
-  `_TVDOS_SKIP_AUTOEXEC` + `_TVDOS_IS_VT_PANE` set, and a `_BIOS` stub captured
-  live from the main context) then launches `command -fancy`, all in ONE direct
-  `eval` so the shell launcher shares scope with `_TVDOS`/`files`/`execApp`.
-  The environment (`_TVDOS.variables`: PATH/INCLPATH/HELPPATH/KEYBOARD, fully
-  `$PATH`-expanded) is snapshotted from the main context at vtmgr start and
-  replayed into every pane (env-copy, NOT per-pane AUTOEXEC — AUTOEXEC launches
-  the GUI shell `fsh` which must not run inside a pane). The snapshot is a
-  boot-time baseline; later `set` in one pane does not propagate to others.
+- **Boot config split (`commandrc` + `AUTOEXEC.BAT`)**: environment setup and
+  app-launch are split into two files so panes can replay one without the other.
+  `\commandrc` holds the `set` commands (PATH/INCLPATH/HELPPATH/KEYBOARD) and is
+  run by the `TVDOS.SYS` boot block in **every** context (boot and pane) — it has
+  no `.BAT` extension, so the boot block runs it line-by-line (`set` mutates the
+  shared `_TVDOS.variables`, so the effect persists). `\AUTOEXEC.BAT` is the
+  **per-console launch** script (Korean IME `tvdos/i18n/korean`, then
+  `command -fancy`); it is run once per console — by each pane's bootstrap, and
+  by the boot block as the post-vtmgr fallback. No env snapshot/replay anymore;
+  each pane gets PATH/KEYBOARD/etc. natively from `commandrc`, and Korean IME
+  (a per-context `unicode.uniprint` handler) now registers in every pane.
+- **Per-pane bootstrap**: each pane re-evals `TVDOS.SYS` (with `_TVDOS_IS_VT_PANE`
+  set — which makes the boot block run `commandrc` but skip the vtmgr/AUTOEXEC
+  launch — and a `_BIOS` stub captured live from the main context) then runs
+  `command -c \AUTOEXEC.BAT`, all in ONE direct `eval` so the launcher shares
+  scope with `_TVDOS`/`files`/`execApp`.
 
 ### Output/input shimming (in the pane bootstrap)
 
@@ -520,10 +528,11 @@ arithmetic (no regression outside vtmgr). Applied so far in
 - New: `assets/disk0/tvdos/sbin/vtmgr.js` (dispatcher + per-pane bootstrap)
 - `assets/disk0/tvdos/bin/command.js`: `chvt` builtin, `[N]` prompt prefix for
   VT 2-6, `shell.stdio.out` → `__VT_OUT` delegation
-- `assets/disk0/tvdos/TVDOS.SYS`: boot block skips AUTOEXEC when
-  `_TVDOS_SKIP_AUTOEXEC` is set (so pane re-init doesn't recurse)
-- `assets/disk0/AUTOEXEC.BAT`: boots into `tvdos/sbin/vtmgr`, with
-  `command -fancy` as a fallback once vtmgr exits
+- `assets/disk0/tvdos/TVDOS.SYS`: boot block runs `\commandrc` (env) in every
+  context, then — only when `!_TVDOS_IS_VT_PANE` — launches `tvdos/sbin/vtmgr`
+  and, on its exit, `\AUTOEXEC.BAT` as the fallback shell
+- `assets/disk0/commandrc`: env-only `set` commands (PATH/INCLPATH/HELPPATH/KEYBOARD)
+- `assets/disk0/AUTOEXEC.BAT`: per-console launch (Korean IME + `command -fancy`)
 - `assets/disk0/tvdos/bin/taut.js`, `assets/disk0/hopper/include/aa.mjs`:
   `vaddr` VT-aware direct-VRAM addressing
 

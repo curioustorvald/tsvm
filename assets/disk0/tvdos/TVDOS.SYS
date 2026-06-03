@@ -1471,17 +1471,40 @@ try {
     serial.println("Warning: Could not load HSDPA driver: " + e.message)
 }
 
-// Boot script. When vtmgr re-evaluates TVDOS.SYS inside a per-VT pane
-// context, the pane already has a SKIP flag set so we don't recursively
-// kick off AUTOEXEC.BAT (which would itself invoke command -fancy and
-// nest a shell underneath vtmgr).
-if (typeof _TVDOS_SKIP_AUTOEXEC === "undefined" || !_TVDOS_SKIP_AUTOEXEC) {
-    serial.println(`TVDOS.SYS initialised on VM ${sys.getVmId()}, running boot script...`);
+// Boot script. The work is split across two files:
+//   \commandrc    -- environment (`set` commands); run in EVERY context.
+//   \AUTOEXEC.BAT -- per-console launch (IME + interactive shell).
+// vtmgr re-evaluates TVDOS.SYS inside each per-VT pane; a pane sets
+// _TVDOS_IS_VT_PANE so it only replays the environment here and leaves the
+// AUTOEXEC launch to vtmgr's pane bootstrap (which avoids recursively
+// spawning vtmgr inside a pane).
+{
+    let cmdsrc = files.open("A:/tvdos/bin/command.js").sread()
+    let runBatch = (path) => eval(`var _BAT=function(exec_args){${cmdsrc}\n};_BAT`)(["", "-c", path])
 
-    let cmdfile = files.open("A:/tvdos/bin/command.js")
-    eval(`var _AUTOEXEC=function(exec_args){${cmdfile.sread()}\n};` +
-          `_AUTOEXEC`)(["", "-c", "\\AUTOEXEC.BAT"])
-}
-else {
-    serial.println(`TVDOS.SYS re-initialised in VT pane on VM ${sys.getVmId()}`);
+    // Environment first, boot and pane alike. Gives every pane the same
+    // PATH / KEYBOARD / etc. natively, with no env-snapshot replay needed.
+    // \commandrc has no .BAT extension (so command.js's batch-file path,
+    // which keys off the extension, won't pick it up); run it line-by-line.
+    // `set` mutates the shared _TVDOS.variables, so the effect persists across
+    // the per-line shell invocations. Skip blanks and `rem` comments.
+    let rcFile = files.open("A:/commandrc")
+    if (rcFile.exists) {
+        rcFile.sread().split('\n').forEach((line) => {
+            let t = line.trim()
+            if (t.length > 0 && !/^rem(\s|$)/i.test(t)) runBatch(line)
+        })
+    }
+
+    if (typeof _TVDOS_IS_VT_PANE === "undefined" || !_TVDOS_IS_VT_PANE) {
+        serial.println(`TVDOS.SYS initialised on VM ${sys.getVmId()}, running boot script...`);
+        // Boot console: hand the screen to the virtual-console multiplexer.
+        // When it exits (Alt-0), fall through to AUTOEXEC so the console is
+        // never left bare.
+        runBatch("tvdos/sbin/vtmgr")
+        runBatch("\\AUTOEXEC.BAT")
+    }
+    else {
+        serial.println(`TVDOS.SYS re-initialised in VT pane on VM ${sys.getVmId()}`);
+    }
 }

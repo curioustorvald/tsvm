@@ -1,20 +1,11 @@
-echo "Starting TVDOS..."
-
-rem put set-xxx commands here:
-set PATH=\tvdos\installer;\tvdos\tuidev;\tbas;\hopper\bin;$PATH
-set INCLPATH=\hopper\include;$INCLPATH
-set HELPPATH=\hopper\help;$HELPPATH
-set KEYBOARD=us_colemak
-
-rem load Korean font / IME (font upload is global hardware)
+rem AUTOEXEC.BAT -- per-console launch script. Run once for every console:
+rem each virtual-console pane runs it (via vtmgr's bootstrap), and the boot
+rem shell runs it as the fallback once vtmgr exits (Alt-0). Environment setup
+rem (`set` commands) lives in \commandrc, which TVDOS.SYS runs before this.
+rem
+rem Korean IME registers a per-CONTEXT handler (unicode.uniprint), so it must
+rem run per-console here rather than once at boot.
 tvdos/i18n/korean
 
-rem Boot into virtual consoles. vtmgr owns the keyboard and screen, and spawns
-rem a `command -fancy` shell per VT (Alt-1..6 / chvt to switch, Alt-0 to exit).
-rem It snapshots the environment set above and replays it into every pane.
-rem NOTE: `fsh` is a graphical shell and must not run inside a VT pane; launch
-rem it directly (not via vtmgr) if you want it. (Old boot line: fsh)
-tvdos/sbin/vtmgr
-
-rem Fallback shell once vtmgr exits (Alt-0), so the console is never left bare.
+rem The interactive shell for this console.
 command -fancy
