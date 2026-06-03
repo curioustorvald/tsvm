@@ -1231,7 +1231,7 @@ function drawSeparators(style) {
         for (let x = PTNVIEW_OFFSET_X; x < SCRW - 3; x += COLSIZE_TIMELINE_FULL) {
             for (let y = 0; y < PTNVIEW_HEIGHT+1; y++) {
                 let memOffset = (y+PTNVIEW_OFFSET_Y-2) * SCRW + (x-1)
-                let bgColOffset = GPU_MEM - TEXT_BACK_OFF - memOffset
+                let bgColOffset = vaddr(TEXT_BACK_OFF + memOffset)
                 let oldBgCol = sys.peek(bgColOffset)
                 if (oldBgCol == 255) {
                     sys.poke(bgColOffset, colColumnSep)
@@ -1806,6 +1806,17 @@ const TEXT_BACK_OFF = 2 + 2560
 const TEXT_CHAR_OFF = 2 + 2560 + 2560
 const TEXT_PLANES   = [TEXT_CHAR_OFF, TEXT_BACK_OFF, TEXT_FORE_OFF]
 
+// Direct text-VRAM addressing. On real hardware the GPU text area is addressed
+// backward (byte m at GPU_MEM - m). Under vtmgr's virtual consoles the physical
+// GPU is owned by the compositor, so direct writes must instead target this
+// pane's forward text-plane buffer (VT_TEXT_PLANE + m), which the compositor
+// blits to the screen. vaddr(m) returns the address of text-area byte m for the
+// current environment; the physical branch is identical to the old arithmetic.
+const _VT_VRAM     = (typeof globalThis.VT_TEXT_PLANE !== 'undefined')
+const VRAM_BASE    = _VT_VRAM ? globalThis.VT_TEXT_PLANE : GPU_MEM
+const VRAM_SGN     = _VT_VRAM ? 1 : -1
+function vaddr(m) { return VRAM_BASE + VRAM_SGN * m }
+
 // One scratch strip, reused across shifts
 const SCRATCH_PTR = sys.malloc(SCRW * PTNVIEW_HEIGHT)
 
@@ -1828,8 +1839,8 @@ function shiftPatternArea(dy) {
 
     for (let p = 0; p < 3; p++) {
         const chanOff = TEXT_PLANES[p]
-        const srcAddr = GPU_MEM - chanOff - (srcTopY - 1) * SCRW
-        const dstAddr = GPU_MEM - chanOff - (dstTopY - 1) * SCRW
+        const srcAddr = vaddr(chanOff + (srcTopY - 1) * SCRW)
+        const dstAddr = vaddr(chanOff + (dstTopY - 1) * SCRW)
         sys.memcpy(srcAddr, SCRATCH_PTR, stripBytes)
         sys.memcpy(SCRATCH_PTR, dstAddr, stripBytes)
     }
@@ -1850,9 +1861,9 @@ function shiftPatternAreaHorizontal(dVoice) {
     for (let p = 0; p < 3; p++) {
         const chanOff = TEXT_PLANES[p]
         for (let vr = 0; vr < PTNVIEW_HEIGHT; vr++) {
-            const rowBase = GPU_MEM - chanOff - (PTNVIEW_OFFSET_Y + vr - 1) * SCRW
-            sys.memcpy(rowBase - srcOff, SCRATCH_PTR, SALVAGE_HORIZ_LEN)
-            sys.memcpy(SCRATCH_PTR, rowBase - dstOff, SALVAGE_HORIZ_LEN)
+            const idxBase = chanOff + (PTNVIEW_OFFSET_Y + vr - 1) * SCRW
+            sys.memcpy(vaddr(idxBase + srcOff), SCRATCH_PTR, SALVAGE_HORIZ_LEN)
+            sys.memcpy(SCRATCH_PTR, vaddr(idxBase + dstOff), SALVAGE_HORIZ_LEN)
         }
     }
 }
@@ -2165,9 +2176,9 @@ function shiftOrdersAreaHorizontal(dVoice) {
     for (let p = 0; p < 3; p++) {
         const chanOff = TEXT_PLANES[p]
         for (let vr = 0; vr < PTNVIEW_HEIGHT; vr++) {
-            const rowBase = GPU_MEM - chanOff - (PTNVIEW_OFFSET_Y + vr - 1) * SCRW
-            sys.memcpy(rowBase - srcOff, SCRATCH_PTR, stripWidth)
-            sys.memcpy(SCRATCH_PTR, rowBase - dstOff, stripWidth)
+            const idxBase = chanOff + (PTNVIEW_OFFSET_Y + vr - 1) * SCRW
+            sys.memcpy(vaddr(idxBase + srcOff), SCRATCH_PTR, stripWidth)
+            sys.memcpy(SCRATCH_PTR, vaddr(idxBase + dstOff), stripWidth)
         }
     }
 }

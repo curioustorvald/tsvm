@@ -30,7 +30,18 @@ function makeHash() {
 const shellID = makeHash()
 
 function print_prompt_text() {
+    // VT pane indicator: shown for VT 2..6, not VT 1 (the default) so the
+    // unmodified prompt is what users see when they never touch virtual
+    // consoles. VT_NUM is set by vtmgr's pane bootstrap.
+    let vtPrefix = ""
+    if (typeof VT_NUM !== "undefined" && VT_NUM > 1) vtPrefix = "[" + VT_NUM + "] "
     if (goFancy) {
+        if (vtPrefix) {
+            con.color_pair(161,253)
+            print(`\u00DD${VT_NUM}`)
+            con.color_pair(253,161)
+            con.addch(16);con.curs_right()
+        }
         con.color_pair(239,161)
         print(" "+CURRENT_DRIVE+":")
         con.color_pair(161,253)
@@ -49,9 +60,9 @@ function print_prompt_text() {
     else {
 //        con.color_pair(253,255)
         if (errorlevel != 0 && errorlevel != "undefined" && errorlevel != undefined)
-            print(CURRENT_DRIVE + ":\\" + shell_pwd.join("\\") + " [" + errorlevel + "]" + PROMPT_TEXT)
+            print(vtPrefix + CURRENT_DRIVE + ":\\" + shell_pwd.join("\\") + " [" + errorlevel + "]" + PROMPT_TEXT)
         else
-            print(CURRENT_DRIVE + ":\\" + shell_pwd.join("\\") + PROMPT_TEXT)
+            print(vtPrefix + CURRENT_DRIVE + ":\\" + shell_pwd.join("\\") + PROMPT_TEXT)
     }
 }
 
@@ -620,6 +631,21 @@ shell.coreutils = {
     },
     panic: function(args) {
         throw Error("Panicking command.js")
+    },
+    chvt: function(args) {
+        // Request a switch to another virtual console. Only meaningful when
+        // running inside a pane spawned by vtmgr (VT_CTRL_ADDR is set by the
+        // pane bootstrap). Outside that environment this is a no-op error.
+        if (args[1] === undefined) { printerrln("Usage: chvt N (1..6)"); return 1 }
+        let n = parseInt(args[1])
+        if (isNaN(n) || n < 1 || n > 6) { printerrln("chvt: N must be in 1..6"); return 1 }
+        if (typeof VT_CTRL_ADDR === "undefined") {
+            printerrln("chvt: not running under vtmgr (no VT context)"); return 1
+        }
+        // CTRL_SWITCH_REQUEST is byte +1 of the shared CTRL area. Dispatcher
+        // picks this up on its next 30 Hz tick and performs the switch.
+        sys.poke(VT_CTRL_ADDR + 1, n)
+        return 0
     }
 }
 // define command aliases here
@@ -636,10 +662,14 @@ shell.coreutils.where = shell.coreutils.which
 Object.freeze(shell.coreutils)
 shell.stdio = {
     out: {
-        print:      function(s) { sys.print(s) },
-        println:    function(s) { if (s === undefined) sys.print("\n"); else sys.print(s+"\n") },
-        printerr:   function(s) { sys.print("\x1B[31m"+s+"\x1B[m") },
-        printerrln: function(s) { if (s === undefined) sys.print("\n"); else sys.print("\x1B[31m"+s+"\x1B[m\n") },
+        // When running inside a vtmgr virtual console, __VT_OUT routes output
+        // to the pane's text-plane buffer instead of the physical GPU (which
+        // the compositor would otherwise overwrite). Outside a VT the hook is
+        // absent and these fall through to sys.print exactly as before.
+        print:      function(s) { if (globalThis.__VT_OUT) globalThis.__VT_OUT.print(s); else sys.print(s) },
+        println:    function(s) { if (globalThis.__VT_OUT) globalThis.__VT_OUT.println(s); else { if (s === undefined) sys.print("\n"); else sys.print(s+"\n") } },
+        printerr:   function(s) { if (globalThis.__VT_OUT) globalThis.__VT_OUT.printerr(s); else sys.print("\x1B[31m"+s+"\x1B[m") },
+        printerrln: function(s) { if (globalThis.__VT_OUT) globalThis.__VT_OUT.printerrln(s); else { if (s === undefined) sys.print("\n"); else sys.print("\x1B[31m"+s+"\x1B[m\n") } },
     },
     pipe: {
         print:      function(s) { if (shell.getPipe() === undefined) throw Error("No pipe opened"); shell.appendToCurrentPipe(s);  },

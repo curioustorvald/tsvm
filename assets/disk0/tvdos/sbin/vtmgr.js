@@ -1,0 +1,564 @@
+// vtmgr — virtual console manager for TVDOS
+//
+// Spawns up to 6 independent shell sessions (virtual consoles), each in its
+// own parallel GraalVM context with its own thread. Each pane runs a real
+// `command -fancy` shell. The dispatcher (this file) owns the physical
+// keyboard, polls Alt-N hotkeys at 30 Hz, blits the active pane's text
+// plane to the GPU's text area, and routes typed characters into the
+// active pane's input ring buffer.
+//
+// Hotkeys: Alt-1..Alt-6 switch to that VT (lazy-spawn on first use).
+//          Alt-0 cleanly tears down vtmgr.
+// Builtins: `chvt N` from inside a pane writes to the switch register.
+
+// ─── shared memory layout ───────────────────────────────────────────────────
+// CTRL_AREA (64 bytes from base)
+//   +0  active_vt        u8 (1..6)
+//   +1  switch_request   u8 (0 = none, 1..6 = target; set by chvt, cleared by dispatcher)
+//   +2  debounce_held    u8
+//   +3  vt_spawned_bits  u8 (bit n-1 set if VT n is alive)
+//   +4..63 reserved
+// VT block (× MAX_VT) starting at base + 64, each VT_BLOCK_SIZE bytes
+//   +0..7 reserved (cursor & color state lives inside text plane itself)
+//   +8    queue_head       u8 (next-read index)
+//   +9    queue_tail       u8 (next-write index)
+//   +10..11 reserved
+//   +12..267 queue_data    (256-byte ring buffer; one slot lost to full/empty disambiguation)
+//   +268..271 reserved (alignment)
+//   +272..7953 text_plane (7682 bytes; mirrors GPU textArea layout exactly)
+
+const MAX_VT = 6
+const CTRL_AREA_SIZE = 64
+const VT_BLOCK_SIZE = 8000
+const TEXT_PLANE_OFFSET = 272
+const TEXT_PLANE_SIZE = 7682
+const QUEUE_DATA_OFFSET = 12
+
+const CTRL_ACTIVE_VT      = 0
+const CTRL_SWITCH_REQUEST = 1
+const CTRL_DEBOUNCE_HELD  = 2
+const CTRL_SPAWNED_BITS   = 3
+
+const GPU_TEXTAREA_OFFSET = 253950
+const TEXT_COLS = 80
+const TEXT_ROWS = 32
+
+const TP_FORE_BASE = 2
+const TP_BACK_BASE = 2 + 2560
+const TP_TEXT_BASE = 2 + 2560 + 2560
+
+const TOTAL_ALLOC_SIZE = CTRL_AREA_SIZE + MAX_VT * VT_BLOCK_SIZE
+const BASE = sys.malloc(TOTAL_ALLOC_SIZE)
+if (!BASE || BASE === 0) { printerrln("vtmgr: sys.malloc failed"); return 1 }
+for (let i = 0; i < TOTAL_ALLOC_SIZE; i++) sys.poke(BASE + i, 0)
+
+const CTRL = BASE
+function vtBlockAddr(n)     { return BASE + CTRL_AREA_SIZE + (n - 1) * VT_BLOCK_SIZE }
+function vtTextPlaneAddr(n) { return vtBlockAddr(n) + TEXT_PLANE_OFFSET }
+
+// ─── pane bootstrap ─────────────────────────────────────────────────────────
+// Read TVDOS.SYS once at startup. Each pane's bootstrap embeds the source
+// (via JSON.stringify-escaped string literal) and evaluates it together with
+// the shell-start code as ONE direct-eval call. This matters because strict-
+// mode direct eval is scope-isolated; if TVDOS.SYS and the shell launcher
+// were two separate evals, the shell launcher wouldn't see `_TVDOS`,
+// `files`, `execApp`, etc. defined by the first eval.
+
+const TVDOS_SYS_SRC = files.open("A:/tvdos/TVDOS.SYS").sread()
+
+// _BIOS is set by the real BIOS before TVDOS.SYS runs; TVDOS.SYS reads
+// _BIOS.FIRST_BOOTABLE_PORT during init. Each pane is a fresh context with no
+// BIOS, so capture the live value here (vtmgr runs in the main context where
+// _BIOS is visible) and re-declare it in every pane bootstrap.
+const BIOS_FIRST_BOOTABLE_PORT = JSON.stringify(_BIOS.FIRST_BOOTABLE_PORT)
+
+// Snapshot the live environment from the main context. vtmgr runs after
+// AUTOEXEC.BAT, so _TVDOS.variables already holds the fully expanded PATH,
+// INCLPATH, HELPPATH, KEYBOARD, etc. Each pane is a fresh context whose
+// TVDOS.SYS only sets the bare defaults, so we replay this snapshot over the
+// pane's defaults — giving panes the same path/variable resolution as the
+// boot shell without re-running AUTOEXEC (which would relaunch the GUI shell).
+const ENV_JSON = JSON.stringify(_TVDOS.variables)
+
+function makePaneBootstrap(vtNum) {
+    const TP_BASE = vtTextPlaneAddr(vtNum)
+    const VT_BLK = vtBlockAddr(vtNum)
+
+    // Shell-launcher code runs after TVDOS.SYS in the SAME eval scope, so
+    // `files`, `eval`, `_TVDOS` etc. resolve via lexical closure. Apply the
+    // captured environment before launching the shell.
+    const SHELL_START = ";\n"
+        + "Object.assign(_TVDOS.variables, " + ENV_JSON + ");\n"
+        + "var _cmdfileSrc = files.open('A:/tvdos/bin/command.js').sread();\n"
+        + "eval('var _VTSHELL=function(exec_args){' + _cmdfileSrc + '\\n};_VTSHELL')(['', '-fancy']);\n"
+
+    const combined = TVDOS_SYS_SRC + SHELL_START
+
+    const raw = `
+globalThis.VT_NUM = ${vtNum}
+globalThis.VT_TEXT_PLANE = ${TP_BASE}
+globalThis.VT_BLOCK_ADDR = ${VT_BLK}
+globalThis.VT_CTRL_ADDR = ${CTRL}
+const TP = ${TP_BASE}
+const VT_BLK = ${VT_BLK}
+const CTRL = ${CTRL}
+const QUEUE_DATA = VT_BLK + ${QUEUE_DATA_OFFSET}
+const QUEUE_HEAD_ADDR = VT_BLK + 8
+const QUEUE_TAIL_ADDR = VT_BLK + 9
+const ACTIVE_VT_ADDR = CTRL + ${CTRL_ACTIVE_VT}
+const COLS = ${TEXT_COLS}, ROWS = ${TEXT_ROWS}
+const FORE_BASE = ${TP_FORE_BASE}, BACK_BASE = ${TP_BACK_BASE}, TEXT_BASE = ${TP_TEXT_BASE}
+
+// ── output shims (write into the per-VT text-plane buffer in shared mem) ──
+// This is a faithful JS port of the GPU's TTY interpreter (GlassTty.acceptChar
+// + GraphicsAdapter handlers). TVDOS apps drive the screen by printing control
+// bytes and escape sequences through print(), so the shim must interpret them
+// exactly as the hardware would: the \\x84<decimal>u "emit char by code" escape
+// (used by con.prnch), CSI cursor moves / erase / SGR colours, and the ?25
+// cursor-visibility private sequence.
+let curX = 0, curY = 0
+let foreCol = 254
+let backCol = 255
+
+// Per-pane cursor visibility lives at VT_BLK+2 (1 = blink on, 0 = hidden).
+// The compositor pushes the active pane's value into the GPU's blink bit.
+const CURSOR_VIS_ADDR = VT_BLK + 2
+sys.poke(CURSOR_VIS_ADDR, 1)
+
+// SGR 30-37 / 40-47 → default 8-colour palette (matches GraphicsAdapter).
+const SGR_PAL = [240, 211, 61, 230, 49, 219, 114, 254]
+
+function writeCursor() {
+    let pos = curY * COLS + curX
+    sys.poke(TP + 0, pos & 0xFF)
+    sys.poke(TP + 1, (pos >> 8) & 0xFF)
+}
+function scrollBufUp(n) {
+    if (n < 1) n = 1
+    if (n > ROWS) n = ROWS
+    for (let p of [FORE_BASE, BACK_BASE, TEXT_BASE]) {
+        for (let y = 0; y < ROWS - n; y++) {
+            for (let x = 0; x < COLS; x++) {
+                sys.poke(TP + p + y * COLS + x, sys.peek(TP + p + (y + n) * COLS + x))
+            }
+        }
+        let clearVal = (p === TEXT_BASE) ? 0 : (p === FORE_BASE ? foreCol : backCol)
+        for (let y = ROWS - n; y < ROWS; y++)
+            for (let x = 0; x < COLS; x++) sys.poke(TP + p + y * COLS + x, clearVal)
+    }
+}
+function putCharRaw(x, y, c) {
+    if (x < 0 || x >= COLS || y < 0 || y >= ROWS) return
+    let off = y * COLS + x
+    sys.poke(TP + TEXT_BASE + off, c & 0xFF)
+    sys.poke(TP + FORE_BASE + off, foreCol)
+    sys.poke(TP + BACK_BASE + off, backCol)
+}
+// Mirror of GraphicsAdapter.setCursorPos: wrap on overflow x, scroll on
+// overflow y, clamp y above the screen.
+function setCursorPos(x, y) {
+    let nx = x, ny = y
+    if (nx >= COLS) { nx = 0; ny += 1 }
+    else if (nx < 0) nx = 0
+    if (ny < 0) ny = 0
+    else if (ny >= ROWS) { scrollBufUp(ny - ROWS + 1); ny = ROWS - 1 }
+    curX = nx; curY = ny
+    writeCursor()
+}
+
+// ── TTY actions (mirror the GraphicsAdapter overrides) ────────────────────
+function ttyPrintable(c) { putCharRaw(curX, curY, c); setCursorPos(curX + 1, curY) }
+function ttyCrlf() {
+    let ny = curY + 1
+    setCursorPos(0, (ny >= ROWS) ? ROWS - 1 : ny)
+    if (ny >= ROWS) scrollBufUp(1)
+}
+function ttyBackspace() { let x = curX, y = curY; setCursorPos(x - 1, y); putCharRaw(curX, curY, 0x20) }
+function ttyTab() { setCursorPos(((curX / 8 | 0) + 1) * 8, curY) }
+function ttyResetStatus() { foreCol = 253; backCol = 255 }
+function ttyEmitChar(code) { putCharRaw(curX, curY, code); setCursorPos(curX + 1, curY) }
+function ttyCursorUp(n) { setCursorPos(curX, curY - n) }
+function ttyCursorDown(n) { let ny = curY + n; setCursorPos(curX, (ny >= ROWS) ? ROWS - 1 : ny) }
+function ttyCursorFwd(n) { setCursorPos(curX + n, curY) }
+function ttyCursorBack(n) { setCursorPos(curX - n, curY) }
+function ttyCursorNextLine(n) { let ny = curY + n; setCursorPos(0, (ny >= ROWS) ? ROWS - 1 : ny); if (ny >= ROWS) scrollBufUp(ny - ROWS + 1) }
+function ttyCursorPrevLine(n) { setCursorPos(0, curY - n) }
+function ttyCursorX(n) { setCursorPos(n, curY) }
+function ttyCursorXY(row, col) { setCursorPos(col - 1, row - 1) }
+function ttyEraseInDisp(arg) {
+    if (arg === 2) {
+        for (let i = 0; i < COLS * ROWS; i++) {
+            sys.poke(TP + TEXT_BASE + i, 0)
+            sys.poke(TP + FORE_BASE + i, foreCol)
+            sys.poke(TP + BACK_BASE + i, backCol)
+        }
+        curX = 0; curY = 0; writeCursor()
+    }
+    // other args: GraphicsAdapter TODOs (throws); we no-op for safety
+}
+function ttySgr1(arg) {
+    if (arg >= 30 && arg <= 37) foreCol = SGR_PAL[arg - 30]
+    else if (arg >= 40 && arg <= 47) backCol = SGR_PAL[arg - 40]
+    else if (arg === 7) { let t = foreCol; foreCol = backCol; backCol = t }
+    else if (arg === 0) { foreCol = 253; backCol = 255; sys.poke(CURSOR_VIS_ADDR, 1) }
+}
+function ttySgr3(a1, a2, a3) {
+    if (a1 === 38 && a2 === 5) foreCol = a3
+    else if (a1 === 48 && a2 === 5) backCol = a3
+}
+function ttyPrivH(arg) { if (arg === 25) sys.poke(CURSOR_VIS_ADDR, 1) }
+function ttyPrivL(arg) { if (arg === 25) sys.poke(CURSOR_VIS_ADDR, 0) }
+
+// ── escape-sequence state machine (mirror of GlassTty.acceptChar) ─────────
+// States: 0 INITIAL, 1 ESC, 2 CSI, 3 NUM1, 4 SEP1, 5 NUM2, 6 SEP2, 7 NUM3,
+//         8 PRIVATESEQ, 9 PRIVATENUM, 10 XCSI, 11 XNUM1
+let escState = 0
+let escArgs = []
+function isDig(c) { return c >= 0x30 && c <= 0x39 }
+function escReset() { escState = 0; escArgs.length = 0 }
+// reject() in hardware returns the char as printable; replicate by printing it
+function escRejectPrint(c) { escReset(); ttyPrintable(c) }
+
+function processByte(c) {
+    switch (escState) {
+        case 0: // INITIAL
+            if (c === 0x1B) escState = 1
+            else if (c === 0x84) escState = 10
+            else if (c === 0x0A) ttyCrlf()
+            else if (c === 0x08) ttyBackspace()
+            else if (c === 0x09) ttyTab()
+            else if (c === 0x07) { /* bell */ }
+            else if (c >= 0x00 && c <= 0x1F) { /* other control: ignored */ }
+            else ttyPrintable(c)
+            break
+        case 1: // ESC
+            if (c === 0x63) { ttyResetStatus(); escReset() }       // 'c'
+            else if (c === 0x5B) escState = 2                       // '['
+            else escRejectPrint(c)
+            break
+        case 2: // CSI
+            if (c === 0x41) { ttyCursorUp(1); escReset() }
+            else if (c === 0x42) { ttyCursorDown(1); escReset() }
+            else if (c === 0x43) { ttyCursorFwd(1); escReset() }
+            else if (c === 0x44) { ttyCursorBack(1); escReset() }
+            else if (c === 0x45) { ttyCursorNextLine(1); escReset() }
+            else if (c === 0x46) { ttyCursorPrevLine(1); escReset() }
+            else if (c === 0x47) { ttyCursorX(1); escReset() }
+            else if (c === 0x4A) { ttyEraseInDisp(0); escReset() }
+            else if (c === 0x4B) { escReset() }                    // eraseInLine: no-op
+            else if (c === 0x53) { scrollBufUp(1); escReset() }    // S
+            else if (c === 0x54) { escReset() }                    // T scrollDown: no-op
+            else if (c === 0x6D) { ttySgr1(0); escReset() }        // m
+            else if (c === 0x3F) escState = 8                      // '?'
+            else if (c === 0x3B) { escArgs.push(0); escState = 4 } // ';'
+            else if (isDig(c)) { escArgs.push(c - 0x30); escState = 3 }
+            else escRejectPrint(c)
+            break
+        case 3: // NUM1
+            if (c === 0x41) { ttyCursorUp(escArgs.pop()); escReset() }
+            else if (c === 0x42) { ttyCursorDown(escArgs.pop()); escReset() }
+            else if (c === 0x43) { ttyCursorFwd(escArgs.pop()); escReset() }
+            else if (c === 0x44) { ttyCursorBack(escArgs.pop()); escReset() }
+            else if (c === 0x45) { ttyCursorNextLine(escArgs.pop()); escReset() }
+            else if (c === 0x46) { ttyCursorPrevLine(escArgs.pop()); escReset() }
+            else if (c === 0x47) { ttyCursorX(escArgs.pop()); escReset() }
+            else if (c === 0x4A) { ttyEraseInDisp(escArgs.pop()); escReset() }
+            else if (c === 0x4B) { escArgs.pop(); escReset() }
+            else if (c === 0x53) { scrollBufUp(escArgs.pop()); escReset() }
+            else if (c === 0x54) { escArgs.pop(); escReset() }
+            else if (c === 0x6D) { ttySgr1(escArgs.pop()); escReset() }
+            else if (c === 0x3B) escState = 4
+            else if (isDig(c)) escArgs.push(escArgs.pop() * 10 + (c - 0x30))
+            else escRejectPrint(c)
+            break
+        case 4: // SEP1 (seen "n;")
+            if (isDig(c)) { escArgs.push(c - 0x30); escState = 5 }
+            else if (c === 0x48) { let a1 = escArgs.pop(); ttyCursorXY(a1, 0); escReset() }   // H
+            else if (c === 0x6D) { ttySgr1(escArgs.pop()); escReset() }                       // m (2-arg unimpl in HW)
+            else if (c === 0x3B) { escArgs.push(0); escState = 6 }
+            else escRejectPrint(c)
+            break
+        case 5: // NUM2 (seen "n;n")
+            if (isDig(c)) escArgs.push(escArgs.pop() * 10 + (c - 0x30))
+            else if (c === 0x48) { let a2 = escArgs.pop(), a1 = escArgs.pop(); ttyCursorXY(a1, a2); escReset() }
+            else if (c === 0x6D) { escArgs.pop(); escArgs.pop(); escReset() }  // 2-arg SGR unimpl in HW
+            else if (c === 0x3B) escState = 6
+            else escRejectPrint(c)
+            break
+        case 6: // SEP2 (seen "n;n;")
+            if (c === 0x6D) { let a2 = escArgs.pop(), a1 = escArgs.pop(); ttySgr3(a1, a2, 0); escReset() }
+            else if (isDig(c)) { escArgs.push(c - 0x30); escState = 7 }
+            else escRejectPrint(c)
+            break
+        case 7: // NUM3 (seen "n;n;n")
+            if (isDig(c)) escArgs.push(escArgs.pop() * 10 + (c - 0x30))
+            else if (c === 0x6D) { let a3 = escArgs.pop(), a2 = escArgs.pop(), a1 = escArgs.pop(); ttySgr3(a1, a2, a3); escReset() }
+            else escRejectPrint(c)
+            break
+        case 8: // PRIVATESEQ (seen "?")
+            if (isDig(c)) { escArgs.push(c - 0x30); escState = 9 }
+            else escRejectPrint(c)
+            break
+        case 9: // PRIVATENUM (seen "?n")
+            if (c === 0x68) { ttyPrivH(escArgs.pop()); escReset() }       // h
+            else if (c === 0x6C) { ttyPrivL(escArgs.pop()); escReset() }  // l
+            else if (isDig(c)) escArgs.push(escArgs.pop() * 10 + (c - 0x30))
+            else escRejectPrint(c)
+            break
+        case 10: // XCSI (seen \\x84)
+            if (c === 0x75) { ttyEmitChar(0); escReset() }                // 'u'
+            else if (isDig(c)) { escArgs.push(c - 0x30); escState = 11 }
+            else escRejectPrint(c)
+            break
+        case 11: // XNUM1 (seen \\x84<digits>)
+            if (c === 0x75) { ttyEmitChar(escArgs.pop()); escReset() }     // 'u'
+            else if (isDig(c)) escArgs.push(escArgs.pop() * 10 + (c - 0x30))
+            else escRejectPrint(c)
+            break
+    }
+}
+
+print = function(s) {
+    if (s === undefined || s === null) return
+    let str = '' + s
+    for (let i = 0; i < str.length; i++) processByte(str.charCodeAt(i))
+}
+println = function(s) {
+    if (s === undefined) print("\\n")
+    else print(s + "\\n")
+}
+printerr = function(s) { print(s) }
+printerrln = function(s) { println(s) }
+
+// command.js's shell.execute reassigns the global print/println/printerr/
+// printerrln to shell.stdio.out.* (which call sys.print → physical GPU,
+// bypassing these shims). Expose the buffer writers through a global hook so
+// shell.stdio.out can delegate to them when running inside a VT pane. The
+// non-VT path in command.js stays unchanged (hook is undefined there).
+globalThis.__VT_OUT = { print: print, println: println, printerr: printerr, printerrln: printerrln }
+
+// con.move / con.getyx are 1-based in TVDOS (graphics.setCursorYX does cx-1,
+// getCursorYX returns cx+1). Internal curX/curY are 0-based, so convert.
+con.move = function(y, x) {
+    curY = Math.max(0, Math.min(ROWS - 1, (y | 0) - 1))
+    curX = Math.max(0, Math.min(COLS - 1, (x | 0) - 1))
+    writeCursor()
+}
+con.getyx = function() { return [curY + 1, curX + 1] }
+con.getmaxyx = function() { return [ROWS, COLS] }
+con.color_pair = function(f, b) { foreCol = f & 0xFF; backCol = b & 0xFF }
+con.color_fore = function(n) { foreCol = n & 0xFF }
+con.color_back = function(n) { backCol = n & 0xFF }
+con.get_color_fore = function() { return foreCol }
+con.get_color_back = function() { return backCol }
+// addch writes a glyph at the cursor WITHOUT advancing — matching
+// graphics.putSymbol(). TVDOS code pairs addch with explicit curs_right();
+// advancing here would double-step and leave gaps (e.g. the fancy prompt).
+con.addch = function(c) { putCharRaw(curX, curY, c) }
+con.mvaddch = function(y, x, c) { con.move(y, x); con.addch(c) }
+con.curs_up = function(n) { n = n || 1; curY = Math.max(0, curY - n); writeCursor() }
+con.curs_down = function(n) { n = n || 1; curY = Math.min(ROWS - 1, curY + n); writeCursor() }
+con.curs_left = function(n) { n = n || 1; curX = Math.max(0, curX - n); writeCursor() }
+con.curs_right = function(n) { n = n || 1; curX = Math.min(COLS - 1, curX + n); writeCursor() }
+con.curs_set = function(arg) { sys.poke(CURSOR_VIS_ADDR, ((arg | 0) === 0) ? 0 : 1) }
+con.video_reverse = function() { /* unsupported; ANSI swallowed */ }
+con.reset_graphics = function() { foreCol = 254; backCol = 255 }
+con.clear = function() {
+    for (let i = 0; i < COLS * ROWS; i++) {
+        sys.poke(TP + TEXT_BASE + i, 0)
+        sys.poke(TP + FORE_BASE + i, foreCol)
+        sys.poke(TP + BACK_BASE + i, backCol)
+    }
+    curX = 0; curY = 0; writeCursor()
+}
+// prnch prints a glyph and DOES advance (unlike addch) — the real impl emits
+// it through print() as \\x84<code>u, so route it through the interpreter.
+con.prnch = function(c) {
+    if (Array.isArray(c)) c.forEach(x => ttyEmitChar(x))
+    else ttyEmitChar(c)
+}
+
+// ── input shims ──────────────────────────────────────────────────────────
+// Pane reads from its own ring buffer in shared mem. NEVER touches physical
+// keyboard MMIO — that's the dispatcher's exclusive territory. Cooperative
+// gate on active_vt keeps background panes parked when they call getch.
+
+function queuePop() {
+    let head = sys.peek(QUEUE_HEAD_ADDR)
+    let tail = sys.peek(QUEUE_TAIL_ADDR)
+    if (head === tail) return -1
+    let b = sys.peek(QUEUE_DATA + head)
+    sys.poke(QUEUE_HEAD_ADDR, (head + 1) & 0xFF)
+    return b
+}
+con.getch = function() {
+    while (true) {
+        if (sys.peek(ACTIVE_VT_ADDR) === VT_NUM) {
+            let k = queuePop()
+            if (k >= 0) return k
+        }
+        sys.sleep(20)
+    }
+}
+con.hitterminate = function() { return false }
+con.hiteof = function() { return false }
+con.resetkeybuf = function() { sys.poke(QUEUE_HEAD_ADDR, sys.peek(QUEUE_TAIL_ADDR)) }
+con.poll_keys = function() { return [0,0,0,0,0,0,0,0] }
+
+// ── TVDOS.SYS init flags + BIOS stub ───────────────────────────────────────
+globalThis._TVDOS_IS_VT_PANE = true
+globalThis._TVDOS_SKIP_AUTOEXEC = true
+globalThis._BIOS = { FIRST_BOOTABLE_PORT: ${BIOS_FIRST_BOOTABLE_PORT} }
+
+// ── load TVDOS.SYS and start command -fancy in one direct-eval call ─────
+// Strict-mode direct eval is scope-isolated, so TVDOS.SYS's \`const _TVDOS\`
+// only survives within the eval scope. The shell launcher must run inside
+// the same eval to access it (via lexical closure into nested evals).
+eval(${JSON.stringify(combined)})
+`
+    // The outer execApp's injectIntChk rewrote the first while/for/do (each
+    // kind) in our literal source to call a per-exec SIGTERM check function.
+    // Some of those rewrites landed inside this template literal — the pane
+    // has no such symbol in scope. Strip them; panes don't need SIGTERM
+    // checks (parallel.kill handles teardown).
+    return raw.replace(/tvdosSIGTERM_[A-Za-z0-9_]+\(\);?/g, '')
+}
+
+// ─── pane lifecycle ─────────────────────────────────────────────────────────
+// Lazy spawn: VT 1 at boot; VT 2-6 the first time the user requests them.
+// Re-spawn if the previous pane's thread has died (e.g. user typed `exit`).
+
+const panes = {}  // n -> { runner, thread }
+
+function isPaneAlive(n) {
+    return panes[n] && parallel.isRunning(panes[n].thread)
+}
+
+function spawnPane(n) {
+    serial.println("[vtmgr] spawning VT " + n)
+    let runner = parallel.spawnNewContext()
+    let thread = parallel.attachProgram("vt" + n, runner, makePaneBootstrap(n))
+    parallel.launch(thread)
+    panes[n] = { runner: runner, thread: thread }
+    sys.poke(CTRL + CTRL_SPAWNED_BITS, sys.peek(CTRL + CTRL_SPAWNED_BITS) | (1 << (n - 1)))
+}
+
+function ensurePane(n) {
+    if (!isPaneAlive(n)) {
+        sys.poke(CTRL + CTRL_SPAWNED_BITS, sys.peek(CTRL + CTRL_SPAWNED_BITS) & ~(1 << (n - 1)))
+        spawnPane(n)
+    }
+}
+
+ensurePane(1)
+sys.poke(CTRL + CTRL_ACTIVE_VT, 1)
+// VT 1's TVDOS.SYS eval is slow; give it room before we start compositing.
+sys.sleep(800)
+
+// ─── compositor / dispatcher loop ───────────────────────────────────────────
+// 30 Hz: blit active pane → GPU text area; honour switch_request; detect
+// Alt-N with debounce; drain typed chars into active pane's queue.
+
+const gpuBase = graphics.getGpuMemBase()
+const TEXTAREA_BASE_ABS = gpuBase - GPU_TEXTAREA_OFFSET
+function blitVt(srcAddr) {
+    sys.memcpy(srcAddr, TEXTAREA_BASE_ABS, TEXT_PLANE_SIZE - 2)
+    sys.poke(TEXTAREA_BASE_ABS - (TEXT_PLANE_SIZE - 2), sys.peek(srcAddr + TEXT_PLANE_SIZE - 2))
+    sys.poke(TEXTAREA_BASE_ABS - (TEXT_PLANE_SIZE - 1), sys.peek(srcAddr + TEXT_PLANE_SIZE - 1))
+}
+
+// GPU textmode-attribute MMIO byte (offset 6): bit 0 = blinkCursor, bit 1 =
+// rawMode, bits 4-7 = chrrom. We flip only bit 0 to match the active pane's
+// cursor visibility. getGpuMemBase() = -1 - 1MB*slot; the peripheral's MMIO
+// window sits at IOSpace offset 128KB*slot, so MMIO byte k = -1 - (128KB*slot + k).
+const gpuSlot = (((-gpuBase) - 1) / 1048576) | 0
+const GPU_MMIO_ATTR = -1 - (131072 * gpuSlot + 6)
+let lastCursorVis = -1
+function applyCursorVis(active) {
+    let vis = sys.peek(vtBlockAddr(active) + 2)
+    if (vis === lastCursorVis) return
+    let attr = sys.peek(GPU_MMIO_ATTR)
+    sys.poke(GPU_MMIO_ATTR, vis ? (attr | 1) : (attr & 0xFE))
+    lastCursorVis = vis
+}
+
+function queuePush(vtN, byte) {
+    let qBase = vtBlockAddr(vtN)
+    let head = sys.peek(qBase + 8)
+    let tail = sys.peek(qBase + 9)
+    let next = (tail + 1) & 0xFF
+    if (next === head) return false
+    sys.poke(qBase + QUEUE_DATA_OFFSET + tail, byte)
+    sys.poke(qBase + 9, next)
+    return true
+}
+
+function switchTo(n) {
+    if (n < 1 || n > MAX_VT) return
+    ensurePane(n)
+    sys.poke(CTRL + CTRL_ACTIVE_VT, n)
+}
+
+sys.poke(-39, 1)  // enable physical keyboard input collection
+
+let running = true
+while (running) {
+    let active = sys.peek(CTRL + CTRL_ACTIVE_VT)
+    if (active < 1 || active > MAX_VT) active = 1
+    blitVt(vtTextPlaneAddr(active))
+    applyCursorVis(active)
+
+    // honour chvt's switch request
+    let req = sys.peek(CTRL + CTRL_SWITCH_REQUEST)
+    if (req >= 1 && req <= MAX_VT) {
+        if (req !== active) {
+            serial.println("[vtmgr] chvt switch -> VT " + req)
+            switchTo(req)
+        }
+        sys.poke(CTRL + CTRL_SWITCH_REQUEST, 0)
+    }
+
+    // Alt-N (and Alt-0 = exit) detection
+    sys.poke(-40, 1)
+    let keys = [sys.peek(-41), sys.peek(-42), sys.peek(-43), sys.peek(-44),
+                sys.peek(-45), sys.peek(-46), sys.peek(-47), sys.peek(-48)]
+    let altHeld = keys.indexOf(57) >= 0 || keys.indexOf(58) >= 0
+    let digit = -1
+    for (let n = 0; n <= MAX_VT; n++) {
+        if (keys.indexOf(7 + n) >= 0) { digit = n; break }
+    }
+    let debounce = sys.peek(CTRL + CTRL_DEBOUNCE_HELD) !== 0
+
+    if (debounce) {
+        if (!altHeld && digit < 0) sys.poke(CTRL + CTRL_DEBOUNCE_HELD, 0)
+    }
+    else if (altHeld && digit === 0) {
+        serial.println("[vtmgr] Alt-0 -> exit")
+        running = false
+        sys.poke(CTRL + CTRL_DEBOUNCE_HELD, 1)
+        sys.poke(-39, 1)
+    }
+    else if (altHeld && digit >= 1) {
+        serial.println("[vtmgr] Alt-" + digit + " -> switching to VT " + digit)
+        switchTo(digit)
+        sys.poke(CTRL + CTRL_DEBOUNCE_HELD, 1)
+        sys.poke(-39, 1)  // swallow the digit char so it doesn't leak into the queue
+    }
+
+    if (!running) break
+
+    // drain typed chars into the active pane's queue
+    while (sys.peek(-50) !== 0) {
+        let k = sys.peek(-38)
+        if (k < 0) k += 256
+        queuePush(active, k)
+    }
+
+    sys.sleep(33)
+}
+
+for (let n = 1; n <= MAX_VT; n++) if (panes[n]) parallel.kill(panes[n].thread)
+con.color_pair(254, 255)
+con.clear()
+println("vtmgr exited.")
+return 0

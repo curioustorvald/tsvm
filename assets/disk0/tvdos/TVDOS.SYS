@@ -1471,9 +1471,17 @@ try {
     serial.println("Warning: Could not load HSDPA driver: " + e.message)
 }
 
-// Boot script
-serial.println(`TVDOS.SYS initialised on VM ${sys.getVmId()}, running boot script...`);
+// Boot script. When vtmgr re-evaluates TVDOS.SYS inside a per-VT pane
+// context, the pane already has a SKIP flag set so we don't recursively
+// kick off AUTOEXEC.BAT (which would itself invoke command -fancy and
+// nest a shell underneath vtmgr).
+if (typeof _TVDOS_SKIP_AUTOEXEC === "undefined" || !_TVDOS_SKIP_AUTOEXEC) {
+    serial.println(`TVDOS.SYS initialised on VM ${sys.getVmId()}, running boot script...`);
 
-let cmdfile = files.open("A:/tvdos/bin/command.js")
-eval(`var _AUTOEXEC=function(exec_args){${cmdfile.sread()}\n};` +
-      `_AUTOEXEC`)(["", "-c", "\\AUTOEXEC.BAT"])
+    let cmdfile = files.open("A:/tvdos/bin/command.js")
+    eval(`var _AUTOEXEC=function(exec_args){${cmdfile.sread()}\n};` +
+          `_AUTOEXEC`)(["", "-c", "\\AUTOEXEC.BAT"])
+}
+else {
+    serial.println(`TVDOS.SYS re-initialised in VT pane on VM ${sys.getVmId()}`);
+}

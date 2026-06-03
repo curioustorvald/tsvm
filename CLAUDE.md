@@ -436,3 +436,103 @@ The different weights for Mid and Side channels reflect the perceptual importanc
 - DC frequency underamplification (using 1.0 instead of 4.0/6.0)
 - Incorrect stereo imaging and extreme side channel distortion
 - Severe frequency response errors that manifest as "clipping-like" distortion
+
+## Virtual Consoles (vtmgr)
+
+Linux-style virtual consoles for TVDOS: up to 6 independent shell sessions,
+switched with **Alt-1..Alt-6** or the **`chvt N`** builtin, **Alt-0** to exit.
+Implemented entirely in JS — **no tsvm_core changes**.
+
+### Architecture
+
+- **Dispatcher**: `assets/disk0/tvdos/sbin/vtmgr.js`. Launched as the boot shell
+  from `AUTOEXEC.BAT` (replaces the old `fsh` / `command -fancy` tail). Owns the
+  physical keyboard and screen. Each VT runs in its own GraalVM context/thread
+  via the existing `parallel.spawnNewContext` / `attachProgram` / `launch` API
+  (see `VMJSR223Delegate.kt` `class Parallel`). VT 1 spawns at boot; VT 2-6 are
+  lazy-spawned on first switch and re-spawned if their shell exits.
+- **Concurrency model**: truly concurrent — switching works mid-command, not
+  just at the prompt. Background panes keep running (no `Thread.suspend`; it is
+  unusable on JDK 21). A cooperative gate inside the shimmed `con.getch` parks
+  panes blocked on input; CPU-bound background panes are allowed to run.
+- **Shared memory**: one `sys.malloc` region holds a control block (active VT,
+  switch request, debounce, spawned-bits) plus, per VT, an input ring buffer and
+  a 7682-byte text-plane buffer mirroring the GPU text-area layout
+  (cursor 2 + fore 2560 + back 2560 + char 2560).
+- **Compositor** (30 Hz): blits the active VT's text plane to the physical GPU
+  text area via `sys.memcpy`, and pushes that VT's cursor-visibility into the GPU
+  blink bit (MMIO attribute byte 6, addressed at `-1 - (131072*gpuSlot + 6)`).
+- **Per-pane bootstrap**: each pane re-evals `TVDOS.SYS` (with
+  `_TVDOS_SKIP_AUTOEXEC` + `_TVDOS_IS_VT_PANE` set, and a `_BIOS` stub captured
+  live from the main context) then launches `command -fancy`, all in ONE direct
+  `eval` so the shell launcher shares scope with `_TVDOS`/`files`/`execApp`.
+  The environment (`_TVDOS.variables`: PATH/INCLPATH/HELPPATH/KEYBOARD, fully
+  `$PATH`-expanded) is snapshotted from the main context at vtmgr start and
+  replayed into every pane (env-copy, NOT per-pane AUTOEXEC — AUTOEXEC launches
+  the GUI shell `fsh` which must not run inside a pane). The snapshot is a
+  boot-time baseline; later `set` in one pane does not propagate to others.
+
+### Output/input shimming (in the pane bootstrap)
+
+`con` and the global `print`/`println` family are plain JS, so the bootstrap
+overrides them to read/write the per-VT shared-memory buffers instead of the
+physical GPU. **`sys` and `graphics` are host objects and CANNOT be overridden
+from JS** — this is the key constraint that shapes everything below.
+
+- The shimmed `print` is a faithful JS port of the GPU's TTY interpreter
+  (`GlassTty.acceptChar` + `GraphicsAdapter` handlers): control bytes, the
+  `\x84<decimal>u` "emit char by code" escape (used by `con.prnch`), CSI cursor
+  moves / erase / SGR colours, and the `?25` cursor-visibility private sequence.
+  A swallow-only parser is NOT enough — TVDOS apps drive the screen through
+  these `print` escapes.
+- `con.move`/`con.getyx` are **1-based** (mirroring `graphics.setCursorYX`'s
+  `cx-1` and `getCursorYX`'s `cx+1`); `con.addch` does NOT advance the cursor
+  (matches `graphics.putSymbol`), while `con.prnch` DOES.
+- `command.js`'s `shell.execute` reassigns the global print family to
+  `shell.stdio.out.*`, which call `sys.print` (→ physical GPU). `shell.stdio.out`
+  was made to delegate to a `globalThis.__VT_OUT` hook when present (set by the
+  bootstrap); outside a VT the hook is absent and the path is byte-identical.
+
+### Direct-VRAM apps need a VT-aware base (the `vaddr` pattern)
+
+Apps that write the text area directly via `graphics.getGpuMemBase()` (rather
+than `con.*`/`print`) bypass the shims and paint the physical screen, invading
+whatever VT is visible. They must resolve text-area byte `m` through a
+VT-aware base:
+
+```js
+// physical: backward  (byte m at gpuBase - m)   — getDev inverts to forward-native
+// VT pane:  forward   (byte m at VT_TEXT_PLANE + m, the pane buffer the compositor blits)
+const VT = (typeof globalThis.VT_TEXT_PLANE !== 'undefined')
+const VRAM_BASE = VT ? globalThis.VT_TEXT_PLANE : (graphics.getGpuMemBase() - 253950)
+const VRAM_SGN  = VT ? 1 : -1
+function vaddr(m) { return VRAM_BASE + VRAM_SGN * m }
+```
+
+`sys.memcpy`/`sys.pokeBytes` copy forward in the resolved native memory, so this
+works for both directions. The physical branch is identical to the original
+arithmetic (no regression outside vtmgr). Applied so far in
+`assets/disk0/tvdos/bin/taut.js` and `assets/disk0/hopper/include/aa.mjs`
+(used by `bb.js`). Any future direct-VRAM app needs the same one-line `vaddr`.
+
+### Files
+
+- New: `assets/disk0/tvdos/sbin/vtmgr.js` (dispatcher + per-pane bootstrap)
+- `assets/disk0/tvdos/bin/command.js`: `chvt` builtin, `[N]` prompt prefix for
+  VT 2-6, `shell.stdio.out` → `__VT_OUT` delegation
+- `assets/disk0/tvdos/TVDOS.SYS`: boot block skips AUTOEXEC when
+  `_TVDOS_SKIP_AUTOEXEC` is set (so pane re-init doesn't recurse)
+- `assets/disk0/AUTOEXEC.BAT`: boots into `tvdos/sbin/vtmgr`, with
+  `command -fancy` as a fallback once vtmgr exits
+- `assets/disk0/tvdos/bin/taut.js`, `assets/disk0/hopper/include/aa.mjs`:
+  `vaddr` VT-aware direct-VRAM addressing
+
+### Gotcha: injectIntChk vs. embedded source
+
+`execApp`/`require` run a program's source through `injectIntChk` (TVDOS.SYS),
+which sed-rewrites the **first** `while`/`for`/`do` of each kind to call a
+per-exec `tvdosSIGTERM_<hash>()` SIGTERM check. When vtmgr embeds the pane
+bootstrap as a string literal, one of those rewrites can land inside the literal
+— and the pane context has no such symbol. vtmgr strips them from the bootstrap
+string with `raw.replace(/tvdosSIGTERM_[A-Za-z0-9_]+\(\);?/g, '')`. Any future
+code that builds executable source as a string literal must do the same.
