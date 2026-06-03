@@ -1042,23 +1042,86 @@ if (goInteractive) {
         print_prompt_text()
 
         var cmdbuf = ""
+        var caret = 0 // insertion point within cmdbuf, 0..cmdbuf.length
+
+        // Self-contained line editor with a movable caret (so command.js does
+        // NOT depend on wintex being installed). The prompt has just been
+        // printed, so the current cursor marks where the editable text begins.
+        // We track that anchor and rebuild the on-screen line from it, decoding
+        // line-wrap ourselves so the maths holds in both the physical console
+        // and a vtmgr pane (whose con.move CLAMPS x instead of wrapping it).
+        let [baseY, baseX] = con.getyx() // 1-based
+        let termCols = con.getmaxyx()[1]
+
+        // absolute (y,x) on screen for caret index `idx`
+        function caretPos(idx) {
+            let abs = (baseX - 1) + idx
+            return [baseY + ((abs / termCols) | 0), (abs % termCols) + 1]
+        }
+        function gotoCaret() {
+            let [cy, cx] = caretPos(caret)
+            con.move(cy, cx)
+        }
+        // reprint cmdbuf from index `from` to the end, optionally padding with
+        // `clearTrail` blanks to wipe characters left over by a now-shorter
+        // line, then park the hardware cursor back on the caret.
+        function refresh(from, clearTrail) {
+            let [py, px] = caretPos(from)
+            con.move(py, px)
+            print(cmdbuf.substring(from))
+            for (let i = 0; i < clearTrail; i++) print(" ")
+            gotoCaret()
+        }
+        // replace the whole buffer (used by history recall)
+        function setBuf(next) {
+            let oldLen = cmdbuf.length
+            cmdbuf = next
+            caret = cmdbuf.length
+            refresh(0, Math.max(0, oldLen - cmdbuf.length))
+        }
 
         while (true) {
             let key = con.getch()
 
             // printable chars
             if (key >= 32 && key <= 126) {
-                var s = String.fromCharCode(key)
-                cmdbuf += s
-                print(s)
+                let s = String.fromCharCode(key)
+                let atEnd = (caret === cmdbuf.length)
+                cmdbuf = cmdbuf.substring(0, caret) + s + cmdbuf.substring(caret)
+                caret += 1
+                if (atEnd) print(s) // fast path: simple append
+                else refresh(caret - 1, 0)
             }
-            // backspace
-            else if (key === con.KEY_BACKSPACE && cmdbuf.length > 0) {
-                cmdbuf = cmdbuf.substring(0, cmdbuf.length - 1)
-                print(String.fromCharCode(key))
+            // backspace: delete the char to the left of the caret
+            else if (key === con.KEY_BACKSPACE && caret > 0) {
+                cmdbuf = cmdbuf.substring(0, caret - 1) + cmdbuf.substring(caret)
+                caret -= 1
+                refresh(caret, 1)
+            }
+            // forward delete: delete the char under the caret
+            else if (key === con.KEY_DELETE && caret < cmdbuf.length) {
+                cmdbuf = cmdbuf.substring(0, caret) + cmdbuf.substring(caret + 1)
+                refresh(caret, 1)
+            }
+            // caret left
+            else if (key === con.KEY_LEFT) {
+                if (caret > 0) { caret -= 1; gotoCaret() }
+            }
+            // caret right
+            else if (key === con.KEY_RIGHT) {
+                if (caret < cmdbuf.length) { caret += 1; gotoCaret() }
+            }
+            // jump to start of line
+            else if (key === con.KEY_HOME) {
+                caret = 0; gotoCaret()
+            }
+            // jump to end of line
+            else if (key === con.KEY_END) {
+                caret = cmdbuf.length; gotoCaret()
             }
             // enter
             else if (key === 10 || key === con.KEY_RETURN) {
+                caret = cmdbuf.length; gotoCaret()
                 println()
 
                 errorlevel = shell.execute(cmdbuf)
@@ -1074,32 +1137,17 @@ if (goInteractive) {
             // up arrow
             else if (key === con.KEY_UP && cmdHistory.length > 0 && cmdHistoryScroll < cmdHistory.length) {
                 cmdHistoryScroll += 1
-
-                // back the cursor in order to type new cmd
-                var x = 0
-                for (x = 0; x < cmdbuf.length; x++) print(String.fromCharCode(8))
-                cmdbuf = cmdHistory[cmdHistory.length - cmdHistoryScroll]
-                // re-type the new command
-                print(cmdbuf)
-
+                setBuf(cmdHistory[cmdHistory.length - cmdHistoryScroll])
             }
             // down arrow
             else if (key === con.KEY_DOWN) {
-                if (cmdHistoryScroll > 0) {
-                    // back the cursor in order to type new cmd
-                    var x = 0
-                    for (x = 0; x < cmdbuf.length; x++) print(String.fromCharCode(8))
-                    cmdbuf = cmdHistory[cmdHistory.length - cmdHistoryScroll]
-                    // re-type the new command
-                    print(cmdbuf)
-
+                if (cmdHistoryScroll > 1) {
                     cmdHistoryScroll -= 1
+                    setBuf(cmdHistory[cmdHistory.length - cmdHistoryScroll])
                 }
-                else {
-                    // back the cursor in order to type new cmd
-                    var x = 0
-                    for (x = 0; x < cmdbuf.length; x++) print(String.fromCharCode(8))
-                    cmdbuf = ""
+                else if (cmdHistoryScroll === 1) {
+                    cmdHistoryScroll = 0
+                    setBuf("")
                 }
             }
         }
