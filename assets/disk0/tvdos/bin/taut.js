@@ -2927,7 +2927,66 @@ const PROJ_META_ROW_GVOL  = 7
 const PROJ_META_ROW_MVOL  = 8
 const PROJ_META_VALUE_X   = 12
 
+const SLIDER_TW_SMALL = 25
+const SLIDER_TW_WIDE  = 36
+
+// GlobalVol / MixingVol get the instrument-tab treatment: an editable HEX capsule
+// (click or Enter → openInlineHexEdit), a visual-only decimal, and a 0..255 slider.
+const PROJ_VOL_CAP_X     = PROJ_META_VALUE_X                    // hex capsule [▌$FF▐] left-cap col
+const PROJ_VOL_CAP_W     = 5
+const PROJ_VOL_DEC_X     = PROJ_VOL_CAP_X + 6                   // visual-only decimal
+const PROJ_VOL_SLIDER_SX = PROJ_VOL_DEC_X + 8                   // slider left-pad col
+const PROJ_VOL_SLIDER_TW = SLIDER_TW_SMALL//SCRW - 2 - (PROJ_VOL_SLIDER_SX + 1)  // trough ends ~2 cols from the edge
+
+// Rebuilt by drawProjectContents; hit-tested by registerProjectMouse.
+let projSliders = []
+
+// Render one volume row (key + hex capsule + decimal + knob) and register its
+// slider entry. `commit(v)` applies the new value; `metaCursor` is the keyboard
+// cursor value for the row so a mouse click can sync the selection.
+function drawProjVolRow(y, selected, key, val0, commit, metaCursor) {
+    const sx = PROJ_VOL_SLIDER_SX, tw = PROJ_VOL_SLIDER_TW
+    const render = (v) => {
+        con.move(y, 2)
+        con.color_pair(selected ? colWHITE : colStatus, selected ? colHighlight : 255)
+        print(key)
+        drawNumCapsule(y, PROJ_VOL_CAP_X, 3, '$' + v.hex02())            // editable hex
+        con.move(y, PROJ_VOL_DEC_X); con.color_pair(colVoiceHdr, colBackPtn)
+        const decW = PROJ_VOL_SLIDER_SX - PROJ_VOL_DEC_X
+        print(('(' + v + ')' + ' '.repeat(decW)).substring(0, decW))     // visual-only decimal
+        drawSlider(y, sx, tw, v / 255)
+    }
+    render(val0)
+    const entry = {
+        y, sx, tw, troughLeftPx: sx * CELL_PW, min: 0, max: 255,
+        numY: y, numX: PROJ_VOL_CAP_X, numW: PROJ_VOL_CAP_W,
+        val: val0, render, commit, repaint: redrawPanel, metaCursor
+    }
+    entry.editHex = () => {
+        const nv = openInlineHexEdit(y, PROJ_VOL_CAP_X, 2, entry.val)
+        if (nv !== null) { entry.val = nv & 0xFF; commit(entry.val) }
+        redrawPanel()
+    }
+    projSliders.push(entry)
+}
+
+function projTroughAt(cy, cx) {
+    for (let i = 0; i < projSliders.length; i++) {
+        const s = projSliders[i]
+        if (cy === s.y && cx >= s.sx && cx <= s.sx + s.tw + 1) return s
+    }
+    return null
+}
+function projCapsuleAt(cy, cx) {
+    for (let i = 0; i < projSliders.length; i++) {
+        const s = projSliders[i]
+        if (cy === s.numY && cx >= s.numX && cx < s.numX + s.numW) return s
+    }
+    return null
+}
+
 function drawProjectContents(wo) {
+    projSliders.length = 0
     fillLine(PTNVIEW_OFFSET_Y - 1, colVoiceHdr, 255)
     for (let y = PTNVIEW_OFFSET_Y; y < SCRH; y++) fillLine(y, colBackPtn, 255)
 
@@ -2958,9 +3017,22 @@ function drawProjectContents(wo) {
     }
 
     Object.entries(projMeta).forEach(([key, value], index) => {
-        con.move(PTNVIEW_OFFSET_Y + index, 2)
+        const rowY = PTNVIEW_OFFSET_Y + index
+        if (index === PROJ_META_ROW_GVOL) {
+            drawProjVolRow(rowY, projectCursor === PROJ_META_GVOL, key, initialGlobalVolume, (v) => {
+                initialGlobalVolume = v & 0xFF; audio.setSongGlobalVolume(PLAYHEAD, initialGlobalVolume); hasUnsavedChanges = true
+            }, PROJ_META_GVOL)
+            return
+        }
+        if (index === PROJ_META_ROW_MVOL) {
+            drawProjVolRow(rowY, projectCursor === PROJ_META_MVOL, key, initialMixingVolume, (v) => {
+                initialMixingVolume = v & 0xFF; audio.setSongMixingVolume(PLAYHEAD, initialMixingVolume); hasUnsavedChanges = true
+            }, PROJ_META_MVOL)
+            return
+        }
+        con.move(rowY, 2)
         con.color_pair(colStatus, 255); print(key)
-        con.move(PTNVIEW_OFFSET_Y + index, PROJ_META_VALUE_X)
+        con.move(rowY, PROJ_META_VALUE_X)
         const isEditable = (index in editableMap)
         const isSelected = isEditable && projectCursor === editableMap[index]
         if (isSelected) {
@@ -4002,7 +4074,7 @@ function drawLabelRow(y, label, value, labelW) {
 function drawGroupHeader(y, title) {
     con.move(y, INST_RIGHT_X)
     con.color_pair(colInstGroupHdr, colBackPtn)
-    const txt = title + ' '
+    const txt = '\u00FB\u00FB ' + title + ' '
     const dashes = Math.max(0, INST_RIGHT_W - txt.length)
     print(txt + `\u00FB`.repeat(dashes))
 }
@@ -4018,13 +4090,12 @@ function drawGroupHeader(y, title) {
 // moves, and the instrument byte(s) are written only on mouse release (see
 // runSliderDrag). instSliders is rebuilt on every Gen.1/Gen.2 body repaint and
 // hit-tested by the panel's slider mouse region.
-const SLIDER_TW_SMALL = 25
-const SLIDER_TW_WIDE  = 36
 const SLIDER_LABEL_W  = 10
 const SLIDER_END_COL  = SCRW - 1                       // common right edge
 const SLIDER_SMALL_SX = SLIDER_END_COL - (SLIDER_TW_SMALL + 1)  // small left-pad col
 const SLIDER_WIDE_SX  = SLIDER_END_COL - (SLIDER_TW_WIDE  + 1)  // wide  left-pad col
 const SLIDER_VALUE_W  = SLIDER_SMALL_SX - (INST_RIGHT_X + SLIDER_LABEL_W)
+const SLIDER_NUM_X    = INST_RIGHT_X + SLIDER_LABEL_W   // editable raw-number capsule (left-cap col)
 
 const sliderGlyphs = [sym.slider1, sym.slider2, sym.slider3, sym.slider4,
                       sym.slider5, sym.slider6, sym.slider7]
@@ -4072,6 +4143,7 @@ function instWriteBytes(slot, pairs) {
     for (let i = 0; i < pairs.length; i++) {
         sys.poke(memBase - (base + pairs[i][0]), pairs[i][1] & 0xFF)
     }
+    hasUnsavedChanges = true
 }
 
 // Drag interaction: live label updates while held, commit on release, ESC cancels.
@@ -4095,37 +4167,55 @@ function runSliderDrag(s, downEvent) {
         })
     }
     if (committed) s.commit(val)
-    drawInstrumentsContents()
+    if (s.repaint) s.repaint(); else drawInstrumentsContents()
 }
 
-// fmt helpers — kept short so the value still fits the SLIDER_VALUE_W field.
-function fmtByte255(v) { return '$' + _hex(v, 2) + ' (' + v + ')' }
-function fmtSigned(v)  { return _signed(v) }
-function fmtFilter(v)  { return (v === 0xFF) ? 'off' : ('$' + _hex(v, 2) + ' (' + v + ')') }
-function fmtFadeout(v) {
-    if (v <= 0)    return '0 none'
-    if (v >= 1024) return '1024 cut'
-    return v + ' ~' + (1024 / v).toFixed(1) + 't'
+// Annotation helpers — short context shown next to the raw-number capsule
+// (the capsule itself already shows the decimal value). Kept terse for the
+// narrow value field.
+function annHex(v)    { return '$' + _hex(v, 2) }
+function annFilter(v) { return (v === 0xFF) ? 'off' : '$' + _hex(v, 2) }
+function annFadeout(v) {
+    if (v <= 0)    return 'none'
+    if (v >= 1024) return 'cut'
+    return '~' + Math.round(1024 / v) + 't'
 }
 
-// Emit a small-slider row: label, numeric value, then the knob. `encode(val)`
-// returns the byte pairs to poke on commit.
-function sliderRow(y, e, label, val0, min, max, fmt, encode) {
+// Draw an editable raw-number field: a black (col 240) capsule with CP437
+// half-block end caps (0xDD left, 0xDE right). The black-bg + cap scheme marks
+// the field as "type a number here". `x` is the left-cap column; `digits` number
+// cells follow (left-aligned, space-padded), then the right cap.
+function drawNumCapsule(y, x, digits, numStr) {
+    con.color_pair(colBackPtn,   colBLACK); con.move(y, x);              con.prnch(0xDD)
+    con.color_pair(colInstValue, colBLACK); con.move(y, x + 1)
+    print((numStr + ' '.repeat(digits)).substring(0, digits))
+    con.color_pair(colBackPtn,   colBLACK); con.move(y, x + 1 + digits); con.prnch(0xDE)
+}
+
+// Emit a small-slider row: label, editable raw-number capsule, annotation, knob.
+// `ann(val)` returns the short annotation (or null); `encode(val)` returns the
+// byte pairs to poke on commit.
+function sliderRow(y, e, label, val0, min, max, ann, encode) {
     const sx = SLIDER_SMALL_SX, tw = SLIDER_TW_SMALL
+    const digits = Math.max(String(min).length, String(max).length)
+    const nx = SLIDER_NUM_X, nw = digits + 2
+    const annX = nx + nw, annW = sx - annX          // fill up to the slider's left pad
     const render = (val) => {
-        if (val < min) val = min
-        if (val > max) val = max
+        const knob = (val < min) ? min : (val > max) ? max : val   // clamp position only
         con.move(y, INST_RIGHT_X)
         con.color_pair(colInstLabel, colBackPtn)
         print((label + ' '.repeat(SLIDER_LABEL_W)).substring(0, SLIDER_LABEL_W))
-        con.color_pair(colInstValue, colBackPtn)
-        print((fmt(val) + ' '.repeat(SLIDER_VALUE_W)).substring(0, SLIDER_VALUE_W))
-        drawSlider(y, sx, tw, (max === min) ? 0 : (val - min) / (max - min))
+        drawNumCapsule(y, nx, digits, String(val))
+        con.move(y, annX); con.color_pair(colInstValue, colBackPtn)
+        const a = ann ? (' ' + ann(val)) : ''
+        print((a + ' '.repeat(annW)).substring(0, annW))
+        drawSlider(y, sx, tw, (max === min) ? 0 : (knob - min) / (max - min))
     }
     render(val0)
     instSliders.push({
         y, sx, tw, troughLeftPx: sx * CELL_PW, min, max, render,
-        val: (val0 < min ? min : val0 > max ? max : val0),   // current value, for wheel ±1 deltas
+        numY: y, numX: nx, numW: nw, ndig: digits,   // raw-number capsule geometry
+        val: val0,                                    // base for wheel ±1 / edit prefill (clamped on use)
         commit: (v) => { instWriteBytes(e.slot, encode(v)); e.decoded = decodeInstFull(readInstRecord(e.slot)) }
     })
 }
@@ -4138,34 +4228,55 @@ function sliderRow(y, e, label, val0, min, max, fmt, encode) {
 function detuneRow(y, e, val0) {
     const sx = SLIDER_WIDE_SX, tw = SLIDER_TW_WIDE
     const min = -4096, max = 4096
+    const digits = 6                       // fits a full signed 16-bit display
+    const nx = INST_RIGHT_X + 4, nw = digits + 2
     const render = (val) => {
         const knob = (val < min) ? min : (val > max) ? max : val   // clamp position only
         con.move(y, INST_RIGHT_X)
         con.color_pair(colInstLabel, colBackPtn)
-        print(('  Detune:' + ' '.repeat(SLIDER_LABEL_W)).substring(0, SLIDER_LABEL_W))
+        print(('  Detune:' + ' '.repeat(20)).substring(0, sx - INST_RIGHT_X))
         drawSlider(y, sx, tw, (knob - min) / (max - min))
-        con.move(y + 1, INST_RIGHT_X)
-        con.color_pair(colInstValue, colBackPtn)
+        // Readout row: editable raw-number capsule + cents.
+        con.move(y + 1, INST_RIGHT_X); con.color_pair(colInstValue, colBackPtn); print('    ')
+        drawNumCapsule(y + 1, nx, digits, String(val))
         const cents = val * 1200 / 4096   // 1 octave = 4096 TET steps = 1200 cents
-        const s = '    ' + _signed(val) + '   (' + cents.toFixed(1) + ' cents, 4096-TET)'
-        print((s + ' '.repeat(INST_RIGHT_W)).substring(0, INST_RIGHT_W))
+        con.move(y + 1, nx + nw); con.color_pair(colInstValue, colBackPtn)
+        const s = '  (' + cents.toFixed(1) + ' cents, 4096-TET)'
+        print((s + ' '.repeat(INST_RIGHT_W)).substring(0, SCRW - (nx + nw) + 1))
     }
     render(val0)
     instSliders.push({
         y, sx, tw, troughLeftPx: sx * CELL_PW, min, max, render,
-        val: (val0 < min ? min : val0 > max ? max : val0),   // snapped into range for drag/wheel
+        numY: y + 1, numX: nx, numW: nw, ndig: digits,   // capsule on the readout row
+        val: val0,                                        // true value; snapped into range on interact
         commit: (v) => { instWriteBytes(e.slot, [[184, v & 0xFF], [185, (v >> 8) & 0xFF]]); e.decoded = decodeInstFull(readInstRecord(e.slot)) }
     })
 }
 
-// Hit-test the live instSliders list for a cell (cy, cx). Gen.1/Gen.2 only.
-function sliderAt(cy, cx) {
+// Hit-test the live instSliders list (Gen.1/Gen.2 only). Separate tests for the
+// knob trough (drag / wheel) and the raw-number capsule (click-to-edit / wheel).
+function sliderTroughAt(cy, cx) {
     if (instSubTab !== INST_TAB_GEN1 && instSubTab !== INST_TAB_GEN2) return null
     for (let i = 0; i < instSliders.length; i++) {
         const s = instSliders[i]
         if (cy === s.y && cx >= s.sx && cx <= s.sx + s.tw + 1) return s
     }
     return null
+}
+function sliderCapsuleAt(cy, cx) {
+    if (instSubTab !== INST_TAB_GEN1 && instSubTab !== INST_TAB_GEN2) return null
+    for (let i = 0; i < instSliders.length; i++) {
+        const s = instSliders[i]
+        if (cy === s.numY && cx >= s.numX && cx < s.numX + s.numW) return s
+    }
+    return null
+}
+
+// Open the inline number editor over a slider's capsule; commit clamps to range.
+function editSliderNumber(s) {
+    const nv = openInlineNumEdit(s.numY, s.numX + 1, s.ndig, s.val, s.min, s.max)
+    if (nv !== null) { s.val = nv; s.commit(nv) }
+    drawInstrumentsContents()   // repaint (restores capsule styling; reflects new value)
 }
 
 // ── Tab body: General (page 1 + page 2) ───────────────────────────────────
@@ -4214,16 +4325,16 @@ function drawInstTabGeneral1(e) {
 
     y++
     drawGroupHeader(y++, 'Volume')
-    sliderRow(y++, e, '  Inst.GV:', d.igv,        0, 255,  fmtByte255, (v) => [[171, v]])
-    sliderRow(y++, e, '  DefNote:', d.defNoteVol, 0, 255,  fmtByte255, (v) => [[196, v]])
-    sliderRow(y++, e, '  Fadeout:', d.fadeout,    0, 1024, fmtFadeout, (v) => [[172, v & 0xFF], [173, (v >> 8) & 0x0F]])
-    sliderRow(y++, e, '  Swing:',   d.volSwing,   0, 255,  fmtByte255, (v) => [[174, v]])
+    sliderRow(y++, e, '  Inst.GV:', d.igv,        0, 255,  annHex, (v) => [[171, v]])
+    sliderRow(y++, e, '  DefNote:', d.defNoteVol, 0, 255,  annHex, (v) => [[196, v]])
+    sliderRow(y++, e, '  Fadeout:', d.fadeout,    0, 1024, annFadeout, (v) => [[172, v & 0xFF], [173, (v >> 8) & 0x0F]])
+    sliderRow(y++, e, '  Swing:',   d.volSwing,   0, 255,  annHex, (v) => [[174, v]])
 
     y++
     drawGroupHeader(y++, 'Panning')
-    sliderRow(y++, e, '  Default:', d.defPan,      0,    255, fmtByte255, (v) => [[177, v]])
-    sliderRow(y++, e, '  Sep:',     d.pitchPanSep, -128, 127, fmtSigned,  (v) => [[180, v & 0xFF]])
-    sliderRow(y++, e, '  Swing:',   d.panSwing,    0,    255, fmtByte255, (v) => [[181, v]])
+    sliderRow(y++, e, '  Default:', d.defPan,      0,    255, annHex, (v) => [[177, v]])
+    sliderRow(y++, e, '  Sep:',     d.pitchPanSep, -128, 127, null,       (v) => [[180, v & 0xFF]])
+    sliderRow(y++, e, '  Swing:',   d.panSwing,    0,    255, annHex, (v) => [[181, v]])
     drawLabelRow(y++, '  PPanCnt:', '$' + _hex(d.pitchPanCenter, 4) + '  Use: ' +
                                     (d.panEnv.panUseDef ? sym.ticked + ' on' : sym.unticked + ' off'))
 }
@@ -4233,16 +4344,16 @@ function drawInstTabGeneral2(e) {
     let y = INST_BODY_Y
 
     drawGroupHeader(y++, 'Filter')
-    sliderRow(y++, e, '  Cutoff:', d.defCutoff, 0, 255, fmtFilter, (v) => [[182, v]])
-    sliderRow(y++, e, '  Reso:',   d.defReso,   0, 255, fmtFilter, (v) => [[183, v]])
+    sliderRow(y++, e, '  Cutoff:', d.defCutoff, 0, 255, annFilter, (v) => [[182, v]])
+    sliderRow(y++, e, '  Reso:',   d.defReso,   0, 255, annFilter, (v) => [[183, v]])
 
     y++
     drawGroupHeader(y++, 'Vibrato')
     drawLabelRow(y++, '  Wave:',  VIB_WF_NAMES[d.vibWaveform & 7], SLIDER_LABEL_W)
-    sliderRow(y++, e, '  Speed:', d.vibSpeed, 0, 255, fmtByte255, (v) => [[175, v]])
-    sliderRow(y++, e, '  Depth:', d.vibDepth, 0, 255, fmtByte255, (v) => [[187, v]])
-    sliderRow(y++, e, '  Sweep:', d.vibSweep, 0, 255, fmtByte255, (v) => [[176, v]])
-    sliderRow(y++, e, '  Rate:',  d.vibRate,  0, 255, fmtByte255, (v) => [[188, v]])
+    sliderRow(y++, e, '  Speed:', d.vibSpeed, 0, 255, annHex, (v) => [[175, v]])
+    sliderRow(y++, e, '  Depth:', d.vibDepth, 0, 255, annHex, (v) => [[187, v]])
+    sliderRow(y++, e, '  Sweep:', d.vibSweep, 0, 255, annHex, (v) => [[176, v]])
+    sliderRow(y++, e, '  Rate:',  d.vibRate,  0, 255, annHex, (v) => [[188, v]])
 
     y++
     drawGroupHeader(y++, 'Note actions')
@@ -4587,16 +4698,18 @@ function registerInstrumentsMouse() {
         }
     })
     // Slider body (Gen.1 / Gen.2): one region that hit-tests the live instSliders
-    // list. Click/drag the matched knob until mouse release; wheel nudges by ±1
-    // (wheel up = +1) and commits each notch for fine control.
+    // list. Click the raw-number capsule to type a value; click/drag the knob to
+    // slide; wheel over either nudges by ±1 (wheel up = +1) and commits each notch.
     addPanelMouseRegion(INST_RIGHT_X, INST_BODY_Y, INST_RIGHT_W, INST_BODY_H, {
         onClick: (cy, cx, btn, ev) => {
             if (btn !== 1) return
-            const s = sliderAt(cy, cx)
+            const c = sliderCapsuleAt(cy, cx)
+            if (c) { editSliderNumber(c); return }
+            const s = sliderTroughAt(cy, cx)
             if (s) runSliderDrag(s, ev)
         },
         onWheel: (cy, cx, dy) => {
-            const s = sliderAt(cy, cx)
+            const s = sliderTroughAt(cy, cx) || sliderCapsuleAt(cy, cx)
             if (!s) return
             const nv = Math.max(s.min, Math.min(s.max, s.val + (dy < 0 ? 1 : -1)))
             if (nv === s.val) return
@@ -5690,6 +5803,77 @@ function openInlineHexEdit(y, x, digits, initialValue) {
     return cancelled ? null : parseInt(buf, 16)
 }
 
+// Inline DECIMAL number editor over a raw-number capsule. `x` is the first digit
+// cell (the half-block caps painted by drawNumCapsule stay put either side).
+// Type digits (and '-' when min < 0); Backspace edits; Enter / click-away commits
+// (clamped to [min,max]); Esc / right-click cancels. Returns the value or null.
+function openInlineNumEdit(y, x, digits, initialValue, min, max) {
+    let buf = String(initialValue)
+    if (buf.length > digits) buf = buf.substring(0, digits)
+    const allowNeg = (min < 0)
+    let cancelled = false
+    let done = false
+
+    const repaint = () => {
+        const shown = (buf + ' '.repeat(digits)).substring(0, digits)
+        con.move(y, x)
+        con.color_pair(colInstValue, colBLACK)        // white digits on the black field
+        print(shown)
+        const cpos = Math.min(buf.length, digits - 1)  // inverse block cursor
+        con.move(y, x + cpos)
+        con.color_pair(colBLACK, colInstValue)
+        print(shown[cpos])
+        con.color_pair(colStatus, 255)
+    }
+
+    repaint()
+    let eventJustReceived = true
+
+    // Click-away commits; clicks on the digit cells are swallowed (field stays open).
+    pushMousePopup([
+        { x: 1, y: 1, w: SCRW, h: SCRH, onClick: (cy, cx, btn) => {
+            if (btn === 1) done = true
+            else if (btn === 2) { cancelled = true; done = true }
+        }},
+        { x, y, w: digits, h: 1, onClick: () => {} },
+    ])
+
+    while (!done) {
+        input.withEvent(ev => {
+            if (eventJustReceived && (ev[0] === 'key_down' || ev[0] === 'mouse_down')) {
+                eventJustReceived = false; return
+            }
+            if (dispatchMouseEvent(ev)) return
+            if (ev[0] !== 'key_down') return
+            if (1 !== ev[2]) return
+            const ks = ev[1]
+
+            if (ks === '<ESC>')   { cancelled = true; done = true; return }
+            if (ks === '\n')      { done = true; return }
+            if (ks === '\x08')    { if (buf.length) buf = buf.substring(0, buf.length - 1); repaint(); return }
+            if (ks === '-' && allowNeg) {
+                buf = (buf[0] === '-') ? buf.substring(1) : ('-' + buf)
+                if (buf.length > digits) buf = buf.substring(0, digits)
+                repaint(); return
+            }
+            if (ks.length === 1 && ks >= '0' && ks <= '9') {
+                if (buf === '0')  buf = ''       // a fresh digit replaces a lone 0
+                if (buf === '-0') buf = '-'
+                if (buf.length < digits) buf += ks
+                repaint(); return
+            }
+        })
+    }
+
+    popMousePopup()
+    if (cancelled) return null
+    let v = parseInt(buf, 10)
+    if (isNaN(v)) return null
+    if (v < min) v = min
+    if (v > max) v = max
+    return v
+}
+
 clampCursor(); clampVoice(); clampCue(); clampOrdersHoriz(); clampPatternIdx(); clampPatternGrid()
 drawAll()
 
@@ -6075,15 +6259,27 @@ function registerPatternsMouse() {
     })
 }
 
+// Display-row offset (cy - PTNVIEW_OFFSET_Y) of each editable meta field → its
+// keyboard cursor value. The editable rows render at offsets 6/7/8.
+const PROJ_META_ROW_TO_CURSOR = {
+    [PROJ_META_ROW_FLAGS]: PROJ_META_FLAGS,
+    [PROJ_META_ROW_GVOL] : PROJ_META_GVOL,
+    [PROJ_META_ROW_MVOL] : PROJ_META_MVOL,
+}
+
 function registerProjectMouse() {
     addPanelMouseRegion(1, PTNVIEW_OFFSET_Y, SCRW, PTNVIEW_HEIGHT, {
-        onClick: (cy, cx, btn) => {
+        onClick: (cy, cx, btn, ev) => {
             if (btn !== 1 || playbackMode !== PLAYMODE_NONE) return
-            // Meta rows occupy PTNVIEW_OFFSET_Y .. PTNVIEW_OFFSET_Y + PROJ_META_ROWS_COUNT - 1.
-            // The song list starts at PROJ_SONGLIST_Y + 1.
-            const metaRow = cy - PTNVIEW_OFFSET_Y
-            if (metaRow >= 0 && metaRow < PROJ_META_ROWS_COUNT) {
-                projectCursor = metaRow
+            // Volume rows: click the hex capsule to type, the knob to slide.
+            const cap = projCapsuleAt(cy, cx)
+            if (cap) { projectCursor = cap.metaCursor; cap.editHex(); return }
+            const tr = projTroughAt(cy, cx)
+            if (tr)  { projectCursor = tr.metaCursor; runSliderDrag(tr, ev); return }
+            // Otherwise: select an editable meta field, or a song in the list.
+            const metaCursor = PROJ_META_ROW_TO_CURSOR[cy - PTNVIEW_OFFSET_Y]
+            if (metaCursor !== undefined) {
+                projectCursor = metaCursor
                 clampProjectCursor(); redrawPanel()
                 return
             }
@@ -6097,6 +6293,15 @@ function registerProjectMouse() {
             }
         },
         onWheel: (cy, cx, dy) => {
+            // Wheel over a volume knob/capsule nudges ±1 (when stopped); else scroll.
+            if (playbackMode === PLAYMODE_NONE) {
+                const s = projTroughAt(cy, cx) || projCapsuleAt(cy, cx)
+                if (s) {
+                    const nv = Math.max(s.min, Math.min(s.max, s.val + (dy < 0 ? 1 : -1)))
+                    if (nv !== s.val) { s.val = nv; s.render(nv); s.commit(nv) }
+                    return
+                }
+            }
             const rowsVis = projectSongListRowsVisible()
             const maxScroll = Math.max(0, songsMeta.numSongs - rowsVis)
             projectSongScroll += dy * 3
