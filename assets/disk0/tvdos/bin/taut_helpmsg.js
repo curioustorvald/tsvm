@@ -8,6 +8,7 @@ let ts = require("typesetter")
 /*
 Tags:
 <b> - print the text in emphasis colour (colVoiceHdr aka 230)
+<s> - print the text in deemphasis colour (248)
 <c> - centre the line. If the line spans multiple lines, centre each line
 <r> - align right
 <l> - align left
@@ -145,7 +146,7 @@ Mixer flags define how should the mixer behave.
 
 // assemble help text pieces to complete help message
 
-const HRULE = '\u00B4\u00B5'.repeat((_G.TAUT.HELPMSG_WIDTH) >>> 1) + '\n'
+const HRULE = '<s>' + '\u00B3'.repeat(_G.TAUT.HELPMSG_WIDTH) + '</s>\n'
 
 // taut.js's popup uses (HELP_COL_TEXT on background) as the default colour pair.
 // The shared typesetter module owns the palette and the markup expander.

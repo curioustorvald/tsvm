@@ -16,7 +16,6 @@ const TRACKER_SIGNATURE = "TsvmTaut"+BUILD_DATE // 14-byte string
 const MIDDOT = "\u00FA"
 const BIGDOT = "\u00F9"
 const BULLET = "\u00847u"
-const DOTHORZ = "\u00B4\u00B5"
 const VERT = 0xDA
 
 // global var for the app
@@ -1722,8 +1721,7 @@ function drawVoiceDetail(isVerticalLayout = false, ptn = null, activeRow = -1, c
         const sepY = PTNVIEW_OFFSET_Y + upperHeight
         con.move(sepY, dx)
         con.color_pair(colSep, 255)
-        print(DOTHORZ.repeat(detailW >>> 1))
-        if (detailW % 2 == 1) print(DOTHORZ[0])
+        print('\u00B3'.repeat(detailW))
 
         // Lower section: cumulative state.
         const lowerY0 = sepY + 1
@@ -4050,13 +4048,16 @@ function _signed(n) { return (n >= 0 ? '+' : '') + n }
 function loopModeNameInst(flags) {
     const lp = flags & 3
     const sus = (flags >>> 2) & 1
-    const names = ['none', 'forward', 'pingpong', 'oneshot']
+    const names = ['None', 'Forward', 'Pingpong', 'Oneshot']
     return names[lp] + (sus ? ' (sustain)' : '')
 }
-const NNA_NAMES = ['Cut', 'Off', 'Continue', 'Fade']
-const DCT_NAMES = ['off', 'note', 'sample', 'instrument']
-const DCA_NAMES = ['Cut', 'Off', 'Fade', 'reserved']
-const VIB_WF_NAMES = ['sine', 'ramp-dn', 'square', 'random', 'ramp-up', '?', '?', '?']
+// Clickable button-group option lists. NNA/DCT use every value; DCA's 4th slot
+// is reserved (dropped); vibrato exposes the 5 engine-supported waves
+// (sine/ramp-dn/square/random/ramp-up — see AudioAdapter.advanceAutoVibrato).
+const NNA_NAMES      = ['Cut', 'Off', 'Continue', 'Fade']
+const DCT_NAMES      = ['Off', 'Note', 'Sample', 'Inst.']
+const DCA_OPTIONS    = ['Cut', 'Off', 'Fade']
+const VIB_WF_OPTIONS = ['\u00D8\u00D9', '\u00A5\u00A6', '\u00B4\u00B4', '\u00F3\u00F3', '\u00B5\u00B6']//['Sine', 'Ramp-dn', 'Square', 'Random', 'Ramp-up']
 
 // Place a value at column INST_RIGHT_X + labelW. Labels are colour
 // colInstLabel; values are colInstValue. Truncates to fit INST_RIGHT_W.
@@ -4103,6 +4104,14 @@ const sliderGlyphs = [sym.slider1, sym.slider2, sym.slider3, sym.slider4,
 // Rebuilt by drawInstTabGeneral1/2; each entry is
 //   { y, sx, tw, troughLeftPx, min, max, render(val), commit(val) }.
 let instSliders = []
+
+// Rebuilt by drawInstTabGeneral2 (radio button groups) and the envelope tabs
+// (checkboxes); hit-tested by the panel body mouse region. Cleared every redraw,
+// so they only ever hold the currently-shown tab's widgets.
+//   instButtons:    { y, x, w, value, commit(value) }
+//   instCheckboxes: { y, xs, xe, off, bit }   (off = instrument byte, bit index)
+let instButtons    = []
+let instCheckboxes = []
 
 // Paint the trough + knob for value-fraction `frac` (0..1) at (y, sx).
 function drawSlider(y, sx, tw, frac) {
@@ -4272,11 +4281,99 @@ function sliderCapsuleAt(cy, cx) {
     return null
 }
 
+// Hit-test the live instButtons / instCheckboxes lists. Rebuilt every body
+// redraw, so they only hold the current tab's widgets — no subtab gate needed.
+function instButtonAt(cy, cx) {
+    for (let i = 0; i < instButtons.length; i++) {
+        const b = instButtons[i]
+        if (cy === b.y && cx >= b.x && cx < b.x + b.w) return b
+    }
+    return null
+}
+function instCheckboxAt(cy, cx) {
+    for (let i = 0; i < instCheckboxes.length; i++) {
+        const c = instCheckboxes[i]
+        if (cy === c.y && cx >= c.xs && cx <= c.xe) return c
+    }
+    return null
+}
+
 // Open the inline number editor over a slider's capsule; commit clamps to range.
 function editSliderNumber(s) {
     const nv = openInlineNumEdit(s.numY, s.numX + 1, s.ndig, s.val, s.min, s.max)
     if (nv !== null) { s.val = nv; s.commit(nv) }
     drawInstrumentsContents()   // repaint (restores capsule styling; reflects new value)
+}
+
+// ── Pill buttons & checkboxes (instrument property toggles) ─────────────────
+// Reuse the input-field "capsule" look (drawNumCapsule) as a tappable control: a
+// pill with CP437 half-block end caps that blend the fill colour into the panel
+// background. Unselected = black fill / white text; selected = white fill / black
+// text. Used as radio-style enum pickers (NNA/DCT/DCA/vibrato wave) and, in
+// checkbox form, for the envelope boolean flags.
+
+// Read-modify-write a `width`-bit field at `shift` of instrument byte `off`,
+// preserving the surrounding bits. Re-reads first so a concurrent engine write
+// isn't clobbered, then refreshes the decoded cache.
+function instWriteField(e, off, shift, width, v) {
+    const mask = ((1 << width) - 1) << shift
+    const rec  = readInstRecord(e.slot)
+    const nb   = (rec[off] & ~mask) | ((v << shift) & mask)
+    instWriteBytes(e.slot, [[off, nb]])
+    e.decoded = decodeInstFull(readInstRecord(e.slot))
+}
+
+// Flip a single bit of instrument byte `off` (checkbox click).
+function toggleInstBit(e, off, bit) {
+    const rec = readInstRecord(e.slot)
+    instWriteBytes(e.slot, [[off, rec[off] ^ (1 << bit)]])
+    e.decoded = decodeInstFull(readInstRecord(e.slot))
+}
+
+// Draw one pill button at (y, x). Cap scheme mirrors drawNumCapsule so it reads
+// as the same "interactive field" affordance. Returns the pill's total width
+// (2 caps + a 1-space-padded label).
+function drawButton(y, x, label, selected) {
+    const fill  = selected ? colWHITE : colBLACK
+    const txt   = selected ? colBLACK : colInstValue
+    const inner = ' ' + label + ' '
+    con.color_pair(colBackPtn, fill); con.move(y, x);                    con.prnch(0xDD)
+    con.color_pair(txt,        fill); con.move(y, x + 1);                print(inner)
+    con.color_pair(colBackPtn, fill); con.move(y, x + 1 + inner.length); con.prnch(0xDE)
+    return inner.length + 2
+}
+
+// Emit a labelled radio-button group: a label, then one pill per option (the
+// active one selected). Pills wrap to the next row when they would overrun the
+// right pane (vibrato's 5 waves need this). Each pill is registered into
+// instButtons with commit(optionIndex). Returns the number of rows consumed.
+const BTN_GROUP_LABEL_W = 8
+function buttonGroupRow(y, label, options, current, commit) {
+    con.move(y, INST_RIGHT_X); con.color_pair(colInstLabel, colBackPtn)
+    print((label + ' '.repeat(BTN_GROUP_LABEL_W)).substring(0, BTN_GROUP_LABEL_W))
+    const x0 = INST_RIGHT_X + BTN_GROUP_LABEL_W
+    let x = x0, rows = 1
+    for (let i = 0; i < options.length; i++) {
+        const w = options[i].length + 4            // ' ' + label + ' ' + 2 caps
+        if (x !== x0 && x + w - 1 > SCRW) { y++; rows++; x = x0 }   // wrap to next row
+        drawButton(y, x, options[i], i === current)
+        instButtons.push({ y, x, w, value: i, commit })
+        x += w + 1                                 // 1-col gap between pills
+    }
+    return rows
+}
+
+// Draw "label<glyph>" (glyph at column x+labelW) and register the label+glyph
+// span as a clickable toggle of byte `off` bit `bit`. Returns the column just
+// past the glyph, so callers can append trailing text there.
+function drawCheckbox(y, x, label, labelW, checked, off, bit) {
+    con.move(y, x); con.color_pair(colInstLabel, colBackPtn)
+    print((label + ' '.repeat(labelW)).substring(0, labelW))
+    const gx = x + labelW
+    con.move(y, gx); con.color_pair(colInstValue, colBackPtn)
+    print(checked ? sym.ticked : sym.unticked)
+    instCheckboxes.push({ y, xs: x, xe: gx, off, bit })
+    return gx + 1
 }
 
 // ── Tab body: General (page 1 + page 2) ───────────────────────────────────
@@ -4335,8 +4432,15 @@ function drawInstTabGeneral1(e) {
     sliderRow(y++, e, '  Default:', d.defPan,      0,    255, annHex, (v) => [[177, v]])
     sliderRow(y++, e, '  Sep:',     d.pitchPanSep, -128, 127, null,       (v) => [[180, v & 0xFF]])
     sliderRow(y++, e, '  Swing:',   d.panSwing,    0,    255, annHex, (v) => [[181, v]])
-    drawLabelRow(y++, '  PPanCnt:', '$' + _hex(d.pitchPanCenter, 4) + '  Use: ' +
-                                    (d.panEnv.panUseDef ? sym.ticked + ' on' : sym.unticked + ' off'))
+    con.move(y, INST_RIGHT_X); con.color_pair(colInstLabel, colBackPtn)
+    print(('  PPanCnt:' + ' '.repeat(12)).substring(0, 12))
+    con.move(y, INST_RIGHT_X + 12); con.color_pair(colInstValue, colBackPtn)
+    print('$' + _hex(d.pitchPanCenter, 4) + '  ')
+    // "Use default pan" mirrors the Pan tab's UseDef checkbox (pan loopWord bit 7).
+    const ppx = drawCheckbox(y, INST_RIGHT_X + 21, 'Use:', 5, d.panEnv.panUseDef, 17, 7)
+    con.move(y, ppx); con.color_pair(colInstValue, colBackPtn)
+    print(d.panEnv.panUseDef ? ' on' : ' off')
+    y++
 }
 
 function drawInstTabGeneral2(e) {
@@ -4349,7 +4453,9 @@ function drawInstTabGeneral2(e) {
 
     y++
     drawGroupHeader(y++, 'Vibrato')
-    drawLabelRow(y++, '  Wave:',  VIB_WF_NAMES[d.vibWaveform & 7], SLIDER_LABEL_W)
+    // Vibrato waveform — instFlag (byte 186) bits 2..4.
+    y += buttonGroupRow(y, '  Wave:', VIB_WF_OPTIONS, d.vibWaveform & 7,
+                        (v) => instWriteField(e, 186, 2, 3, v))
     sliderRow(y++, e, '  Speed:', d.vibSpeed, 0, 255, annHex, (v) => [[175, v]])
     sliderRow(y++, e, '  Depth:', d.vibDepth, 0, 255, annHex, (v) => [[187, v]])
     sliderRow(y++, e, '  Sweep:', d.vibSweep, 0, 255, annHex, (v) => [[176, v]])
@@ -4357,9 +4463,10 @@ function drawInstTabGeneral2(e) {
 
     y++
     drawGroupHeader(y++, 'Note actions')
-    drawLabelRow(y++, '  NNA:', NNA_NAMES[d.nna & 3], SLIDER_LABEL_W)
-    drawLabelRow(y++, '  DCT:', DCT_NAMES[d.dct & 3], SLIDER_LABEL_W)
-    drawLabelRow(y++, '  DCA:', DCA_NAMES[d.dca & 3], SLIDER_LABEL_W)
+    // NNA — instFlag (byte 186) bits 0..1; DCT/DCA — dcByte (byte 195) bits 0..1 / 2..3.
+    y += buttonGroupRow(y, '  NNA:', NNA_NAMES,   d.nna & 3, (v) => instWriteField(e, 186, 0, 2, v))
+    y += buttonGroupRow(y, '  DCT:', DCT_NAMES,   d.dct & 3, (v) => instWriteField(e, 195, 0, 2, v))
+    y += buttonGroupRow(y, '  DCA:', DCA_OPTIONS, d.dca & 3, (v) => instWriteField(e, 195, 2, 2, v))
 
     y++
     drawGroupHeader(y++, 'Tuning')
@@ -4520,27 +4627,58 @@ function drawEnvelopeGraph(env) {
     }
 }
 
-// Common envelope-tab body: a few lines of summary text above the graph.
-// `extra` is an array of additional [label, value] rows specific to this kind
-// (e.g. pan's "Use default pan" flag).
-function drawInstTabEnvelope(e, env, kindLabel, extra) {
+// Common envelope-tab body: a few lines of summary text above the graph, then
+// the envelope graph. `extraCb`, when given, is a per-kind extra checkbox
+// descriptor { label, checked, onText, offText } (e.g. pan's "Use default pan").
+// Present / Carry / Loop / Sustain (+ that extra flag) are clickable checkboxes
+// wired to their backing bits. Bit map (see
+// decodeEnvelope): loopWord = rec[loopOff] | rec[loopOff+1]<<8, so Present is
+// high-byte bit 5 (loopWord bit 13); Carry/Loop/extra are loopOff bits 6/5/7;
+// Sustain is sustOff bit 5.
+function drawInstTabEnvelope(e, env, kindLabel, extraCb) {
     let y = INST_BODY_Y
+    const loopOff = (env.kind === 'vol') ? 15  : (env.kind === 'pan') ? 17  : 19
+    const sustOff = (env.kind === 'vol') ? 189 : (env.kind === 'pan') ? 191 : 193
+
     drawGroupHeader(y++, kindLabel + ' envelope')
-    drawLabelRow(y++, '  Present:', (env.present ? sym.ticked + ' yes (P=1)' : sym.unticked + ' no  (P=0)'))
+
+    // Present (P bit) — loopWord bit 13 lives in the high byte (loopOff+1) bit 5.
+    let px = drawCheckbox(y, INST_RIGHT_X, '  Present:', 12, env.present, loopOff + 1, 5)
+    con.move(y, px); con.color_pair(colInstValue, colBackPtn)
+    print(env.present ? ' yes (P=1)' : ' no  (P=0)')
+    y++
+
+    // Node count + Carry checkbox share one row so the text block stays ≤ 7 rows
+    // (the envelope graph below starts at INST_BODY_Y + 7).
     const realCount = (env.terminatorIdx >= 0) ? (env.terminatorIdx + 1) : env.nodes.length
-    drawLabelRow(y++, '  Nodes:',   realCount + ' / 25' +
-                                    (env.carry ? '   Carry: ' + sym.ticked : '   Carry: ' + sym.unticked))
-    drawLabelRow(y++, '  Loop:',    env.loopEnable
-                                    ? (sym.ticked + ' [' + env.loopStart + '..' + env.loopEnd + ']')
-                                    : (sym.unticked + ' off'))
-    drawLabelRow(y++, '  Sustain:', env.sustEnable
-                                    ? (sym.ticked + ' [' + env.sustStart + '..' + env.sustEnd + ']')
-                                    : (sym.unticked + ' off'))
-    if (extra) {
-        for (let i = 0; i < extra.length; i++) {
-            drawLabelRow(y++, '  ' + extra[i][0], extra[i][1])
-        }
+    con.move(y, INST_RIGHT_X); con.color_pair(colInstLabel, colBackPtn)
+    print(('  Nodes:' + ' '.repeat(12)).substring(0, 12))
+    con.move(y, INST_RIGHT_X + 12); con.color_pair(colInstValue, colBackPtn)
+    print((realCount + ' / 25' + ' '.repeat(8)).substring(0, 8))
+    drawCheckbox(y, INST_RIGHT_X + 21, 'Carry:', 7, env.carry, loopOff, 6)
+    y++
+
+    // Loop enable (+ range when on)
+    let lx = drawCheckbox(y, INST_RIGHT_X, '  Loop:', 12, env.loopEnable, loopOff, 5)
+    con.move(y, lx); con.color_pair(colInstValue, colBackPtn)
+    print(env.loopEnable ? (' [' + env.loopStart + '..' + env.loopEnd + ']') : ' off')
+    y++
+
+    // Sustain enable (+ range when on)
+    let sx = drawCheckbox(y, INST_RIGHT_X, '  Sustain:', 12, env.sustEnable, sustOff, 5)
+    con.move(y, sx); con.color_pair(colInstValue, colBackPtn)
+    print(env.sustEnable ? (' [' + env.sustStart + '..' + env.sustEnd + ']') : ' off')
+    y++
+
+    // Per-kind extra flag (Pan: use-default-pan; Pitch: filter-vs-pitch mode) —
+    // both ride loopWord bit 7 (loopOff bit 7).
+    if (extraCb) {
+        let ex = drawCheckbox(y, INST_RIGHT_X, extraCb.label, 12, extraCb.checked, loopOff, 7)
+        con.move(y, ex); con.color_pair(colInstValue, colBackPtn)
+        print(' ' + (extraCb.checked ? extraCb.onText : extraCb.offText))
+        y++
     }
+
     // Total envelope length + the time-grid step the graph below uses, so the
     // dashed vertical hairlines have a readable scale.
     const lastIdx = (env.terminatorIdx >= 0) ? env.terminatorIdx : (env.nodes.length - 1)
@@ -4552,18 +4690,21 @@ function drawInstTabEnvelope(e, env, kindLabel, extra) {
     drawEnvelopeGraph(env)
 }
 
-function drawInstTabVolume(e)  { drawInstTabEnvelope(e, e.decoded.volEnv, 'Volume') }
+function drawInstTabVolume(e)  { drawInstTabEnvelope(e, e.decoded.volEnv, 'Volume', null) }
 function drawInstTabPanning(e) {
-    drawInstTabEnvelope(e, e.decoded.panEnv, 'Panning', [
-        ['UseDef:', (e.decoded.panEnv.panUseDef ? sym.ticked + ' on' : sym.unticked + ' off') +
-                    '  (chan-pan source: byte $B1)']
-    ])
+    drawInstTabEnvelope(e, e.decoded.panEnv, 'Panning', {
+        label: '  UseDef:', checked: e.decoded.panEnv.panUseDef,
+        onText: 'on   (chan-pan source: byte $B1)',
+        offText: 'off  (chan-pan source: byte $B1)'
+    })
 }
 function drawInstTabPitch(e) {
     const env = e.decoded.pfEnv
-    drawInstTabEnvelope(e, env, env.pfFilter ? 'Filter' : 'Pitch', [
-        ['Mode:', env.pfFilter ? 'filter cutoff' : 'pitch']
-    ])
+    drawInstTabEnvelope(e, env, env.pfFilter ? 'Filter' : 'Pitch', {
+        label: '  Filter:', checked: env.pfFilter,
+        onText: 'on   (envelope targets filter cutoff)',
+        offText: 'off  (envelope targets pitch)'
+    })
 }
 
 // ── Edit button (bottom row) ───────────────────────────────────────────────
@@ -4586,6 +4727,8 @@ function drawInstrumentsContents(wo) {
     if (instrumentsCache === null) refreshInstrumentsCache()
     clampInstrumentsCursor()
     instSliders.length = 0   // rebuilt by the Gen.1/Gen.2 body drawers below
+    instButtons.length = 0   // rebuilt by Gen.2 button groups
+    instCheckboxes.length = 0 // rebuilt by Gen.1 / envelope-tab checkboxes
     clearInstrumentsPanel()
     drawInstrumentsListColumn()
     drawInstrumentsSeparator()
@@ -4703,6 +4846,11 @@ function registerInstrumentsMouse() {
     addPanelMouseRegion(INST_RIGHT_X, INST_BODY_Y, INST_RIGHT_W, INST_BODY_H, {
         onClick: (cy, cx, btn, ev) => {
             if (btn !== 1) return
+            const e = instrumentsCache ? instrumentsCache[instListCursor] : null
+            const cb = instCheckboxAt(cy, cx)
+            if (cb) { if (e) { toggleInstBit(e, cb.off, cb.bit); drawInstrumentsContents() } return }
+            const b = instButtonAt(cy, cx)
+            if (b) { b.commit(b.value); drawInstrumentsContents(); return }
             const c = sliderCapsuleAt(cy, cx)
             if (c) { editSliderNumber(c); return }
             const s = sliderTroughAt(cy, cx)

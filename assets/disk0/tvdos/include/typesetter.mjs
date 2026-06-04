@@ -8,6 +8,7 @@
  * Markup
  * ------
  *   <b>...</b>   emphasised foreground colour
+ *   <b>...</b>   de-emphasised foreground colour
  *   <c>...</c>   centre-align this source line
  *   <r>...</r>   right-align this source line
  *   <l>...</l>   left-align this source line
@@ -43,12 +44,14 @@
 
 const COL_TEXT      = 239 // popup body default (== colWHITE)
 const COL_EMPH      = 230 // <b>...</b> highlight (== colVoiceHdr)
+const COL_DEEMPH      = 248 // <s>...</s> unhighlight
 const COL_BRAND     = 211 // first half of "Microtone"
 const COL_BRAND_DIM = 239 // second half of "Microtone"
 
 const fgEsc = (n) => `\x1B[38;5;${n}m`
 const ESC_DEFAULT = fgEsc(COL_TEXT)
 const ESC_EMPH    = fgEsc(COL_EMPH)
+const ESC_DEEMPH    = fgEsc(COL_DEEMPH)
 const MICROTONE   = `${fgEsc(COL_BRAND)}Micro${fgEsc(COL_BRAND_DIM)}tone${ESC_DEFAULT}`
 
 
@@ -123,6 +126,8 @@ function tokenise(line) {
         // inline tags (case-sensitive for <b>, case-insensitive for <o>)
         if (line.slice(i, i + 3) === '<b>')  { buf += ESC_EMPH;    i += 3; continue }
         if (line.slice(i, i + 4) === '</b>') { buf += ESC_DEFAULT; i += 4; continue }
+        if (line.slice(i, i + 3) === '<s>')  { buf += ESC_DEEMPH;    i += 3; continue }
+        if (line.slice(i, i + 4) === '</s>') { buf += ESC_DEFAULT; i += 4; continue }
         const head3 = line.slice(i, i + 3).toLowerCase()
         const head4 = line.slice(i, i + 4).toLowerCase()
         if (head3 === '<o>')  { flushWord(); tokens.push({type: 'anchor', open: true});  i += 3; continue }
@@ -327,5 +332,6 @@ exports = {
     COL_BRAND_DIM,
     ESC_DEFAULT,
     ESC_EMPH,
+    ESC_DEEMPH,
     MICROTONE,
 }
