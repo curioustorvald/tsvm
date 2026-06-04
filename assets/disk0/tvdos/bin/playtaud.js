@@ -87,8 +87,8 @@ const COL_LABEL       = 220   // amber panel label
 const COL_DIM         = 235   // muted text
 const COL_TITLE       = 230   // bright white-yellow song title
 const COL_VALUE       = 254   // bright white numeric values
-const COL_TICK_LIVE   = 46    // green tick light
-const COL_TICK_DEAD   = 22    // dim green
+const COL_TICK_LIVE   = 76    // green tick light
+const COL_TICK_DEAD   = 20    // dim green
 const COL_ORDER_PAST  = 235
 const COL_ORDER_CUR   = 226   // bright yellow active cue
 const COL_ORDER_FUT   = 250
@@ -731,20 +731,166 @@ function spawnEventsForRow(cueIdx, rowIdx) {
     }
 }
 
-// ── Per-lane rendering ──────────────────────────────────────────────────────
+// ── Dynamic matrix background ────────────────────────────────────────────────
 //
-// The renderer is structured as: each frame, blank the visualiser rows of all
-// five lanes, walk the active events, and draw each into its lane.  Painting
-// is reasonably cheap because (a) the bordered side columns stay untouched,
-// and (b) blanking inside is two cells per row × ~14 rows = 30 cells.
+// Behind the event lanes runs a "terminal matrix" of the raw tracker data,
+// re-spelled as pseudo-opcodes and streamed one row's worth at a time in
+// lock-step with the playhead's row cadence.  Each tracker cell on the current
+// row contributes up to four 7-char tokens (only for the sub-fields it carries):
+//
+//   NT:nnnn   note            (4-hex noteVal)
+//   VO:i.jj   volume column   (i = selector 0..3, jj = 2-digit value 00..63)
+//   PN:k.ll   pan column      (k = selector 0..3, ll = 2-digit value 00..63)
+//   Fs:eeee   effect          (s = base-36 opcode symbol, eeee = 4-hex argument)
+//
+// Tokens flow left-to-right and wrap at the canvas edge; when the print head
+// runs off the bottom it rolls back to the top, and a cue change resets it to
+// the top too.  Column wrapping only ever breaks between a token's three 2-char
+// atoms AA / bb / cc — never mid-atom — and a colon that would land at a line
+// edge is dropped, so a line never starts or ends with ':' (it may start with a
+// single separator space).  Each freshly printed cell is brightest and decays
+// one palette step per row, trailing a comet tail behind the head.
+const BG_TOP   = ROW_TONAL_TOP          // matrix shares the whole visuals canvas
+const BG_BOT   = ROW_DRUMS_BOT
+const BG_ROWS  = BG_BOT - BG_TOP + 1
+const BG_L     = COL_INSIDE_L
+const BG_COLS  = LANE_W
+const BG_BLANK = ' '.repeat(BG_COLS)
 
-function blankLanes() {
-    colour(COL_DIM, COL_BG)
-    const blank = ' '.repeat(LANE_W)
-    for (let r = ROW_TONAL_TOP; r <= ROW_TONAL_BOT; r++)
-        mvtext(r, COL_INSIDE_L, blank)
-    for (let r = ROW_DRUMS_TOP; r <= ROW_DRUMS_BOT; r++)
-        mvtext(r, COL_INSIDE_L, blank)
+// Palette runs dim → bright per the spec; fresh text takes the bright end.
+const BG_PALETTE = [97,243,242,242,241,241,241]  // index 0 = freshest .. last = oldest
+const BG_LIFE    = 48 // rows a cell stays lit before going dark
+
+const bgChar = new Uint8Array(BG_ROWS * BG_COLS)
+const bgLvl  = new Int8Array(BG_ROWS * BG_COLS)   // 0 = dark, BG_LIFE = freshest
+const bgDith = new Uint8Array(BG_ROWS * BG_COLS)  // per-cell ordered-dither threshold 0..15
+
+// Ordered colour dithering.  Each opcode atom (the AA / bb / cc of an "AA:bbcc"
+// token) is stamped with ONE 4×4 Bayer threshold taken from its start cell, so
+// the atom dithers as a coherent unit while neighbouring atoms differ — this
+// stipples the otherwise-flat palette bands of the ageing tail into a smooth
+// gradient.  The threshold biases the floor() that picks between the two palette
+// entries bracketing a cell's fractional colour index.
+const BG_BAYER = [
+     0,  8,  2, 10,
+    12,  4, 14,  6,
+     3, 11,  1,  9,
+    15,  7, 13,  5
+]
+const BG_DITHER_N = 16
+function bgBayerAt(gr, gc) { return BG_BAYER[(gr & 3) * 4 + (gc & 3)] }
+
+// BG_PALETTE[0] is reserved for the freshest row — the cells appended this very
+// row (lvl == BG_LIFE) — no matter how large BG_LIFE is.  Its continuous index
+// is pinned to exactly 0, which no dither bias can lift, so it stays solid.
+// Ageing levels carry a *fractional* palette index in [1, BG_LAST]; the dither
+// resolves that fraction into a spatial mix of the two bracketing entries.
+const BG_LAST = BG_PALETTE.length - 1
+const bgContLut = new Float32Array(BG_LIFE + 1)
+bgContLut[BG_LIFE] = 0
+for (let lvl = 1; lvl < BG_LIFE; lvl++) {
+    const span = BG_LIFE - 2                  // ageing steps between the endpoints
+    const age  = (BG_LIFE - 1) - lvl          // 0 = freshest aged .. span = oldest
+    const t    = span > 0 ? age / span : 0
+    let f = 1 + t * (BG_LAST - 1)             // continuous index in [1, BG_LAST]
+    if (f > BG_LAST) f = BG_LAST
+    if (f < 1) f = 1
+    bgContLut[lvl] = f
+}
+
+let bgHeadR = 0, bgHeadC = 0
+
+function bgNewline() { bgHeadR = (bgHeadR + 1) % BG_ROWS; bgHeadC = 0 }
+
+function bgPut(code) {                   // single glue char; caller guarantees room
+    const idx = bgHeadR * BG_COLS + bgHeadC
+    bgChar[idx] = code; bgLvl[idx] = BG_LIFE; bgDith[idx] = bgBayerAt(bgHeadR, bgHeadC)
+    bgHeadC++
+}
+
+function bgPutAtom(c0, c1) {             // 2-char atom; wraps as a unit, dithers as a unit
+    if (bgHeadC + 2 > BG_COLS) bgNewline()
+    const base = bgHeadR * BG_COLS
+    const d = bgBayerAt(bgHeadR, bgHeadC)   // one threshold for the whole atom
+    bgChar[base + bgHeadC] = c0; bgLvl[base + bgHeadC] = BG_LIFE; bgDith[base + bgHeadC] = d; bgHeadC++
+    bgChar[base + bgHeadC] = c1; bgLvl[base + bgHeadC] = BG_LIFE; bgDith[base + bgHeadC] = d; bgHeadC++
+}
+
+// Lay out one "AA:bbcc" token (prefix2 = 2 chars, val4 = 4 chars) with the
+// break rules above.
+function bgEmitToken(prefix2, val4) {
+    if (bgHeadC > 0) {                   // separator space between tokens
+        if (bgHeadC + 3 > BG_COLS) bgNewline()   // ...carried to the next line if needed
+        bgPut(0x20)
+    }
+    bgPutAtom(prefix2.charCodeAt(0), prefix2.charCodeAt(1))   // AA
+    if (bgHeadC + 3 <= BG_COLS) {        // colon + bb both fit on this line
+        bgPut(0x3A)                      // ':'
+        bgPutAtom(val4.charCodeAt(0), val4.charCodeAt(1))     // bb
+    } else {                             // drop the colon, bb opens the next line
+        bgNewline()
+        bgPutAtom(val4.charCodeAt(0), val4.charCodeAt(1))     // bb
+    }
+    bgPutAtom(val4.charCodeAt(2), val4.charCodeAt(3))         // cc (may wrap)
+}
+
+// Advance the matrix by one tracker row: decay every lit cell one step, then
+// stream the pseudo-opcodes for whatever the row's cells carry.  A cue change
+// rolls the print head back to the top first.
+function bgAdvanceRow(cueIdx, rowIdx, cueChanged) {
+    for (let i = 0; i < bgLvl.length; i++) {
+        if (bgLvl[i] > 0) bgLvl[i]--
+    }
+    if (cueChanged) { bgHeadR = 0; bgHeadC = 0 }
+    const cue = song.cues[cueIdx]
+    if (!cue) return
+    const off = rowIdx * 8
+    for (let v = 0; v < song.numVoices; v++) {
+        const patIdx = cue.ptns[v]
+        if (patIdx === CUE_EMPTY || patIdx >= song.numPats) continue
+        const pat = song.patterns[patIdx]
+        if (!pat) continue
+        const note   = pat[off] | (pat[off + 1] << 8)
+        const voleff = pat[off + 3]
+        const paneff = pat[off + 4]
+        const effop  = pat[off + 5]
+        const effarg = pat[off + 6] | (pat[off + 7] << 8)
+        if (note !== 0)
+            bgEmitToken('NT', note.toString(16).toUpperCase().padStart(4, '0'))
+        if (voleff !== 0 && voleff !== 0xC0)
+            bgEmitToken('VO', (voleff >>> 6) + '.' + (voleff & 63).toString(10).padStart(2, '0'))
+        if (paneff !== 0 && paneff !== 0xC0)
+            bgEmitToken('PN', (paneff >>> 6) + '.' + (paneff & 63).toString(10).padStart(2, '0'))
+        if (effop !== 0)
+            bgEmitToken('F' + effop.toString(36).toUpperCase()[0],
+                        effarg.toString(16).toUpperCase().padStart(4, '0'))
+    }
+}
+
+// Paint the matrix as the canvas backdrop; the event lanes draw over it.  Each
+// strip is blanked in one shot, then its lit cells are overlaid (spaces and dark
+// cells skipped), batching colour switches so same-age runs share one call.
+function drawBackground() {
+    let curFg = -1
+    for (let gr = 0; gr < BG_ROWS; gr++) {
+        const sr = BG_TOP + gr
+        colour(COL_DIM, COL_BG); curFg = COL_DIM
+        con.move(sr, BG_L)
+        print(BG_BLANK)
+        const base = gr * BG_COLS
+        for (let gc = 0; gc < BG_COLS; gc++) {
+            const lvl = bgLvl[base + gc]
+            if (lvl <= 0) continue
+            const ch = bgChar[base + gc]
+            if (ch === 0x20) continue
+            let idx = Math.floor(bgContLut[lvl] + (bgDith[base + gc] + 0.5) / BG_DITHER_N)
+            if (idx > BG_LAST) idx = BG_LAST
+            if (idx < 0) idx = 0
+            const fg = BG_PALETTE[idx]
+            if (fg !== curFg) { colour(fg, COL_BG); curFg = fg }
+            mvprn(sr, BG_L + gc, ch)
+        }
+    }
 }
 
 function envColour(arch, volFrac) {
@@ -883,7 +1029,7 @@ function drawEventMetal(ev, stage, volFrac, liveNote) {
 }
 
 function renderEvents() {
-    blankLanes()
+    drawBackground()
     for (let v = 0; v < song.numVoices; v++) {
         const ev = events[v]
         if (!ev) continue
@@ -1014,8 +1160,10 @@ try {
         const curCue = audio.getCuePosition(0)
         const curRow = audio.getTrackerRow(0)
         if (curCue !== lastSeenCue || curRow !== lastSeenRow) {
-            // Row boundary — spawn new events, reset synthetic tick counter.
+            // Row boundary — spawn new events, advance the matrix background
+            // (a cue change rolls its print head to the top), reset tick count.
             spawnEventsForRow(curCue, curRow)
+            bgAdvanceRow(curCue, curRow, curCue !== lastSeenCue)
             lastSeenCue = curCue
             lastSeenRow = curRow
             synthTick = 0
