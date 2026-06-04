@@ -4130,26 +4130,30 @@ function sliderRow(y, e, label, val0, min, max, fmt, encode) {
     })
 }
 
-// Emit the wide two-row Detune slider: knob on `y`, numeric labels on `y+1`.
+// Emit the wide two-row Detune slider: knob on `y`, cents readout on `y+1`.
+// The field is a full signed 16-bit, but the knob's interactive range is the
+// practical ±4096 (one octave). An out-of-range stored value still displays
+// truthfully (its true number + cents), with the knob pinned to the nearer end;
+// it is snapped into range the instant the user drags or wheels the knob.
 function detuneRow(y, e, val0) {
     const sx = SLIDER_WIDE_SX, tw = SLIDER_TW_WIDE
-    const min = -32768, max = 32767
+    const min = -4096, max = 4096
     const render = (val) => {
-        if (val < min) val = min
-        if (val > max) val = max
+        const knob = (val < min) ? min : (val > max) ? max : val   // clamp position only
         con.move(y, INST_RIGHT_X)
         con.color_pair(colInstLabel, colBackPtn)
         print(('  Detune:' + ' '.repeat(SLIDER_LABEL_W)).substring(0, SLIDER_LABEL_W))
-        drawSlider(y, sx, tw, (val - min) / (max - min))
+        drawSlider(y, sx, tw, (knob - min) / (max - min))
         con.move(y + 1, INST_RIGHT_X)
         con.color_pair(colInstValue, colBackPtn)
-        const s = '    ' + _signed(val) + '   (' + (val / 0x1000).toFixed(3) + ' octave, 4096-TET)'
+        const cents = val * 1200 / 4096   // 1 octave = 4096 TET steps = 1200 cents
+        const s = '    ' + _signed(val) + '   (' + cents.toFixed(1) + ' cents, 4096-TET)'
         print((s + ' '.repeat(INST_RIGHT_W)).substring(0, INST_RIGHT_W))
     }
     render(val0)
     instSliders.push({
         y, sx, tw, troughLeftPx: sx * CELL_PW, min, max, render,
-        val: (val0 < min ? min : val0 > max ? max : val0),   // current value, for wheel ±1 deltas
+        val: (val0 < min ? min : val0 > max ? max : val0),   // snapped into range for drag/wheel
         commit: (v) => { instWriteBytes(e.slot, [[184, v & 0xFF], [185, (v >> 8) & 0xFF]]); e.decoded = decodeInstFull(readInstRecord(e.slot)) }
     })
 }
