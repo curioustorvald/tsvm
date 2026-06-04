@@ -4007,6 +4007,163 @@ function drawGroupHeader(y, title) {
     print(txt + `\u00FB`.repeat(dashes))
 }
 
+// ── Inline value sliders (Gen.1 / Gen.2 knob editing) ──────────────────────
+// A horizontal slider painted alongside a numeric field. The knob is one 7-px
+// cell wide and slides with per-pixel precision via the sym.slider1..7 glyphs
+// (slider1 = knob snug in one cell; slider2..7 straddle two cells at a 1..6 px
+// offset). The trough is a flat colBLACK bar capped by inverse-video round pads
+// (0xAB left, 0xAA right). Two trough widths only: small (10) and wide (20).
+//
+// Clicking/dragging a trough drives the knob: the label updates live as the knob
+// moves, and the instrument byte(s) are written only on mouse release (see
+// runSliderDrag). instSliders is rebuilt on every Gen.1/Gen.2 body repaint and
+// hit-tested by the panel's slider mouse region.
+const SLIDER_TW_SMALL = 25
+const SLIDER_TW_WIDE  = 36
+const SLIDER_LABEL_W  = 10
+const SLIDER_END_COL  = SCRW - 1                       // common right edge
+const SLIDER_SMALL_SX = SLIDER_END_COL - (SLIDER_TW_SMALL + 1)  // small left-pad col
+const SLIDER_WIDE_SX  = SLIDER_END_COL - (SLIDER_TW_WIDE  + 1)  // wide  left-pad col
+const SLIDER_VALUE_W  = SLIDER_SMALL_SX - (INST_RIGHT_X + SLIDER_LABEL_W)
+
+const sliderGlyphs = [sym.slider1, sym.slider2, sym.slider3, sym.slider4,
+                      sym.slider5, sym.slider6, sym.slider7]
+
+// Rebuilt by drawInstTabGeneral1/2; each entry is
+//   { y, sx, tw, troughLeftPx, min, max, render(val), commit(val) }.
+let instSliders = []
+
+// Paint the trough + knob for value-fraction `frac` (0..1) at (y, sx).
+function drawSlider(y, sx, tw, frac) {
+    const pmax = (tw - 1) * CELL_PW
+    const p    = Math.round((frac < 0 ? 0 : frac > 1 ? 1 : frac) * pmax)
+    const cell = (p / CELL_PW) | 0
+    const sub  = p - cell * CELL_PW
+    const cells = new Array(tw).fill(' ')
+    if (sub === 0) cells[cell] = sliderGlyphs[0]
+    else {
+        const g = sliderGlyphs[sub]            // 2-char glyph straddling cell..cell+1
+        cells[cell] = g[0]
+        if (cell + 1 < tw) cells[cell + 1] = g[1]
+    }
+    con.color_pair(colBLACK, colStatus); con.move(y, sx);          con.prnch(0xAB)
+    con.color_pair(colStatus, colBLACK); con.move(y, sx + 1);      print(cells.join(''))
+    con.color_pair(colBLACK, colStatus); con.move(y, sx + tw + 1); con.prnch(0xAA)
+}
+
+// Pixel X (mouse) → quantised slider value, knob centred under the cursor.
+function sliderMouseToVal(s, pxX) {
+    const pmax = (s.tw - 1) * CELL_PW
+    let knob = Math.round((pxX - s.troughLeftPx) - CELL_PW / 2)
+    if (knob < 0) knob = 0
+    if (knob > pmax) knob = pmax
+    const frac = (pmax === 0) ? 0 : knob / pmax
+    let v = Math.round(s.min + frac * (s.max - s.min))
+    if (v < s.min) v = s.min
+    if (v > s.max) v = s.max
+    return v
+}
+
+// Write byte pairs [[offset, value], ...] into instrument `slot`'s peripheral
+// record. The audio adapter decodes these live, so edits take effect at once.
+function instWriteBytes(slot, pairs) {
+    const memBase = audio.getMemAddr()
+    const base = TAUT_INST_WINDOW_OFF + slot * TAUT_INST_RECORD_SIZE
+    for (let i = 0; i < pairs.length; i++) {
+        sys.poke(memBase - (base + pairs[i][0]), pairs[i][1] & 0xFF)
+    }
+}
+
+// Drag interaction: live label updates while held, commit on release, ESC cancels.
+function runSliderDrag(s, downEvent) {
+    let val = sliderMouseToVal(s, downEvent[1])
+    let committed = false
+    s.render(val)
+    let dragging = true
+    while (dragging) {
+        input.withEvent(e => {
+            const t = e[0]
+            if (t === 'mouse_move') {
+                const nv = sliderMouseToVal(s, e[1])
+                if (nv !== val) { val = nv; s.render(val) }
+            } else if (t === 'mouse_up') {
+                dragging = false; committed = true
+            } else if (t === 'key_down' && e[1] === '<ESC>') {
+                dragging = false
+            }
+            // mouse_down echo and other events are ignored during a drag
+        })
+    }
+    if (committed) s.commit(val)
+    drawInstrumentsContents()
+}
+
+// fmt helpers — kept short so the value still fits the SLIDER_VALUE_W field.
+function fmtByte255(v) { return '$' + _hex(v, 2) + ' (' + v + ')' }
+function fmtSigned(v)  { return _signed(v) }
+function fmtFilter(v)  { return (v === 0xFF) ? 'off' : ('$' + _hex(v, 2) + ' (' + v + ')') }
+function fmtFadeout(v) {
+    if (v <= 0)    return '0 none'
+    if (v >= 1024) return '1024 cut'
+    return v + ' ~' + (1024 / v).toFixed(1) + 't'
+}
+
+// Emit a small-slider row: label, numeric value, then the knob. `encode(val)`
+// returns the byte pairs to poke on commit.
+function sliderRow(y, e, label, val0, min, max, fmt, encode) {
+    const sx = SLIDER_SMALL_SX, tw = SLIDER_TW_SMALL
+    const render = (val) => {
+        if (val < min) val = min
+        if (val > max) val = max
+        con.move(y, INST_RIGHT_X)
+        con.color_pair(colInstLabel, colBackPtn)
+        print((label + ' '.repeat(SLIDER_LABEL_W)).substring(0, SLIDER_LABEL_W))
+        con.color_pair(colInstValue, colBackPtn)
+        print((fmt(val) + ' '.repeat(SLIDER_VALUE_W)).substring(0, SLIDER_VALUE_W))
+        drawSlider(y, sx, tw, (max === min) ? 0 : (val - min) / (max - min))
+    }
+    render(val0)
+    instSliders.push({
+        y, sx, tw, troughLeftPx: sx * CELL_PW, min, max, render,
+        val: (val0 < min ? min : val0 > max ? max : val0),   // current value, for wheel ±1 deltas
+        commit: (v) => { instWriteBytes(e.slot, encode(v)); e.decoded = decodeInstFull(readInstRecord(e.slot)) }
+    })
+}
+
+// Emit the wide two-row Detune slider: knob on `y`, numeric labels on `y+1`.
+function detuneRow(y, e, val0) {
+    const sx = SLIDER_WIDE_SX, tw = SLIDER_TW_WIDE
+    const min = -32768, max = 32767
+    const render = (val) => {
+        if (val < min) val = min
+        if (val > max) val = max
+        con.move(y, INST_RIGHT_X)
+        con.color_pair(colInstLabel, colBackPtn)
+        print(('  Detune:' + ' '.repeat(SLIDER_LABEL_W)).substring(0, SLIDER_LABEL_W))
+        drawSlider(y, sx, tw, (val - min) / (max - min))
+        con.move(y + 1, INST_RIGHT_X)
+        con.color_pair(colInstValue, colBackPtn)
+        const s = '    ' + _signed(val) + '   (' + (val / 0x1000).toFixed(3) + ' octave, 4096-TET)'
+        print((s + ' '.repeat(INST_RIGHT_W)).substring(0, INST_RIGHT_W))
+    }
+    render(val0)
+    instSliders.push({
+        y, sx, tw, troughLeftPx: sx * CELL_PW, min, max, render,
+        val: (val0 < min ? min : val0 > max ? max : val0),   // current value, for wheel ±1 deltas
+        commit: (v) => { instWriteBytes(e.slot, [[184, v & 0xFF], [185, (v >> 8) & 0xFF]]); e.decoded = decodeInstFull(readInstRecord(e.slot)) }
+    })
+}
+
+// Hit-test the live instSliders list for a cell (cy, cx). Gen.1/Gen.2 only.
+function sliderAt(cy, cx) {
+    if (instSubTab !== INST_TAB_GEN1 && instSubTab !== INST_TAB_GEN2) return null
+    for (let i = 0; i < instSliders.length; i++) {
+        const s = instSliders[i]
+        if (cy === s.y && cx >= s.sx && cx <= s.sx + s.tw + 1) return s
+    }
+    return null
+}
+
 // ── Tab body: General (page 1 + page 2) ───────────────────────────────────
 // Page 1 (Gen.1):
 //   Sample binding   — sample link, length, c4Rate, play/loop positions, loop mode
@@ -4053,25 +4210,18 @@ function drawInstTabGeneral1(e) {
 
     y++
     drawGroupHeader(y++, 'Volume')
-    drawLabelRow(y++, '  Inst. GV:', _hex(d.igv, 2) + '  (' + d.igv + '/255)')
-    drawLabelRow(y++, '  DefNote:',  _hex(d.defNoteVol, 2) + '  (' + d.defNoteVol + '/255' +
-                                     (d.defNoteVol === 0 ? '  legacy: row default 63' : '') + ')')
-    let fadeStr
-    if (d.fadeout === 0)             fadeStr = '0  (no fade)'
-    else if (d.fadeout >= 1024)      fadeStr = d.fadeout + '  (1-tick cut)'
-    else {
-        const ticks = (1024 / d.fadeout)
-        fadeStr = d.fadeout + '  (~' + ticks.toFixed(1) + ' ticks)'
-    }
-    drawLabelRow(y++, '  Fadeout:', fadeStr)
-    drawLabelRow(y++, '  Swing:',   _hex(d.volSwing, 2))
+    sliderRow(y++, e, '  Inst.GV:', d.igv,        0, 255,  fmtByte255, (v) => [[171, v]])
+    sliderRow(y++, e, '  DefNote:', d.defNoteVol, 0, 255,  fmtByte255, (v) => [[196, v]])
+    sliderRow(y++, e, '  Fadeout:', d.fadeout,    0, 1024, fmtFadeout, (v) => [[172, v & 0xFF], [173, (v >> 8) & 0x0F]])
+    sliderRow(y++, e, '  Swing:',   d.volSwing,   0, 255,  fmtByte255, (v) => [[174, v]])
 
     y++
     drawGroupHeader(y++, 'Panning')
-    drawLabelRow(y++, '  Default:', _hex(d.defPan, 2) + '  Use: ' +
+    sliderRow(y++, e, '  Default:', d.defPan,      0,    255, fmtByte255, (v) => [[177, v]])
+    sliderRow(y++, e, '  Sep:',     d.pitchPanSep, -128, 127, fmtSigned,  (v) => [[180, v & 0xFF]])
+    sliderRow(y++, e, '  Swing:',   d.panSwing,    0,    255, fmtByte255, (v) => [[181, v]])
+    drawLabelRow(y++, '  PPanCnt:', '$' + _hex(d.pitchPanCenter, 4) + '  Use: ' +
                                     (d.panEnv.panUseDef ? sym.ticked + ' on' : sym.unticked + ' off'))
-    drawLabelRow(y++, '  PPanCtr:', '$' + _hex(d.pitchPanCenter, 4) + '  Sep: ' + _signed(d.pitchPanSep))
-    drawLabelRow(y++, '  Swing:',   _hex(d.panSwing, 2))
 }
 
 function drawInstTabGeneral2(e) {
@@ -4079,27 +4229,27 @@ function drawInstTabGeneral2(e) {
     let y = INST_BODY_Y
 
     drawGroupHeader(y++, 'Filter')
-    drawLabelRow(y++, '  Cutoff:',  (d.defCutoff === 0xFF ? 'off' : ('$' + _hex(d.defCutoff, 2) +
-                                    '   (' + d.defCutoff + '/254)')))
-    drawLabelRow(y++, '  Reso:',    (d.defReso   === 0xFF ? 'off' : ('$' + _hex(d.defReso, 2) +
-                                    '   (' + d.defReso + '/254)')))
+    sliderRow(y++, e, '  Cutoff:', d.defCutoff, 0, 255, fmtFilter, (v) => [[182, v]])
+    sliderRow(y++, e, '  Reso:',   d.defReso,   0, 255, fmtFilter, (v) => [[183, v]])
 
     y++
     drawGroupHeader(y++, 'Vibrato')
-    drawLabelRow(y++, '  Waveform:', VIB_WF_NAMES[d.vibWaveform & 7])
-    drawLabelRow(y++, '  Speed:',   _hex(d.vibSpeed, 2) + '   Depth: ' + _hex(d.vibDepth, 2))
-    drawLabelRow(y++, '  Sweep:',   _hex(d.vibSweep, 2) + '   Rate:  ' + _hex(d.vibRate, 2))
+    drawLabelRow(y++, '  Wave:',  VIB_WF_NAMES[d.vibWaveform & 7], SLIDER_LABEL_W)
+    sliderRow(y++, e, '  Speed:', d.vibSpeed, 0, 255, fmtByte255, (v) => [[175, v]])
+    sliderRow(y++, e, '  Depth:', d.vibDepth, 0, 255, fmtByte255, (v) => [[187, v]])
+    sliderRow(y++, e, '  Sweep:', d.vibSweep, 0, 255, fmtByte255, (v) => [[176, v]])
+    sliderRow(y++, e, '  Rate:',  d.vibRate,  0, 255, fmtByte255, (v) => [[188, v]])
 
     y++
     drawGroupHeader(y++, 'Note actions')
-    drawLabelRow(y++, '  NNA:',     NNA_NAMES[d.nna & 3])
-    drawLabelRow(y++, '  DCT:',     DCT_NAMES[d.dct & 3])
-    drawLabelRow(y++, '  DCA:',     DCA_NAMES[d.dca & 3])
+    drawLabelRow(y++, '  NNA:', NNA_NAMES[d.nna & 3], SLIDER_LABEL_W)
+    drawLabelRow(y++, '  DCT:', DCT_NAMES[d.dct & 3], SLIDER_LABEL_W)
+    drawLabelRow(y++, '  DCA:', DCA_NAMES[d.dca & 3], SLIDER_LABEL_W)
 
     y++
     drawGroupHeader(y++, 'Tuning')
-    const detStr = _signed(d.detune) + '   (' + (d.detune / 0x1000).toFixed(3) + ' octave, 4096-TET)'
-    drawLabelRow(y++, '  Detune:',  detStr)
+    detuneRow(y, e, d.detune)
+    y += 2
 }
 
 // ── Envelope rendering (shared by Volume/Panning/Pitch tabs) ───────────────
@@ -4320,6 +4470,7 @@ function clearInstrumentsPanel() {
 function drawInstrumentsContents(wo) {
     if (instrumentsCache === null) refreshInstrumentsCache()
     clampInstrumentsCursor()
+    instSliders.length = 0   // rebuilt by the Gen.1/Gen.2 body drawers below
     clearInstrumentsPanel()
     drawInstrumentsListColumn()
     drawInstrumentsSeparator()
@@ -4429,6 +4580,25 @@ function registerInstrumentsMouse() {
             const n = instrumentsCache ? instrumentsCache.length : 0
             const slot = (n > 0) ? instrumentsCache[instListCursor].slot : -1
             requestEditorLaunch('taut_instredit', [fullPathObj.full, VIEW_INSTRMNT, slot])
+        }
+    })
+    // Slider body (Gen.1 / Gen.2): one region that hit-tests the live instSliders
+    // list. Click/drag the matched knob until mouse release; wheel nudges by ±1
+    // (wheel up = +1) and commits each notch for fine control.
+    addPanelMouseRegion(INST_RIGHT_X, INST_BODY_Y, INST_RIGHT_W, INST_BODY_H, {
+        onClick: (cy, cx, btn, ev) => {
+            if (btn !== 1) return
+            const s = sliderAt(cy, cx)
+            if (s) runSliderDrag(s, ev)
+        },
+        onWheel: (cy, cx, dy) => {
+            const s = sliderAt(cy, cx)
+            if (!s) return
+            const nv = Math.max(s.min, Math.min(s.max, s.val + (dy < 0 ? 1 : -1)))
+            if (nv === s.val) return
+            s.val = nv
+            s.render(nv)
+            s.commit(nv)
         }
     })
 }

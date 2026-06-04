@@ -2218,7 +2218,7 @@ from source.
         * FastTracker2 has instrumentwise config (0..255)
         * The spec follows FastTracker2, and conversion must be performed when importing from FastTracker2
 176 Uint8  Vibrato sweep
-        * FastTracker2 instrument config
+        * FastTracker2 instrument config (0..255)
 177 Uint8  Default pan value (0..255 full range, see offset 17 for the enable flag)
         * ImpulseTracker has samplewise default pan and instrumentwise default pan, and they must be taken into account because Taud has no samplewise config
 178 Uint16 Pitch-pan centre (4096-TET note value)
@@ -2226,7 +2226,7 @@ from source.
 181 Uint8  Pan swing (0..255 full range)
 182 Uint8  Default cutoff (0..254 full range, 255 to off (-1 on IT). Effect range equals to that of ImpulseTracker -- 127 in IT is equal to 254 in Taud)
 183 Uint8  Default resonance (0..254 full range, 255 to off (-1 on IT). Effect range equals to that of ImpulseTracker -- 127 in IT is equal to 254 in Taud)
-184 Uint16 Sample detune (in 4096-TET unit) (FT2 finetune scale need to be rescaled accordingly)
+184 Sint16 Sample detune (in 4096-TET unit) (FT2 finetune scale need to be rescaled accordingly)
 186 Bit8   Instrument Flag
         0b 000 www nn
             n: New note action. 00: note off, 01: note cut, 10: continue, 11: note fade (arranged differently to IT)
