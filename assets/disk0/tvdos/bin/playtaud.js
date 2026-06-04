@@ -849,9 +849,12 @@ function drawEventLead(ev, stage, volFrac, livePan, liveNote) {
                     : stage === STAGE_RELEASE ? 0xF9 /*·*/
                                               : 0xC4 /*─*/
     for (let i = 1; i <= tailLen; i++) {
-        const x = cx - i
-        if (x >= COL_INSIDE_L && x <= COL_INSIDE_R)
-            mvprn(y, x, trailChar)
+        const xl = cx - i
+        if (xl >= COL_INSIDE_L && xl <= COL_INSIDE_R)
+            mvprn(y, xl, trailChar)
+        const xr = cx + i
+        if (xr >= COL_INSIDE_L && xr <= COL_INSIDE_R)
+            mvprn(y, xr, trailChar)
     }
     const head = stage === STAGE_ATTACK ? 0xFE /*■*/
                : stage === STAGE_RELEASE ? 0x09 /*°*/
