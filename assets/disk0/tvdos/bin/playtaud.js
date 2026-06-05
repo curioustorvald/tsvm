@@ -744,12 +744,15 @@ function spawnEventsForRow(cueIdx, rowIdx) {
 //   Fs:eeee   effect          (s = base-36 opcode symbol, eeee = 4-hex argument)
 //
 // Tokens flow left-to-right and wrap at the canvas edge; when the print head
-// runs off the bottom it rolls back to the top, and a cue change resets it to
-// the top too.  Column wrapping only ever breaks between a token's three 2-char
-// atoms AA / bb / cc — never mid-atom — and a colon that would land at a line
-// edge is dropped, so a line never starts or ends with ':' (it may start with a
-// single separator space).  Each freshly printed cell is brightest and decays
-// one palette step per row, trailing a comet tail behind the head.
+// runs off the bottom the whole matrix scrolls up one row so the head stays on
+// the bottom line — the oldest line rolls off the top, like a terminal.  A cue
+// change instead wraps the print head straight back to the top, so each cue
+// opens a fresh page over the ageing tail of the last.  Column
+// wrapping only ever breaks between a token's three 2-char atoms AA / bb / cc —
+// never mid-atom — and a colon that would land at a line edge is dropped, so a
+// line never starts or ends with ':' (it may start with a single separator
+// space).  Each freshly printed cell is brightest and decays one palette step
+// per row, trailing a comet tail behind the head.
 const BG_TOP   = ROW_TONAL_TOP          // matrix shares the whole visuals canvas
 const BG_BOT   = ROW_DRUMS_BOT
 const BG_ROWS  = BG_BOT - BG_TOP + 1
@@ -758,8 +761,8 @@ const BG_COLS  = LANE_W
 const BG_BLANK = ' '.repeat(BG_COLS)
 
 // Palette runs dim → bright per the spec; fresh text takes the bright end.
-const BG_PALETTE = [97,243,242,242,241,241,241]  // index 0 = freshest .. last = oldest
-const BG_LIFE    = 48 // rows a cell stays lit before going dark
+const BG_PALETTE = [244,243,242,241]  // index 0 = freshest .. last = oldest
+const BG_LIFE    = 32 // rows a cell stays lit before going dark
 
 const bgChar = new Uint8Array(BG_ROWS * BG_COLS)
 const bgLvl  = new Int8Array(BG_ROWS * BG_COLS)   // 0 = dark, BG_LIFE = freshest
@@ -800,7 +803,25 @@ for (let lvl = 1; lvl < BG_LIFE; lvl++) {
 
 let bgHeadR = 0, bgHeadC = 0
 
-function bgNewline() { bgHeadR = (bgHeadR + 1) % BG_ROWS; bgHeadC = 0 }
+// Scroll the whole matrix up one row: every row inherits the one below it, the
+// top line rolls off, and the freed bottom line is cleared.  Levels and dither
+// travel with their cells, so the comet tail stays intact and the decay reads
+// as a continuous upward drift rather than a wrap-around jump.
+function bgScrollUp() {
+    bgChar.copyWithin(0, BG_COLS)
+    bgLvl.copyWithin(0, BG_COLS)
+    bgDith.copyWithin(0, BG_COLS)
+    const last = (BG_ROWS - 1) * BG_COLS
+    bgChar.fill(0, last)
+    bgLvl.fill(0, last)
+    bgDith.fill(0, last)
+}
+
+function bgNewline() {
+    if (bgHeadR + 1 >= BG_ROWS) bgScrollUp()   // at the bottom: scroll instead of wrapping to the top
+    else bgHeadR++
+    bgHeadC = 0
+}
 
 function bgPut(code) {                   // single glue char; caller guarantees room
     const idx = bgHeadR * BG_COLS + bgHeadC
@@ -835,8 +856,9 @@ function bgEmitToken(prefix2, val4) {
 }
 
 // Advance the matrix by one tracker row: decay every lit cell one step, then
-// stream the pseudo-opcodes for whatever the row's cells carry.  A cue change
-// rolls the print head back to the top first.
+// stream the pseudo-opcodes for whatever the row's cells carry.  Within a cue
+// the head marches down and the matrix scrolls under it (see bgNewline); a cue
+// change wraps the head back to the top to open a fresh page.
 function bgAdvanceRow(cueIdx, rowIdx, cueChanged) {
     for (let i = 0; i < bgLvl.length; i++) {
         if (bgLvl[i] > 0) bgLvl[i]--
@@ -1161,7 +1183,8 @@ try {
         const curRow = audio.getTrackerRow(0)
         if (curCue !== lastSeenCue || curRow !== lastSeenRow) {
             // Row boundary — spawn new events, advance the matrix background
-            // (a cue change rolls its print head to the top), reset tick count.
+            // (scrolls within a cue, wraps to the top on a cue change), reset
+            // tick count.
             spawnEventsForRow(curCue, curRow)
             bgAdvanceRow(curCue, curRow, curCue !== lastSeenCue)
             lastSeenCue = curCue
