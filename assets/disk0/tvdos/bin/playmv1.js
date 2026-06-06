@@ -97,10 +97,14 @@ let startTime = sys.nanoTime()
 let framesRead = 0
 let audioFired = false
 
-audio.resetParams(0)
-audio.purgeQueue(0)
-audio.setPcmMode(0)
-audio.setMasterVolume(0, 255)
+// Occupy the first idle playhead rather than always grabbing #0, so playback
+// doesn't cut off audio already running on another playhead. Falls back to #0
+// when all four are busy.
+const PLAYHEAD = audio.getFreePlayhead(0)
+audio.resetParams(PLAYHEAD)
+audio.purgeQueue(PLAYHEAD)
+audio.setPcmMode(PLAYHEAD)
+audio.setMasterVolume(PLAYHEAD, 255)
 
 function s16StTou8St(inPtrL, inPtrR, outPtr, length) {
     for (let k = 0; k < length; k+=2) {
@@ -204,7 +208,7 @@ while (!stopPlay && seqread.getReadCount() < FILE_LENGTH) {
 
                             // defer audio playback until a first frame is sent
                             if (!audioFired) {
-                                audio.play(0)
+                                audio.play(PLAYHEAD)
                                 audioFired = true
                             }
 
@@ -263,7 +267,7 @@ while (!stopPlay && seqread.getReadCount() < FILE_LENGTH) {
 
                             // defer audio playback until a first frame is sent
                             if (!audioFired) {
-                                audio.play(0)
+                                audio.play(PLAYHEAD)
                                 audioFired = true
                             }
 
@@ -326,9 +330,9 @@ while (!stopPlay && seqread.getReadCount() < FILE_LENGTH) {
                     // RAW PCM packets (decode on the fly)
                     else if (packetType == 0x1000 || packetType == 0x1001) {
                         let frame = seqread.readBytes(readLength)
-                        audio.putPcmDataByPtr(0, frame, readLength, 0)
-                        audio.setSampleUploadLength(0, readLength)
-                        audio.startSampleUpload(0)
+                        audio.putPcmDataByPtr(PLAYHEAD, frame, readLength, 0)
+                        audio.setSampleUploadLength(PLAYHEAD, readLength)
+                        audio.startSampleUpload(PLAYHEAD)
                         sys.free(frame)
                     }
                     else {
@@ -382,14 +386,14 @@ finally {
     if (AUDIO_QUEUE_BYTES > 0 && AUDIO_QUEUE_LENGTH > 1) {
 
     }
-    //audio.stop(0)
+    //audio.stop(PLAYHEAD)
 
     let timeTook = (endTime - startTime) / 1000000000.0
 
     //println(`Actual FPS: ${framesRendered / timeTook}`)
 
-    audio.stop(0)
-    audio.purgeQueue(0)
+    audio.stop(PLAYHEAD)
+    audio.purgeQueue(PLAYHEAD)
 
     if (interactive) {
         con.clear()

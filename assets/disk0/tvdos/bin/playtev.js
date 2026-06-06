@@ -100,10 +100,14 @@ graphics.clearPixels(0)
 graphics.clearPixels2(0)
 
 // Initialize audio
-audio.resetParams(0)
-audio.purgeQueue(0)
-audio.setPcmMode(0)
-audio.setMasterVolume(0, 255)
+// Occupy the first idle playhead rather than always grabbing #0, so playback
+// doesn't cut off audio already running on another playhead. Falls back to #0
+// when all four are busy.
+const PLAYHEAD = audio.getFreePlayhead(0)
+audio.resetParams(PLAYHEAD)
+audio.purgeQueue(PLAYHEAD)
+audio.setPcmMode(PLAYHEAD)
+audio.setMasterVolume(PLAYHEAD, 255)
 
 // set colour zero as half-opaque black
 graphics.setPalette(0, 0, 0, 0, 9)
@@ -791,14 +795,14 @@ try {
                     if (isInterlaced) {
                         // fire audio after frame 1
                         if (!audioFired && frameCount > 0) {
-                            audio.play(0)
+                            audio.play(PLAYHEAD)
                             audioFired = true
                         }
                     }
                     else {
                         // fire audio after frame 0
                         if (!audioFired) {
-                            audio.play(0)
+                            audio.play(PLAYHEAD)
                             audioFired = true
                         }
                     }
@@ -900,8 +904,8 @@ finally {
     if (PREV_FIELD_BUFFER > 0) sys.free(PREV_FIELD_BUFFER)
     if (NEXT_FIELD_BUFFER > 0) sys.free(NEXT_FIELD_BUFFER)
 
-    audio.stop(0)
-    audio.purgeQueue(0)
+    audio.stop(PLAYHEAD)
+    audio.purgeQueue(PLAYHEAD)
 
     if (interactive) {
         //con.clear()

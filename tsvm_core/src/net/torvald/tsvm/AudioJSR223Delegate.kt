@@ -67,6 +67,17 @@ class AudioJSR223Delegate(private val vm: VM) {
     fun stop(playhead: Int) { getPlayhead(playhead)?.isPlaying = false }
     fun isPlaying(playhead: Int) = getPlayhead(playhead)?.isPlaying
 
+    /** Lowest-numbered playhead that is not currently playing, so a player app can
+     *  "occupy" an idle playhead instead of always clobbering playhead 0. Returns
+     *  [fallback] when every playhead is busy (or no audio device is present). */
+    fun getFreePlayhead(fallback: Int): Int {
+        val playheads = getFirstSnd()?.playheads ?: return fallback
+        for (i in playheads.indices) {
+            if (!playheads[i].isPlaying) return i
+        }
+        return fallback
+    }
+
 //    fun setPosition(playhead: Int, pos: Int) { getPlayhead(playhead)?.position = pos and 65535 }
     fun getPosition(playhead: Int) = getPlayhead(playhead)?.position
 

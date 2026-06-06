@@ -1162,6 +1162,7 @@ This guide deliberately stops at that overview. The Taud file format, the instru
 \1\formalsynopsis{play}{playhead: Int}{Starts the playhead.}
 \1\formalsynopsis{stop}{playhead: Int}{Stops the playhead.}
 \1\formalsynopsis{isPlaying}{playhead: Int}[Boolean]{Whether the playhead is currently playing.}
+\1\formalsynopsis{getFreePlayhead}{fallback: Int}[Int]{Returns the lowest-numbered playhead that is not currently playing.}
 \1\formalsynopsis{getPosition}{playhead: Int}[Int]{Current playback position of the playhead.}
 \1\formalsynopsis{setMasterVolume}{playhead: Int, volume: Int}{Sets the playhead's output volume.}
 \1\formalsynopsis{setMasterPan}{playhead: Int, pan: Int}{Sets the playhead's stereo pan.}

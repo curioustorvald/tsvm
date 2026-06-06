@@ -5241,7 +5241,10 @@ const panels = [panelTimeline, panelOrders, panelPatterns, panelSamples, panelIn
 // PLAYBACK STATE
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-const PLAYHEAD = 0
+// Occupy the first idle playhead rather than always grabbing #0, so launching
+// taut doesn't cut off music already playing on another playhead. Falls back to
+// #0 when all four are busy.
+const PLAYHEAD = audio.getFreePlayhead(0)
 
 // Scratch cue slot used for pattern-only preview; beyond any real cue the song uses
 const PREVIEW_CUE_IDX = NUM_CUES - 1

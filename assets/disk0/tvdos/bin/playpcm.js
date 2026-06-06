@@ -23,10 +23,14 @@ function bytesToSec(i) { return i / byterate }
 seqread.prepare(filePath)
 
 const readPtr = sys.malloc(BLOCK_SIZE)
-audio.resetParams(0)
-audio.purgeQueue(0)
-audio.setPcmMode(0)
-audio.setMasterVolume(0, 255)
+// Occupy the first idle playhead rather than always grabbing #0, so playback
+// doesn't cut off audio already running on another playhead. Falls back to #0
+// when all four are busy.
+const PLAYHEAD = audio.getFreePlayhead(0)
+audio.resetParams(PLAYHEAD)
+audio.purgeQueue(PLAYHEAD)
+audio.setPcmMode(PLAYHEAD)
+audio.setMasterVolume(PLAYHEAD, 255)
 
 if (interactive) {
     gui.audioInit({
@@ -42,7 +46,7 @@ try {
     while (!stopPlay && seqread.getReadCount() < FILE_SIZE && readLength > 0) {
         if (interactive && gui.audioIsExitRequested()) { stopPlay = true; break }
 
-        const queueSize = audio.getPosition(0)
+        const queueSize = audio.getPosition(PLAYHEAD)
         if (queueSize <= 1) {
             for (let repeat = QUEUE_MAX - queueSize; repeat > 0; repeat--) {
                 const remainingBytes = FILE_SIZE - seqread.getReadCount()
@@ -54,13 +58,13 @@ try {
                 // Raw PCMu8 stereo — sampleCount = bytes / 2.
                 if (interactive) gui.audioFeedPcm(readPtr, readLength >> 1)
 
-                audio.putPcmDataByPtr(0, readPtr, readLength, 0)
-                audio.setSampleUploadLength(0, readLength)
-                audio.startSampleUpload(0)
+                audio.putPcmDataByPtr(PLAYHEAD, readPtr, readLength, 0)
+                audio.setSampleUploadLength(PLAYHEAD, readLength)
+                audio.startSampleUpload(PLAYHEAD)
 
                 if (repeat > 1) sys.sleep(10)
             }
-            audio.play(0)
+            audio.play(PLAYHEAD)
         }
 
         if (interactive) {

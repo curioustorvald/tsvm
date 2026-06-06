@@ -131,16 +131,20 @@ try {
             readPtr   = sys.malloc(pcmType === 2 ? BLOCK_SIZE : BLOCK_SIZE * bitsPerSample / 8)
             decodePtr = sys.malloc(BLOCK_SIZE * pcm.HW_SAMPLING_RATE / samplingRate)
 
-            audio.resetParams(0)
-            audio.purgeQueue(0)
-            audio.setPcmMode(0)
-            audio.setMasterVolume(0, 255)
+            // Occupy the first idle playhead rather than always grabbing #0, so
+            // playback doesn't cut off audio already running on another playhead.
+            // Falls back to #0 when all four are busy.
+            const PLAYHEAD = audio.getFreePlayhead(0)
+            audio.resetParams(PLAYHEAD)
+            audio.purgeQueue(PLAYHEAD)
+            audio.setPcmMode(PLAYHEAD)
+            audio.setMasterVolume(PLAYHEAD, 255)
 
             let readLength = 1
             while (!stopPlay && seqread.getReadCount() < startOffset + chunkSize && readLength > 0) {
                 if (interactive && gui.audioIsExitRequested()) { stopPlay = true; break }
 
-                if (audio.getPosition(0) <= 1) {
+                if (audio.getPosition(PLAYHEAD) <= 1) {
                     for (let repeat = 0; repeat < QUEUE_MAX; repeat++) {
                         const remainingBytes = FILE_SIZE - 8 - seqread.getReadCount()
                         readLength = (remainingBytes < INFILE_BLOCK_SIZE) ? remainingBytes : INFILE_BLOCK_SIZE
@@ -153,13 +157,13 @@ try {
                         // before queueing — the buffer is reused next iteration.
                         if (interactive) gui.audioFeedPcm(decodePtr, decodedSampleLength >> 1)
 
-                        audio.putPcmDataByPtr(0, decodePtr, decodedSampleLength, 0)
-                        audio.setSampleUploadLength(0, decodedSampleLength)
-                        audio.startSampleUpload(0)
+                        audio.putPcmDataByPtr(PLAYHEAD, decodePtr, decodedSampleLength, 0)
+                        audio.setSampleUploadLength(PLAYHEAD, decodedSampleLength)
+                        audio.startSampleUpload(PLAYHEAD)
 
                         sys.spin()
                     }
-                    audio.play(0)
+                    audio.play(PLAYHEAD)
                 }
 
                 if (interactive) {

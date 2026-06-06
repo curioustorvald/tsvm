@@ -57,13 +57,17 @@ let decodedLength = 0
 
 const bufRealTimeLen = 36   // one MP2 frame at 32 kHz ≈ 36 ms
 
-audio.resetParams(0)
-audio.purgeQueue(0)
-audio.setPcmMode(0)
-audio.setPcmQueueCapacityIndex(0, 2)
-const QUEUE_MAX = audio.getPcmQueueCapacity(0)
-audio.setMasterVolume(0, 255)
-audio.play(0)
+// Occupy the first idle playhead rather than always grabbing #0, so playback
+// doesn't cut off audio already running on another playhead. Falls back to #0
+// when all four are busy.
+const PLAYHEAD = audio.getFreePlayhead(0)
+audio.resetParams(PLAYHEAD)
+audio.purgeQueue(PLAYHEAD)
+audio.setPcmMode(PLAYHEAD)
+audio.setPcmQueueCapacityIndex(PLAYHEAD, 2)
+const QUEUE_MAX = audio.getPcmQueueCapacity(PLAYHEAD)
+audio.setMasterVolume(PLAYHEAD, 255)
+audio.play(PLAYHEAD)
 audio.mp2Init()
 
 function bytesToSec(i) { return i / (FRAME_SIZE * 1000 / bufRealTimeLen) }
@@ -91,8 +95,8 @@ try {
             gui.audioFeedPcm(mp2VisScratch, MP2_VIS_SAMPLE_COUNT)
         }
 
-        if (audio.getPosition(0) >= QUEUE_MAX) {
-            while (audio.getPosition(0) >= (QUEUE_MAX >>> 1)) {
+        if (audio.getPosition(PLAYHEAD) >= QUEUE_MAX) {
+            while (audio.getPosition(PLAYHEAD) >= (QUEUE_MAX >>> 1)) {
                 if (interactive) gui.audioRender()
                 sys.sleep(bufRealTimeLen)
             }

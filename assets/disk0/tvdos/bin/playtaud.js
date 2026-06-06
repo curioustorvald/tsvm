@@ -304,9 +304,13 @@ function parseTaud(path, songIndex) {
 const song = parseTaud(filePath, songArg)
 
 // ── Hand the file to the audio adapter ─────────────────────────────────────
-audio.resetParams(0)
-audio.purgeQueue(0)
-taud.uploadTaudFile(filePath, songArg, 0)
+// Occupy the first idle playhead rather than always grabbing #0, so launching
+// playtaud doesn't cut off music already playing on another playhead. Falls
+// back to #0 when all four are busy.
+const PLAYHEAD = audio.getFreePlayhead(0)
+audio.resetParams(PLAYHEAD)
+audio.purgeQueue(PLAYHEAD)
+taud.uploadTaudFile(filePath, songArg, PLAYHEAD)
 
 // ── Instrument archetype classification ─────────────────────────────────────
 //
@@ -565,8 +569,8 @@ function pad(n, w) {
 
 let lastStatus = ''
 function drawStatus(curCue) {
-    const bpm  = audio.getBPM(0) || song.bpm
-    const tick = audio.getTickRate(0) || song.tickRate
+    const bpm  = audio.getBPM(PLAYHEAD) || song.bpm
+    const tick = audio.getTickRate(PLAYHEAD) || song.tickRate
     const cueStr = pad(curCue, 3) + '/' + pad(song.lastCue, 3)
     const s = 'BPM ' + pad(bpm,3) + '  Tick ' + pad(tick,2) +
               '  Voices ' + pad(song.numVoices,2) + '  Cue ' + cueStr
@@ -714,7 +718,7 @@ function spawnEventsForRow(cueIdx, rowIdx) {
         const arch = archByInst[effInst]
         let pan = 128
         if (panSel === 0) pan = (panVal / 63 * 255) | 0
-        const livePan = audio.getVoiceEffectivePan(0, v)
+        const livePan = audio.getVoiceEffectivePan(PLAYHEAD, v)
         if (typeof livePan === 'number' && livePan !== 128) pan = livePan
         // Replace whatever was in voice v's slot.  peakVol seeds at 0 and is
         // tracked per-frame so the colour ramp normalises by attack peak,
@@ -1058,11 +1062,11 @@ function renderEvents() {
         // The engine's `active` flag is the source of truth — set by note-on,
         // cleared by note-cut, sample-end, envelope-end-of-decay, or NNA cut.
         // Once it drops, the voice is genuinely silent so the visual goes too.
-        if (!audio.getVoiceActive(0, v)) { events[v] = null; continue }
+        if (!audio.getVoiceActive(PLAYHEAD, v)) { events[v] = null; continue }
 
-        const liveVol  = audio.getVoiceEffectiveVolume(0, v) || 0
-        const livePan  = audio.getVoiceEffectivePan(0, v)
-        const liveNote = audio.getVoiceNote(0, v)
+        const liveVol  = audio.getVoiceEffectiveVolume(PLAYHEAD, v) || 0
+        const livePan  = audio.getVoiceEffectivePan(PLAYHEAD, v)
+        const liveNote = audio.getVoiceNote(PLAYHEAD, v)
 
         if (liveVol > ev.peakVol) ev.peakVol = liveVol
         ev.ageFrames++
@@ -1094,10 +1098,10 @@ function drawStereo() {
     const W = LANE_W
     const bins = new Float32Array(W)
     for (let v = 0; v < song.numVoices; v++) {
-        if (!audio.getVoiceActive(0, v)) continue
-        const vol = Math.pow(audio.getVoiceEffectiveVolume(0, v) || 0, 0.125)
+        if (!audio.getVoiceActive(PLAYHEAD, v)) continue
+        const vol = Math.pow(audio.getVoiceEffectiveVolume(PLAYHEAD, v) || 0, 0.125)
         if (vol <= 0) continue
-        const pan = audio.getVoiceEffectivePan(0, v)
+        const pan = audio.getVoiceEffectivePan(PLAYHEAD, v)
         let col = Math.round((pan / 255) * (W - 1))
         if (col < 0) col = 0
         if (col >= W) col = W - 1
@@ -1143,7 +1147,7 @@ function drawTickLights(tickInRow, tickRate) {
     // Voice activity counter on the right.
     let nActive = 0
     for (let v = 0; v < song.numVoices; v++) {
-        if (audio.getVoiceActive(0, v)) nActive++
+        if (audio.getVoiceActive(PLAYHEAD, v)) nActive++
     }
     colour(COL_DIM, COL_BG)
     const s = 'ACTIVE ' + pad(nActive, 2) + '/' + pad(song.numVoices, 2)
@@ -1157,10 +1161,10 @@ drawStatus(0)
 drawOrderStrip(0)
 
 // ── Playback ────────────────────────────────────────────────────────────────
-audio.setCuePosition(0, 0)
-audio.setTrackerRow(0, 0)
-audio.setMasterVolume(0, 255)
-audio.play(0)
+audio.setCuePosition(PLAYHEAD, 0)
+audio.setTrackerRow(PLAYHEAD, 0)
+audio.setMasterVolume(PLAYHEAD, 255)
+audio.play(PLAYHEAD)
 
 let stopReq = false
 let errorlevel = 0
@@ -1174,13 +1178,13 @@ let errorlevel = 0
 let ticksPerRow = Math.max(1, song.tickRate)
 let synthTick = 0 // tick within current row, 0..ticksPerRow-1
 try {
-    while (audio.isPlaying(0) && !stopReq) {
+    while (audio.isPlaying(PLAYHEAD) && !stopReq) {
         // Backspace polling (mirrors playtad).
         sys.poke(-40, 1)
         if (sys.peek(-41) === 67) stopReq = true
 
-        const curCue = audio.getCuePosition(0)
-        const curRow = audio.getTrackerRow(0)
+        const curCue = audio.getCuePosition(PLAYHEAD)
+        const curRow = audio.getTrackerRow(PLAYHEAD)
         if (curCue !== lastSeenCue || curRow !== lastSeenRow) {
             // Row boundary — spawn new events, advance the matrix background
             // (scrolls within a cue, wraps to the top on a cue change), reset
@@ -1192,7 +1196,7 @@ try {
             synthTick = 0
             // Pull a fresh tickRate read here in case a T effect changed it
             // mid-song.
-            ticksPerRow = Math.max(1, audio.getTickRate(0) || song.tickRate)
+            ticksPerRow = Math.max(1, audio.getTickRate(PLAYHEAD) || song.tickRate)
         } else {
             // Same row — advance the synthetic tick counter against wall time.
             // Tick period (ms) = (60000 / BPM) / 24 ... but the spec is
@@ -1212,7 +1216,7 @@ try {
         drawStereo()
         drawTickLights(synthTick, ticksPerRow)
 
-        sys.sleep((2500 / audio.getBPM(0))|0) // one visual frame = one tick
+        sys.sleep((2500 / audio.getBPM(PLAYHEAD))|0) // one visual frame = one tick
     }
 }
 catch (e) {
@@ -1220,7 +1224,7 @@ catch (e) {
     errorlevel = 1
 }
 finally {
-    audio.stop(0)
+    audio.stop(PLAYHEAD)
     con.move(ROW_BOT_BORDER + 1, 1)
     con.curs_set(1)
 }

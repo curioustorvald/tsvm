@@ -109,13 +109,17 @@ function bytesToSec(i) {
     return Math.round((i / FILE_SIZE) * (FILE_SIZE / AVG_CHUNK_SIZE) * (bufRealTimeLen / 1000))
 }
 
-audio.resetParams(0)
-audio.purgeQueue(0)
-audio.setPcmMode(0)
-audio.setPcmQueueCapacityIndex(0, 2)
-const QUEUE_MAX = audio.getPcmQueueCapacity(0)
-audio.setMasterVolume(0, 255)
-audio.play(0)
+// Occupy the first idle playhead rather than always grabbing #0, so playback
+// doesn't cut off audio already running on another playhead. Falls back to #0
+// when all four are busy.
+const PLAYHEAD = audio.getFreePlayhead(0)
+audio.resetParams(PLAYHEAD)
+audio.purgeQueue(PLAYHEAD)
+audio.setPcmMode(PLAYHEAD)
+audio.setPcmQueueCapacityIndex(PLAYHEAD, 2)
+const QUEUE_MAX = audio.getPcmQueueCapacity(PLAYHEAD)
+audio.setMasterVolume(PLAYHEAD, 255)
+audio.play(PLAYHEAD)
 
 if (interactive) {
     gui.audioInit({
@@ -163,7 +167,7 @@ try {
         filebuf.readBytes(7 + payloadSize, TAD_INPUT_ADDR)
 
         audio.tadDecode()
-        audio.tadUploadDecoded(0, sampleCount)
+        audio.tadUploadDecoded(PLAYHEAD, sampleCount)
         // After upload tadDecodedBin still holds the chunk until the next
         // tadDecode call, so it's safe to keep slicing samples out of it
         // during the playback wait below.
