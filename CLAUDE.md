@@ -445,7 +445,7 @@ Implemented entirely in JS — **no tsvm_core changes**.
 
 ### Architecture
 
-- **Dispatcher**: `assets/disk0/tvdos/sbin/vtmgr.js`. Launched directly by the
+- **Dispatcher**: `assets/disk0/tvdos/VTMGR.SYS`. Launched directly by the
   `TVDOS.SYS` boot block (only when `!_TVDOS_IS_VT_PANE`); when it exits (Alt-0)
   the boot block runs `AUTOEXEC.BAT` as the bare fallback shell. Owns the
   physical keyboard and screen. Each VT runs in its own GraalVM context/thread
@@ -525,7 +525,7 @@ arithmetic (no regression outside vtmgr). Applied so far in
 
 ### Files
 
-- New: `assets/disk0/tvdos/sbin/vtmgr.js` (dispatcher + per-pane bootstrap)
+- New: `assets/disk0/tvdos/VTMGR.SYS` (dispatcher + per-pane bootstrap)
 - `assets/disk0/tvdos/bin/command.js`: `chvt` builtin, `[N]` prompt prefix for
   VT 2-6, `shell.stdio.out` → `__VT_OUT` delegation
 - `assets/disk0/tvdos/TVDOS.SYS`: boot block runs `\commandrc` (env) in every

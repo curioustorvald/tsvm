@@ -1501,7 +1501,7 @@ try {
         // Boot console: hand the screen to the virtual-console multiplexer.
         // When it exits (Alt-0), fall through to AUTOEXEC so the console is
         // never left bare.
-        runBatch("tvdos/sbin/vtmgr")
+        runBatch("tvdos/VTMGR.SYS")
         runBatch("\\AUTOEXEC.BAT")
     }
     else {
