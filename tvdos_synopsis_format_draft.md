@@ -1,8 +1,8 @@
-# TVDOS Synopses Format (TSF) Version 1.0 Draft
+# TVDOS Synopsis Format (TSF) Version 1.0 Draft
 
 ## 1. Scope
 
-The TVDOS Synopses Format (TSF) is a machine-readable command interface description language.
+The TVDOS Synopsis Format (TSF) is a machine-readable command interface description language.
 
 A TSF document describes:
 
@@ -15,6 +15,8 @@ A TSF document describes:
 * Validation constraints
 
 The key words **MUST**, **MUST NOT**, **REQUIRED**, **SHALL**, **SHALL NOT**, **SHOULD**, **SHOULD NOT**, **RECOMMENDED**, **NOT RECOMMENDED**, **MAY**, and **OPTIONAL** in this document are to be interpreted as described in [RFC 2119](https://www.rfc-editor.org/rfc/rfc2119) and [RFC 8174](https://www.rfc-editor.org/rfc/rfc8174) when, and only when, they appear in all capitals. Lowercase uses of these words carry their ordinary English meaning and impose no normative requirement.
+
+TSF lives next to the program, with the program's full filename plus a .synopsis extension. An app installed as `cp.js` in `\tvdos\bin` therefore ships alongside it as `\tvdos\bin\cp.js.synopsis`. 
 
 TSF MUST be valid JSON. A TSF document MUST be encoded such that its byte stream contains only ASCII characters: any character outside the ASCII range (U+0000–U+007F) MUST be represented using a JSON `\uXXXX` escape sequence rather than emitted as a literal multibyte character. Consumers MUST decode such escapes per the JSON specification.
 

@@ -1013,6 +1013,22 @@ function getAutocompleteWin() {
     return _acWin
 }
 
+// Lazily-resolved synopsis module (TSF loader/completion resolver). Held for
+// the whole session so its in-memory cache survives across keystrokes.
+// undefined = not probed yet, null = unavailable.
+let _acSyn = undefined
+function getSynopsisMod() {
+    if (_acSyn !== undefined) return _acSyn
+    _acSyn = null
+    try {
+        let m = require("synopsis") // resolved through INCLPATH (\tvdos\include\synopsis.mjs)
+        if (m && typeof m.getCompletion === "function") _acSyn = m
+    } catch (e) {
+        debugprintln("command.js > autocomplete: synopsis unavailable: " + e)
+    }
+    return _acSyn
+}
+
 // List a directory's entries, swallowing any IO error.
 function _acListDir(fullPath) {
     try {
@@ -1103,15 +1119,53 @@ function _acPathCandidates(word) {
     return out
 }
 
+// Candidates for an argument (not the command word). Consults the command's
+// TSF synopsis (via synopsis.mjs) for option flags, enum/list values and
+// subcommand names, and merges in filesystem entries when the synopsis says the
+// slot expects a path/file/directory. Falls back to plain path completion when
+// no synopsis exists, so behaviour is unchanged for commands without one.
+function _acArgCandidates(prefix, word) {
+    let syn = getSynopsisMod()
+    if (syn) {
+        try {
+            let toks = prefix.trim().split(/\s+/)
+            let cmd = toks[0]
+            let argToks = toks.slice(1)
+            let r = syn.getCompletion(cmd, argToks, word)
+            if (r && r.ok) {
+                let out = (r.candidates || []).slice()
+                if (r.filesystem) {
+                    _acPathCandidates(word).forEach(function(c) {
+                        if (r.filesystem === 'directory' && !c.isDir) return // dirs only
+                        out.push(c)
+                    })
+                }
+                // de-dupe by the text that would be inserted
+                let seen = {}, dedup = []
+                out.forEach(function(c) { if (seen[c.value]) return; seen[c.value] = true; dedup.push(c) })
+                return dedup
+            }
+        } catch (e) {
+            debugprintln("command.js > _acArgCandidates: " + e)
+        }
+    }
+    return _acPathCandidates(word)
+}
+
 // Work out what is being completed at `caret` within `line`.
 // Returns { wordStart, word, candidates } (candidates sorted by label).
 function computeCompletion(line, caret) {
     let wordStart = caret
     while (wordStart > 0 && line.charAt(wordStart - 1) !== ' ') wordStart -= 1
     let word = line.substring(wordStart, caret)
-    let isFirstWord = (line.substring(0, wordStart).trim().length === 0)
+    let prefix = line.substring(0, wordStart)
+    let isFirstWord = (prefix.trim().length === 0)
     let hasPathSep = (word.indexOf('\\') >= 0 || word.indexOf('/') >= 0 || word.indexOf(':') >= 0)
-    let candidates = (isFirstWord && !hasPathSep) ? _acCommandCandidates(word) : _acPathCandidates(word)
+    let candidates
+    if (isFirstWord)
+        candidates = hasPathSep ? _acPathCandidates(word) : _acCommandCandidates(word)
+    else
+        candidates = _acArgCandidates(prefix, word)
     candidates.sort(function(a, b) { return (a.label < b.label) ? -1 : (a.label > b.label) ? 1 : 0 })
     return { wordStart: wordStart, word: word, candidates: candidates }
 }

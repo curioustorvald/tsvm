@@ -1,0 +1,12 @@
+{
+  "tsfVersion": "1.0",
+  "name": "hexdump",
+  "summary": "Print a file as a hexadecimal dump",
+  "symbols": {
+    "file": { "kind": "positional", "type": "file", "name": "FILE", "summary": "File to dump; reads from the pipe when omitted" }
+  },
+  "synopsis": {
+    "type": "optional",
+    "child": { "type": "reference", "symbol": "file" }
+  }
+}

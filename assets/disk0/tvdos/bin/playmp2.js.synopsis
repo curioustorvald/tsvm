@@ -1,0 +1,17 @@
+{
+  "tsfVersion": "1.0",
+  "name": "playmp2",
+  "summary": "Play an MP2 audio file",
+  "symbols": {
+    "interactive": { "kind": "option", "short": "-i", "summary": "Interactive mode (visualiser)" },
+    "options":     { "kind": "group", "summary": "Options", "members": ["interactive"] },
+    "file":        { "kind": "positional", "type": "file", "name": "FILE", "summary": "MP2 file to play" }
+  },
+  "synopsis": {
+    "type": "sequence",
+    "children": [
+      { "type": "reference", "symbol": "file" },
+      { "type": "repeat", "child": { "type": "reference", "symbol": "options" } }
+    ]
+  }
+}

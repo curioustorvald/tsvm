@@ -1,0 +1,34 @@
+{
+  "tsfVersion": "1.0",
+  "name": "lfs",
+  "summary": "Create, extract or list a Linear File Strip (.lfs) archive",
+  "description": "Bundles a directory tree into a single TVDOS Linear File Strip archive, or unpacks one. Exactly one mode must be given: -c creates ARCHIVE from PATH, -x extracts ARCHIVE into PATH, and -t lists the files in ARCHIVE (PATH is not used). Individual files are stored uncompressed; gzip the whole .lfs to compress it.",
+  "symbols": {
+    "create":   { "kind": "option", "short": "-c", "summary": "Create an archive from a directory" },
+    "extract":  { "kind": "option", "short": "-x", "summary": "Extract an archive into a directory" },
+    "list":     { "kind": "option", "short": "-t", "summary": "List the files stored in an archive" },
+    "relative": { "kind": "option", "short": "-r", "summary": "Store paths relative to the source directory (with -c)" },
+    "archive":  { "kind": "positional", "type": "file", "name": "ARCHIVE", "summary": "The .lfs archive file" },
+    "path":     { "kind": "positional", "type": "directory", "name": "PATH", "summary": "Source directory (-c) or destination directory (-x); unused for -t" }
+  },
+  "synopsis": {
+    "type": "sequence",
+    "children": [
+      {
+        "type": "choice",
+        "children": [
+          { "type": "reference", "symbol": "create" },
+          { "type": "reference", "symbol": "extract" },
+          { "type": "reference", "symbol": "list" }
+        ]
+      },
+      { "type": "optional", "child": { "type": "reference", "symbol": "relative" } },
+      { "type": "reference", "symbol": "archive" },
+      { "type": "optional", "child": { "type": "reference", "symbol": "path" } }
+    ]
+  },
+  "constraints": [
+    { "type": "cardinality", "symbols": ["create", "extract", "list"], "minimum": 1, "maximum": 1 },
+    { "type": "requires", "subject": "relative", "targets": ["create"] }
+  ]
+}

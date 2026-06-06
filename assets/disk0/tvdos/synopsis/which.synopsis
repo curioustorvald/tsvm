@@ -1,0 +1,9 @@
+{
+  "tsfVersion": "1.0",
+  "name": "which",
+  "summary": "Report how a command name resolves",
+  "symbols": {
+    "program": { "kind": "positional", "type": "command", "name": "PROGRAM", "summary": "Command name to resolve" }
+  },
+  "synopsis": { "type": "reference", "symbol": "program" }
+}

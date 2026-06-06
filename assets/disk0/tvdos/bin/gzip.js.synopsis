@@ -1,0 +1,18 @@
+{
+  "tsfVersion": "1.0",
+  "name": "gzip",
+  "summary": "Compress or decompress a file (Zstd-backed)",
+  "symbols": {
+    "decompress": { "kind": "option", "short": "-d", "summary": "Decompress instead of compress" },
+    "stdout":     { "kind": "option", "short": "-c", "summary": "Write to the pipe instead of a file" },
+    "options":    { "kind": "group", "summary": "Options", "members": ["decompress", "stdout"] },
+    "file":       { "kind": "positional", "type": "file", "name": "FILE", "summary": "File to process" }
+  },
+  "synopsis": {
+    "type": "sequence",
+    "children": [
+      { "type": "repeat", "child": { "type": "reference", "symbol": "options" } },
+      { "type": "reference", "symbol": "file" }
+    ]
+  }
+}

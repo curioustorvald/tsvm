@@ -1,0 +1,7 @@
+{
+  "tsfVersion": "1.0",
+  "name": "ver",
+  "summary": "Print the operating system version",
+  "symbols": {},
+  "synopsis": { "type": "sequence", "children": [] }
+}

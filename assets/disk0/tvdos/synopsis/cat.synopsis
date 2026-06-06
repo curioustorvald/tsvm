@@ -1,0 +1,12 @@
+{
+  "tsfVersion": "1.0",
+  "name": "cat",
+  "summary": "Print a file, or pipe its contents onward",
+  "symbols": {
+    "file": { "kind": "positional", "type": "file", "name": "FILE", "summary": "File to read; reads from the pipe when omitted" }
+  },
+  "synopsis": {
+    "type": "optional",
+    "child": { "type": "reference", "symbol": "file" }
+  }
+}

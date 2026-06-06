@@ -1,0 +1,12 @@
+{
+  "tsfVersion": "1.0",
+  "name": "cd",
+  "summary": "Change the current working directory",
+  "symbols": {
+    "dir": { "kind": "positional", "type": "directory", "name": "DIR", "summary": "Directory to change into; prints the current directory when omitted" }
+  },
+  "synopsis": {
+    "type": "optional",
+    "child": { "type": "reference", "symbol": "dir" }
+  }
+}

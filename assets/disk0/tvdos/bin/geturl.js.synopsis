@@ -1,0 +1,9 @@
+{
+  "tsfVersion": "1.0",
+  "name": "geturl",
+  "summary": "Fetch a URL and print the response",
+  "symbols": {
+    "url": { "kind": "positional", "type": "url", "name": "URL", "summary": "Address to fetch" }
+  },
+  "synopsis": { "type": "reference", "symbol": "url" }
+}

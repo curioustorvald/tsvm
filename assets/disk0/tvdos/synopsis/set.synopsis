@@ -1,0 +1,18 @@
+{
+  "tsfVersion": "1.0",
+  "name": "set",
+  "summary": "Set or display an environment variable",
+  "symbols": {
+    "assignment": {
+      "kind": "positional",
+      "type": "string",
+      "name": "NAME=VALUE",
+      "summary": "Variable assignment, or a name to display; lists all variables when omitted",
+      "completion": { "method": "internal", "provider": "envvars" }
+    }
+  },
+  "synopsis": {
+    "type": "optional",
+    "child": { "type": "reference", "symbol": "assignment" }
+  }
+}

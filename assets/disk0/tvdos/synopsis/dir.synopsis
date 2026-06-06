@@ -1,0 +1,12 @@
+{
+  "tsfVersion": "1.0",
+  "name": "dir",
+  "summary": "List the contents of a directory",
+  "symbols": {
+    "path": { "kind": "positional", "type": "directory", "name": "PATH", "summary": "Directory to list; the working directory when omitted" }
+  },
+  "synopsis": {
+    "type": "optional",
+    "child": { "type": "reference", "symbol": "path" }
+  }
+}

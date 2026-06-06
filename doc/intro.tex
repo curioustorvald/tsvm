@@ -1,3 +1,7 @@
-\thismachine\ is a virtual machine programmable using mainly, but not limited to, Javascript, and can have 7 virtual peripherals that can be communicated using MMIOs exclusively. \thismachine\ has default graphics of 80-column 32-rows text mode with one 560\times448 pixels framebuffer with 256 palette colours with 4096 colours to choose from.
+\thismachine\ is a virtual machine that imitates the architecture of an 8-bit era home computer while being programmed, mainly but not exclusively, in Javascript. A \thismachine\ system is built around a flat memory space into which both the core memory and the hardware peripherals are mapped, so that every device --- the graphics adapter, the sound card, the disk drives --- is reached through the same \code{peek} and \code{poke} operations that touch ordinary memory.
 
-This is the documentation for \thismachine\ \tsvmver.
+Out of the box, \thismachine\ presents an 80-column, 32-row text display backed by a $560\times448$-pixel framebuffer with 256 simultaneous colours chosen from a palette of 4096, built-in keyboard and mouse input, and four serial ports for attaching disk drives, modems and other machines. Up to seven expansion cards may be fitted, each mapping a megabyte of its own memory into the address space.
+
+This guide is one book in two parts. The first part, \emph{\thismachine}, documents the virtual machine itself: its memory map, the Javascript runtime and its built-in libraries, the way peripherals are addressed, and the text, graphics and audio hardware. The second part, \emph{\thedos}, documents the disk operating system that is usually shipped with the machine: how it boots, the commands and applications it provides, how it plays back media, the format in which commands describe themselves, and the libraries it offers to programs of your own.
+
+This is the documentation for \thismachine\ version \tsvmver\ and the \thedos\ that accompanies it.

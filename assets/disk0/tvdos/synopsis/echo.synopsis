@@ -1,0 +1,12 @@
+{
+  "tsfVersion": "1.0",
+  "name": "echo",
+  "summary": "Print text, expanding $VARIABLE references",
+  "symbols": {
+    "text": { "kind": "positional", "type": "string", "name": "TEXT", "summary": "Text to print", "completion": { "method": "none" } }
+  },
+  "synopsis": {
+    "type": "repeat",
+    "child": { "type": "reference", "symbol": "text" }
+  }
+}

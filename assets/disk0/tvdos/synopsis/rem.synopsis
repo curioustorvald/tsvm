@@ -1,0 +1,12 @@
+{
+  "tsfVersion": "1.0",
+  "name": "rem",
+  "summary": "A comment; the line is ignored",
+  "symbols": {
+    "text": { "kind": "positional", "type": "string", "name": "TEXT", "summary": "Comment text", "completion": { "method": "none" } }
+  },
+  "synopsis": {
+    "type": "repeat",
+    "child": { "type": "reference", "symbol": "text" }
+  }
+}

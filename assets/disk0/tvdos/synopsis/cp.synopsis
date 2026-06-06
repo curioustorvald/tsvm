@@ -1,0 +1,16 @@
+{
+  "tsfVersion": "1.0",
+  "name": "cp",
+  "summary": "Copy a file",
+  "symbols": {
+    "source": { "kind": "positional", "type": "file", "name": "SOURCE", "summary": "File to copy from" },
+    "dest":   { "kind": "positional", "type": "path", "name": "DEST", "summary": "Destination path" }
+  },
+  "synopsis": {
+    "type": "sequence",
+    "children": [
+      { "type": "reference", "symbol": "source" },
+      { "type": "reference", "symbol": "dest" }
+    ]
+  }
+}

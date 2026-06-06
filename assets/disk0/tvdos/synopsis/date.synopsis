@@ -1,0 +1,7 @@
+{
+  "tsfVersion": "1.0",
+  "name": "date",
+  "summary": "Print the system date and time",
+  "symbols": {},
+  "synopsis": { "type": "sequence", "children": [] }
+}

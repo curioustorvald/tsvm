@@ -1,0 +1,12 @@
+{
+  "tsfVersion": "1.0",
+  "name": "less",
+  "summary": "View text a screen at a time",
+  "symbols": {
+    "file": { "kind": "positional", "type": "file", "name": "FILE", "summary": "File to view; reads from the pipe when omitted" }
+  },
+  "synopsis": {
+    "type": "optional",
+    "child": { "type": "reference", "symbol": "file" }
+  }
+}

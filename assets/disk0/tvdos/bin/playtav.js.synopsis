@@ -1,0 +1,23 @@
+{
+  "tsfVersion": "1.0",
+  "name": "playtav",
+  "summary": "Play a TAV video file",
+  "symbols": {
+    "interactive": { "kind": "option", "short": "-i", "summary": "Interactive mode" },
+    "filmGrain": {
+      "kind": "option",
+      "long": "--filter-film-grain",
+      "summary": "Apply a film-grain filter",
+      "value": { "name": "LEVEL", "type": "integer", "required": false, "summary": "Grain intensity" }
+    },
+    "options": { "kind": "group", "summary": "Options", "members": ["interactive", "filmGrain"] },
+    "file":    { "kind": "positional", "type": "file", "name": "FILE", "summary": "TAV file to play" }
+  },
+  "synopsis": {
+    "type": "sequence",
+    "children": [
+      { "type": "reference", "symbol": "file" },
+      { "type": "repeat", "child": { "type": "reference", "symbol": "options" } }
+    ]
+  }
+}

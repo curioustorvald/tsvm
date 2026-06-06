@@ -1,0 +1,13 @@
+{
+  "tsfVersion": "1.0",
+  "name": "synopsis",
+  "summary": "Print a command's summary and auto-generated synopsis",
+  "description": "Prints the one-line summary and an auto-generated usage line for PROGRAM, derived from its TSF .synopsis document, together with its arguments, options and constraints. With no PROGRAM, describes itself.",
+  "symbols": {
+    "program": { "kind": "positional", "type": "command", "name": "PROGRAM", "summary": "Command to describe; describes synopsis itself when omitted" }
+  },
+  "synopsis": {
+    "type": "optional",
+    "child": { "type": "reference", "symbol": "program" }
+  }
+}

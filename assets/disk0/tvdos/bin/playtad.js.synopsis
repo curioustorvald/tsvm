@@ -1,0 +1,21 @@
+{
+  "tsfVersion": "1.0",
+  "name": "playtad",
+  "summary": "Play a TAD audio file",
+  "symbols": {
+    "interactive": { "kind": "option", "short": "-i", "summary": "Interactive mode (visualiser and progress bar)" },
+    "dump":        { "kind": "option", "short": "-d", "summary": "Dump coefficients (diagnostic)" },
+    "options":     { "kind": "group", "summary": "Options", "members": ["interactive", "dump"] },
+    "file":        { "kind": "positional", "type": "file", "name": "FILE", "summary": "TAD file to play" }
+  },
+  "synopsis": {
+    "type": "sequence",
+    "children": [
+      { "type": "reference", "symbol": "file" },
+      { "type": "repeat", "child": { "type": "reference", "symbol": "options" } }
+    ]
+  },
+  "constraints": [
+    { "type": "conflicts", "symbols": ["interactive", "dump"] }
+  ]
+}

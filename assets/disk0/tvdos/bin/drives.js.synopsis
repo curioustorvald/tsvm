@@ -1,0 +1,7 @@
+{
+  "tsfVersion": "1.0",
+  "name": "drives",
+  "summary": "List connected and mounted disk drives",
+  "symbols": {},
+  "synopsis": { "type": "sequence", "children": [] }
+}

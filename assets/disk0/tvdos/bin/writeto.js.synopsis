@@ -1,0 +1,9 @@
+{
+  "tsfVersion": "1.0",
+  "name": "writeto",
+  "summary": "Write a pipe's stream to a file",
+  "symbols": {
+    "file": { "kind": "positional", "type": "path", "name": "FILE", "summary": "File to write the stream to" }
+  },
+  "synopsis": { "type": "reference", "symbol": "file" }
+}

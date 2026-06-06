@@ -1,0 +1,9 @@
+{
+  "tsfVersion": "1.0",
+  "name": "printfile",
+  "summary": "Print a text file with line numbers",
+  "symbols": {
+    "file": { "kind": "positional", "type": "file", "name": "FILE", "summary": "Text file to print" }
+  },
+  "synopsis": { "type": "reference", "symbol": "file" }
+}

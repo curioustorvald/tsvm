@@ -146,7 +146,7 @@
 \newcommand{\codeline}[1]{%
 \colorbox{lgrey}{%
 \begin{tabular*}{\textwidth}{l}%
-\monofont #1 \\% TODO fill the cell with \hl colour
+\monofont #1 \\% cell background is provided by the enclosing \colorbox
 \end{tabular*}%
 }}
 
@@ -203,8 +203,8 @@
 \newcommand{\thismachine}{TSVM}
 \newcommand{\thedos}{TVDOS}
 \newcommand{\tsvmver}{1.2}
-\newcommand{\theedition}{Zeroth Edition}
-\newcommand{\thepublishingdate}{0000-00-00}
+\newcommand{\theedition}{First Edition}
+\newcommand{\thepublishingdate}{2026-06-06}
 \newcommand{\oreallypress}{\begingroup\hspace{0.083em}\large\textbf{O'REALLY\raisebox{1ex}{\scriptsize ?}} \large Press\endgroup}
 
 \newcommand{\argN}[1]{arg\textsubscript{#1}}
@@ -247,10 +247,10 @@
 
 % \input{changesmeta}
 
-\part{The Virtual Machine}
+\part{\thismachine: The Virtual Machine}
 \input{implementation}
 
-\part{The DOS}
+\part{\thedos: The Disk Operating System}
 \input{tvdos}
 
 \part*{Bibliography}

@@ -1,0 +1,7 @@
+{
+  "tsfVersion": "1.0",
+  "name": "exit",
+  "summary": "Exit the command processor",
+  "symbols": {},
+  "synopsis": { "type": "sequence", "children": [] }
+}

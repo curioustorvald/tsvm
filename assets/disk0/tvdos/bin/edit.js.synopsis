@@ -1,0 +1,12 @@
+{
+  "tsfVersion": "1.0",
+  "name": "edit",
+  "summary": "Full-screen text editor",
+  "symbols": {
+    "file": { "kind": "positional", "type": "file", "name": "FILE", "summary": "File to edit; a new buffer when omitted" }
+  },
+  "synopsis": {
+    "type": "optional",
+    "child": { "type": "reference", "symbol": "file" }
+  }
+}

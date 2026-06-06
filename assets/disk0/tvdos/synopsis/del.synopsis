@@ -1,0 +1,9 @@
+{
+  "tsfVersion": "1.0",
+  "name": "del",
+  "summary": "Delete a file",
+  "symbols": {
+    "file": { "kind": "positional", "type": "file", "name": "FILE", "summary": "File to delete" }
+  },
+  "synopsis": { "type": "reference", "symbol": "file" }
+}

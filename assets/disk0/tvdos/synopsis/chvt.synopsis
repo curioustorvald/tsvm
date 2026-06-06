@@ -1,0 +1,22 @@
+{
+  "tsfVersion": "1.0",
+  "name": "chvt",
+  "summary": "Switch to virtual console N (1-6)",
+  "symbols": {
+    "console": {
+      "kind": "positional",
+      "type": "enum",
+      "name": "N",
+      "summary": "Target virtual console",
+      "values": [
+        { "value": "1", "summary": "Virtual console 1" },
+        { "value": "2", "summary": "Virtual console 2" },
+        { "value": "3", "summary": "Virtual console 3" },
+        { "value": "4", "summary": "Virtual console 4" },
+        { "value": "5", "summary": "Virtual console 5" },
+        { "value": "6", "summary": "Virtual console 6" }
+      ]
+    }
+  },
+  "synopsis": { "type": "reference", "symbol": "console" }
+}

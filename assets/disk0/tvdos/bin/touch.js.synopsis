@@ -1,0 +1,17 @@
+{
+  "tsfVersion": "1.0",
+  "name": "touch",
+  "summary": "Update a file's modification time, creating it if absent",
+  "symbols": {
+    "noCreate": { "kind": "option", "short": "-c", "summary": "Do not create the file if it does not exist" },
+    "options":  { "kind": "group", "summary": "Options", "members": ["noCreate"] },
+    "file":     { "kind": "positional", "type": "path", "name": "FILE", "summary": "File to touch" }
+  },
+  "synopsis": {
+    "type": "sequence",
+    "children": [
+      { "type": "repeat", "child": { "type": "reference", "symbol": "options" } },
+      { "type": "reference", "symbol": "file" }
+    ]
+  }
+}

@@ -7,16 +7,16 @@ All \thedos-related features requires the DOS to be fully loaded.
 
 \chapter{Bootstrapping}
 
-\index{boot process}\thedos\ goes through follwing progress to deliver the \code{A:\rs} prompt:
+\index{boot process}\thedos\ goes through the following progress to deliver the \code{A:\rs} prompt:
 
 \section{Probing Bootable Devices}
-The BIOS will probe serial devices to find first bootable drive. If found, port number of the driver is written to the \code{\_BIOS} object, then attempts to load and run the bootloader.
+The BIOS will probe serial devices to find the first bootable drive. If found, the port number of the drive is written to the \code{\_BIOS} object, then it attempts to load and run the bootloader.
 
 \section{The Bootloader}
 The Bootloader is a short program that loads the \code{TVDOS.SYS} file.
 
 \section{TVDOS.SYS}
-\thedos.SYS will load system libraries and variables and then will try to run the boot script by executing \code{A:\rs{}AUTOEXEC.BAT}
+\thedos.SYS loads the system libraries and variables, installs the filesystem and input drivers, and then runs the boot script.
 
 Boot Procedure:
 
@@ -26,21 +26,58 @@ Boot Procedure:
  \item initialise DOS variables
  \item install filesystem drivers
  \item install input device drivers
- \item install GL using the external file
- \item execute \code{AUTOEXEC.BAT}
- \begin{enumerate}
-  \item execute \code{command.js} with proper arguments
-  \item \code{command.js} to initialise \code{shell.*} functions (this includes coreutils and patched version of \code{require})
-  \item \code{command.js} to parse and run \code{AUTOEXEC.BAT}
- \end{enumerate}
+ \item install \code{GL} using the external file
+ \item run \code{\rs{}commandrc} to set up the environment
+ \item hand the screen to the virtual-console manager, \code{\rs{}tvdos\rs{}VTMGR.SYS}
+ \item when the manager exits, run \code{\rs{}AUTOEXEC.BAT} as a bare fallback shell
 \end{enumerate}
 
-\section{AUTOEXEC.BAT}
+Steps 7--9 are run through \code{command.js}: \thedos.SYS loads \code{command.js}, which initialises the \code{shell.*} functions (the coreutils and a patched \code{require}), and then parses and runs the requested script.
 
-AUTOEXEC can setup user-specific variables (e.g. keyboard layout) and launch the command shell of your choice, \code{COMMAND} is the most common shell.
+\section{The Boot Configuration: commandrc and AUTOEXEC.BAT}
 
-Variables can be set or changed using \textbf{SET} commands.
+\index{commandrc}\index{AUTOEXEC.BAT}The boot configuration is split across two files with deliberately different jobs. The split exists because \thedos\ runs several independent shell sessions at once (see \emph{Virtual Consoles}): the environment must be established in \emph{every} session, but applications should be launched only \emph{once per session}.
 
+\code{\rs{}commandrc} is the \textbf{environment} file. It holds \code{set} commands and nothing else, and \thedos.SYS runs it in every context --- the boot console and every virtual-console pane. Because it has no \code{.BAT} extension, the boot block runs it line by line. A typical \code{commandrc} configures the search paths and the keyboard layout:
+
+\begin{lstlisting}
+set PATH=\tbas;\hopper\bin;$PATH
+set INCLPATH=\hopper\include;$INCLPATH
+set HELPPATH=\hopper\help;$HELPPATH
+set KEYBOARD=us_qwerty
+\end{lstlisting}
+
+\code{\rs{}AUTOEXEC.BAT} is the \textbf{per-console launch} script. It is run once for each console: by each virtual-console pane as it starts, and by the boot console as the fallback once the virtual-console manager has exited. It performs work that must happen per session --- registering the input method, then starting the interactive shell:
+
+\begin{lstlisting}
+command -fancy
+\end{lstlisting}
+
+Variables are set or changed with the \textbf{set} command. A value may refer to the previous value of a variable with \code{\$NAME}, as the \code{\$PATH} above does, which appends to rather than replaces the existing search path.
+
+
+
+\chapter{Virtual Consoles}
+
+\index{virtual consoles}\thedos\ runs up to six independent shell sessions at once, called \textbf{virtual consoles}. Only one is shown on the physical screen at a time; the others keep running in the background. This is managed by \code{VTMGR.SYS}, which the boot process starts automatically (see \emph{Bootstrapping}).
+
+\section{Switching Consoles}
+
+\begin{outline}
+\1\textbf{Alt-1} through \textbf{Alt-6} switch to that console. A console is created the first time it is selected, and re-created if its shell has exited.
+\1the \code{chvt} \emph{N} command switches to console \emph{N} from within a script or a running shell.
+\1\textbf{Alt-0} shuts the virtual-console manager down entirely, after which the boot console's \code{AUTOEXEC.BAT} runs as a single bare shell.
+\end{outline}
+
+Console 1 is created at boot; consoles 2--6 are created on first use. Each console runs its own \code{command -fancy} shell, with its own working directory and screen, but they all share the same environment set up by \code{commandrc}. The prompt of consoles 2--6 is prefixed with \code{[\emph{N}]} so the active console is always identifiable.
+
+\section{Concurrency}
+
+Switching is truly concurrent: a console keeps running even while it is not on screen, and you can switch away from a long-running command and back again without interrupting it. A console that is waiting for keyboard input is parked until it is brought to the foreground.
+
+\section{Well-behaved Applications}
+
+Most programs need no special handling to run inside a virtual console, because they draw through the \code{con} library and the \code{print} family, which \thedos\ routes to the correct console automatically. The one exception is a program that writes to the text area \emph{directly} through \code{graphics.getGpuMemBase()}: such a program would paint the physical screen and bleed into whichever console is visible. Applications that need direct text-area access must resolve their writes through a console-aware base address; the bundled applications that do this are already adapted.
 
 
 \chapter{Coreutils}
@@ -50,6 +87,7 @@ Variables can be set or changed using \textbf{SET} commands.
 \begin{outline}
 \1\dossynopsis{cat}[file]{Reads a file and pipes its contents to the pipe, or to the console if no pipes are specified.}
 \1\dossynopsis{cd}[dir]{Change the current working directory. Alias: chdir}
+\1\dossynopsis{chvt}[N]{Switches to virtual console \emph{N} (1--6). Only meaningful inside a virtual console. See \emph{Virtual Consoles}.}
 \1\dossynopsis{cls}{Clears the text buffer and the framebuffer if available.}
 \1\dossynopsis{cp}[from to]{Make copies of the specified file. The source file must not be a directory. Alias: copy}
 \1\dossynopsis{date}{Prints the system date. Alias: time}
@@ -59,42 +97,130 @@ Variables can be set or changed using \textbf{SET} commands.
 \1\dossynopsis{exit}{Exits the current command processor.}
 \1\dossynopsis{mkdir}[path]{Creates a directory. Aliase: md}
 \1\dossynopsis{mv}[from to]{Moves or renames the file. Aliase: move}
+\1\dossynopsis{panic}{Deliberately raises an error in the command processor. A diagnostic aid.}
 \1\dossynopsis{rem}{Comment-out the line.}
 \1\dossynopsis{set}[key=value]{Sets the global variable \code{key} to \code{value}, or displays the list of global variables if no arguments were given.}
 \1\dossynopsis{ver}{Prints the version of \thedos.}
+\1\dossynopsis{which}[program]{Reports how a name would resolve: as a shell built-in, or as the full path of the executable found on the \code{PATH}. Alias: where}
 \end{outline}
 
 
 
 \chapter{Built-in Apps}
 
-\index{built-in apps (DOS)}Built-in Applications are the programs shipped with the standard distribution of \thedos\ that is written for users' convenience.
+\index{built-in apps (DOS)}Built-in Applications are the programs shipped with the standard distribution of \thedos\ that are written for users' convenience.
 
-This chapter will only briefly list and describe the applications.
+This chapter lists the general-purpose applications. The applications for playing and converting media have a chapter of their own, \emph{Media Playback and Formats}.
+
+\section{Shells and Languages}
 
 \begin{outline}
-\1\dossynopsis{basica}{Invokes a BASIC interpreter stored in the ROM. If no BASIC rom is present, nothing will be done.}
-\1\dossynopsis{basic}{If your system is bundled with a software-based BASIC, this command will invoke the BASIC interpreter stored in the disk.}
-\1\dossynopsis{color}{Changes the background and the foreground of the active session.}
-\1\dossynopsis{command}{The default text-based DOS shell. Call with \code{command -fancy} for more \ae sthetically pleasing looks.}
-\1\dossynopsis{decodeipf}[file]{Decodes the IPF-formatted image to the framebuffer using the graphics processor.}
-\1\dossynopsis{drives}{Shows the list of the connected and mounted disk drives.}
-\1\dossynopsis{edit}[file]{The interactive full-screen text editor.}
-\1\dossynopsis{encodeipf}[1/2 imagefile ipffile]{Encodes the given image file (.jpg, .png, .bmp, .tga) to the IPF format using the graphics hardware.}
-\1\dossynopsis{false}{Returns errorlevel 1 upon execution.}
-\1\dossynopsis{geturl}[url]{Reads contents on the web address and store it to the disk. Requires Internet adapter.}
-\1\dossynopsis{hexdump}[file]{Prints out the contents of a file in hexadecimal view. Supports pipe.}
-\1\dossynopsis{less}[file]{Allows user to read the long text, even if they are wider and/or taller than the screen. Supports pipe.}
-\1\dossynopsis{playmov}[file]{Plays tsvmmov-formatted video. Use -i flag for playback control.}
-\1\dossynopsis{playmp2}[file]{Plays MP2 (MPEG-1 Audio Layer II) formatted audio. Use -i flag for playback control.}
-\1\dossynopsis{playpcm}[file]{Plays raw PCM audio. Use -i flag for playback control.}
-\1\dossynopsis{playwav}[file]{Plays linear PCM/ADPCM audio. Use -i flag for playback control.}
-\1\dossynopsis{printfile}[file]{Prints out the contents of a textfile with line numbers. Useful for making descriptive screenshots.}
-\1\dossynopsis{touch}[file]{Updates a file's modification date. New file will be created if the specified file does not exist.}
-\1\dossynopsis{true}{Returns errorlevel 0 upon execution.}
-\1\dossynopsis{zfm}{Z File Manager. A two-panel graphical user interface to navigate the system using arrow keys. Hit Z to switch panels.}
+\1\dossynopsis{command}{The default text-based \thedos\ shell. Call with \code{command -fancy} for a more \ae sthetically pleasing look.}
+\1\dossynopsis{basica}{Invokes a BASIC interpreter stored in the ROM. If no BASIC ROM is present, nothing is done.}
+\1\dossynopsis{basic}{If your system is bundled with a software-based BASIC, invokes the BASIC interpreter stored on the disk.}
 \end{outline}
 
+\section{Files and Text}
+
+\begin{outline}
+\1\dossynopsis{edit}[file]{The interactive full-screen text editor.}
+\1\dossynopsis{zfm}{Z File Manager. A two-panel graphical interface for navigating the system with the arrow keys. Press Z to switch panels.}
+\1\dossynopsis{less}[file]{Lets the user read long text, even when it is wider and/or taller than the screen. Supports pipes.}
+\1\dossynopsis{hexdump}[file]{Prints the contents of a file in a hexadecimal view. Supports pipes.}
+\1\dossynopsis{printfile}[file]{Prints the contents of a text file with line numbers. Useful for making descriptive screenshots.}
+\1\dossynopsis{touch}[file]{Updates a file's modification date. The file is created if it does not exist.}
+\1\dossynopsis{tee}[file]{In a pipe, copies the incoming stream to a file \emph{and} passes it on to the next command.}
+\1\dossynopsis{writeto}[file]{In a pipe, writes the incoming stream to a file.}
+\end{outline}
+
+\section{Storage and Archives}
+
+\begin{outline}
+\1\dossynopsis{drives}{Lists the connected and mounted disk drives.}
+\1\dossynopsis{defrag}{Defragments the current drive.}
+\1\dossynopsis{gzip}[file]{Compresses a file in place, or decompresses it with \code{-d}, or writes to standard output with \code{-c}. As with the \code{gzip} library, the actual format used is Zstandard.}
+\1\dossynopsis{lfs}{Creates and extracts \thedos\ Linear File Strip (\code{.lfs}) archives --- a simple way to bundle a directory tree into one file.}
+\1\dossynopsis{autorun}[file]{Runs a program or plays a media file directly from a sequential (tape) device.}
+\end{outline}
+
+\section{Networking and Packages}
+
+\begin{outline}
+\1\dossynopsis{geturl}[url]{Reads the contents at a web address and stores it to the disk. Requires an Internet adapter.}
+\1\dossynopsis{telcom}[port]{A terminal program for talking to a device or modem on a serial port.}
+\1\dossynopsis{hopper}{The \thedos\ package manager, for installing and managing optional software. Alias: hop.}
+\end{outline}
+
+\section{Miscellaneous}
+
+\begin{outline}
+\1\dossynopsis{synopsis}[program]{Prints a command's one-line summary together with an auto-generated synopsis --- its usage line, arguments, options and constraints --- read from the command's \code{.synopsis} description. With no \code{program} it describes itself. Alias: help.}
+\1\dossynopsis{color}{Changes the background and foreground colour of the active session.}
+\1\dossynopsis{true}{Returns errorlevel 0 upon execution.}
+\1\dossynopsis{false}{Returns errorlevel 1 upon execution.}
+\end{outline}
+
+The music tracker and editor (invoked as \code{microtone}) is also bundled, but it --- together with the music format it authors --- is large enough to warrant its own manual and is not covered here.
+
+
+
+\chapter{Media Playback and Formats}
+
+\index{media playback (DOS)}\thedos\ can display images, play video and play audio, in several formats. Decoding is hardware-accelerated by the graphics and audio adapters, so even the more sophisticated formats play back smoothly. This chapter is written for someone who wants to \emph{use} these formats; it describes what each is for and which command plays it, not how the codecs work internally.
+
+Most players accept the \code{-i} flag, which turns on \textbf{interactive mode}: an on-screen progress bar, a visualiser where appropriate, and playback control. Without it, the player simply plays the file and exits. Across the players, holding \textbf{Backspace} stops playback.
+
+\section{Still Images}
+
+\index{iPF}The machine's native still-image format is \textbf{iPF} (Interchangeable Picture Format). The graphics hardware can also decode ordinary JPEG, PNG and TGA images directly.
+
+\begin{outline}
+\1\dossynopsis{decodeipf}[file]{Decodes an iPF image onto the framebuffer.}
+\1\dossynopsis{encodeipf}[1/2 imagefile ipffile]{Encodes an image file (\code{.jpg}, \code{.png}, \code{.bmp}, \code{.tga}) into iPF, using the graphics hardware. The first argument selects the iPF type (1 or 2).}
+\end{outline}
+
+The TAV video format below also have still-picture variants, used for high-fidelity images.
+
+\section{Video}
+
+\thedos\ supports three families of video, in rough order of age and sophistication:
+
+\begin{outline}
+\1\textbf{MV1} --- the legacy movie format, carrying iPF (or plain palette) frames with MP2 audio. Created on the machine with \code{encodemov} / \code{encodemov2}.
+\1\textbf{TEV} (\thismachine\ Enhanced Video) --- a modern format with markedly better compression than iPF movies, taking full advantage of the 4096-colour hardware.
+\1\textbf{TAV} (\thismachine\ Advanced Video) --- the current format and successor to TEV, offering the best compression and image quality.
+\end{outline}
+
+TEV and TAV files are prepared on a host computer and copied to the disk for playback; MOV and iPF content can also be produced on the machine itself. Both TEV and TAV are encoded at a chosen \emph{quality level} when they are made, trading file size against fidelity --- as a viewer you simply play the result.
+
+\begin{outline}
+\1\dossynopsis{playmv1}[file]{Plays a MV1-format movie.}
+\1\dossynopsis{playtev}[file]{Plays a TEV-format video.}
+\1\dossynopsis{playtav}[file]{Plays a TAV-format video.}
+\1\dossynopsis{movprobe}[file]{Prints a movie's properties (dimensions, frame rate, audio, \dots) without playing it.}
+\1\dossynopsis{playucf}[file]{Plays a chaptered movie (UCF), presenting a chapter selector.}
+\end{outline}
+
+\section{Audio}
+
+\index{MP2}\index{TAD}For sound, \thedos\ plays standard \textbf{MP2} (MPEG-1 Audio Layer II), raw and wave-wrapped PCM, and its own compressed format, \textbf{TAD} (\thismachine\ Advanced Audio). All audio plays back at the hardware's 32\,kHz stereo. As with video, TAD files are prepared on a host computer; MP2 is a widely interchangeable format, and PCM/WAV are uncompressed.
+
+\begin{outline}
+\1\dossynopsis{playmp2}[file]{Plays MP2 (MPEG-1 Audio Layer II) audio.}
+\1\dossynopsis{playtad}[file]{Plays TAD audio.}
+\1\dossynopsis{playpcm}[file]{Plays raw PCM audio.}
+\1\dossynopsis{playwav}[file]{Plays linear-PCM or ADPCM \code{.wav} audio.}
+\end{outline}
+
+\section{Music}
+
+\index{Taud}\thismachine\ has a native tracker music format, \textbf{Taud}, played by the built-in tracker engine (see the \emph{Audio} chapter in the \thismachine\ part). Unlike the streamed audio formats above, a Taud file is a compact \emph{score} --- samples plus the patterns that sequence them --- so a whole piece of music occupies very little space.
+
+\begin{outline}
+\1\dossynopsis{playtaud}[file]{Plays a Taud module, with a text-mode visualiser. An optional second argument selects which song within the file to play. Hold Backspace to exit.}
+\end{outline}
+
+Authoring Taud music, and the format itself, are the subject of a separate manual and are not described here.
 
 
 \chapter{Writing Your Own Apps}
@@ -108,6 +234,15 @@ User apps are invoked through \thedos\ to inject the command-line arguments and 
 The command line arguments are given via the array of strings named `exec\_args`.
 
 Index zero holds the name used to invoke the app, and the rest hold the actual arguments.
+
+
+\section{Describing Your App: the Synopsis File}
+
+\index{synopsis file}Every command should ship a machine-readable description of its own command-line interface, written in the \thedos\ Synopsis Format (TSF) and described in full in the \emph{Command Synopsis Format} chapter.
+
+The rule is simple: the synopsis lives \emph{next to} the program, with the program's full filename plus a \code{.synopsis} extension. An app installed as \code{cp.js} in \code{\rs{}tvdos\rs{}bin} therefore ships alongside it as \code{\rs{}tvdos\rs{}bin\rs{}cp.js.synopsis}. \thedos\ uses these files to generate help text and tab-completion, so providing one makes your app a first-class citizen of the system.
+
+Built-in coreutils have no on-disk executable to sit beside, so their synopses live together in \code{\rs{}tvdos\rs{}synopsis}, named for the command (for example \code{\rs{}tvdos\rs{}synopsis\rs{}cp.synopsis}). Either way, once a synopsis is in place the \code{synopsis} command --- and its \code{help} alias --- will display it, and the shell will tab-complete against it.
 
 
 \section{Invoking Coreutils on the user Apps}
@@ -133,6 +268,254 @@ To invoke the coreutils, use \code{\_G.shell.coreutils.*}
 Due to the non-preemptive nature of the virtual machine, the termination\footnote{Default key combination: Shift+Ctrl+T+R} signal must be explicitly captured by the app, and taking care of it by yourself can be extremely tedious. Fortunately \thedos\ parses the user-written program and injects those checks accordingly.
 
 While- and For-loops are always have such checks injected, but the `read()` is not checked for the termination.
+
+
+\chapter{Command Synopsis Format}
+\label{ch:tsf}
+
+\index{TSF}\index{synopsis format}The \thedos\ Synopsis Format (TSF) is the language in which a command describes its own command-line interface. Every command is expected to ship a TSF document --- a file with the command's full name plus a \code{.synopsis} extension, stored in the same directory as the program. The command \code{cp.js} in \code{\rs{}tvdos\rs{}bin}, for instance, is accompanied by \code{cp.js.synopsis} in that same directory. \thedos\ reads these documents to drive shell completion, help generation, and argument validation.
+
+The key words MUST, MUST NOT, REQUIRED, SHALL, SHALL NOT, SHOULD, SHOULD NOT, RECOMMENDED, NOT RECOMMENDED, MAY and OPTIONAL in this chapter are to be interpreted as described in RFC 2119 and RFC 8174 when, and only when, they appear in all capitals.
+
+\section{Scope}
+
+A TSF document describes a command's grammar: its options and flags, positional arguments, subcommands, argument types, completion sources and validation constraints.
+
+A TSF document MUST be valid JSON, and MUST be encoded so that its byte stream contains only ASCII characters: any character outside the ASCII range (U+0000--U+007F) MUST be written as a JSON \texttt{\textbackslash u} escape (a backslash, \texttt{u}, and four hexadecimal digits) rather than as a literal multibyte character. Consumers MUST decode such escapes per the JSON specification.
+
+\section{Design Goals}
+
+TSF SHALL be machine-readable, human-authorable, and able to support automatic shell completion, automatic help generation, parser generation and GUI generation.
+
+The structured synopsis grammar SHALL be the sole normative description of command syntax; every other representation, including human-readable usage strings, is treated as output generated from it.
+
+\section{Document Structure}
+
+A TSF document SHALL contain one JSON object.
+
+\begin{lstlisting}
+{
+  "tsfVersion": "1.0",
+  "name": "cp",
+  "summary": "Copy files and directories",
+  "symbols": {},
+  "synopsis": {}
+}
+\end{lstlisting}
+
+Its fields are:
+
+\begin{tabulary}{\textwidth}{lclL}
+Field & Req. & Type & Notes \\
+\hline
+tsfVersion  & yes & string & Version of TSF this document targets. \\
+name        & yes & string & Command name as invoked. \\
+summary     & yes & string & One-line description. \\
+symbols     & yes & object & The symbol table. \\
+synopsis    & yes & object & The synopsis grammar root node. \\
+description & no  & string & Free-form long description for help generation. \\
+constraints & no  & array  & Constraint objects. \\
+metadata    & no  & object & Free-form, non-normative data for authors and hosts. \\
+\end{tabulary}
+
+\section{The Symbol Table}
+
+All command elements SHALL be declared in the symbol table, and the synopsis grammar SHALL reference them by identifier.
+
+\begin{lstlisting}
+"symbols": {
+  "recursive": { "kind": "option", "long": "--recursive", "short": "-r" },
+  "source":    { "kind": "positional", "type": "path" }
+}
+\end{lstlisting}
+
+Every symbol has a \code{kind}, one of \code{option}, \code{positional}, \code{subcommand} or \code{group}.
+
+\section{Argument Descriptors}
+
+An \emph{argument descriptor} describes a single consumed value. The same shape is used in two places: directly on a \code{positional} symbol, and as the \code{value} of an \code{option} symbol.
+
+\begin{tabulary}{\textwidth}{lclL}
+Field & Req. & Type & Notes \\
+\hline
+type       & no    & string & One of the built-in types. Defaults to \code{string}. \\
+name       & no    & string & Metavar shown in generated usage (e.g.\ FILE, WHEN). \\
+values     & cond. & array  & Permitted values; REQUIRED when \code{type} is \code{enum}. \\
+default    & no    & any    & Default value, for help and GUI prefill. \\
+validation & no    & object & Value-level validation (below). \\
+completion & no    & object & Completion override. \\
+summary    & no    & string & Short description of the value. \\
+\end{tabulary}
+
+Each entry in \code{values} SHALL be either a bare JSON value or an object \code{\{ "value": v, "summary": s \}}; the optional per-value summary feeds completion hints and help.
+
+\subsection{Validation}
+
+The \code{validation} object expresses checks the grammar cannot:
+
+\begin{tabulary}{\textwidth}{lL}
+Field & Notes \\
+\hline
+pattern   & A regular expression the value MUST match (string-like types). \\
+minimum   & Inclusive lower bound (numeric types). \\
+maximum   & Inclusive upper bound (numeric types). \\
+minLength & Minimum length in characters (string-like types). \\
+maxLength & Maximum length in characters (string-like types). \\
+\end{tabulary}
+
+The regular-expression flavour for \code{pattern} is implementation-defined; authors are RECOMMENDED to keep to a portable subset. As the document is ASCII-only, any non-ASCII character within a pattern MUST be escaped.
+
+\section{Option Symbols}
+
+\begin{lstlisting}
+"output": {
+  "kind": "option",
+  "long": "--output",
+  "short": "-o",
+  "summary": "Write output to FILE",
+  "value": { "name": "FILE", "type": "file", "required": true }
+}
+\end{lstlisting}
+
+\begin{tabulary}{\textwidth}{lclL}
+Field & Req. & Type & Notes \\
+\hline
+kind      & yes   & string  & \code{option}. \\
+long      & cond. & string  & Long form, e.g.\ \code{--recursive}. \\
+short     & cond. & string  & Short form, e.g.\ \code{-r}. \\
+summary   & no    & string  & One-line description. \\
+value     & no    & object  & Argument descriptor. Omit for a bare flag. \\
+negatable & no    & boolean & If true, a \code{--no-<long>} form is also accepted. \\
+\end{tabulary}
+
+At least one of \code{long} or \code{short} SHALL exist. The \code{value} object MAY carry a \code{required} field (default true): when false, the argument is optional, as in \code{--color} with or without \code{=WHEN}. How often an option may repeat is expressed in the grammar (via \code{repeat} or \code{oneOrMore}), not by a field on the symbol.
+
+\section{Positional Symbols}
+
+A positional symbol is an argument descriptor plus its \code{kind}.
+
+\begin{lstlisting}
+"source": { "kind": "positional", "type": "path", "summary": "Source file" }
+\end{lstlisting}
+
+Its fields are \code{kind} (\code{positional}) followed by the argument-descriptor fields (\code{type}, \code{name}, \code{values}, \code{default}, \code{validation}, \code{completion}, \code{summary}). Whether a positional is required or optional is expressed in the grammar by wrapping it in \code{optional} or not, keeping a single source of truth.
+
+\section{Subcommand Symbols}
+
+\begin{lstlisting}
+"clone": { "kind": "subcommand", "summary": "Clone repository", "tsf": "git.clone" }
+\end{lstlisting}
+
+A subcommand MAY reference an embedded or an external TSF document through its \code{tsf} field; resolution of that reference is implementation-specific.
+
+\section{Group Symbols}
+
+A group collects related symbols --- typically options --- so the grammar can refer to them collectively. A group is what backs the conventional \code{[OPTION...]} slot.
+
+\begin{lstlisting}
+"commonOptions": {
+  "kind": "group",
+  "summary": "Common options",
+  "members": ["recursive", "force", "verbose"]
+}
+\end{lstlisting}
+
+A group has \code{kind} (\code{group}), a \code{members} array of symbol identifiers, and an optional \code{summary}. A reference to a group is equivalent to a \code{choice} over its members; wrapping that reference in \code{repeat} yields the familiar ``any number of these options, in any order'' behaviour.
+
+\section{The Synopsis Grammar}
+
+The \code{synopsis} object describes valid invocations as a tree of nodes. Every node has a \code{type}:
+
+\begin{tabulary}{\textwidth}{lL}
+Node & Meaning \\
+\hline
+sequence  & All children appear in order. Has a \code{children} array. (\code{A B C}) \\
+choice    & Exactly one child appears. Has a \code{children} array. (\code{(A | B | C)}) \\
+optional  & The single \code{child} appears zero or one time. (\code{[A]}) \\
+repeat    & The single \code{child} appears zero or more times. (\code{A...}) \\
+oneOrMore & The single \code{child} appears at least once; sugar for \code{sequence[A, repeat[A]]}. (\code{A [A...]}) \\
+reference & References a \code{symbol} by identifier. A reference to a group expands to a \code{choice} over its members. \\
+\end{tabulary}
+
+\section{A Complete Example}
+
+The human-readable form \code{cp [OPTION...] SOURCE DEST} is expressed as:
+
+\begin{lstlisting}
+"symbols": {
+  "recursive":   { "kind": "option", "long": "--recursive", "short": "-r" },
+  "force":       { "kind": "option", "long": "--force", "short": "-f" },
+  "options":     { "kind": "group", "members": ["recursive", "force"] },
+  "source":      { "kind": "positional", "type": "path", "name": "SOURCE" },
+  "destination": { "kind": "positional", "type": "path", "name": "DEST" }
+},
+"synopsis": {
+  "type": "sequence",
+  "children": [
+    { "type": "repeat", "child": { "type": "reference", "symbol": "options" } },
+    { "type": "reference", "symbol": "source" },
+    { "type": "reference", "symbol": "destination" }
+  ]
+}
+\end{lstlisting}
+
+Because \code{options} is a declared symbol, the \code{[OPTION...]} slot satisfies the rule that every referenced element exists in the symbol table.
+
+\section{Argument Types}
+
+The built-in primitive types are \code{string}, \code{integer}, \code{float}, \code{boolean}, \code{path}, \code{file}, \code{directory}, \code{url}, \code{hostname}, \code{user}, \code{group}, \code{command} and \code{enum}.
+
+A descriptor whose \code{type} is \code{enum} SHALL provide a \code{values} array. The \code{values} array MAY also be supplied for non-\code{enum} types as a soft suggestion list that informs completion without restricting valid input. Unknown types SHALL be interpreted as \code{string}; implementations are RECOMMENDED to emit a diagnostic when they do, since an unknown type is usually an authoring error. Each type carries a default completion behaviour --- \code{path}, \code{file} and \code{directory} complete against the filesystem, \code{user} and \code{group} against the account databases, \code{enum} against its \code{values} --- which a \code{completion} block overrides.
+
+\section{Completion}
+
+If a descriptor has no \code{completion} block, completion is derived automatically from its \code{type}. A block overrides that default and names a \code{method}:
+
+\begin{tabulary}{\textwidth}{lL}
+method & Notes \\
+\hline
+type     & Use the default completion implied by the \code{type}. (Implicit when no block is present.) \\
+enum     & Complete from the descriptor's \code{values}. (Implicit when \code{type} is \code{enum}.) \\
+internal & Use a named provider resolved by the host (a \code{provider} field names it). \\
+command  & Run a command whose output supplies the candidates. \\
+list     & Offer a static inline list of suggestions, without restricting input. \\
+none     & Suppress completion for this value. \\
+\end{tabulary}
+
+\section{Constraints}
+
+Constraints describe relationships not expressible in the grammar, and are listed in the root \code{constraints} array. Symmetric constraints use a \code{symbols} field; asymmetric constraints use \code{subject} and \code{targets}.
+
+\begin{outline}
+\1\inlinesynopsis{conflicts}{symmetric --- the listed \code{symbols} are mutually exclusive.}
+\1\inlinesynopsis{requires}{asymmetric --- if \code{subject} is present, every symbol in \code{targets} MUST also be present.}
+\1\inlinesynopsis{implies}{asymmetric derivation --- if \code{subject} is present, every symbol in \code{targets} is implicitly set (a side effect, not a rejection).}
+\1\inlinesynopsis{cardinality}{symmetric --- constrains how many of the listed \code{symbols} may appear, via \code{minimum} and \code{maximum}.}
+\end{outline}
+
+Three of these (\code{conflicts}, \code{requires}, \code{cardinality}) are validation predicates that decide whether an invocation is well-formed; \code{implies} instead sets a value.
+
+\begin{lstlisting}
+"constraints": [
+  { "type": "conflicts", "symbols": ["stdout", "output"] },
+  { "type": "cardinality", "symbols": ["create", "extract", "list"],
+    "minimum": 1, "maximum": 1 }
+]
+\end{lstlisting}
+
+\section{Generated Usage and Compatibility}
+
+Implementations SHOULD generate human-readable usage text from the synopsis grammar; that text is non-authoritative output, the grammar remaining the sole normative description.
+
+TSF distinguishes additive content, which may be ignored safely, from structural content, which may not. Unknown \emph{fields} on otherwise-valid objects SHALL be ignored, so future minor versions MAY add fields without breaking existing documents or consumers. Unknown \emph{grammar node types} and unknown \emph{symbol kinds} SHALL cause the document to be rejected or to enter an explicitly defined degraded mode, because ignoring them would silently change the set of accepted invocations.
+
+Authors and hosts that need to attach implementation-specific data SHOULD do so inside the root \code{metadata} object or under field names prefixed with \code{x-}; names without that prefix are reserved for future versions of this specification. Consumers SHOULD report the highest \code{tsfVersion} they support so producers can downgrade gracefully.
+
+\section{How \thedos\ Uses Synopsis Documents}
+
+A synopsis document is put to work in three ways. The shell uses it for \emph{tab-completion}: when you press Tab part-way through an argument, the grammar tells the shell whether to offer option flags, a fixed set of \code{enum} values, a subcommand name, or filesystem entries (for the \code{path}, \code{file} and \code{directory} types). The \code{synopsis} command --- and its \code{help} alias --- uses it for \emph{help}, printing the summary, a generated usage line, and the arguments, options and constraints. Authors may further use the \code{validation} and \code{constraints} sections to check an invocation before acting on it.
+
+\thedos\ finds a command's document the same way it finds the command itself: an app's synopsis sits next to its executable (\code{geturl.js} beside \code{geturl.js.synopsis}), while the built-in coreutils, having no file of their own, keep theirs in \code{\rs{}tvdos\rs{}synopsis}. Aliases resolve to the canonical command's document, so \code{ls} is described by \code{dir.synopsis}. Parsed documents are cached under \code{\rs{}tvdos\rs{}cache\rs{}synopsis} so that repeated completions and help lookups stay fast; the cache is rebuilt on demand and may be deleted at any time.
 
 
 \chapter{Pipes}
@@ -230,6 +613,7 @@ Functions:
  \2\argsynopsis{sread}{returns an empty string}
 \1\inlinesynopsis{ZERO}{returns zero upon reading}
  \2\argsynopsis{pread}{returns the specified number of zeros}
+\1\inlinesynopsis{TMP}{a scratch area for temporary files, addressed as \code{\$:\rs{}TMP\rs{}\dots}. Files written here are not expected to persist.}
 \1\inlinesynopsis{CON}{manipulates the screen text buffer, disregarding the colours}
  \2\argsynopsis{pread}{reads the texts as bytes.}
  \2\argsynopsis{bread}{reads the texts as bytes.}
@@ -256,24 +640,34 @@ Functions:
 
 \subsection{Input Events}
 
-Input events are Javascript array of: $$ [\mathrm{event\ name,\ arg_1,\ arg_2 \cdots arg_n}] $$, where:
+An input event is a Javascript array of the form $$ [\mathrm{event\ name,\ arg_1,\ arg_2 \cdots arg_n}] $$ where the event name is one of \textbf{key\_down}, \textbf{key\_change}, \textbf{mouse\_down}, \textbf{mouse\_up}, \textbf{mouse\_move} or \textbf{mouse\_wheel}. Every event ends with the current key-press buffer (\code{keycode0} through \code{keycode7}), so a handler can detect modifier keys held during a mouse action.
 
 \begin{outline}
-\1event name --- one of following: \textbf{key\_down}, \textbf{mouse\_down}, \textbf{mouse\_move}
 \1arguments for \textbf{key\_down}:
- \2\argsynopsis{\argN{1}}{Key Symbol (string) of the head key}
+ \2\argsynopsis{\argN{1}}{Key symbol (string) of the head key}
  \2\argsynopsis{\argN{2}}{Repeat count of the key event}
  \2\argsynopsis{\argN{3}..\argN{10}}{The keycodes of the pressed keys}
-\1arguments for \textbf{mouse\_down}:
+\1arguments for \textbf{key\_change} (a key was released):
+ \2\argsynopsis{\argN{1}}{Key symbol (string) of the key that went up}
+ \2\argsynopsis{\argN{2}}{0}
+ \2\argsynopsis{\argN{3}..\argN{10}}{The keycodes of the keys still held down}
+\1arguments for \textbf{mouse\_down} / \textbf{mouse\_up}:
  \2\argsynopsis{\argN{1}}{X-position of the mouse cursor}
  \2\argsynopsis{\argN{2}}{Y-position of the mouse cursor}
- \2\argsynopsis{\argN{3}}{Always the integer 1.}
+ \2\argsynopsis{\argN{3}}{Button mask: 1 = left, 2 = right, 4 = middle (for \textbf{mouse\_up}, the button that was released)}
+ \2\argsynopsis{\argN{4}..}{The key-press buffer}
 \1arguments for \textbf{mouse\_move}:
  \2\argsynopsis{\argN{1}}{X-position of the mouse cursor}
  \2\argsynopsis{\argN{2}}{Y-position of the mouse cursor}
- \2\argsynopsis{\argN{3}}{1 if the mouse button is held down (i.e. dragging), 0 otherwise}
- \2\argsynopsis{\argN{4}}{X-position of the mouse cursor on the previous frame (previous V-blank of the screen)}
+ \2\argsynopsis{\argN{3}}{Currently-held button mask (non-zero while dragging)}
+ \2\argsynopsis{\argN{4}}{X-position of the mouse cursor on the previous frame}
  \2\argsynopsis{\argN{5}}{Y-position of the mouse cursor on the previous frame}
+ \2\argsynopsis{\argN{6}..}{The key-press buffer}
+\1arguments for \textbf{mouse\_wheel}:
+ \2\argsynopsis{\argN{1}}{X-position of the mouse cursor}
+ \2\argsynopsis{\argN{2}}{Y-position of the mouse cursor}
+ \2\argsynopsis{\argN{3}}{$-1$ for a wheel notch up, $+1$ for a notch down}
+ \2\argsynopsis{\argN{4}..}{The key-press buffer}
 \end{outline}
 
 
@@ -328,7 +722,8 @@ External libraries are packaged codes with the intention of being re-used by oth
 External libraries can be stored in following locations:
 
 \begin{enumerate}
- \item \code{A:\rs{}tvdos\rs{}include}
+ \item \code{A:\rs{}tvdos\rs{}include}, the home of the libraries bundled with \thedos
+ \item any directory listed in the \code{INCLPATH} variable (configured in \code{commandrc})
  \item a path relative to the user program
  \item an absolute path that can be anywhere
 \end{enumerate}
@@ -336,7 +731,7 @@ External libraries can be stored in following locations:
 and can be loaded by:
 
 \begin{enumerate}
- \item \code{let name = require(libraryname)} // no .mjs extension
+ \item \code{let name = require(libraryname)} // no .mjs extension; searches the include directory and INCLPATH
  \item \code{let name = require(./libraryname)} // the relative path must start with a dot-slash
  \item \code{let name = require(A:/path/to/library.mjs)} // full path WITH the .mjs extension
 \end{enumerate}
@@ -357,3 +752,197 @@ const BAR = 127
 // following line exports the function and the variable
 exports = { foo, BAR }
 \end{lstlisting}
+
+
+
+\chapter{Bundled Libraries}
+
+\index{bundled libraries (DOS)}\thedos\ ships a set of ready-made libraries in \code{A:\rs{}tvdos\rs{}include}. Each is loaded with \code{require} using its base name --- \code{require("fs")}, \code{require("psg")}, and so on --- and returns the object the library exports. This chapter documents each in turn.
+
+\section{fs --- Filesystem (NodeJS-compatible)}
+
+\index{fs (library)}\code{fs} wraps the \thedos\ file interface in the familiar NodeJS \code{fs} API. Synchronous (\code{*Sync}) calls, callback-style asynchronous calls, and a \code{promises} namespace are all provided; because the machine has no real concurrency, the ``asynchronous'' calls execute immediately and then invoke the callback or resolve the promise. Binary data is exchanged as \code{Uint8Array}; supplying an encoding (\code{"utf8"}, \code{"binary"}, \dots) exchanges strings instead.
+
+\begin{lstlisting}
+let fs = require("fs")
+let txt = fs.readFileSync("A:/etc/motd", "utf8")
+fs.writeFileSync("A:/tmp/hello.txt", "hi", "utf8")
+fs.readdirSync("A:/").forEach(println)
+\end{lstlisting}
+
+Frequently used members:
+\begin{outline}
+\1\inlinesynopsis{readFileSync}[path, options]{reads an entire file.}
+\1\inlinesynopsis{writeFileSync}[path, data, options]{writes (and truncates) a file.}
+\1\inlinesynopsis{appendFileSync}[path, data, options]{appends to a file.}
+\1\inlinesynopsis{existsSync}[path]{whether a path exists.}
+\1\inlinesynopsis{statSync}[path]{returns a \code{Stats} object.}
+\1\inlinesynopsis{readdirSync}[path]{lists a directory.}
+\1\inlinesynopsis{mkdirSync}[path]{creates a directory.}
+\1\inlinesynopsis{unlinkSync, rmSync, rmdirSync}[path]{remove files / directories.}
+\1\inlinesynopsis{renameSync, copyFileSync, cpSync}[src, dest]{rename and copy.}
+\1\inlinesynopsis{openSync, readSync, writeSync, closeSync}{the low-level descriptor calls.}
+\end{outline}
+The corresponding callback forms (\code{readFile}, \code{writeFile}, \dots), the \code{promises} namespace, the \code{Stats} and \code{Dirent} classes, and the usual \code{constants} are also exported.
+
+\section{getopt --- Option Parsing}
+
+\index{getopt (library)}\code{getopt} is a port of the POSIX \code{getopt()} routine. Construct a \code{BasicParser} from an option string and the argument vector, then call \code{getopt()} repeatedly; each call returns an object \code{\{ option, optarg \}} for the next option, or \code{undefined} at the end. A colon after a letter in the option string means that option takes an argument; long aliases are written in parentheses.
+
+\begin{lstlisting}
+let getopt = require("getopt")
+let parser = new getopt.BasicParser("r(recursive)o:(output)", exec_args)
+let o
+while ((o = parser.getopt()) !== undefined) {
+    switch (o.option) {
+        case 'r': /* recursive */ break
+        case 'o': let target = o.optarg; break
+    }
+}
+\end{lstlisting}
+
+\section{gl --- Graphics Library}
+
+\index{gl (library)}\code{gl} is the same graphics-drawing library installed at boot as the \code{GL} namespace; \code{require("gl")} returns the same set of textures, sprite-sheets and drawing functions. It is documented in full in the \emph{The Graphics Library} chapter.
+
+\section{net --- Internet Text Fetch}
+
+\index{net (library)}\code{net} fetches text over the network through an attached HTTP modem, translating ordinary URLs into the form the modem expects.
+
+\begin{outline}
+\1\inlinesynopsis{isAvailable}[]{true if an HTTP modem is attached.}
+\1\inlinesynopsis{getHttpDrive}[]{the drive letter bound to the HTTP modem, or null.}
+\1\inlinesynopsis{fetchText}[url]{fetches a URL and returns the body as a string, or null on failure.}
+\1\inlinesynopsis{fetchTextOrThrow}[url]{as \code{fetchText}, but throws on failure.}
+\1\inlinesynopsis{open}[url]{returns a file descriptor backed by the modem, whose \code{sread}/\code{bread} trigger the fetch.}
+\1\inlinesynopsis{toModemPath}[url]{returns the \code{<drive>:\rs{}<url>} path the fetch would use.}
+\end{outline}
+
+\section{pcm --- PCM and ADPCM Decoding}
+
+\index{pcm (library)}\code{pcm} decodes linear PCM and Microsoft ADPCM into the audio hardware's 8-bit format, resampling to the 32\,kHz hardware rate as needed. It underpins the \code{playpcm} and \code{playwav} players.
+
+\begin{outline}
+\1\inlinesynopsis{decodeLPCM}[inPtr, outPtr, inputLen, config]{decodes linear PCM. \code{config} gives \code{nChannels}, \code{bitsPerSample}, \code{samplingRate} and \code{blockSize}.}
+\1\inlinesynopsis{decodeMS\_ADPCM}[inPtr, outPtr, blockSize, config]{decodes one Microsoft-ADPCM block.}
+\1\inlinesynopsis{HW\_SAMPLING\_RATE}{the hardware sampling rate, 32000.}
+\end{outline}
+The sample-conversion helpers \code{s8Tou8}, \code{s16Tou8}, \code{u16Tos16} and \code{randomRound} are exported too.
+
+\section{psg --- Programmable Sound Generator}
+
+\index{psg (library)}\code{psg} is a software sound generator: it synthesises classic chiptune waveforms into a buffer and sends the result to a playhead as PCM. It is handy for sound effects and simple music without authoring a full tracker module.
+
+\begin{outline}
+\1\inlinesynopsis{makeBuffer}[length]{allocates a mixing buffer; \code{makeBufferNative} / \code{freeBufferNative} use native memory.}
+\1\inlinesynopsis{clearBuffer}[buf, offsetSec, lengthSec]{silences part of a buffer.}
+\1\inlinesynopsis{makeSquare}{writes a square wave (with duty cycle) into a buffer.}
+\1\inlinesynopsis{makeTriangle, makeAliasedTriangle, makeAliasedTriangleNES}{triangle-wave variants.}
+\1\inlinesynopsis{makeNoise}{writes an LFSR noise waveform.}
+\1\inlinesynopsis{sendBuffer, sendBufferFast}[buf, playhead, offsetSec, lengthSec]{uploads a buffer to a playhead for playback.}
+\end{outline}
+The wave generators take an offset, frequency, amplitude, pan and a mixing operation, so several voices can be layered into one buffer.
+
+\section{taud --- Tracker Module Loading}
+
+\index{taud (library)}\code{taud} moves Taud music between disk and the tracker hardware. It is intentionally small; authoring Taud music belongs to the separate Taud manual.
+
+\begin{outline}
+\1\inlinesynopsis{uploadTaudFile}[inFile, songIndex, playhead]{loads one song from a Taud file into the tracker hardware and prepares the given playhead to play it.}
+\1\inlinesynopsis{captureTrackerDataToFile}[outFile]{writes the current tracker state (samples, instruments, patterns and cue sheet) out to a single-song Taud file.}
+\end{outline}
+
+\section{typesetter --- Rich-text Layout}
+
+\index{typesetter (library)}\code{typesetter} wraps, aligns and justifies text for the console using a small markup language. It returns an array of strings, each padded to the requested width, ready to print.
+
+\begin{outline}
+\1\inlinesynopsis{typeset}[text, width, opts]{lays out text to the given width (default: the rest of the current row). \code{opts.defaultAlign} is one of \code{l}, \code{c}, \code{r} or \code{j} (justified).}
+\1\inlinesynopsis{typesetText}[text, width, defaultAlign]{the same, with the width always given explicitly.}
+\1\inlinesynopsis{expandEntities}[s]{expands the named entities (glyphs, accidentals, arrows, \code{\&nbsp;}, \dots).}
+\end{outline}
+The markup understands \code{<b>}/\code{<s>} for emphasis, \code{<c>}/\code{<r>}/\code{<l>} for per-line alignment, and \code{<o>} for a hanging-indent box anchored at the cursor column.
+
+\section{wintex --- TUI Windows}
+
+\index{wintex (library)}\code{wintex} provides a small text-mode window toolkit: framed, titled windows with their own input and drawing handlers, plus scrolling helpers and a ready-made dialog box.
+
+\begin{outline}
+\1\inlinesynopsis{WindowObject}[x, y, w, h, inputProcessor, drawContents, title, drawFrame]{constructs a window; the two handler functions receive input events and redraw the contents.}
+\1\inlinesynopsis{showDialog}[opts]{displays a modal dialog (message, buttons, \dots) and returns the user's choice.}
+\1\inlinesynopsis{scrollVert, scrollHorz}{compute new cursor and scroll positions for scrollable lists and fields.}
+\end{outline}
+
+\section{lfs --- Archive Extraction}
+
+\index{lfs (library)}\code{lfs} extracts \thedos\ Linear File Strip (\code{.lfs}) archives programmatically, transparently inflating any compressed entries.
+
+\begin{outline}
+\1\inlinesynopsis{extractOne}[archive, filename]{extracts a single named entry and returns its file descriptor (under \code{\$:\rs{}TMP}).}
+\1\inlinesynopsis{extractAll}[archive]{unpacks the whole archive and returns the directory descriptor.}
+\end{outline}
+Both take an optional \code{autoDecompress} flag (default true) and require a relative-path archive.
+
+\section{mload --- Bulk File Loading}
+
+\index{mload (library)}\code{mload} is a single function for packaged apps that need to pre-load resources into memory. Given an array of absolute paths, it loads each into memory and returns an array of the corresponding pointers (or \code{null} where a file could not be loaded).
+
+\begin{lstlisting}
+let mload = require("mload")
+let [fontPtr, sheetPtr] = mload(["A:/app/font.bin", "A:/app/sheet.bin"])
+\end{lstlisting}
+
+\section{seqread --- Sequential Disk Reading}
+
+\index{seqread (library)}\code{seqread} reads a file from a serial-connected disk drive as a stream, which is more efficient than random access for whole-file consumption (media players, archive readers).
+
+\begin{outline}
+\1\inlinesynopsis{prepare}[fullPath]{opens a file for sequential reading.}
+\1\inlinesynopsis{readBytes}[length, ptr]{reads bytes into memory (allocating a buffer if no pointer is given).}
+\1\inlinesynopsis{readInt, readShort, readOneByte, readFourCC, readString}{read typed values from the stream.}
+\1\inlinesynopsis{skip}[n]{skips ahead; \code{seek}/\code{rewind} reposition the stream.}
+\1\inlinesynopsis{getReadCount}[]{the number of bytes read so far.}
+\end{outline}
+
+\section{seqreadtape --- Sequential Tape Reading}
+
+\index{seqreadtape (library)}\code{seqreadtape} is the counterpart to \code{seqread} for high-speed tape devices, addressed as \code{\$:\rs{}TAPE0}\dots\code{\$:\rs{}TAPE3}. It reads in large chunks rather than being limited to the serial block size, and exposes the same reading interface (\code{prepare}, \code{readBytes}, \code{readInt}, \dots, \code{skip}, \code{seek}, \code{rewind}) plus \code{close}, \code{isReady} and \code{getCurrentTapeDevice}.
+
+\section{font --- Character ROM}
+
+\index{font (library)}\code{font} replaces the displayed character set by uploading a font file into the graphics adapter's character ROM.
+
+\begin{outline}
+\1\inlinesynopsis{setLowRom}[fullPath]{loads characters 0--127 from a font file.}
+\1\inlinesynopsis{setHighRom}[fullPath]{loads characters 128--255 from a font file.}
+\1\inlinesynopsis{resetLowRom, resetHighRom}[]{restore the default character set.}
+\end{outline}
+
+\section{keysym --- Key Symbol Constants}
+
+\index{keysym (library)}\code{keysym} is a table of named key codes (\code{A}, \code{ENTER}, \code{UP}, \code{SHIFT\_LEFT}, \dots) for use with the \code{input} library's events. Note that these are the keycodes carried by \code{input.withEvent} events, which differ from the character codes returned by \code{con.getch}.
+
+\begin{lstlisting}
+let key = require("keysym")
+input.withEvent((e) => {
+    if (e[0] === "key_down" && e.includes(key.ESCAPE)) quit()
+})
+\end{lstlisting}
+
+\section{tbas --- Terran BASIC Runtime}
+
+\index{tbas (library)}\code{tbas} is the runtime support library for compiled Terran BASIC programs. It supplies the BASIC built-in functions (\code{PRINT}, \code{SIN}, \code{LEFT}, \dots) and the helpers the BASIC compiler emits. It is loaded automatically by a compiled program and is not normally used by hand; it is documented here only for completeness.
+
+\section{synopsis --- Command Synopsis Loading}
+
+\index{synopsis (library)}\code{synopsis} loads and caches TSF \code{.synopsis} documents (see the \emph{Command Synopsis Format} chapter) and answers the questions the shell and the \code{synopsis} command ask of them. It resolves a command name to its document --- an app's sits beside the executable, a coreutil's in \code{A:\rs{}tvdos\rs{}synopsis} --- parses it into a model, and caches the result both in memory and on disk.
+
+\begin{outline}
+\1\inlinesynopsis{getCompletion}[command, priorArgs, word]{returns the completion candidates for the word being typed: option flags, enum values, subcommand names, and whether the shell should additionally offer filesystem entries.}
+\1\inlinesynopsis{getModel}[command]{the parsed model --- summary, options, positional arguments, subcommands and constraints --- or null when the command has no synopsis.}
+\1\inlinesynopsis{getSummary}[command]{the one-line summary, or null.}
+\1\inlinesynopsis{getUsage}[command]{a generated usage string, such as \code{cp SOURCE DEST}.}
+\1\inlinesynopsis{resolveSynopsisPath}[command]{the full path of the command's synopsis document, or null.}
+\1\inlinesynopsis{registerProvider}[name, fn]{registers an \code{internal} completion provider that \code{fn(word)} supplies candidates for; \code{commands} and \code{envvars} are built in.}
+\1\inlinesynopsis{clearCache}[]{drops the in-memory caches.}
+\end{outline}

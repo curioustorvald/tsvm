@@ -1,0 +1,7 @@
+{
+  "tsfVersion": "1.0",
+  "name": "cls",
+  "summary": "Clear the screen",
+  "symbols": {},
+  "synopsis": { "type": "sequence", "children": [] }
+}

@@ -1,0 +1,9 @@
+{
+  "tsfVersion": "1.0",
+  "name": "movprobe",
+  "summary": "Print metadata about a movie file",
+  "symbols": {
+    "file": { "kind": "positional", "type": "file", "name": "FILE", "summary": "Movie file to inspect" }
+  },
+  "synopsis": { "type": "reference", "symbol": "file" }
+}

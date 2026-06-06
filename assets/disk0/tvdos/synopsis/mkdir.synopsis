@@ -1,0 +1,9 @@
+{
+  "tsfVersion": "1.0",
+  "name": "mkdir",
+  "summary": "Create a directory",
+  "symbols": {
+    "dir": { "kind": "positional", "type": "path", "name": "DIR", "summary": "Directory to create" }
+  },
+  "synopsis": { "type": "reference", "symbol": "dir" }
+}

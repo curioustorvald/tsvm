@@ -1,0 +1,7 @@
+{
+  "tsfVersion": "1.0",
+  "name": "panic",
+  "summary": "Deliberately raise an error (diagnostic aid)",
+  "symbols": {},
+  "synopsis": { "type": "sequence", "children": [] }
+}

@@ -1,0 +1,16 @@
+{
+  "tsfVersion": "1.0",
+  "name": "color",
+  "summary": "Set the screen background and foreground colours",
+  "symbols": {
+    "code": {
+      "kind": "positional",
+      "type": "string",
+      "name": "BF",
+      "summary": "Two hex digits: background then foreground",
+      "validation": { "pattern": "^[0-9A-Fa-f]{2}$" },
+      "completion": { "method": "none" }
+    }
+  },
+  "synopsis": { "type": "reference", "symbol": "code" }
+}

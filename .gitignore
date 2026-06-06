@@ -74,3 +74,6 @@ assets/disk0/movtestimg/*.jpg
 assets/disk0/*.mov
 assets/diskMediabin/*
 assets/disk0/hopper/*
+
+# TVDOS runtime caches (regenerated on the VM; never commit)
+assets/disk0/tvdos/cache/

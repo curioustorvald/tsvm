@@ -3,16 +3,16 @@
 \section{Specs}
 
 \begin{outline}
-\1 16 MB memory space with maximum 8 MB of scratchpad memory
+\1 16 MB memory space with maximum 8 MB of core memory
 \1 7 peripheral card slots, each can map 1 MB of memory to the memory space
 \1 Standard graphics adapter on slot 1, with 256 simultaneous colours, 560\times448 pixels framebuffer and 80-column 32-row text buffer
 \1 Built-in mouse input support
 \1 4 serial ports to connect disk drives, modems and other computers
 \end{outline}
 
-There are three memories on the system: Hardware Memory (8 MB), Scratchpad Memory (up to 8 MB) and Program Memory (infinite!)
+There are three memories on the system: Hardware Memory (8 MB), Core Memory (up to 8 MB) and Program Memory (infinite!)
 
-Your Javascript program is stored into the Program Memory, and since its capacity is limitless, you can put a large graphics directly into your Javascript source code, but the Program Memory is the slowest of all three memories. For faster graphics, you need to store them onto the Scratchpad Memory then DMA-Copy them to the graphics adapter.
+Your Javascript program is stored into the Program Memory, and since its capacity is limitless, you can put a large graphics directly into your Javascript source code, but the Program Memory is the slowest of all three memories. For faster graphics, you need to store them onto the Core Memory then DMA-Copy them to the graphics adapter.
 
 \section{Javascript Extensions}
 
@@ -36,7 +36,29 @@ Your Javascript program is stored into the Program Memory, and since its capacit
 
 \chapter{Libraries}
 
+\thismachine\ runs your program on an embedded ECMAScript engine. The language is standard Javascript; what makes a \thismachine\ program a \thismachine\ program is the set of \emph{host namespaces} the engine exposes --- global objects, available without any import, through which the program talks to the hardware.
 
+\section{Namespaces}
+
+\index{namespaces}The following namespaces are always present, whether or not an operating system is loaded:
+
+\begin{outline}
+\1\inlinesynopsis{sys}{low-level system and memory access (\code{peek}, \code{poke}, \code{malloc}, timing, input).}
+\1\inlinesynopsis{graphics}{the graphics adapter: pixels, palette, graphics modes, image decoding.}
+\1\inlinesynopsis{audio}{the sound card: PCM playback and the tracker engine.}
+\1\inlinesynopsis{com}{block (``serial'') communication with attached devices.}
+\1\inlinesynopsis{dma}{bulk memory-to-memory and memory-to-device transfers.}
+\1\inlinesynopsis{gzip}{compression and decompression (see the note on the name below).}
+\1\inlinesynopsis{base64}{Base64 encoding and decoding.}
+\1\inlinesynopsis{serial}{a debug text channel to the host; output appears on the host's console, not on the \thismachine\ screen.}
+\1\inlinesynopsis{con}{screen text manipulation, built on top of the above.}
+\end{outline}
+
+The plain \code{print}, \code{println}, \code{printerr}, \code{printerrln} and \code{read} functions are also global.
+
+A second set of namespaces --- \code{files}, \code{input}, \code{unicode}, \code{GL}, \code{require}, \code{exports} and the \code{\_G.shell} family --- is provided by \thedos\ and is only present once the operating system has booted. Those are documented in the \thedos\ part of this book.
+
+\textbf{A note on \code{gzip}:} despite the name, the \code{gzip} namespace compresses and decompresses using the \emph{Zstandard} format. The decompressor recognises both Zstandard and the older gzip streams, so older files keep working. The name is historical.
 
 \section{Standard Input and Output}
 
@@ -96,6 +118,8 @@ Functions:
 \1\formalsynopsis{color\_fore}{code: Int}{Defines the foreground colour of the text. 0 -- black, 1 -- red, 2 -- green, 3 -- yellow, 4 -- blue, 5 -- magenta, 6 -- cyan, 7 -- white, -1 -- transparent}
 \1\formalsynopsis{color\_back}{code: Int}{Defines the background colour of the text.}
 \1\formalsynopsis{color\_pair}{fore: Int, back: Int}{Defines the foreground and background colour of the text. Colour code for this function differs from the \code{color\_back} and \code{color\_fore}; please refer to the \ref{colourpalette}.}
+\1\formalsynopsis{get\_color\_fore}{}[Int]{Returns the current text foreground colour (palette index).}
+\1\formalsynopsis{get\_color\_back}{}[Int]{Returns the current text background colour (palette index).}
 \1\formalsynopsis{clear}{}{Clears the text buffer. The framebuffer (if any) will not be affected.}
 \1\formalsynopsis{reset\_graphics}{}{Resets foreground and background colour to defaults and makes the cursor visible if it was hidden.}
 \end{outline}
@@ -146,7 +170,7 @@ Sys library allows programmers to manipulate the system in low-level.
 \begin{outline}
 \1\formalsynopsis{poke}{address: Int, value: Int}{Puts a value into the memory of the specified address.}
 \1\formalsynopsis{peek}{address: Int}[Int]{Reads a value from the memory of the specified address.}
-\1\formalsynopsis{malloc}{size: Int}[Int]{Allocates a space of the given size on the Scratchpad memory and returns its pointer (starting address)}
+\1\formalsynopsis{malloc}{size: Int}[Int]{Allocates a space of the given size on the Core memory and returns its pointer (starting address)}
 \1\formalsynopsis{free}{pointer: Int}{Frees the memory space previously \code{malloc}'d}
 \1\formalsynopsis{memcpy}{from: Int, to: Int, length: Int}{Copies the memory block of the given length. From and To are pointers.}
 \1\formalsynopsis{mapRom}{romSlotNum: Int}{Maps the contents on the given ROM to the memory address {-\nobreak65537.\nobreak.-\nobreak131072}}
@@ -163,12 +187,43 @@ Sys library allows programmers to manipulate the system in low-level.
 \1\formalsynopsis{waitForMemChg}{address: Int, andMask: Int, xorMask: Int}[]{Do nothing until a memory value is changed. More specifically, this function will \code{spin} while:$$ (\mathrm{peek}(addr)\ \mathrm{xor}\ xorMask)\ \mathrm{and}\ andMask = 0 $$}
 \1\formalsynopsis{getSysRq}{}[Boolean]{Returns true if System Request key is down.}
 \1\formalsynopsis{unsetSysRq}{}{After using the System Request key, call this function to `release' the key so that other programs can use it.}
-\1\formalsynopsis{maxmem}{}[Int]{returns the size of the Scratchpad Memory in bytes.}
+\1\formalsynopsis{maxmem}{}[Int]{returns the size of the Core Memory in bytes.}
 \1\formalsynopsis{getUsedMem}{}[Int]{Returns how many memories can be \code{malloc}'d.}
 \1\formalsynopsis{getMallocStatus}{}[IntArray(2)]{Returns the \code{malloc} status in following order:$$ [\mathrm{Malloc\ unit\ size,\ allocated\ block\ counts}] $$}
 \end{outline}
 
 
+
+
+
+\section{DMA}
+
+\index{dma (library)}The \thismachine\ can copy blocks of memory directly, without the program shuffling individual bytes. This is far faster than a \code{peek}/\code{poke} loop and is the usual way of moving graphics into the framebuffer.
+
+\namespaceis{DMA}{dma}
+
+\begin{outline}
+\1\formalsynopsis{ramToRam}{from: Int, to: Int, length: Int}{Copies a block of memory from one address to another.}
+\1\formalsynopsis{ramToFrame}{from: Int, to: Int, length: Int}{Copies a block of memory into the framebuffer of the first graphics adapter.}
+\1\formalsynopsis{ramToFrame}{from: Int, devnum: Int, offset: Int, length: Int}{Copies a block of memory into the framebuffer of the graphics adapter in the given slot, starting at the given offset.}
+\1\formalsynopsis{frameToRam}{from: Int, to: Int, length: Int}{Copies a block of framebuffer memory back into ordinary memory.}
+\1\formalsynopsis{frameToRam}{from: Int, to: Int, devnum: Int, length: Int}{As above, sourcing the framebuffer of the graphics adapter in the given slot.}
+\1\formalsynopsis{comToRam}{portNo: Int, srcOff: Int, destOff: Int, length: Int}{Copies bytes from a serial port's receive block into memory.}
+\1\formalsynopsis{ramToCom}{srcOff: Int, portNo: Int, length: Int}{Copies bytes from memory into a serial port's send block.}
+\1\formalsynopsis{strToRam}{str: String, to: Int, srcOff: Int, length: Int}{Writes the characters of a Javascript string into memory as bytes.}
+\end{outline}
+
+
+\section{Serial Debugger}
+
+\index{serial (library)}The \code{serial} namespace prints to a debug channel that appears on the \emph{host} machine's console, never on the \thismachine\ screen. It is invaluable for tracing a program without disturbing what the user sees.
+
+\namespaceis{Serial}{serial}
+
+\begin{outline}
+\1\inlinesynopsis{print}[Anything]{prints a value to the host debug console.}
+\1\inlinesynopsis{println}[Anything]{prints a value followed by a new line to the host debug console.}
+\end{outline}
 
 
 
@@ -328,7 +383,13 @@ The com-port will behave differently if you're writing to or reading from the ad
 
 \section{Keyboard}
 
-TODO
+\index{keyboard}The keyboard is part of the main hardware (the slot-zero IO device) and is read through MMIO. It offers two distinct views of the same physical keyboard, and a program chooses whichever suits it.
+
+\textbf{The input stream (TTY view).} For ordinary line- and character-oriented input, the program opens the text input stream by writing a non-zero value to MMIO \code{-39}. Keystrokes are then translated to characters and pushed onto the \emph{keyboard input buffer}; the head of that buffer is read from MMIO \code{-38}, and reading it shifts the buffer along. This is the mechanism behind \code{con.getch}, \code{read} and the \code{sys.read}/\code{sys.readKey} family. Opening the stream clears the buffer, so it must be opened exactly once.
+
+\textbf{The raw view.} For interactive programs that need to know which keys are physically held down --- games, editors --- the program latches the current input by writing to MMIO \code{-40} and then reads the \emph{list of pressed keys} from \code{-41..-48}. This buffer holds up to eight simultaneous keys (``8-key rollover''), sorted, with zero filling the unused slots. \code{con.poll\_keys} exposes this directly. Latching freezes the values so that a multi-key read is consistent.
+
+The codes in the raw view are the engine keycodes listed below; the codes in the stream view are character codes (with a handful of control values, e.g.\ \code{3} for Ctrl-C, \code{8} for Backspace, \code{13} for Return, and \code{19}--\code{22} for the arrow keys). \thedos\ builds its event-driven \code{input} library (see the \thedos\ part) on top of the raw view.
 
 \subsection{Keycodes}
 
@@ -451,7 +512,14 @@ F12 & 142 \\
 
 \section{Mouse}
 
-TODO
+\index{mouse}The mouse is read through the same slot-zero IO device. Its position and button state are memory-mapped:
+
+\begin{outline}
+\1the cursor's X position is a 16-bit value at MMIO \code{-33..-34}, and the Y position at \code{-35..-36}. Like the keyboard's raw view, both are latched by a write to \code{-40} so a coordinate pair can be read consistently.
+\1the button state is a single byte at \code{-37}. It is a bit-field: bit 0 is the left button, bit 1 the right, bit 2 the middle. Bits 6 and 7 report a wheel notch up and down respectively; these wheel bits latch in hardware and clear when read, so a single notch is reported exactly once.
+\end{outline}
+
+Most programs do not poke these addresses directly. Under \thedos, the \code{input} library turns mouse motion, clicks and wheel notches into the \textbf{mouse\_down}, \textbf{mouse\_up}, \textbf{mouse\_move} and \textbf{mouse\_wheel} events described in the \thedos\ part of this book.
 
 
 \chapter{Peripherals and Memory Mapping}
@@ -490,7 +558,7 @@ The memory map of \thismachine\ is illustrated as following:
 \draw(0,12.5) node[anchor=north east] {Start};
 \draw(6,12.5) node[anchor=north west] {End};
 
-\draw(3,10)  node[anchor=mid] {\memlabel{Scratchpad Memory}};
+\draw(3,10)  node[anchor=mid] {\memlabel{Core Memory}};
 \draw(3,7.5) node[anchor=mid] {\memlabel{MMIO Area}};
 \draw(3,6.5) node[anchor=mid] {\memlabel{Peripheral Memory \#1}};
 \draw(3,5.5) node[anchor=mid] {\memlabel{Peripheral Memory \#2}};
@@ -559,7 +627,7 @@ Address & RW & Description \\
 -41..-48 & RO & List of pressed keys (latched by -40) \\
 -49 & RO & System Flags A (\code{0b r000 000t}, where r: RESET button held, t: STOP button held) \\
 -50..-52 & RO & Unused System Flags \\
--65..-68 & RO & Size of the Scratchpad Memory \\
+-65..-68 & RO & Size of the Core Memory \\
 -69 & WO & Counter Latch (\code{0b01}--Uptime, \code{0b10}--RTC) \\
 -73..-80 & RO & System Uptime in nanoseconds (latched by -69) \\
 -81..-88 & RO & RTC in nanoseconds (latched by -69) \\
@@ -578,7 +646,14 @@ Address & RW & Description \\
 
 \chapter{Text and Graphics Display}
 
-TODO: Textbuf, pixelbuf, graphics mode, chart of the draw order
+\index{display model}The reference graphics adapter drives the screen from two superimposed surfaces:
+
+\begin{outline}
+\1the \textbf{framebuffer} (also called the pixel buffer), a grid of pixels whose size and colour depth depend on the current graphics mode; and
+\1the \textbf{text buffer}, a grid of character cells, each with its own foreground and background colour.
+\end{outline}
+
+These are composited every frame in a fixed order: first the screen background (border) colour, then the framebuffer, then the text on top. The text is therefore always visible over whatever the framebuffer holds, and a text cell whose background uses the transparent palette entry lets the framebuffer show through. A program that wants a purely graphical display simply leaves the text buffer blank; one that wants a classic terminal leaves the framebuffer cleared.
 
 While the graphics adapters can be plugged into any peripheral slot, it is highly recommended they occupy the 1st slot. The Memory address charts for the graphics adapter on this documentation will assume as such.
 
@@ -634,7 +709,35 @@ Sequence & Description \\
 
 \section{Frame Buffer}
 
-TODO
+\index{frame buffer}The framebuffer holds the pixel image. In the default mode it is $560\times448$ pixels, one byte per pixel, where each byte is an index into the 256-entry colour palette. Pixels are written either with the \code{graphics} library (\code{plotPixel}, \code{plotRect}, \dots), or far more quickly by \code{dma}-copying a prepared image into the framebuffer region of the adapter's memory.
+
+\subsection{Graphics Modes}
+
+\index{graphics mode}The adapter can be reconfigured into several modes that trade resolution, colour depth and the number of \emph{layers} (independent pixel planes that the adapter composites together). The mode is selected with \code{graphics.setGraphicsMode}, or by poking the Current Graphics Mode register. The higher modes need extra video-memory banks to be fitted; if the required banks are absent, the mode change is ignored.
+
+\begin{center}
+\begin{tabulary}{\textwidth}{clcl}
+Mode & Resolution & Colours & Layers / requirement \\
+\hline
+0 & $560\times448$ & 256 & 1 layer (default) \\
+1 & $280\times224$ & 256 & 4 layers \\
+2 & $280\times224$ & 4096 & 2 layers \\
+3 & $560\times448$ & 256 & 2 layers (needs bank 2) \\
+4 & $560\times448$ & 4096 & 1 layer (needs bank 2) \\
+5 & $560\times448$ & 15-bit & 1 layer (needs bank 2) \\
+8 & $560\times448$ & 24-bit & 1 layer (needs banks 3 \& 4) \\
+\end{tabulary}
+\end{center}
+
+A graphics adapter ships with one 256\,kB memory bank and can hold up to four. The number of installed banks is reported by the adapter and limits which modes are available.
+
+\subsection{Direct Colour}
+
+\index{direct colour}The 4096-colour (``direct colour'') modes do not use the palette. Instead two layers are paired to form one frame: the low layer carries the red and green channels (\code{0b RRRR GGGG}) and the high layer carries the blue channel and a 4-bit transparency (\code{0b BBBB AAAA}), giving 4096 colours each with 16 levels of transparency.
+
+\subsection{Layers and Scrolling}
+
+\index{layers}When a mode provides more than one layer, the \emph{layer arrangement} register chooses the order in which the layers are stacked, so a program can swap front and back planes without moving any pixels. The whole framebuffer can also be panned: the horizontal and vertical framebuffer-scroll registers shift the entire image, and a per-scanline horizontal offset table allows each scanline to be displaced independently --- the basis of split-screen and wavy ``raster'' effects.
 
 \subsection{Colour Palette}
 \label{colourpalette}
@@ -940,13 +1043,54 @@ TODO
 
 \section{The Graphics Library}
 
-\index{graphics (library)}Graphics library provides basic functions to communicate and manipulate the graphics adapter.
+\index{graphics (library)}Graphics library provides basic functions to communicate and manipulate the graphics adapter. Coordinates are in pixels with the origin at the top-left; colours are palette indices unless the adapter is in a direct-colour mode.
 
 \namespaceis{Graphics}{graphics}
 
+Drawing:
 \begin{outline}
-\1\formalsynopsis{TODO}{to be added.}
+\1\formalsynopsis{plotPixel}{x: Int, y: Int, colour: Int}{Plots a single pixel on the first framebuffer.}
+\1\formalsynopsis{plotPixel2}{x: Int, y: Int, colour: Int}{Plots a single pixel on the second framebuffer.}
+\1\formalsynopsis{plotRect}{x: Int, y: Int, w: Int, h: Int, colour: Int}{Fills a rectangle on the first framebuffer. An optional sixth argument selects a blending effect.}
+\1\formalsynopsis{plotRect2}{x: Int, y: Int, w: Int, h: Int, colour: Int}{As \code{plotRect}, on the second framebuffer.}
+\1\formalsynopsis{clearPixels}{col: Int}{Fills the entire framebuffer with the given colour.}
+\1\formalsynopsis{clearText}{}{Blanks the text buffer.}
+\1\formalsynopsis{getGpuMemBase}{}[Int]{Returns the base address of the graphics adapter's memory, for direct access via \code{peek}/\code{poke} or \code{dma}.}
 \end{outline}
+
+Colour:
+\begin{outline}
+\1\formalsynopsis{setBackground}{r: Int, g: Int, b: Int}{Sets the screen background (border) colour, 8 bits per channel.}
+\1\formalsynopsis{resetPalette}{}{Restores the default colour palette.}
+\1\formalsynopsis{setPalette}{index: Int, r: Int, g: Int, b: Int, a: Int}{Sets one palette entry. Channels are 4-bit (0--15); \code{a} (alpha) defaults to 15 (opaque).}
+\1\formalsynopsis{setTextFore}{b: Int}{Sets the current text foreground colour.}
+\1\formalsynopsis{setTextBack}{b: Int}{Sets the current text background colour.}
+\1\formalsynopsis{getTextFore}{}[Int]{Returns the current text foreground colour.}
+\1\formalsynopsis{getTextBack}{}[Int]{Returns the current text background colour.}
+\end{outline}
+
+Mode and geometry:
+\begin{outline}
+\1\formalsynopsis{setGraphicsMode}{mode: Int}{Switches the graphics mode (see \emph{Graphics Modes}).}
+\1\formalsynopsis{getGraphicsMode}{}[Int]{Returns the current graphics mode.}
+\1\formalsynopsis{getPixelDimension}{}[IntArray(2)]{Returns the framebuffer size as \code{[width, height]}.}
+\1\formalsynopsis{getTermDimension}{}[IntArray(2)]{Returns the text grid size as \code{[columns, rows]}.}
+\1\formalsynopsis{setFramebufferScroll}{x: Int, y: Int}{Pans the whole framebuffer to the given offset.}
+\1\formalsynopsis{getFramebufferScroll}{}[IntArray(2)]{Returns the current framebuffer scroll offset.}
+\1\formalsynopsis{scrollFrame}{xdelta: Int, ydelta: Int}{Pans the framebuffer by a relative amount.}
+\1\formalsynopsis{setLineOffset}{line: Int, offset: Int}{Sets the per-scanline horizontal offset (raster effects).}
+\1\formalsynopsis{getLineOffset}{line: Int}[Int]{Returns the per-scanline horizontal offset.}
+\end{outline}
+
+Text cursor and symbols (these talk to the adapter directly; under \thedos\ prefer the \code{con} library):
+\begin{outline}
+\1\formalsynopsis{getCursorYX}{}[IntArray(2)]{Returns the text cursor position as \code{[row, column]}.}
+\1\formalsynopsis{setCursorYX}{cy: Int, cx: Int}{Moves the text cursor.}
+\1\formalsynopsis{putSymbol}{c: Int}{Writes the character of the given code at the cursor, without advancing it.}
+\1\formalsynopsis{putSymbolAt}{cy: Int, cx: Int, c: Int}{Writes a character at a specific cell.}
+\end{outline}
+
+Image decoding: the adapter can decode compressed still images straight into memory. \code{decodeImage(srcFilePtr, srcFileLen)} decodes an image (JPEG, PNG, TGA, \dots) whose bytes are already in memory and returns its dimensions; \code{decodeImageTo} writes the result to a given buffer, and \code{decodeImageResample} scales it on the way. These, together with the hardware decoders for the iPF, TEV and TAV formats, are what the \thedos\ media players are built on; the formats themselves are described in the \thedos\ part.
 
 
 \section{MMIO and Memory Mapping}
@@ -987,3 +1131,43 @@ Address & RW & Description \\
 -1310209..-1310720 & RW & Palettes in This Pattern: {\ttfamily 0b RRRR GGGG; 0b BBBB AAAA} \\
 -1310721..-1561600 & RW & Second Framebuffer \\
 \end{tabulary}
+
+
+
+\chapter{Audio}
+
+\index{audio adapter}The \thismachine\ sound card is built from four independent \textbf{playheads}. Each playhead can play either a stream of PCM samples or a tracker track, and the four are mixed together to the card's native output of 32\,kHz stereo.
+
+The playheads are not locked to one another, so timing between them is not guaranteed. A single piece of music should therefore live on a single playhead; the remaining playheads are best used for sound effects or left idle.
+
+\section{PCM Playback}
+
+\index{PCM playback}In PCM mode a playhead is fed a queue of raw samples, which the card plays back at the hardware rate. This is the path used by the \thedos\ players for raw PCM, WAV/ADPCM, MP2 and \thedos's own compressed audio --- a player decodes the file into samples and pushes them into a playhead's queue. The relevant format details are covered, from the listener's point of view, in the \thedos\ part.
+
+\section{Tracker Playback}
+
+\index{tracker engine}In tracker mode a playhead is driven by the card's built-in tracker engine. The engine keeps a pool of digitised \emph{samples}, a set of \emph{instruments} built from them, and the \emph{patterns} and cue sheet that sequence the notes; once these are loaded the playhead renders the song autonomously. This is how \thismachine\ plays its native \textbf{Taud} music.
+
+This guide deliberately stops at that overview. The Taud file format, the instrument and envelope model, the effect commands, and the \emph{Microtone} tracker used to author Taud music are large topics with a manual of their own, and are out of scope here.
+
+\section{The Audio Library}
+
+\index{audio (library)}The \code{audio} namespace controls the playheads. The functions below cover everyday playback; the engine also exposes a large number of tracker-control and voice-inspection calls (pattern and cue upload, tempo, per-voice queries, \dots) that belong with the Taud documentation.
+
+\namespaceis{Audio}{audio}
+
+\begin{outline}
+\1\formalsynopsis{setPcmMode}{playhead: Int}{Puts a playhead (0--3) into PCM mode.}
+\1\formalsynopsis{setTrackerMode}{playhead: Int}{Puts a playhead into tracker mode.}
+\1\formalsynopsis{play}{playhead: Int}{Starts the playhead.}
+\1\formalsynopsis{stop}{playhead: Int}{Stops the playhead.}
+\1\formalsynopsis{isPlaying}{playhead: Int}[Boolean]{Whether the playhead is currently playing.}
+\1\formalsynopsis{getPosition}{playhead: Int}[Int]{Current playback position of the playhead.}
+\1\formalsynopsis{setMasterVolume}{playhead: Int, volume: Int}{Sets the playhead's output volume.}
+\1\formalsynopsis{setMasterPan}{playhead: Int, pan: Int}{Sets the playhead's stereo pan.}
+\1\formalsynopsis{putPcmDataByPtr}{playhead: Int, ptr: Int, length: Int, destOffset: Int}{Copies PCM samples from memory into the playhead's buffer.}
+\1\formalsynopsis{purgeQueue}{playhead: Int}{Empties the playhead's pending sample queue.}
+\1\formalsynopsis{resetParams}{playhead: Int}{Resets the playhead to default parameters.}
+\1\formalsynopsis{getMemAddr}{}[Int]{Returns the base address of the audio adapter's memory space.}
+\1\formalsynopsis{getBaseAddr}{}[Int]{Returns the base address of the audio adapter's MMIO area.}
+\end{outline}

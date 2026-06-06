@@ -1,0 +1,18 @@
+{
+  "tsfVersion": "1.0",
+  "name": "playtev",
+  "summary": "Play a TEV video file",
+  "symbols": {
+    "interactive": { "kind": "option", "short": "-i", "summary": "Interactive mode" },
+    "debugMv":     { "kind": "option", "long": "-debug-mv", "summary": "Show motion-vector debug overlay" },
+    "options":     { "kind": "group", "summary": "Options", "members": ["interactive", "debugMv"] },
+    "file":        { "kind": "positional", "type": "file", "name": "FILE", "summary": "TEV file to play" }
+  },
+  "synopsis": {
+    "type": "sequence",
+    "children": [
+      { "type": "reference", "symbol": "file" },
+      { "type": "repeat", "child": { "type": "reference", "symbol": "options" } }
+    ]
+  }
+}
