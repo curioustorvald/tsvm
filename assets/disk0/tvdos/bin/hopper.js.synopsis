@@ -1,0 +1,81 @@
+{
+  "tsfVersion": "1.0",
+  "name": "hopper",
+  "summary": "Package manager for TVDOS",
+  "description": "Hopper resolves package dependencies across the installed set (system packages shipped with TVDOS plus user packages under A:/hopper) and any remote mirrors listed in A:/tvdos/hopper/mirrors.list, then installs, upgrades, downgrades or removes user packages. System packages are read-only: install and remove refuse to touch them. Versions are strict SemVer (MAJOR.MINOR.PATCH); constraints support *, X.*, X.Y.*, exact, ^, ~ and >=/>/<=/< operators, comma-separated for AND.",
+  "symbols": {
+    "search":  { "kind": "subcommand", "name": "search",  "summary": "Search installed packages and remote mirrors (alias: se)" },
+    "install": { "kind": "subcommand", "name": "install", "summary": "Resolve dependencies and install a package (alias: in)" },
+    "upgrade": { "kind": "subcommand", "name": "upgrade", "summary": "Upgrade packages to the latest available version; all user packages when none named (alias: up)" },
+    "remove":  { "kind": "subcommand", "name": "remove",  "summary": "Remove a user-installed package (alias: rm)" },
+
+    "provides":    { "kind": "option", "long": "--provides",    "summary": "Match against the HopperProvides field instead of the name" },
+    "requires":    { "kind": "option", "long": "--requires",    "summary": "Match against the HopperRequires field instead of the name" },
+    "description": { "kind": "option", "long": "--description", "summary": "Match against the package description instead of the name" },
+    "author":      { "kind": "option", "long": "--author",      "summary": "Match against the package author instead of the name" },
+    "searchFields": {
+      "kind": "group",
+      "summary": "Search-field selectors",
+      "members": ["provides", "requires", "description", "author"]
+    },
+
+    "version": {
+      "kind": "option",
+      "short": "-v",
+      "summary": "Install a specific package version or range",
+      "value": {
+        "name": "VERSION",
+        "type": "string",
+        "required": true,
+        "summary": "Package version as shown by search, or a constraint, e.g. 1.2.0, ^1.2.0, ~1.2, 2.*"
+      }
+    },
+
+    "query":      { "kind": "positional", "type": "string", "name": "QUERY",   "summary": "Substring matched against the package name (or the selected field)" },
+    "pkgInstall": { "kind": "positional", "type": "string", "name": "PACKAGE", "summary": "Name of the package (or virtual capability) to install" },
+    "pkgUpgrade": { "kind": "positional", "type": "string", "name": "PACKAGE", "summary": "Package(s) to upgrade; upgrades every user package when omitted" },
+    "pkgRemove":  { "kind": "positional", "type": "string", "name": "PACKAGE", "summary": "Name of the user-installed package to remove" }
+  },
+  "synopsis": {
+    "type": "choice",
+    "children": [
+      {
+        "type": "sequence",
+        "children": [
+          { "type": "reference", "symbol": "search" },
+          { "type": "repeat", "child": { "type": "reference", "symbol": "searchFields" } },
+          { "type": "reference", "symbol": "query" }
+        ]
+      },
+      {
+        "type": "sequence",
+        "children": [
+          { "type": "reference", "symbol": "install" },
+          { "type": "reference", "symbol": "pkgInstall" },
+          { "type": "optional", "child": { "type": "reference", "symbol": "version" } }
+        ]
+      },
+      {
+        "type": "sequence",
+        "children": [
+          { "type": "reference", "symbol": "upgrade" },
+          { "type": "repeat", "child": { "type": "reference", "symbol": "pkgUpgrade" } }
+        ]
+      },
+      {
+        "type": "sequence",
+        "children": [
+          { "type": "reference", "symbol": "remove" },
+          { "type": "reference", "symbol": "pkgRemove" }
+        ]
+      }
+    ]
+  },
+  "constraints": [
+    {
+      "type": "cardinality",
+      "symbols": ["provides", "requires", "description", "author"],
+      "maximum": 1
+    }
+  ]
+}

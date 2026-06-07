@@ -17,6 +17,8 @@ const net = require("net")
 // hopper {search,se} [--provides, --requires, --description, --author] query
 //// default searches from ProperName
 // hopper {install,in} query [-v version]
+// hopper {upgrade,up} [package...]
+//// no package names upgrades every user-installed package
 // hopper {remove,rm} query
 
 // ============================================================
@@ -372,12 +374,29 @@ function findProviders(idx, name) {
     return out
 }
 
-// Sort: installed first (no churn), then highest version, then upstream order.
-function sortCandidates(cands) {
+// Sort candidates by preference. Normally installed-first (no churn) then
+// highest version; with `preferNewest` (used by `upgrade`) the installed
+// bias is dropped so the newest package version wins regardless of source.
+function sortCandidates(cands, preferNewest) {
     return cands.slice().sort((a, b) => {
-        if (a.source !== b.source) return (a.source === "installed") ? -1 : 1
+        if (!preferNewest && a.source !== b.source) return (a.source === "installed") ? -1 : 1
         return -compareVersion(a.version, b.version)
     })
+}
+
+// Highest *package* version (HopperPackageVersion) among the candidates that
+// ARE the package `name` -- installed or upstream -- or null if there are
+// none. `upgrade` uses this to decide whether a newer build exists. It
+// deliberately ignores HopperProvides versions (which advance independently
+// of the package version) and other packages that merely provide `name`;
+// the candidate index is keyed by package name, so idx.get(name) is exactly
+// the builds of that package.
+function latestInstallableVersion(idx, name) {
+    const arr = idx.get(name)
+    if (!arr || arr.length === 0) return null
+    let best = null
+    arr.forEach(c => { if (best === null || compareVersion(c.version, best) > 0) best = c.version })
+    return best
 }
 
 // ============================================================
@@ -399,7 +418,7 @@ function sortCandidates(cands) {
 // recursive resolve() call over each requirement. Replacing this with
 // clause learning / a watched-literals scheme later would be local.
 
-function resolveAll(idx, requirements) {
+function resolveAll(idx, requirements, upgradeSet, pkgVersionPins) {
     const chosen = new Map()
     const issues = []
 
@@ -407,10 +426,16 @@ function resolveAll(idx, requirements) {
     function restore(snap)        { chosen.clear(); snap.forEach((v, k) => chosen.set(k, v)) }
 
     function _resolve(reqName, constraint, trail) {
+        // A package-version pin (from `install -v`) constrains the chosen
+        // build's HopperPackageVersion -- the version `search` shows -- and is
+        // matched separately from `constraint`, which always works in the
+        // HopperProvides capability space.
+        const pin = (pkgVersionPins && pkgVersionPins.get(reqName)) || null
+
         const existing = chosen.get(reqName)
         if (existing !== undefined) {
             const v = providedVersionOf(existing, reqName)
-            return satisfies(v, constraint)
+            return (satisfies(v, constraint) && (!pin || satisfies(existing.version, pin)))
                 ? { ok: true }
                 : { ok: false, reason: `${reqName} pinned to ${v}, but ${trail.join(" -> ")} requires ${constraint}` }
         }
@@ -421,9 +446,19 @@ function resolveAll(idx, requirements) {
         }
         // Satisfaction checks the virtual version the candidate exposes
         // for `reqName` (HopperProvides), not necessarily the package's
-        // own HopperPackageVersion.
-        const matching = sortCandidates(providers.filter(c => satisfies(providedVersionOf(c, reqName), constraint)))
+        // own HopperPackageVersion. A package-version pin is applied on top,
+        // against the build's own version.
+        const preferNewest = !!(upgradeSet && upgradeSet.has(reqName))
+        const provMatched = providers.filter(c => satisfies(providedVersionOf(c, reqName), constraint))
+        const matching = sortCandidates(provMatched.filter(c => !pin || satisfies(c.version, pin)), preferNewest)
         if (matching.length === 0) {
+            // When the package-version pin is what eliminated the candidates,
+            // report it in package-version space (matching `search`); a plain
+            // capability mismatch stays in HopperProvides space.
+            if (pin && provMatched.length > 0) {
+                const versions = providers.map(p => `${p.version}[${p.source}]`).join(", ")
+                return { ok: false, reason: `no build of "${reqName}" has version ${pin} (available: ${versions})` }
+            }
             const versions = providers.map(p => `${providedVersionOf(p, reqName)}[${p.source}]`).join(", ")
             return { ok: false, reason: `no version of "${reqName}" satisfies ${constraint} (available: ${versions})` }
         }
@@ -728,43 +763,11 @@ function _installOne(action, candidate) {
     return true
 }
 
-function cmdInstall(args) {
-    let query = undefined
-    let version = undefined
-    for (let i = 0; i < args.length; i++) {
-        if (args[i] === "-v") { version = args[i + 1]; i++ }
-        else if (args[i].startsWith("--")) { printerrln(`Unknown option: ${args[i]}`); return 1 }
-        else query = args[i]
-    }
-    if (query === undefined) {
-        printerrln("Usage: hopper install <package> [-v <version>]")
-        return 1
-    }
-
-    const targetConstraint = version || "*"
-    const verSuffix = (targetConstraint !== "*") ? ` (${targetConstraint})` : ""
-    println(`Resolving ${query}${verSuffix} ...`)
-
-    const idx = buildCandidateIndex()
-
-    // Sanity check: target must exist in the index (installed or upstream).
-    if (findProviders(idx, query).length === 0) {
-        printerrln(`Error: package "${query}" not found (not on upstream, not installed).`)
-        return 4
-    }
-
-    // Seed order matters: the target goes FIRST so its (possibly tight)
-    // constraints can drive upgrades of dependencies. The installed-set
-    // requirements follow at "*" so the resolver still has to keep them
-    // alive (preferring installed candidates when their version still fits,
-    // otherwise upgrading or downgrading them).
-    const seed = [{ name: query, constraint: targetConstraint }]
-    listInstalledManifests().forEach(m => {
-        if (m.HopperPackageName === query) return
-        seed.push({ name: m.HopperPackageName, constraint: "*" })
-    })
-
-    const { chosen, issues } = resolveAll(idx, seed)
+// Shared tail for `install` and `upgrade`: turn a resolver result into an
+// actual on-disk change. Prints the plan, runs the pre-flight checks
+// (system-package and missing-payload blockers, modem availability), asks
+// for confirmation, then fetches and writes every changing package.
+function commitResolution(idx, chosen, issues, planLabel, confirmMsg) {
     if (issues.length > 0) {
         printerrln("Resolution failed:")
         issues.forEach(reason => printerrln(`  - ${reason}`))
@@ -774,7 +777,7 @@ function cmdInstall(args) {
     }
 
     const plan = classifyPlan(idx, chosen)
-    printPlan(plan, query)
+    printPlan(plan, planLabel)
 
     const changing = plan.filter(a => a.action !== "keep")
     if (changing.length === 0) return 0
@@ -804,7 +807,7 @@ function cmdInstall(args) {
     }
 
     println("")
-    if (!confirm("Proceed with installation?", true)) {
+    if (!confirm(confirmMsg, true)) {
         println("Aborted.")
         return 0
     }
@@ -833,6 +836,132 @@ function cmdInstall(args) {
 
     println("Done.")
     return 0
+}
+
+function cmdInstall(args) {
+    let query = undefined
+    let version = undefined
+    for (let i = 0; i < args.length; i++) {
+        if (args[i] === "-v") { version = args[i + 1]; i++ }
+        else if (args[i].startsWith("--")) { printerrln(`Unknown option: ${args[i]}`); return 1 }
+        else query = args[i]
+    }
+    if (query === undefined) {
+        printerrln("Usage: hopper install <package> [-v <version>]")
+        return 1
+    }
+
+    const verSuffix = version ? ` (${version})` : ""
+    println(`Resolving ${query}${verSuffix} ...`)
+
+    const idx = buildCandidateIndex()
+
+    // Sanity check: target must exist in the index (installed or upstream).
+    if (findProviders(idx, query).length === 0) {
+        printerrln(`Error: package "${query}" not found (not on upstream, not installed).`)
+        return 4
+    }
+
+    // Seed order matters: the target goes FIRST so its (possibly tight)
+    // constraints can drive upgrades of dependencies. The installed-set
+    // requirements follow at "*" so the resolver still has to keep them
+    // alive (preferring installed candidates when their version still fits,
+    // otherwise upgrading or downgrading them).
+    //
+    // A user-supplied `-v` pins the target's PACKAGE version (the version
+    // `hopper search` displays), NOT its HopperProvides capability version
+    // which the resolver otherwise matches against. So the seed constraint
+    // stays "*" (capability space) and the version goes into a package-
+    // version pin; dependencies keep resolving in capability space.
+    const seed = [{ name: query, constraint: "*" }]
+    listInstalledManifests().forEach(m => {
+        if (m.HopperPackageName === query) return
+        seed.push({ name: m.HopperPackageName, constraint: "*" })
+    })
+
+    const pkgVersionPins = new Map()
+    if (version) pkgVersionPins.set(query, version)
+
+    const { chosen, issues } = resolveAll(idx, seed, null, pkgVersionPins)
+    return commitResolution(idx, chosen, issues, query, "Proceed with installation?")
+}
+
+// ============================================================
+// Upgrade
+// ============================================================
+//
+// `upgrade` is `install` without the "keep what's installed" bias. For
+// every named package -- or, with no names, every user-installed package
+// -- it forces the resolver to pick a version strictly newer than what is
+// installed, which makes it choose the latest build the mirrors offer
+// (the resolver still backtracks to a lower-but-newer version if the
+// newest one would break a dependency). Packages that are already at
+// their newest version are skipped, and system packages are read-only.
+
+function cmdUpgrade(args) {
+    const names = []
+    for (let i = 0; i < args.length; i++) {
+        if (args[i].startsWith("-")) { printerrln(`Unknown option: ${args[i]}`); return 1 }
+        names.push(args[i])
+    }
+
+    const idx = buildCandidateIndex()
+
+    // Target set: the named packages, or -- when none are named -- every
+    // user-installed package. System packages cannot be upgraded.
+    const targets = []
+    if (names.length === 0) {
+        listInstalledManifests().forEach(m => {
+            if (m._origin === "system") return
+            targets.push({ name: m.HopperPackageName, installed: m.HopperPackageVersion || "0.0.0" })
+        })
+        if (targets.length === 0) {
+            println("No user-installed packages to upgrade.")
+            return 0
+        }
+    } else {
+        for (let i = 0; i < names.length; i++) {
+            const m = findInstalledManifest(names[i])
+            if (m === undefined) { printerrln(`Package not installed: ${names[i]}`); return 2 }
+            if (m._origin === "system") { printerrln(`Cannot upgrade ${names[i]}: it is a system package.`); return 6 }
+            targets.push({ name: m.HopperPackageName, installed: m.HopperPackageVersion || "0.0.0" })
+        }
+    }
+
+    // Keep only the targets that actually have a newer *package* version
+    // available. Compare HopperPackageVersion (the real build), NOT the
+    // HopperProvides capability version, which can advance independently.
+    const upgradeNames = new Set()
+    targets.forEach(t => {
+        const latest = latestInstallableVersion(idx, t.name)
+        if (latest !== null && compareVersion(latest, t.installed) > 0) upgradeNames.add(t.name)
+    })
+
+    if (upgradeNames.size === 0) {
+        println("Everything is up to date.")
+        return 0
+    }
+
+    // Seed the resolver. Upgrade targets stay at "*" but join the upgrade
+    // set, which flips their candidate preference from "keep what is
+    // installed" to "pick the newest build". A version constraint cannot do
+    // this: satisfaction is tested against the HopperProvides version, which
+    // is decoupled from the package version, so an installed copy whose
+    // provided version is already high would wrongly satisfy ">installed".
+    // Everything else stays at "*" so it is kept unless a dependency drags
+    // it along.
+    const seed = []
+    upgradeNames.forEach(n => seed.push({ name: n, constraint: "*" }))
+    listInstalledManifests().forEach(m => {
+        if (upgradeNames.has(m.HopperPackageName)) return
+        seed.push({ name: m.HopperPackageName, constraint: "*" })
+    })
+
+    const label = (names.length === 1) ? names[0] : "the selected packages"
+    println(`Resolving upgrade for ${label} ...`)
+
+    const { chosen, issues } = resolveAll(idx, seed, upgradeNames)
+    return commitResolution(idx, chosen, issues, label, "Proceed with upgrade?")
 }
 
 // ============================================================
@@ -929,6 +1058,7 @@ function printUsage() {
     println("Usage:")
     println("  hopper {search,se} [--provides|--requires|--description|--author] <query>")
     println("  hopper {install,in} <package> [-v <version>]")
+    println("  hopper {upgrade,up} [<package>...]")
     println("  hopper {remove,rm} <package>")
 }
 
@@ -943,6 +1073,9 @@ switch (_hopperCmd) {
     case "install":
     case "in":
         return cmdInstall(_hopperRest)
+    case "upgrade":
+    case "up":
+        return cmdUpgrade(_hopperRest)
     case "remove":
     case "rm":
         return cmdRemove(_hopperRest)
