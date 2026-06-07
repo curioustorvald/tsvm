@@ -5,6 +5,7 @@
   "symbols": {
     "interactive":   { "kind": "option", "short": "-i", "summary": "Interactive mode (controls + on-screen info)" },
     "ascii":         { "kind": "option", "long": "-ascii", "summary": "Start in ASCII-render mode" },
+    "colour":        { "kind": "option", "long": "-colour", "summary": "Colourise ASCII glyphs from the video (implies -ascii); -color alias" },
     "deblock":       { "kind": "option", "long": "-deblock", "summary": "TEV: enable deblocking filter" },
     "boundaryAware": { "kind": "option", "long": "-boundaryaware", "summary": "TEV: boundary-aware decoding" },
     "debugMv":       { "kind": "option", "long": "-debug-mv", "summary": "TEV: show motion-vector debug overlay" },
@@ -23,7 +24,7 @@
     "options": {
       "kind": "group",
       "summary": "Options",
-      "members": ["interactive", "ascii", "deblock", "boundaryAware", "debugMv", "deinterlace", "filmGrain"]
+      "members": ["interactive", "ascii", "colour", "deblock", "boundaryAware", "debugMv", "deinterlace", "filmGrain"]
     },
     "file": { "kind": "positional", "type": "file", "name": "FILE", "summary": "Movie file to play" }
   },

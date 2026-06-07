@@ -360,6 +360,42 @@ function sampleGrayScreen(width, height, dst, dstW, dstH, mode) {
     }
 }
 
+// ── sampleColour source ──────────────────────────────────────────────────────
+// Companion to sampleGrayScreen: fill an RGB buffer (dst, length dstW·dstH·3,
+// laid out R,G,B per cell) by point-sampling the GPU framebuffer at the CENTRE
+// of each cell.  Used by the player's colour-ASCII postprocessor — aa.mjs picks
+// each glyph from brightness, this supplies the per-cell ink colour.  Same
+// backend-specific `mode` (4/5/8-bpp unpacking) and same cheap ~dstW·dstH peek
+// count as sampleGrayScreen.
+function sampleColourScreen(width, height, dst, dstW, dstH, mode) {
+    for (let y = 0; y < dstH; y++) {
+        let sy = ((y + 0.5) * height / dstH) | 0
+        if (sy >= height) sy = height - 1
+        let dstRow = y * dstW * 3
+        for (let x = 0; x < dstW; x++) {
+            let sx = ((x + 0.5) * width / dstW) | 0
+            if (sx >= width) sx = width - 1
+            let off = sy * 560 + sx
+            let fb1 = sys.peek(DISP_RG - off) & 255
+            let fb2 = sys.peek(DISP_BA - off) & 255
+            let r, g, b
+            if (mode == 5) {
+                r = ((fb1 >>> 2) & 31) * 255 / 31
+                g = (((fb1 & 3) << 3) | ((fb2 >>> 5) & 7)) * 255 / 31
+                b = (fb2 & 31) * 255 / 31
+            } else if (mode == 8) {
+                r = fb1; g = fb2; b = sys.peek(DISP_PLANE3 - off) & 255
+            } else {   // mode 4
+                r = (fb1 >>> 4) * 17
+                g = (fb1 & 15) * 17
+                b = (fb2 >>> 4) * 17
+            }
+            let di = dstRow + x * 3
+            dst[di] = r | 0; dst[di + 1] = g | 0; dst[di + 2] = b | 0
+        }
+    }
+}
+
 exports = {
     MAGIC_MOV, MAGIC_TEV, MAGIC_TAV, MAGIC_TAP, MAGIC_UCF,
     MP2_FRAME_SIZE, QLUT,
@@ -369,5 +405,5 @@ exports = {
     openSeqread, readMagic, detectFormat, magicEquals,
     luma8,
     makeAudioRouter, makeSubtitleEngine, makeBias,
-    sampleGrayScreen
+    sampleGrayScreen, sampleColourScreen
 }

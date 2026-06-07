@@ -615,6 +615,7 @@ function create(magic, sr, fileLength, opts, common, isTap) {
     // Player calls blit() before sampleGray() in ASCII mode, so the framebuffer
     // already holds the current frame regardless of kind.
     function sampleGray(dst, w, h) { common.sampleGrayScreen(width, height, dst, w, h, gpuGraphicsMode) }
+    function sampleColour(dst, w, h) { common.sampleColourScreen(width, height, dst, w, h, gpuGraphicsMode) }
 
     // ── TAP still: decode the single image now ──────────────────────────────
     if (isTap) {
@@ -658,6 +659,7 @@ function create(magic, sr, fileLength, opts, common, isTap) {
         blit: blit,
         bias() { applyBias() },
         sampleGray: sampleGray,
+        sampleColour: sampleColour,
 
         pause(p) {
             paused = p

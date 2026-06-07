@@ -150,6 +150,7 @@ function create(magic, sr, fileLength, opts, common) {
 
     // Frame is already on the display planes, so the player can sample the screen.
     function sampleGray(dst, w, h) { common.sampleGrayScreen(width, height, dst, w, h, 4) }
+    function sampleColour(dst, w, h) { common.sampleColourScreen(width, height, dst, w, h, 4) }
 
     return {
         info: info,
@@ -164,6 +165,7 @@ function create(magic, sr, fileLength, opts, common) {
         blit: blit,
         bias() { if (autoBg) applyBias() },   // skipped when an explicit bg packet set the colour
         sampleGray: sampleGray,
+        sampleColour: sampleColour,
         pause(p) { paused = p; if (p) audioR.stop(); else { audioR.resume(); lastT = sys.nanoTime() } },
         isPaused() { return paused },
         setVolume(v) { audioR.setVolume(v) },

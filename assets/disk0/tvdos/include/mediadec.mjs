@@ -21,6 +21,7 @@
  *   .step()                 -> { type:'frame'|'idle'|'eof'|'newfile'|'error', frameCount }
  *   .blit()                 present the current native frame to the screen
  *   .sampleGray(dst,w,h)    fill an ASCII brightness buffer from the framebuffer
+ *   .sampleColour(dst,w,h)  fill a per-cell RGB buffer (w*h*3) from the framebuffer
  *   .subtitle {visible,text,position,useUnicode,dirty}  (resolved by the lib)
  *   .pause(b)/.isPaused() .setVolume(v)/.getVolume()
  *   .seekSeconds(n) .cue(d) .cues

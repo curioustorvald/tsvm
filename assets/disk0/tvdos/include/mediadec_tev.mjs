@@ -189,6 +189,7 @@ function create(magic, sr, fileLength, opts, common) {
     // Player calls blit() (which uploads currentFrameSrc) before sampleGray in
     // ASCII mode, so we read the framebuffer the upload just produced.
     function sampleGray(dst, w, h) { common.sampleGrayScreen(width, height, dst, w, h, 4) }
+    function sampleColour(dst, w, h) { common.sampleColourScreen(width, height, dst, w, h, 4) }
 
     return {
         info: info,
@@ -204,6 +205,7 @@ function create(magic, sr, fileLength, opts, common) {
         blit: blit,
         bias() { applyBias() },
         sampleGray: sampleGray,
+        sampleColour: sampleColour,
         pause(p) { paused = p; if (p) audioR.stop(); else { audioR.resume(); lastT = sys.nanoTime() } },
         isPaused() { return paused },
         setVolume(v) { audioR.setVolume(v) },
