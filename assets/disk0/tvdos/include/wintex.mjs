@@ -49,28 +49,22 @@ class WindowObject {
                 let tt = ''+this.title
                 con.move(this.y, this.x + ((this.width - 2 - tt.length) >>> 1))
                 if (this.titleBack !== undefined) print(`\x1B[48;5;${this.titleBack}m`)
-                print(`\x84${charset[6]}u`)
                 print(`\x1B[38;5;${colourText}m${tt}`)
-                print(`\x1B[38;5;${colour}m\x84${charset[7]}u`)
                 if (this.titleBack !== undefined) print(`\x1B[48;5;${oldBack}m`)
             }
             if (this.titleLeft !== undefined) {
                 let tt = ''+this.titleLeft
-                con.move(this.y, this.x)
-                print(`\x84${charset[0]}u`)
+                con.move(this.y, this.x + 1)
                 if (this.titleBackLeft !== undefined) print(`\x1B[48;5;${this.titleBackLeft}m`)
                 print(`\x1B[38;5;${colourText}m`);print(tt)
                 if (this.titleBackLeft !== undefined) print(`\x1B[48;5;${oldBack}m`)
-                print(`\x1B[38;5;${colour}m`);print(`\x84${charset[4]}u`)
             }
             if (this.titleRight !== undefined) {
                 let tt = ''+this.titleRight
-                con.move(this.y + this.height - 1, this.x + this.width - tt.length - 2)
-                print(`\x84${charset[4]}u`)
+                con.move(this.y + this.height - 1, this.x + this.width - tt.length - 1)
                 if (this.titleBackRight !== undefined) print(`\x1B[48;5;${this.titleBackRight}m`)
                 print(`\x1B[38;5;${colourText}m${tt}`)
                 if (this.titleBackRight !== undefined) print(`\x1B[48;5;${oldBack}m`)
-                print(`\x1B[38;5;${colour}m\x84${charset[3]}u`)
             }
 
 
