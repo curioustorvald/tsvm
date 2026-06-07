@@ -182,11 +182,19 @@ function create(magic, sr, fileLength, opts, common, isTap) {
     function rotateFields() { let t = prevField; prevField = curField; curField = nextField; nextField = t }
 
     function cleanupAsyncDecode() {
-        if (asyncDecodeInProgress && asyncDecodePtr) { sys.free(asyncDecodePtr); asyncDecodeInProgress = false; asyncDecodePtr = 0; asyncDecodeGopSize = 0 }
-        if (readyGopData && readyGopData.compressedPtr) { sys.free(readyGopData.compressedPtr); readyGopData.compressedPtr = 0 }
-        readyGopData = null
-        if (decodingGopData && decodingGopData.compressedPtr) { sys.free(decodingGopData.compressedPtr); decodingGopData.compressedPtr = 0 }
-        decodingGopData = null
+        // asyncDecodePtr ALIASES readyGopData.compressedPtr / decodingGopData.compressedPtr:
+        // startAsyncGop records the same compressedPtr in both the asyncDecodePtr tracker and
+        // the GOP record (handleGopPacket cases + overflow drain). The normal free paths know
+        // this (free via one var, zero the other); a blind free of all three here double-frees
+        // and sys.free throws "No allocation for pointer", aborting close() before it frees the
+        // RGB frame buffers (leaking two width*height*3 allocations). Free each pointer once.
+        let freed = {}
+        function freeOnce(p) { if (p && !freed[p]) { freed[p] = true; sys.free(p) } }
+        if (asyncDecodeInProgress) freeOnce(asyncDecodePtr)
+        if (readyGopData) freeOnce(readyGopData.compressedPtr)
+        if (decodingGopData) freeOnce(decodingGopData.compressedPtr)
+        asyncDecodeInProgress = false; asyncDecodePtr = 0; asyncDecodeGopSize = 0
+        readyGopData = null; decodingGopData = null
         if (predecodedPcmBuffer !== null) { sys.free(predecodedPcmBuffer); predecodedPcmBuffer = null; predecodedPcmSize = 0; predecodedPcmOffset = 0 }
         currentGopSize = 0; currentGopFrameIndex = 0; nextFrameTime = 0; shouldReadPackets = true
     }
