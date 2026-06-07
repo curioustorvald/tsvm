@@ -194,12 +194,30 @@ The TAV video format below also have still-picture variants, used for high-fidel
 TEV and TAV files are prepared on a host computer and copied to the disk for playback; MOV and iPF content can also be produced on the machine itself. Both TEV and TAV are encoded at a chosen \emph{quality level} when they are made, trading file size against fidelity --- as a viewer you simply play the result.
 
 \begin{outline}
+\1\dossynopsis{playmov}[file]{Plays any movie --- MV1, TEV or TAV, including TAV still pictures --- detecting the format from the file itself. This is the recommended player; see below.}
 \1\dossynopsis{playmv1}[file]{Plays a MV1-format movie.}
 \1\dossynopsis{playtev}[file]{Plays a TEV-format video.}
 \1\dossynopsis{playtav}[file]{Plays a TAV-format video.}
 \1\dossynopsis{movprobe}[file]{Prints a movie's properties (dimensions, frame rate, audio, \dots) without playing it.}
 \1\dossynopsis{playucf}[file]{Plays a chaptered movie (UCF), presenting a chapter selector.}
 \end{outline}
+
+\subsection{The All-in-One Player}
+
+\index{playmov}\code{playmov} plays every video format above --- MV1, TEV and TAV, including TAV still pictures --- from a single command, choosing the right decoder by inspecting the file. It is the recommended way to play video; the format-specific players remain available for compatibility. Subtitles are shown automatically for files that carry them, and chaptered (UCF) streams are navigable.
+
+Run with \code{-i} for interactive playback. The controls are:
+
+\begin{outline}
+\1\textbf{Backspace} --- stop and exit (hold).
+\1\textbf{Space} --- pause and resume.
+\1\textbf{Left} / \textbf{Right} --- seek backward / forward.
+\1\textbf{Up} / \textbf{Down} --- volume up / down.
+\1\textbf{Page Up} / \textbf{Page Down} --- previous / next chapter, for chaptered files.
+\1\textbf{A} --- toggle ASCII-render mode.
+\end{outline}
+
+\index{ASCII-render mode}In \textbf{ASCII-render mode} the picture is drawn as text-mode character art rather than pixels --- a novelty, low-fidelity view of the same playing video. Begin in this mode with \code{playmov -ascii file}, or press \textbf{A} to switch in and out at any time, including mid-playback.
 
 \section{Audio}
 
@@ -851,6 +869,49 @@ The wave generators take an offset, frequency, amplitude, pan and a mixing opera
 \1\inlinesynopsis{uploadTaudFile}[inFile, songIndex, playhead]{loads one song from a Taud file into the tracker hardware and prepares the given playhead to play it.}
 \1\inlinesynopsis{captureTrackerDataToFile}[outFile]{writes the current tracker state (samples, instruments, patterns and cue sheet) out to a single-song Taud file.}
 \end{outline}
+
+\section{mediadec --- Movie and Still Playback}
+
+\index{mediadec (library)}\code{mediadec} is the decoding engine behind \code{playmov}. Most apps will not need it --- to simply play a file, run \code{playmov}. It is useful when you want to show a \textbf{short intro movie} or a \textbf{still picture} from inside your own program, in any of the machine's formats (MV1, TEV, TAV, and TAV still pictures), without writing a decoder yourself. It detects the format from the file, sets up the graphics and audio hardware, and decodes one frame at a time under your control.
+
+\code{open} returns a \emph{decoder}; you then call \code{step} in a loop. Each call advances the stream and returns an event describing what happened; when the event is a \code{frame}, call \code{blit} to put it on screen. Always \code{close} the decoder when done --- it frees its buffers and stops audio. The loop below plays an intro the viewer can skip with Backspace:
+
+\begin{lstlisting}
+let mediadec = require("mediadec")
+let dec = mediadec.open("A:/intro.tav")
+let ev
+while ((ev = dec.step()).type != "eof") {
+    if (ev.type == "frame") dec.blit()
+    else sys.sleep(1)
+    sys.poke(-40, 1)
+    if (sys.peek(-41) == 67) break   // Backspace: skip the intro
+}
+dec.close()
+\end{lstlisting}
+
+A \textbf{still picture} (a TAV still, played the same way) produces a single frame and then keeps reporting \code{idle}, so you decode it once, show it, and hold it on screen for as long as you like:
+
+\begin{lstlisting}
+let dec = mediadec.open("A:/splash.tap")
+if (dec.step().type == "frame") dec.blit()   // decode and show
+// ...hold it on screen, then:
+dec.close()
+\end{lstlisting}
+
+The library exports \code{open}; everything else is a method on the decoder it returns (called \code{dec} here):
+
+\begin{outline}
+\1\inlinesynopsis{open}[path, options]{opens a movie or still and returns a decoder. \code{path} is a fully-qualified path; \code{options} is an optional settings object, rarely needed.}
+\1\inlinesynopsis[dec]{step}[]{advances the stream and returns \code{\{ type \}}: \code{"frame"} (a frame is ready --- call \code{blit}), \code{"idle"} (nothing to show yet), \code{"eof"} (finished), or \code{"newfile"} (a concatenated next title started).}
+\1\inlinesynopsis[dec]{blit}[]{draws the current frame to the screen.}
+\1\inlinesynopsis[dec]{close}[]{frees buffers, stops audio and restores hardware state.}
+\1\inlinesynopsis[dec]{pause}[on]{pauses (\code{true}) or resumes (\code{false}) playback.}
+\1\inlinesynopsis[dec]{setVolume}[v]{sets playback volume, 0--255.}
+\1\inlinesynopsis[dec]{seekSeconds}[n]{seeks \code{n} seconds forward (positive) or back (negative); best-effort, TAV only.}
+\1\inlinesynopsis[dec]{cue}[dir]{jumps to the previous (\code{-1}) or next (\code{1}) chapter of a chaptered file.}
+\end{outline}
+
+The decoder also exposes \code{dec.info} --- a description of the file, with \code{width}, \code{height}, \code{fps}, \code{totalFrames}, \code{isStill}, \code{hasAudio}, \code{hasSubtitles} and more --- and \code{dec.subtitle}, the currently-active subtitle for files that carry one.
 
 \section{typesetter --- Rich-text Layout}
 

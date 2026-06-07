@@ -1,0 +1,37 @@
+{
+  "tsfVersion": "1.0",
+  "name": "playmov",
+  "summary": "Play a movie file (MOV/iPF, TEV, TAV or TAP)",
+  "symbols": {
+    "interactive":   { "kind": "option", "short": "-i", "summary": "Interactive mode (controls + on-screen info)" },
+    "ascii":         { "kind": "option", "long": "-ascii", "summary": "Start in ASCII-render mode" },
+    "deblock":       { "kind": "option", "long": "-deblock", "summary": "TEV: enable deblocking filter" },
+    "boundaryAware": { "kind": "option", "long": "-boundaryaware", "summary": "TEV: boundary-aware decoding" },
+    "debugMv":       { "kind": "option", "long": "-debug-mv", "summary": "TEV: show motion-vector debug overlay" },
+    "deinterlace": {
+      "kind": "option",
+      "long": "-deinterlace",
+      "summary": "TEV: deinterlacing algorithm",
+      "value": { "name": "ALGO", "type": "enum", "values": ["yadif", "bwdif"], "required": true, "summary": "Deinterlacer" }
+    },
+    "filmGrain": {
+      "kind": "option",
+      "long": "--filter-film-grain",
+      "summary": "TAV: apply a film-grain filter",
+      "value": { "name": "LEVEL", "type": "integer", "required": false, "summary": "Grain intensity" }
+    },
+    "options": {
+      "kind": "group",
+      "summary": "Options",
+      "members": ["interactive", "ascii", "deblock", "boundaryAware", "debugMv", "deinterlace", "filmGrain"]
+    },
+    "file": { "kind": "positional", "type": "file", "name": "FILE", "summary": "Movie file to play" }
+  },
+  "synopsis": {
+    "type": "sequence",
+    "children": [
+      { "type": "reference", "symbol": "file" },
+      { "type": "repeat", "child": { "type": "reference", "symbol": "options" } }
+    ]
+  }
+}
