@@ -148,7 +148,10 @@ function create(magic, sr, fileLength, opts, common) {
     // (bias() below) and is skipped when an explicit background packet disabled it.
     function blit() { }
 
-    // Frame is already on the display planes, so the player can sample the screen.
+    // iPF decodes straight to the 4bpp display planes (no fast JS planar->RGB
+    // path), so — unlike TEV / TAV — there is no RAM RGB888 frame: the planes ARE
+    // the frame. sampleGray/sampleColour therefore read the planes back; this still
+    // costs no extra upload in ASCII mode, since decoding already wrote the planes.
     function sampleGray(dst, w, h) { common.sampleGrayScreen(width, height, dst, w, h, 4) }
     function sampleColour(dst, w, h) { common.sampleColourScreen(width, height, dst, w, h, 4) }
 
@@ -160,6 +163,12 @@ function create(magic, sr, fileLength, opts, common) {
         get videoRate() { return 0 },
         get frameMode() { return ' ' },
         cues: [],
+
+        // No generic RAM frame for iPF: it decodes straight to the display planes,
+        // so frameBuffer is 0. Use sampleGray/sampleColour to read the frame instead.
+        get frameBuffer() { return 0 },
+        get frameWidth() { return width },
+        get frameHeight() { return height },
 
         step: step,
         blit: blit,

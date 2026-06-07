@@ -7,21 +7,30 @@
  *   const mediadec = require("mediadec")
  *   const dec = mediadec.open("A:\\film.tav", { interactive: true })
  *   while (true) {
- *       const ev = dec.step()              // [backend] decode the next due frame
+ *       const ev = dec.step()              // [backend] decode the next due frame to RAM
  *       if (ev.type === 'eof') break
  *       if (ev.type !== 'frame') { sys.sleep(1); continue }
- *       dec.blit()                         // [draw] copy the frame to the screen
- *       // ...or in ASCII mode: dec.blit(); dec.sampleGray(buf,w,h); aa.render/flush
+ *       dec.blit()                         // [draw] upload the RAM frame to the screen
+ *       // ...or in ASCII mode (no upload): dec.sampleGray(buf,w,h); aa.render/flush
+ *       // ...or grab the frame yourself:   sys.peek(dec.frameBuffer + ...)
  *   }
  *   dec.close()
+ *
+ * step() decodes the next due frame into a generic RAM RGB888 buffer (exposed as
+ * .frameBuffer); the caller decides what to do with it — upload it with .blit(),
+ * sample it for ASCII, or read it directly.  (iPF is the exception: it decodes
+ * straight to the 4bpp display planes, so .frameBuffer is 0 and .sampleGray/.blit
+ * operate on the planes — see mediadec_ipf.mjs.)
  *
  * The decoder object every backend returns exposes a uniform interface:
  *   .info {format,width,height,fps,totalFrames,hasAudio,hasSubtitles,
  *          isInterlaced,colourSpace,graphicsMode,isStill}
  *   .step()                 -> { type:'frame'|'idle'|'eof'|'newfile'|'error', frameCount }
- *   .blit()                 present the current native frame to the screen
- *   .sampleGray(dst,w,h)    fill an ASCII brightness buffer from the framebuffer
- *   .sampleColour(dst,w,h)  fill a per-cell RGB buffer (w*h*3) from the framebuffer
+ *   .frameBuffer            RAM RGB888 address of the current frame (0 for iPF; see above)
+ *   .frameWidth/.frameHeight dimensions of the frame in .frameBuffer
+ *   .blit()                 upload the current RAM frame to the screen (adapter)
+ *   .sampleGray(dst,w,h)    fill an ASCII brightness buffer from the RAM frame
+ *   .sampleColour(dst,w,h)  fill a per-cell RGB buffer (w*h*3) from the RAM frame
  *   .subtitle {visible,text,position,useUnicode,dirty}  (resolved by the lib)
  *   .pause(b)/.isPaused() .setVolume(v)/.getVolume()
  *   .seekSeconds(n) .cue(d) .cues

@@ -426,6 +426,20 @@ class GraphicsJSR223Delegate(private val vm: VM) {
         }
     }
 
+    fun clearPixelsAll(col1: Int, col2: Int, col3: Int, col4: Int) {
+        getFirstGPU()?.let {
+            it.poke(250884L, col1.toByte())
+            it.poke(250883L, 2)
+            it.poke(250884L, col2.toByte())
+            it.poke(250883L, 4)
+            it.poke(250884L, col3.toByte())
+            it.poke(250883L, 6)
+            it.poke(250884L, col4.toByte())
+            it.poke(250883L, 8)
+            it.applyDelay()
+        }
+    }
+
     /**
      * prints a char as-is; won't interpret them as an escape sequence
      */
@@ -7088,22 +7102,52 @@ class GraphicsJSR223Delegate(private val vm: VM) {
     }
 
     /**
-     * Upload interlaced GOP frame from videoBuffer with deinterlacing.
-     * Handles field extraction and temporal deinterlacing for GOP frames.
+     * Copy a single progressive GOP frame out of videoBuffer (Java heap) into a
+     * JS-addressable RGB888 RAM buffer, without dithering or uploading.  Lets the
+     * mediadec library expose every decoded frame as a generic RAM frame: the
+     * caller then uploads it with uploadRGBToFramebuffer (graphics path) or
+     * samples it for the ASCII renderer — never going through the display planes
+     * just to read the pixels back.
+     *
+     * @param frameIndex Which frame in the GOP to copy (0-based)
+     * @param width Frame width
+     * @param height Frame height
+     * @param bufferOffset Byte offset of the GOP slot in videoBuffer
+     * @param dstRGBAddr Destination RGB888 buffer in VM user memory (width*height*3 bytes)
+     */
+    fun tavCopyGopFrameToRGB(frameIndex: Int, width: Int, height: Int, bufferOffset: Long, dstRGBAddr: Long) {
+        val gpu = (vm.peripheralTable[1].peripheral as GraphicsAdapter)
+        val frameSize = width * height * 3L
+        val videoBufferOffset = bufferOffset + (frameIndex * frameSize)
+        UnsafeHelper.memcpyRaw(
+            null,
+            gpu.videoBuffer.ptr + videoBufferOffset,
+            null,
+            vm.usermem.ptr + dstRGBAddr,
+            frameSize
+        )
+    }
+
+    /**
+     * Extract three consecutive fields of an interlaced GOP frame from videoBuffer
+     * and deinterlace them into an RGB888 RAM buffer — the field-copy + deinterlace
+     * half of uploadInterlacedGopFrameToFramebuffer, WITHOUT the final upload.  Used
+     * by the mediadec library to land the decoded frame in RAM (where it can then be
+     * uploaded or sampled), mirroring tavCopyGopFrameToRGB for the progressive case.
      *
      * @param frameIndex Current frame index in GOP (0-based)
      * @param gopSize Total number of frames in GOP
      * @param width Frame width
      * @param fieldHeight Height of each field (half of display height)
-     * @param fullHeight Full display height (2 * fieldHeight)
-     * @param frameCount Global frame counter for dithering
+     * @param fullHeight Full display height (2 * fieldHeight) — unused here, kept for call symmetry
+     * @param frameCount Global frame counter (deinterlacer cadence)
      * @param bufferOffset Start offset of GOP in videoBuffer
-     * @param prevFieldAddr Memory address for previous field buffer
-     * @param currentFieldAddr Memory address for current field buffer
-     * @param nextFieldAddr Memory address for next field buffer
-     * @param deinterlaceOutputAddr Memory address for deinterlaced output
+     * @param prevFieldAddr Memory address for previous field buffer (scratch)
+     * @param currentFieldAddr Memory address for current field buffer (scratch)
+     * @param nextFieldAddr Memory address for next field buffer (scratch)
+     * @param deinterlaceOutputAddr Destination RGB888 buffer (width*fullHeight*3 bytes)
      */
-    fun uploadInterlacedGopFrameToFramebuffer(
+    fun tavDeinterlaceGopFrameToRGB(
         frameIndex: Int,
         gopSize: Int,
         width: Int,
@@ -7158,8 +7202,43 @@ class GraphicsJSR223Delegate(private val vm: VM) {
             prevFieldAddr, currentFieldAddr, nextFieldAddr,
             deinterlaceOutputAddr, "yadif"
         )
+    }
 
-        // Upload deinterlaced full-height frame
+    /**
+     * Upload interlaced GOP frame from videoBuffer with deinterlacing.
+     * Handles field extraction and temporal deinterlacing for GOP frames.
+     *
+     * @param frameIndex Current frame index in GOP (0-based)
+     * @param gopSize Total number of frames in GOP
+     * @param width Frame width
+     * @param fieldHeight Height of each field (half of display height)
+     * @param fullHeight Full display height (2 * fieldHeight)
+     * @param frameCount Global frame counter for dithering
+     * @param bufferOffset Start offset of GOP in videoBuffer
+     * @param prevFieldAddr Memory address for previous field buffer
+     * @param currentFieldAddr Memory address for current field buffer
+     * @param nextFieldAddr Memory address for next field buffer
+     * @param deinterlaceOutputAddr Memory address for deinterlaced output
+     */
+    fun uploadInterlacedGopFrameToFramebuffer(
+        frameIndex: Int,
+        gopSize: Int,
+        width: Int,
+        fieldHeight: Int,
+        fullHeight: Int,
+        frameCount: Int,
+        bufferOffset: Long,
+        prevFieldAddr: Long,
+        currentFieldAddr: Long,
+        nextFieldAddr: Long,
+        deinterlaceOutputAddr: Long
+    ) {
+        // Field copy + deinterlace into the RGB output buffer ...
+        tavDeinterlaceGopFrameToRGB(
+            frameIndex, gopSize, width, fieldHeight, fullHeight, frameCount, bufferOffset,
+            prevFieldAddr, currentFieldAddr, nextFieldAddr, deinterlaceOutputAddr
+        )
+        // ... then upload the deinterlaced full-height frame.
         uploadRGBToFramebuffer(deinterlaceOutputAddr, width, fullHeight, frameCount, false)
     }
 

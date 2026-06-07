@@ -4,8 +4,10 @@
  * Holds everything the three movie backends (iPF/MOV, TEV, TAV) duplicated in
  * the old standalone players: magic constants, packet-type / SSF-opcode tables,
  * the TAV quality LUT, seqread selection, the audio router, the subtitle
- * engine, bias lighting, and the two `sampleGray` source samplers used by the
- * player's ASCII-render path.
+ * engine, bias lighting, and the `sampleGray` / `sampleColour` source samplers
+ * used by the player's ASCII-render path — both a *Screen pair (read the GPU
+ * display planes, for iPF) and a *RGB pair (read a RAM RGB888 frame, for the
+ * decode-into-RAM backends TEV / TAV).
  *
  * Runs in the same GraalVM context as the player, so the host globals
  * (sys/graphics/audio/con/serial/files/gzip) are visible directly, exactly as
@@ -396,6 +398,42 @@ function sampleColourScreen(width, height, dst, dstW, dstH, mode) {
     }
 }
 
+// ── sampleGray / sampleColour from a RAM RGB888 frame ─────────────────────────
+// Companions to the *Screen samplers that read a decoded frame straight out of a
+// JS-addressable RGB888 RAM buffer (3 bytes/pixel, forward-addressed) instead of
+// the GPU display planes.  Backends that decode into RAM (TEV / TAV) use these so
+// the ASCII renderer can sample the frame WITHOUT it ever being uploaded to the
+// video adapter — the whole point of the generic RAM-frame model.  Same cheap
+// ~dstW·dstH·3 peek count and the same nearest-sampling geometry as the *Screen
+// versions (sampleGrayRGB row-aligned; sampleColourRGB at the cell centre).
+function sampleGrayRGB(srcPtr, width, height, dst, dstW, dstH) {
+    for (let y = 0; y < dstH; y++) {
+        let sy = (y * height / dstH) | 0
+        let dstRow = y * dstW
+        for (let x = 0; x < dstW; x++) {
+            let sx = (x * width / dstW) | 0
+            let o = srcPtr + (sy * width + sx) * 3
+            let r = sys.peek(o) & 255, g = sys.peek(o + 1) & 255, b = sys.peek(o + 2) & 255
+            dst[dstRow + x] = luma8(r, g, b)
+        }
+    }
+}
+
+function sampleColourRGB(srcPtr, width, height, dst, dstW, dstH) {
+    for (let y = 0; y < dstH; y++) {
+        let sy = ((y + 0.5) * height / dstH) | 0
+        if (sy >= height) sy = height - 1
+        let dstRow = y * dstW * 3
+        for (let x = 0; x < dstW; x++) {
+            let sx = ((x + 0.5) * width / dstW) | 0
+            if (sx >= width) sx = width - 1
+            let o = srcPtr + (sy * width + sx) * 3
+            let di = dstRow + x * 3
+            dst[di] = sys.peek(o) & 255; dst[di + 1] = sys.peek(o + 1) & 255; dst[di + 2] = sys.peek(o + 2) & 255
+        }
+    }
+}
+
 exports = {
     MAGIC_MOV, MAGIC_TEV, MAGIC_TAV, MAGIC_TAP, MAGIC_UCF,
     MP2_FRAME_SIZE, QLUT,
@@ -405,5 +443,6 @@ exports = {
     openSeqread, readMagic, detectFormat, magicEquals,
     luma8,
     makeAudioRouter, makeSubtitleEngine, makeBias,
-    sampleGrayScreen, sampleColourScreen
+    sampleGrayScreen, sampleColourScreen,
+    sampleGrayRGB, sampleColourRGB
 }

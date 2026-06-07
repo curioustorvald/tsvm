@@ -9,11 +9,13 @@
  * headers (XFPS) and timecode-driven subtitles.
  *
  * The original main-loop body becomes step(): each call performs one iteration
- * (optional packet read + GOP state machine + a time-gated display) and returns
- * 'frame' when a frame is displayed.  The actual upload is deferred to blit()
- * (or sampleGray() in ASCII mode), which is the only structural change from the
- * original — it lets the same decoded frame feed either the graphics path or
- * the ASCII path.
+ * (optional packet read + GOP state machine + a time-gated display) and, when a
+ * frame is due, materialises it into PRESENT_RGB (an RGB888 RAM buffer) before
+ * returning 'frame'.  This is the one structural change from the original: every
+ * source (I/P ping-pong, progressive GOP in the Java-heap videoBuffer, interlaced
+ * GOP) is funnelled into one RAM frame, so blit() (upload to the adapter) and the
+ * ASCII sampler both read from RAM — neither reads pixels back off the display
+ * planes, and `frameBuffer` exposes the frame for arbitrary reuse.
  */
 
 const TAV_VERSION = 1
@@ -106,6 +108,15 @@ function create(magic, sr, fileLength, opts, common, isTap) {
     sys.memset(RGB_BUFFER_B, 0, FRAME_SIZE)
     let CURRENT_RGB = RGB_BUFFER_A
     let PREV_RGB = RGB_BUFFER_B
+
+    // Canonical decoded-frame buffer: every displayed frame is materialised here
+    // as RGB888, whatever its source (I/P ping-pong, progressive GOP in the
+    // Java-heap videoBuffer, or an interlaced GOP that needs deinterlacing).  This
+    // is the one ~735 kB buffer the generic RAM-frame model costs: blit() uploads
+    // it, the ASCII path samples it, and `frameBuffer` exposes it to callers — so
+    // a frame can be reused without ever round-tripping through the display planes.
+    const PRESENT_RGB = sys.malloc(FRAME_SIZE)
+    sys.memset(PRESENT_RGB, 0, FRAME_SIZE)
 
     const FIELD_SIZE = width * decodeHeight * 3
     const CURR_FIELD = isInterlaced ? sys.malloc(FIELD_SIZE) : 0
@@ -488,7 +499,7 @@ function create(magic, sr, fileLength, opts, common, isTap) {
     function step() {
         // TAP still: show the pre-decoded frame once, then idle.
         if (isTap) {
-            if (!firstFrameIssued) { firstFrameIssued = true; pending = { kind: 'rgb', src: CURRENT_RGB, frameNo: 0 }; return { type: 'frame', frameCount: 1 } }
+            if (!firstFrameIssued) { firstFrameIssued = true; pending = { kind: 'rgb', src: CURRENT_RGB, frameNo: 0 }; materializeFrame(); return { type: 'frame', frameCount: 1 } }
             return { type: 'idle' }
         }
 
@@ -539,6 +550,7 @@ function create(magic, sr, fileLength, opts, common, isTap) {
             while (sys.nanoTime() < nextFrameTime && !paused) sys.sleep(1)
             if (!paused) {
                 pending = { kind: 'rgb', src: CURRENT_RGB, frameNo: trueFrameCount }
+                materializeFrame()
                 audioR.fire()
                 firstFrameIssued = true
                 frameCount++; trueFrameCount++; iframeReady = false
@@ -556,6 +568,7 @@ function create(magic, sr, fileLength, opts, common, isTap) {
             if (!paused) {
                 if (isInterlaced) pending = { kind: 'gop-interlaced', frameIndex: currentGopFrameIndex, bufferOffset: currentGopBufferSlot * SLOT_SIZE, frameNo: trueFrameCount, gopSize: currentGopSize }
                 else pending = { kind: 'gop', frameIndex: currentGopFrameIndex, bufferOffset: currentGopBufferSlot * SLOT_SIZE, frameNo: trueFrameCount, gopSize: currentGopSize }
+                materializeFrame()
                 audioR.fire()
                 firstFrameIssued = true
                 currentGopFrameIndex++; frameCount++; trueFrameCount++
@@ -606,24 +619,35 @@ function create(magic, sr, fileLength, opts, common, isTap) {
         return displayed ? { type: 'frame', frameCount: frameCount } : { type: 'idle' }
     }
 
-    // ── Present / sample ─────────────────────────────────────────────────────
-    function blit() {
+    // ── Materialise / present / sample ───────────────────────────────────────
+    // Land the just-decoded frame in PRESENT_RGB (RGB888 RAM), whatever its source.
+    // Called by step() the moment a frame becomes due, so blit() (upload) and the
+    // ASCII sampler can both consume it from RAM and neither path has to read the
+    // pixels back off the display planes.
+    //   rgb            : I/P (or TAP still) — already RGB888 in CURRENT_RGB; copy in.
+    //   gop            : progressive GOP frame in the Java-heap videoBuffer; copy out.
+    //   gop-interlaced : interlaced GOP fields; deinterlace into PRESENT_RGB.
+    function materializeFrame() {
         if (pending.kind === 'rgb') {
-            graphics.uploadRGBToFramebuffer(pending.src, width, height, pending.frameNo, false)
+            sys.memcpy(pending.src, PRESENT_RGB, FRAME_SIZE)
         } else if (pending.kind === 'gop') {
-            graphics.uploadVideoBufferFrameToFramebuffer(pending.frameIndex, width, height, pending.frameNo, pending.bufferOffset)
-            updateScreenMask(frameCount); fillMaskedRegions()
+            graphics.tavCopyGopFrameToRGB(pending.frameIndex, width, height, pending.bufferOffset, PRESENT_RGB)
         } else if (pending.kind === 'gop-interlaced') {
-            graphics.uploadInterlacedGopFrameToFramebuffer(pending.frameIndex, pending.gopSize, width, decodeHeight, height, pending.frameNo, pending.bufferOffset, prevField, curField, nextField, CURRENT_RGB)
-            updateScreenMask(frameCount); fillMaskedRegions()
+            graphics.tavDeinterlaceGopFrameToRGB(pending.frameIndex, pending.gopSize, width, decodeHeight, height, pending.frameNo, pending.bufferOffset, prevField, curField, nextField, PRESENT_RGB)
         }
-        // bias lighting is a separate, player-driven stage (bias() below)
     }
 
-    // Player calls blit() before sampleGray() in ASCII mode, so the framebuffer
-    // already holds the current frame regardless of kind.
-    function sampleGray(dst, w, h) { common.sampleGrayScreen(width, height, dst, w, h, gpuGraphicsMode) }
-    function sampleColour(dst, w, h) { common.sampleColourScreen(width, height, dst, w, h, gpuGraphicsMode) }
+    // Present the materialised RAM frame to the display planes (with dithering).
+    // bias lighting is a separate, player-driven stage (bias() below).
+    function blit() {
+        graphics.uploadRGBToFramebuffer(PRESENT_RGB, width, height, pending.frameNo, false)
+        if (pending.kind === 'gop' || pending.kind === 'gop-interlaced') { updateScreenMask(frameCount); fillMaskedRegions() }
+    }
+
+    // The current frame already sits in PRESENT_RGB (materialised in step()), so
+    // sampling never touches the display planes — ASCII mode needs no blit().
+    function sampleGray(dst, w, h) { common.sampleGrayRGB(PRESENT_RGB, width, height, dst, w, h) }
+    function sampleColour(dst, w, h) { common.sampleColourRGB(PRESENT_RGB, width, height, dst, w, h) }
 
     // ── TAP still: decode the single image now ──────────────────────────────
     if (isTap) {
@@ -662,6 +686,12 @@ function create(magic, sr, fileLength, opts, common, isTap) {
         get cues() { return cueElements },
         get currentCueIndex() { return currentCueIndex },
         get currentFileIndex() { return currentFileIndex },
+
+        // Generic RAM frame: RGB888 buffer holding the current decoded frame,
+        // valid after step() returns 'frame'. Callers may read it for their own use.
+        get frameBuffer() { return PRESENT_RGB },
+        get frameWidth() { return width },
+        get frameHeight() { return height },
 
         step: step,
         blit: blit,
@@ -714,7 +744,7 @@ function create(magic, sr, fileLength, opts, common, isTap) {
 
         close() {
             cleanupAsyncDecode()
-            sys.free(RGB_BUFFER_A); sys.free(RGB_BUFFER_B)
+            sys.free(RGB_BUFFER_A); sys.free(RGB_BUFFER_B); sys.free(PRESENT_RGB)
             if (isInterlaced) { sys.free(CURR_FIELD); sys.free(PREV_FIELD); sys.free(NEXT_FIELD) }
             while (overflowQueue.length > 0) { const ov = overflowQueue.shift(); sys.free(ov.compressedPtr) }
             audioR.close()

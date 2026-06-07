@@ -4,8 +4,9 @@
  * Ported from assets/disk0/tvdos/bin/playtev.js.  DCT codec, YCoCg-R / ICtCp,
  * motion compensation, optional deblock / boundary-aware decoding, interlaced
  * (yadif/bwdif) support, NTSC frame duplication, MP2 audio, SSF + SSF-TC
- * subtitles.  Decodes into an off-screen RGB888 ping-pong buffer; blit() uploads
- * it (deferred from decode so the ASCII path can sample the same buffer).
+ * subtitles.  Decodes into an off-screen RGB888 ping-pong buffer (the generic
+ * RAM frame): blit() uploads it to the adapter, while the ASCII path samples it
+ * straight from RAM, and `frameBuffer` exposes it for arbitrary reuse.
  */
 
 const TEV_VERSION_YCOCG = 2
@@ -181,15 +182,16 @@ function create(magic, sr, fileLength, opts, common) {
         }
     }
 
-    // Present only; bias lighting is a separate, player-driven stage (bias() below).
+    // Present the decoded RAM frame to the display planes (with dithering).
+    // bias lighting is a separate, player-driven stage (bias() below).
     function blit() {
         graphics.uploadRGBToFramebuffer(currentFrameSrc, width, height, frameCount, false)
     }
 
-    // Player calls blit() (which uploads currentFrameSrc) before sampleGray in
-    // ASCII mode, so we read the framebuffer the upload just produced.
-    function sampleGray(dst, w, h) { common.sampleGrayScreen(width, height, dst, w, h, 4) }
-    function sampleColour(dst, w, h) { common.sampleColourScreen(width, height, dst, w, h, 4) }
+    // The decoded frame already sits in currentFrameSrc (RGB888 RAM), so sampling
+    // reads RAM directly — ASCII mode needs no blit() / display-plane round-trip.
+    function sampleGray(dst, w, h) { common.sampleGrayRGB(currentFrameSrc, width, height, dst, w, h) }
+    function sampleColour(dst, w, h) { common.sampleColourRGB(currentFrameSrc, width, height, dst, w, h) }
 
     return {
         info: info,
@@ -200,6 +202,12 @@ function create(magic, sr, fileLength, opts, common) {
         get frameMode() { return currentFrameType },
         get qY() { return qualityY }, get qCo() { return qualityCo }, get qCg() { return qualityCg },
         cues: [],
+
+        // Generic RAM frame: the current decoded frame as RGB888 (the live
+        // ping-pong buffer), valid after step() returns 'frame'. Callers may read it.
+        get frameBuffer() { return currentFrameSrc },
+        get frameWidth() { return width },
+        get frameHeight() { return height },
 
         step: step,
         blit: blit,

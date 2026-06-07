@@ -5,10 +5,11 @@
 //
 //   loop:
 //     read input (quit / pause / seek / volume / cue / ASCII-toggle)
-//     [backend] dec.step()  -> decode the next due frame into the framebuffer
+//     [backend] dec.step()  -> decode the next due frame into a RAM RGB888 frame
 //     [player]  hold the frame
 //     [postprocessor] subtitle state resolved by the library
-//     [draw]    dec.blit()  (graphics)  OR  sampleGray + aa.mjs (ASCII),
+//     [draw]    graphics: dec.blit() (upload RAM frame to adapter) + dec.bias()
+//               ASCII:    dec.sampleGray + aa.mjs straight off the RAM frame (no upload)
 //               then subtitle overlay + playgui chrome
 //
 // Usage: playmov FILE [-i] [-ascii] [-colour] [-deblock] [-boundaryaware]
@@ -234,6 +235,7 @@ try {
     function enterAsciiVisual() {
         ensureAscii()
         graphics.setBackground(0, 0, 0)
+        graphics.clearPixelsAll(0, 0, 0, 0)
         con.clear()
     }
 
@@ -284,19 +286,20 @@ try {
         lastKey = key
     }
 
-    // ── Draw a decoded frame: framebuffer -> screen -> overlays -> chrome ──────
+    // ── Draw a decoded frame: RAM frame -> screen / ASCII -> overlays -> chrome ─
     function draw() {
         if (asciiMode) {
-            // Sample the frame off the framebuffer, then cover the picture with
-            // solid-black (240) text cells — cheaper than clearing the pixel planes.
-            dec.blit()                               // frame -> framebuffer (so sample* can read it)
+            // The decoded frame already sits in RAM (TEV/TAV) or on the display
+            // planes (iPF), so sample it WITHOUT uploading to the video adapter,
+            // then cover the picture with solid-black (240) text cells (cheaper
+            // than clearing the pixel planes).
             dec.sampleGray(aaCtx.imagebuffer, aaCtx.imgW, aaCtx.imgH)
             aa.render(aaCtx, aaParams)
             aa.flush(aaCtx)
             if (colourMode) applyColourFore(dec)     // recolour the FG plane from the video's RGB
             paintAsciiBgOpaque()                     // cover with opaque 240 (not transparent 255)
         } else {
-            dec.blit()                               // copy the frame to the framebuffer
+            dec.blit()                               // upload the RAM frame to the video adapter
             dec.bias()                               // bias lighting (player-owned stage; graphics only)
         }
 
