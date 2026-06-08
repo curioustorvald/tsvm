@@ -544,6 +544,17 @@ while (running) {
 
     if (!running) break
 
+    // Re-assert ownership of the cooked keyboard. keyboardInputRequested (-39)
+    // is a single global flag gating whether typed chars reach keyboardBuffer;
+    // the dispatcher relies on it staying 1. An active-pane app that used cooked
+    // host input (sys.read / sys.readKey leave it at 0) or crashed mid-read
+    // leaves it off, and the shimmed con.getch — unlike the base getch, which
+    // calls sys.readKey (→ -39=1) every time — never re-asserts it. That is why
+    // the current VT's keyboard locks up (and why it never happens without
+    // vtmgr). Re-enable ONLY when it is actually off: poke(-39,1) clears
+    // keyboardBuffer, so doing it every frame would drop chars typed last frame.
+    if (sys.peek(-39) === 0) sys.poke(-39, 1)
+
     // drain typed chars into the active pane's queue
     while (sys.peek(-50) !== 0) {
         let k = sys.peek(-38)
