@@ -2412,7 +2412,9 @@ TODO:
     [x] Samples and Instruments view (viewer on taut.js; editor on separate .js)
         follow the ImpulseTracker design first, then improve from there
     [?] Sample desig for instrument in Pitch-Volume space (one rectangle = one patch). If undefined, the old sample pointer falls thru
-        [ ] Needs .it and .xm test file to complete it2taud and xm2taud
+        [ ] Expectedly not working, test with DOOM-E1M1.taud
+    [ ] .sf2 import module (for generic use, including "Import instrument from soundfont" and midi2taud conversion)
+        [ ] Midi2Taud using .mid and .sf2 as input, trim unused samples and Ixmp patches
 
 TODO - list of demo songs that MUST ship with Microtone:
     * 4THSYM (rename to Fourth Symmetriad) — excellent piece for demonstrating NNAs and filter envelopes
