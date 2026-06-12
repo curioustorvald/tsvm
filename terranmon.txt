@@ -2321,7 +2321,28 @@ from source.
           files SHOULD treat default_note_volume == 0 as "field not present"
           and fall back to row_default = 63 — preserving the pre-fix behaviour
           for legacy files where IGV already carries sample.vol.
-197..255 Reserved (59 bytes free for future per-instrument fields)
+197 Bit16  Filter/Pitch envelope LOOP word ; if offset 19 specified 'Pitch', this field is automatically 'filter', and vice-versa. Contradictory 'm' flag is INVALID
+        * Always-active wrap region for the pitch/filter envelope.
+        0b 00P_sssss_mcb_eeeee
+            s (bits 12..8) : loop start index
+            e (bits 4..0)  : loop end   index
+            b (bit 5)      : enable the LOOP
+            c (bit 6)      : envelope carry
+            m (bit 7)      : mode — 0 = pitch envelope, 1 = filter envelope ; this is NOT inverted from offset 19
+            P (bit 13)     : envelope present in source. Same semantics as the
+                             pan envelope's P bit: gates whether the mixer applies
+                             envelope-driven pitch / cutoff at all. P=0 ⇒ no
+                             envelope contribution (sample plays at its own pitch /
+                             default cutoff). P=1 ⇒ evaluate every tick regardless
+                             of LOOP.b / SUSTAIN.b.
+            (bits 14..15 reserved)
+199 Bit16  Filter/Pitch envelope SUSTAIN word ; if offset 19 specified 'Pitch', this field is automatically 'filter', and vice-versa
+        * Same encoding as offset 189, applied to the filter/pitch envelope.
+        0b 000_sssss_00b_eeeee
+201 Bit16x25 Filter/Pitch envelopes ; if offset 19 specified 'Pitch', this field is automatically 'filter', and vice-versa
+      Byte 1: Value (00..FF)
+      Byte 2: Time until the next point, in seconds (3.5 Unsigned Minifloat, biased; range 0..15.75 s, smallest non-zero step 1/256 s ≈ 3.91 ms — chosen so single tracker ticks resolve at every supported BPM). 0 = hold at this point indefinitely.
+252..255 Reserved (4 bytes free for future per-instrument fields)
 
 
 
@@ -2796,13 +2817,14 @@ prefixes:
     Uint8   Instrument ID
     Uint24  Count of patches
         ** Repetition of:
-        Uint8  Patch definition version
+        Bit8   Patch definition version
             Version numbers are essentially feature bit-flags, where:
-            0b 000x fpvi
+            0b x00 Pfpvi
                 i: always set (version 1)
                 v: has volume envelopes
                 p: has pan envelopes
-                f: has pitch/filter envelopes
+                f: has filter envelopes
+                P: has pitch envelopes
                 x: extra base info
         Uint16 Pitch start                 ; Taud 4096-TET noteVal (same scale as pattern-cell note)
         Uint16 Pitch end (inclusive)
@@ -2824,6 +2846,12 @@ prefixes:
         Uint8  vibratoDepth                ; per-sample auto-vibrato (mirrors base inst byte 187)
         Uint8  vibratoRate                 ; per-sample auto-vibrato (mirrors base inst byte 188)
         Uint8  vibratoWaveform             ; bits 0-2 only (mirrors instrumentFlag bits 2-4); 0xFF = "no override"
+        * Patch definition flag 'x'
+        Bit32  Extra feature flags 1..32 (reserved; keep it as all-unset)
+        Bit32  Extra feature flags 33..64 (reserved; keep it as all-unset)
+        Uint16 Volume Fadeout    ; same encoding as identical base instrument byte 172-173
+        Uint8  Default cutoff     ; identical to base instrument byte 182
+        Uint8  Default resonance  ; identical to base instrument byte 183
         * Patch definition flag 'v'
         Bit16  Volume envelope LOOP word    ; identical to base instrument byte 15..16
         Bit16  Volume envelope SUSTAIN word ; identical to base instrument byte 189..190
@@ -2833,25 +2861,24 @@ prefixes:
         Bit16  Panning envelope SUSTAIN word ; identical to base instrument byte 191.192
         Bit16x25 Panning envelopes           ; identical to base instrument byte 71..120
         * Patch definition flag 'f'
-        Bit16  Pitch/Filter envelope LOOP word    ; identical to base instrument byte 19..20
-        Bit16  Pitch/Filter envelope SUSTAIN word ; identical to base instrument byte 193..194
-        Bit16x25 Pitch/Filter envelopes           ; identical to base instrument byte 121..170
-        * Patch definition flag 'x'
-        Uint16 Volume Fadeout    ; same encoding as identical base instrument byte 172-173
-        Uint8  Default cutoff     ; identical to base instrument byte 182
-        Uint8  Default resonance  ; identical to base instrument byte 183
+        Bit16  Filter envelope LOOP word    ; identical to base instrument byte 19..20
+        Bit16  Filter envelope SUSTAIN word ; identical to base instrument byte 193..194
+        Bit16x25 Filter envelopes           ; identical to base instrument byte 121..170
+        * Patch definition flag 'P'
+        Bit16  Pitch envelope LOOP word
+        Bit16  Pitch envelope SUSTAIN word
+        Bit16x25 Pitch envelopes
 
     Notes:
     0. this extension is made to support IT/XM instrument spec as well as partial compatibility to SF2 (Soundfont format two)
-    1. Envelopes (vol/pan/pf), fadeout, NNA / DCT / DCA, pitch-pan, filter, IGV and any other "instrument-scope" parameters all follow the base instrument definition. Only sample-scope parameters (the patch fields listed above) override.
-    2. overlapping regions are considered INVALID
+    x. Envelopes (vol/pan/pf), fadeout, NNA / DCT / DCA, pitch-pan, filter, IGV and any other "instrument-scope" parameters all follow the base instrument definition. Only sample-scope parameters (the patch fields listed above) override. -- obsoleted by new patch definitions
+    1. overlapping regions are considered INVALID (layered samples are impossible in the Taud engine)
     3. multiple Ixmp blocks pointing the same instrument are considered INVALID
     4. IT and XM does not define volumes. Keep the Volume rectangle at 0..63 — the engine clamps to that range when matching.
-    5. SF2 does define volumes (because MIDI). Convert it using `round(velocity * (63/127))`
-        On import, `initialAttenuation`, filters and ADSR shall be ignored
-    6. Patch selection at trigger time walks the patch list in order; the first patch whose rectangle contains the trigger's (noteVal, rowVolume) wins. When no patch matches, the base instrument's sample fields are used unchanged.
-    7. Sentinel values listed above ("no override") let a patch defer to the base instrument for a given field — used by converters that don't carry per-sample data for one of the dimensions (e.g. SF2 ignoring per-sample pan).
-    8. Total per-patch payload is 31 bytes.
+    x. SF2 does define volumes (because MIDI). Convert it using `round(velocity * (63/127))`
+        On import, `initialAttenuation`, filters and ADSR shall be ignored -- obsoleted by new patch definitions
+    5. Patch selection at trigger time walks the patch list in order; the first patch whose rectangle contains the trigger's (noteVal, rowVolume) wins. When no patch matches, the base instrument's sample fields are used unchanged.
+    6. Sentinel values listed above ("no override") let a patch defer to the base instrument for a given field — used by converters that don't carry per-sample data for one of the dimensions (e.g. SF2 ignoring per-sample pan).
 
 --------------------------------------------------------------------------------
 
