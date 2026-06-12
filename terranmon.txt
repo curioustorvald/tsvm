@@ -2228,9 +2228,20 @@ from source.
 183 Uint8  Default resonance (0..254 full range, 255 to off (-1 on IT). Effect range equals to that of ImpulseTracker -- 127 in IT is equal to 254 in Taud)
 184 Sint16 Sample detune (in 4096-TET unit) (FT2 finetune scale need to be rescaled accordingly)
 186 Bit8   Instrument Flag
-        0b 000 www nn
+        0b 00N www nn
             n: New note action. 00: note off, 01: note cut, 10: continue, 11: note fade (arranged differently to IT)
             ww: Vibrato waveform (IT: sample config, FT2: instrument config). 00: sine, 01: ramp-down saw, 10: square, 11: random, 100: ramp-up saw (FT2 only)
+            Nnn: New note action (non-traditional). 100: key lift
+                * Key Lift behaves *exactly* like a MIDI key-up: on key-off the volume-envelope
+                  playhead jumps straight to the sustain-end node, so the post-sustain (release)
+                  nodes play immediately from there — instead of the IT semantics where key-off
+                  merely releases the SUSTAIN wrap and the playhead still walks the remaining
+                  pre-sustain (hold/decay) nodes first, ringing held-style instruments like a
+                  depressed sustain pedal. Applies wherever key-off is delivered: pattern
+                  KEY_OFF (0x0001), the NNA ghost spawned on a new-note, DCA Note Off, and
+                  past-note S $71. Instruments without a volume-envelope SUSTAIN region are
+                  unaffected (there is no release boundary to jump to). Primary consumer:
+                  midi2taud melodic instruments (SF2 ADSR import).
 187 Uint8  Vibrato Depth (0..255 full range)
         * ImpulseTracker has range of 0..32 ON THE SAMPLE SETTINGS; multiply by (255/32) then round to int
         * FastTracker2 has range of 0..16; multiply by (255/16) then round to int
@@ -2386,7 +2397,7 @@ TODO:
     [x] volume and panning policy to match note effect policy: when note is "retriggerred" (note command with instrument specified), the volume/pan must take default value; if not (note command with instrument 0) the volume/pan must stay at the old value. Make both audio engine and taut.js simulator changes.
     [x] xm volume column commands (+x, -x, Dx, Lx, Mx, Px, Rx, Sx, Ux, Vx) are completely ignored
     [x] theday.xm order 0x28, channel 6..8 has 'note trigger with inst 1 but no volume -> key-off -> set-volume to 0x20 -> key-off -> set-volume to 0x10 -> key-off -> ...' and it sounds like gating: key-off silences the output, set-volume turns on the output again; notably, this behaviour only works when volume envelope is turned off (any fadeouts progress normally). FT2's keyOff (ft2_replayer.c:411-435) zeroes realVol/outVol when the volume envelope is disabled — IT/Schism does not, and Taud's engine follows IT semantics (no fade when fadeStep == 0). Resolved in xm2taud.py: a pre-pass tracks per-channel bound XM instrument across the order-list walk, and any key-off cell whose bound instrument has vol_env_type & XM_ENV_ON == 0 is paired with `SEL_SET vol=0` in the same row. A subsequent vol-col SET on the channel restores audibility — exactly mirroring FT2's outVol/realVol gate without diverging the engine. Engine semantics stay IT-pure.
-    [x] FT2/MOD double effects with 00 as arg (500, 600) missing volume column -> easiest solution: fully implement `L xy00` and `K xy00` and map 5xx to L, 6xx to K (xm2taud, mod2taud), Kxy and Lxy verbatim (s3m2taud.py, it2taud.py). This is justified because the volume effects rely on memory when 00 is given, and said memory effect only get recalled when NoteFx is used. TAUD_NOTE_EFFECTS already has detailed implementation notes. Mark those two commands as implemented sorely for tracker compatibility.
+    [x] FT2/MOD double effects with 00 as arg (500, 600) missing volume column -> easiest solution: fully implement `L xy00` and `K xy00` and map 5xx to L, 6xx to K (xm2taud, mod2taud), Kxy and Lxy verbatim (s3m2taud.py, it2taud.py). This is justified because the volume effects rely on memory when 00 is given, and said memory effrect only get recalled when NoteFx is used. TAUD_NOTE_EFFECTS already has detailed implementation notes. Mark those two commands as implemented sorely for tracker compatibility.
     Also document then implement `Mxx` (set channel volume, not just a note: 0x00 to 0x3F) `Nxy` (channel volume slide: similar to Dxy, but applies to the current channel's volume, not just a note) `Pxy` (channel panning slide. Similar to Dxx: P0y - to the right, Px0 - to the left, PFy - fine pan right, PxF - fine pan left) effects
     [x] 8 MB sample RAM via 512k banks
     [x] remove panning mode selection and replace global panning rule to  equal energy, also move the 'ff' flags to bit 0..1
@@ -2411,10 +2422,13 @@ TODO:
         [ ] establish hooks for the interrupts
     [x] Samples and Instruments view (viewer on taut.js; editor on separate .js)
         follow the ImpulseTracker design first, then improve from there
-    [?] Sample desig for instrument in Pitch-Volume space (one rectangle = one patch). If undefined, the old sample pointer falls thru
-        [ ] Expectedly not working, test with DOOM-E1M1.taud
-    [ ] .sf2 import module (for generic use, including "Import instrument from soundfont" and midi2taud conversion)
-        [ ] Midi2Taud using .mid and .sf2 as input, trim unused samples and Ixmp patches
+    [x] Sample desig for instrument in Pitch-Volume space (one rectangle = one patch). If undefined, the old sample pointer falls thru
+        [ ] taut.js not reading extra samples added by Ixmp process for some reason, which is absurd because Ixmp patches use sample pointer, which means the samples are on the sample bin but taut.js is not reading them?
+        [ ] Ixmp version 2, supporting per-patch ADSR. (layered samples are impossible in the Taud engine unless you bake every layered combinations in)
+        For UI concerns, taut_instredit.js will take care of it (aka problem for later)
+    [x] .sf2 import module (for generic use, including "Import instrument from soundfont" and midi2taud conversion)
+        [x] Midi2Taud using .mid and .sf2 as input, trim unused samples and Ixmp patches
+        [ ] auto-set optimal-ish Tickspeed and RPB by MIDI analysis?
 
 TODO - list of demo songs that MUST ship with Microtone:
     * 4THSYM (rename to Fourth Symmetriad) — excellent piece for demonstrating NNAs and filter envelopes
@@ -2782,7 +2796,14 @@ prefixes:
     Uint8   Instrument ID
     Uint24  Count of patches
         ** Repetition of:
-        Uint8  Patch definition version (always 1)
+        Uint8  Patch definition version
+            Version numbers are essentially feature bit-flags, where:
+            0b 000x fpvi
+                i: always set (version 1)
+                v: has volume envelopes
+                p: has pan envelopes
+                f: has pitch/filter envelopes
+                x: extra base info
         Uint16 Pitch start                 ; Taud 4096-TET noteVal (same scale as pattern-cell note)
         Uint16 Pitch end (inclusive)
         Uint8  Volume start                ; 0..63
@@ -2795,7 +2816,7 @@ prefixes:
         Uint16 Loop End
         Uint16 samplingRate                ; per-sample C-5 speed; same encoding as base instrument byte 6-7
         Int16  sampleDetune                ; per-sample fine detune in signed 4096-TET units (XM finetune; IT samples leave 0)
-        Uint8  loopMode                    ; same encoding as base instrument byte 14 (bits 0-1 = mode, bit 2 = sustain loop)
+        Uint8  loopMode and loop-is-sustain ; identical base instrument byte 14 (bits 0-1 = mode, bit 2 = sustain loop)
         Uint8  defaultPan                  ; per-sample default pan (0..255; 0x80 = centre); 0xFF = "no override"
         Uint8  defaultNoteVolume           ; per-sample default note volume (0..255 scaled from IT 0..64); 0 = "no override"
         Uint8  vibratoSpeed                ; per-sample auto-vibrato (mirrors base inst byte 175)
@@ -2803,6 +2824,22 @@ prefixes:
         Uint8  vibratoDepth                ; per-sample auto-vibrato (mirrors base inst byte 187)
         Uint8  vibratoRate                 ; per-sample auto-vibrato (mirrors base inst byte 188)
         Uint8  vibratoWaveform             ; bits 0-2 only (mirrors instrumentFlag bits 2-4); 0xFF = "no override"
+        * Patch definition flag 'v'
+        Bit16  Volume envelope LOOP word    ; identical to base instrument byte 15..16
+        Bit16  Volume envelope SUSTAIN word ; identical to base instrument byte 189..190
+        Bit16x25 Volume envelopes           ; identical to base instrument byte 21..70
+        * Patch definition flag 'p'
+        Bit16  Panning envelope LOOP word    ; identical to base instrument byte 17..18
+        Bit16  Panning envelope SUSTAIN word ; identical to base instrument byte 191.192
+        Bit16x25 Panning envelopes           ; identical to base instrument byte 71..120
+        * Patch definition flag 'f'
+        Bit16  Pitch/Filter envelope LOOP word    ; identical to base instrument byte 19..20
+        Bit16  Pitch/Filter envelope SUSTAIN word ; identical to base instrument byte 193..194
+        Bit16x25 Pitch/Filter envelopes           ; identical to base instrument byte 121..170
+        * Patch definition flag 'x'
+        Uint16 Volume Fadeout    ; same encoding as identical base instrument byte 172-173
+        Uint8  Default cutoff     ; identical to base instrument byte 182
+        Uint8  Default resonance  ; identical to base instrument byte 183
 
     Notes:
     0. this extension is made to support IT/XM instrument spec as well as partial compatibility to SF2 (Soundfont format two)
