@@ -2069,6 +2069,10 @@ their pan / pf envelopes evaluated by the current engine — re-convert
 from source.
 
 0   Uint32 Sample Pointer
+    - If the high 16 bits are 0xFFFF — i.e. (samplePointer >> 16) == 0xFFFF, a
+      value no real sample pointer can take (the 8 MB sample bin caps pointers
+      at 0x7FFFFF) — this instrument is a "Metainstrument" and bytes 0..3 are
+      reinterpreted per "Metainstrument definition" below.
 4   Uint16 Sample length
 6   Uint16 Sampling rate at C4 (note number 0x5000)
 8   Uint16 Play Start (usually 0 but not always)
@@ -2342,9 +2346,322 @@ from source.
 201 Bit16x25 Filter/Pitch envelopes ; if offset 19 specified 'Pitch', this field is automatically 'filter', and vice-versa
       Byte 1: Value (00..FF)
       Byte 2: Time until the next point, in seconds (3.5 Unsigned Minifloat, biased; range 0..15.75 s, smallest non-zero step 1/256 s ≈ 3.91 ms — chosen so single tracker ticks resolve at every supported BPM). 0 = hold at this point indefinitely.
-252..255 Reserved (4 bytes free for future per-instrument fields)
+251..255 Reserved (5 bytes free for future per-instrument fields)
 
+### Metainstrument definition
 
+A Metainstrument occupies a normal 256-byte instrument-bin slot and is
+referenced by a pattern cell exactly like any instrument. It carries no sample
+of its own; instead it triggers a list of LAYERS, each a normal instrument
+sounded simultaneously at its own mix level, detune and (note x volume)
+sub-range. Bytes 0..3 alias the base instrument's Uint32 Sample Pointer; the
+0xFFFF identifier sits in its high 16 bits so the aliased pointer reads
+0xFFFF_ll_tt — a value no real sample pointer can take (see byte 0 of the
+instrument record). Layer records begin at byte 4.
+
+0   Uint8  Metainstrument type
+    - 0: layered (every layer whose rectangle contains the trigger sounds together)
+1   Uint8  Metainstrument length (layer count, 1..25 — the record holds at most 25)
+2   Bit16  Metainstrument identifier
+    - 0xFFFF
+4   * Repetition of (one 10-byte record per layer):
+    Uint8  Instrument index (MUST be a normal instrument, never a Metainstrument)
+    Uint8  Mix volume according to "Perceptually Significant Octet to Decibel Table" (octet 159 = 0 dB / unity)
+    Sint16 Sample detune (in 4096-TET unit)
+    Uint16 Pitch start                 ; note-range low,  4096-TET noteVal (same scale as pattern-cell note); full range = 0x0000
+    Uint16 Pitch end (inclusive)       ; note-range high;                                                     full range = 0xFFFF
+    Uint8  Volume start                ; velocity/volume-range low,  0..0x3F; full range = 0x00
+    Uint8  Volume end (inclusive)      ; velocity/volume-range high, 0..0x3F; full range = 0x3F
+
+    Notes:
+    a. The four range fields define a rectangle over the same Pitch-Volume space
+       as an Ixmp patch (Ixmp Notes 4/5). A layer fires ONLY when the trigger's
+       (noteVal, rowVolume) falls inside its rectangle; a layer whose rectangle
+       excludes the trigger stays silent for that note. A whole-range layer uses
+       0x0000..0xFFFF / 0x00..0x3F. This is how key/velocity-conditional layering
+       is expressed (e.g. a bell layer only in the top octaves, or an accent
+       layer only above some velocity); the SF2 velocity axis is the usual
+       round(velocity * 63/127) (Ixmp Note 4a).
+    b. Layer rectangles MAY overlap one another — that is the entire purpose of a
+       Metainstrument. Every layer whose rectangle contains the trigger sounds
+       simultaneously, each on its own voice. (Overlap remains INVALID WITHIN a
+       single normal instrument's Ixmp patch list, Ixmp Note 1 — layering lives
+       here instead. The same normal instrument may be listed as several layers
+       at different detune/mix to reproduce SF2 detune-stacks and duplicate zones
+       without spending extra instrument slots.)
+    c. Mix volume SCALES that layer's output; it multiplies with the trigger's
+       row volume / velocity (it does not replace it). Sample detune is ADDED to
+       the trigger noteVal and to the layer instrument's own sampleDetune.
+    d. The voices spawned by one trigger form a voice group sharing the note's
+       lifecycle: KEY_OFF, tone portamento (Gxx), channel volume (Mxx) and
+       panning apply to every layer. Each layer still resolves its OWN NNA / DCT
+       / DCA on key-off, so a key-lift melodic layer and a ring-to-tail layer can
+       coexist in one Metainstrument.
+    e. Recursion is forbidden: a layer's Instrument index MUST resolve to a normal
+       instrument. The engine ignores (skips) any layer pointing at another
+       Metainstrument or at instrument 0.
+    f. Voice budget: a single Metainstrument trigger costs up to `length` voices
+       against the mixer pool.
+
+#### Perceptually Significant Octet to Decibel Table
+
+Octet,Decibel-fullscale,Delta
+255,24,0.5
+254,23.5,0.5
+253,23,0.5
+252,22.5,0.5
+251,22,0.5
+250,21.5,0.5
+249,21,0.5
+248,20.5,0.5
+247,20,0.5
+246,19.5,0.5
+245,19,0.5
+244,18.5,0.5
+243,18,0.5
+242,17.5,0.5
+241,17,0.5
+240,16.5,0.5
+239,16,0.5
+238,15.5,0.5
+237,15,0.5
+236,14.5,0.5
+235,14,0.5
+234,13.5,0.5
+233,13,0.5
+232,12.5,0.5
+231,12,0.25
+230,11.75,0.25
+229,11.5,0.25
+228,11.25,0.25
+227,11,0.25
+226,10.75,0.25
+225,10.5,0.25
+224,10.25,0.25
+223,10,0.25
+222,9.75,0.25
+221,9.5,0.25
+220,9.25,0.25
+219,9,0.25
+218,8.75,0.25
+217,8.5,0.25
+216,8.25,0.25
+215,8,0.25
+214,7.75,0.25
+213,7.5,0.25
+212,7.25,0.25
+211,7,0.25
+210,6.75,0.25
+209,6.5,0.25
+208,6.25,0.25
+207,6,0.125
+206,5.875,0.125
+205,5.75,0.125
+204,5.625,0.125
+203,5.5,0.125
+202,5.375,0.125
+201,5.25,0.125
+200,5.125,0.125
+199,5,0.125
+198,4.875,0.125
+197,4.75,0.125
+196,4.625,0.125
+195,4.5,0.125
+194,4.375,0.125
+193,4.25,0.125
+192,4.125,0.125
+191,4,0.125
+190,3.875,0.125
+189,3.75,0.125
+188,3.625,0.125
+187,3.5,0.125
+186,3.375,0.125
+185,3.25,0.125
+184,3.125,0.125
+183,3,0.125
+182,2.875,0.125
+181,2.75,0.125
+180,2.625,0.125
+179,2.5,0.125
+178,2.375,0.125
+177,2.25,0.125
+176,2.125,0.125
+175,2,0.125
+174,1.875,0.125
+173,1.75,0.125
+172,1.625,0.125
+171,1.5,0.125
+170,1.375,0.125
+169,1.25,0.125
+168,1.125,0.125
+167,1,0.125
+166,0.875,0.125
+165,0.75,0.125
+164,0.625,0.125
+163,0.5,0.125
+162,0.375,0.125
+161,0.25,0.125
+160,0.125,0.125
+159,0,0.125
+158,-0.125,0.125
+157,-0.25,0.125
+156,-0.375,0.125
+155,-0.5,0.125
+154,-0.625,0.125
+153,-0.75,0.125
+152,-0.875,0.125
+151,-1,0.125
+150,-1.125,0.125
+149,-1.25,0.125
+148,-1.375,0.125
+147,-1.5,0.125
+146,-1.625,0.125
+145,-1.75,0.125
+144,-1.875,0.125
+143,-2,0.125
+142,-2.125,0.125
+141,-2.25,0.125
+140,-2.375,0.125
+139,-2.5,0.125
+138,-2.625,0.125
+137,-2.75,0.125
+136,-2.875,0.125
+135,-3,0.125
+134,-3.125,0.125
+133,-3.25,0.125
+132,-3.375,0.125
+131,-3.5,0.125
+130,-3.625,0.125
+129,-3.75,0.125
+128,-3.875,0.125
+127,-4,0.125
+126,-4.125,0.125
+125,-4.25,0.125
+124,-4.375,0.125
+123,-4.5,0.125
+122,-4.625,0.125
+121,-4.75,0.125
+120,-4.875,0.125
+119,-5,0.125
+118,-5.125,0.125
+117,-5.25,0.125
+116,-5.375,0.125
+115,-5.5,0.125
+114,-5.625,0.125
+113,-5.75,0.125
+112,-5.875,0.125
+111,-6,0.25
+110,-6.25,0.25
+109,-6.5,0.25
+108,-6.75,0.25
+107,-7,0.25
+106,-7.25,0.25
+105,-7.5,0.25
+104,-7.75,0.25
+103,-8,0.25
+102,-8.25,0.25
+101,-8.5,0.25
+100,-8.75,0.25
+99,-9,0.25
+98,-9.25,0.25
+97,-9.5,0.25
+96,-9.75,0.25
+95,-10,0.25
+94,-10.25,0.25
+93,-10.5,0.25
+92,-10.75,0.25
+91,-11,0.25
+90,-11.25,0.25
+89,-11.5,0.25
+88,-11.75,0.25
+87,-12,0.5
+86,-12.5,0.5
+85,-13,0.5
+84,-13.5,0.5
+83,-14,0.5
+82,-14.5,0.5
+81,-15,0.5
+80,-15.5,0.5
+79,-16,0.5
+78,-16.5,0.5
+77,-17,0.5
+76,-17.5,0.5
+75,-18,0.5
+74,-18.5,0.5
+73,-19,0.5
+72,-19.5,0.5
+71,-20,0.5
+70,-20.5,0.5
+69,-21,0.5
+68,-21.5,0.5
+67,-22,0.5
+66,-22.5,0.5
+65,-23,0.5
+64,-23.5,0.5
+63,-24,1
+62,-25,1
+61,-26,1
+60,-27,1
+59,-28,1
+58,-29,1
+57,-30,1
+56,-31,1
+55,-32,1
+54,-33,1
+53,-34,1
+52,-35,1
+51,-36,1
+50,-37,1
+49,-38,1
+48,-39,1
+47,-40,1
+46,-41,1
+45,-42,1
+44,-43,1
+43,-44,1
+42,-45,1
+41,-46,1
+40,-47,1
+39,-48,1
+38,-49,1
+37,-50,1
+36,-51,1
+35,-52,1
+34,-53,1
+33,-54,1
+32,-55,1
+31,-56,1
+30,-57,1
+29,-58,1
+28,-59,1
+27,-60,1
+26,-61,1
+25,-62,1
+24,-63,1
+23,-64,1
+22,-65,1
+21,-66,1
+20,-67,1
+19,-68,1
+18,-69,1
+17,-70,1
+16,-71,1
+15,-72,1
+14,-73,1
+13,-74,1
+12,-75,1
+11,-76,1
+10,-77,1
+9,-78,1
+8,-79,1
+7,-80,1
+6,-81,1
+5,-82,1
+4,-83,1
+3,-84,1
+2,-85,1
+1,-86,1
+0,-Infinity,N/A
 
 TODO:
     [x] implement Instrument Flag, Vibrato Depth, Vibrato Rate, other samplewise/instrumentwise changes to it2taud and audio engine
@@ -2444,8 +2761,8 @@ TODO:
     [x] Samples and Instruments view (viewer on taut.js; editor on separate .js)
         follow the ImpulseTracker design first, then improve from there
     [x] Sample desig for instrument in Pitch-Volume space (one rectangle = one patch). If undefined, the old sample pointer falls thru
-        [ ] taut.js not reading extra samples added by Ixmp process for some reason, which is absurd because Ixmp patches use sample pointer, which means the samples are on the sample bin but taut.js is not reading them?
-        [ ] Ixmp version 2, supporting per-patch ADSR. (layered samples are impossible in the Taud engine unless you bake every layered combinations in)
+        [ ] taut.js not reading extra samples added by Ixmp process for some reason, which means the samples are on the sample bin but taut.js is not reading them?
+        [x] Ixmp version 2, supporting per-patch ADSR
         For UI concerns, taut_instredit.js will take care of it (aka problem for later)
     [x] .sf2 import module (for generic use, including "Import instrument from soundfont" and midi2taud conversion)
         [x] Midi2Taud using .mid and .sf2 as input, trim unused samples and Ixmp patches
@@ -2836,7 +3153,7 @@ prefixes:
         Uint16 Play Start (usually 0 but not always)
         Uint16 Loop Start (can be smaller than Play Start)
         Uint16 Loop End
-        Uint16 samplingRate                ; per-sample C-5 speed; same encoding as base instrument byte 6-7
+        Uint16 samplingRate                ; per-sample C4 (note 0x5000) speed; same encoding as base instrument byte 6-7
         Int16  sampleDetune                ; per-sample fine detune in signed 4096-TET units (XM finetune; IT samples leave 0)
         Uint8  loopMode and loop-is-sustain ; identical base instrument byte 14 (bits 0-1 = mode, bit 2 = sustain loop)
         Uint8  defaultPan                  ; per-sample default pan (0..255; 0x80 = centre); 0xFF = "no override"
@@ -2858,27 +3175,47 @@ prefixes:
         Bit16x25 Volume envelopes           ; identical to base instrument byte 21..70
         * Patch definition flag 'p'
         Bit16  Panning envelope LOOP word    ; identical to base instrument byte 17..18
-        Bit16  Panning envelope SUSTAIN word ; identical to base instrument byte 191.192
+        Bit16  Panning envelope SUSTAIN word ; identical to base instrument byte 191..192
         Bit16x25 Panning envelopes           ; identical to base instrument byte 71..120
         * Patch definition flag 'f'
         Bit16  Filter envelope LOOP word    ; identical to base instrument byte 19..20
         Bit16  Filter envelope SUSTAIN word ; identical to base instrument byte 193..194
         Bit16x25 Filter envelopes           ; identical to base instrument byte 121..170
         * Patch definition flag 'P'
-        Bit16  Pitch envelope LOOP word
-        Bit16  Pitch envelope SUSTAIN word
-        Bit16x25 Pitch envelopes
+        Bit16  Pitch envelope LOOP word    ; identical to base instrument byte 197..198 (the 2nd pf-env slot)
+        Bit16  Pitch envelope SUSTAIN word ; identical to base instrument byte 199..200
+        Bit16x25 Pitch envelopes           ; identical to base instrument byte 201..250
 
     Notes:
     0. this extension is made to support IT/XM instrument spec as well as partial compatibility to SF2 (Soundfont format two)
-    x. Envelopes (vol/pan/pf), fadeout, NNA / DCT / DCA, pitch-pan, filter, IGV and any other "instrument-scope" parameters all follow the base instrument definition. Only sample-scope parameters (the patch fields listed above) override. -- obsoleted by new patch definitions
-    1. overlapping regions are considered INVALID (layered samples are impossible in the Taud engine)
-    3. multiple Ixmp blocks pointing the same instrument are considered INVALID
-    4. IT and XM does not define volumes. Keep the Volume rectangle at 0..63 — the engine clamps to that range when matching.
-    x. SF2 does define volumes (because MIDI). Convert it using `round(velocity * (63/127))`
-        On import, `initialAttenuation`, filters and ADSR shall be ignored -- obsoleted by new patch definitions
-    5. Patch selection at trigger time walks the patch list in order; the first patch whose rectangle contains the trigger's (noteVal, rowVolume) wins. When no patch matches, the base instrument's sample fields are used unchanged.
-    6. Sentinel values listed above ("no override") let a patch defer to the base instrument for a given field — used by converters that don't carry per-sample data for one of the dimensions (e.g. SF2 ignoring per-sample pan).
+    1. overlapping regions are considered INVALID (layered samples must use Metainstrument)
+    2. multiple Ixmp blocks pointing the same instrument are considered INVALID
+    3. IT and XM does not define volumes. Keep the Volume rectangle at 0..63 — the engine clamps to that range when matching.
+    3a. SF2 does define volumes (because MIDI). The velocity axis of the rectangle is
+        `round(velocity * 63/127)`. SF2 ADSR and filters are now carried per-patch (the
+        v/f/P/x blocks) instead of being ignored. SF2 `initialAttenuation` (a per-zone
+        static gain) has no dedicated field — converters fold it into the per-patch
+        VOLUME envelope's node peak: scale every 0..63 node by `10^(-attenuation_cB/200)`.
+        This multiplies with the velocity-driven note volume (it can NOT live in
+        defaultNoteVolume, which an explicit V column overrides at trigger time), so
+        velocity layers differ in level as well as ADSR shape.
+    4. Patch selection at trigger time walks the patch list in order; the first patch whose rectangle contains the trigger's (noteVal, rowVolume) wins. When no patch matches, the base instrument's sample fields are used unchanged.
+    5. Sentinel values listed above ("no override") let a patch defer to the base instrument for a given field — used by converters that don't carry per-sample data for one of the dimensions (e.g. SF2 ignoring per-sample pan).
+    6. ON-WIRE BLOCK ORDER. The version byte's flag bits gate which optional blocks
+       follow the fixed common fields. When present they ALWAYS appear in this order
+       regardless of bit numbering: x, v, p, f, P. A decoder walks them in that order,
+       skipping any whose flag bit is 0. (Block sizes: x = 12 bytes; each of v/p/f/P =
+       2 (LOOP) + 2 (SUSTAIN) + 50 (25 nodes) = 54 bytes.) A version byte with only the
+       'i' bit set yields the legacy 31-byte record (version byte + 30 common bytes,
+       no blocks) — byte-identical to pre-2026-06-13 Ixmp patches.
+    7. PITCH vs FILTER envelopes. The 'f' (filter) and 'P' (pitch) blocks map onto the
+       base instrument's TWO pf-envelope slots: 'f' → byte 19..20/121..170/193..194
+       (m=filter), 'P' → byte 197..198/201..250/199..200 (m=pitch). A patch may carry
+       either, both, or neither; each independently overrides the base inst's
+       corresponding role and the other role falls through to the base inst. This is
+       how SF2's single modulation envelope (which drives modEnvToPitch AND
+       modEnvToFilterFc simultaneously) is represented; IT/XM instruments use only one
+       pf-env (pitch XOR filter) and leave the other slot absent (P bit = 0).
 
 --------------------------------------------------------------------------------
 
