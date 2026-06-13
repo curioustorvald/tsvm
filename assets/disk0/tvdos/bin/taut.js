@@ -3239,26 +3239,76 @@ function decodeInstRecord(rec) {
 // usedBy[], name }. usedBy is a list of instrument slot numbers (1..255).
 let samplesCache = null
 
+// Ixmp ("instrument extra samples") introspection — present once the host VM
+// exposes the patch read-back API. On an un-rebuilt host it's absent and the
+// Samples tab simply lists the base-record samples (no patch samples).
+const hasIxmpAPI = (typeof audio !== 'undefined' &&
+    typeof audio.getInstrumentPatchCount === 'function' &&
+    typeof audio.getInstrumentPatches === 'function')
+
+// Per-patch on-wire length from its version byte (terranmon.txt §Ixmp; mirrors
+// taud.mjs#patchLen / AudioJSR223Delegate). 31 common bytes + present blocks.
+function ixmpPatchLen(ver) {
+    return 31
+        + ((ver & 0x80) ? 15 : 0)   // x: extra-base-info (flags1+flags2+fadeout+cutoff+reson+atten)
+        + ((ver & 0x02) ? 54 : 0)   // v: volume envelope
+        + ((ver & 0x04) ? 54 : 0)   // p: panning envelope
+        + ((ver & 0x08) ? 54 : 0)   // f: filter envelope
+        + ((ver & 0x10) ? 54 : 0)   // P: pitch envelope
+}
+
+// Walk instrument `slot`'s Ixmp patches; invoke cb(samplePtr, sampleLen, extra) per
+// patch. Patch common-byte layout (terranmon.txt §Ixmp): u32 ptr@7, u16 len@11,
+// u16 playStart@13, loopStart@15, loopEnd@17, rate@19, u8 loopMode@23. No-op without API.
+function forEachIxmpPatchSample(slot, cb) {
+    if (!hasIxmpAPI) return
+    if (audio.getInstrumentPatchCount(slot) <= 0) return
+    const b = audio.getInstrumentPatches(slot)
+    if (!b || b.length < 31) return
+    const u16 = (o) => (b[o] & 0xFF) | ((b[o+1] & 0xFF) << 8)
+    let o = 0
+    while (o + 31 <= b.length) {
+        const ver = b[o] & 0xFF
+        const len = ixmpPatchLen(ver)
+        if (o + len > b.length) break
+        const ptr = (b[o+7] & 0xFF) | ((b[o+8] & 0xFF) << 8) |
+                    ((b[o+9] & 0xFF) << 16) | ((b[o+10] & 0xFF) * 0x1000000)
+        cb(ptr, u16(o+11), {
+            c4Rate: u16(o+19), playStart: u16(o+13),
+            loopStart: u16(o+15), loopEnd: u16(o+17),
+            sampleFlags: b[o+23] & 0xFF
+        })
+        o += len
+    }
+}
+
 function buildSampleIndex() {
     const byPtr = new Map()
-    for (let i = 1; i < TAUT_INST_COUNT; i++) {
-        const d = decodeInstRecord(readInstRecord(i))
-        if (d.sampleLen === 0) continue
-        const key = d.samplePtr + ':' + d.sampleLen
+    const addSample = (slot, ptr, len, extra) => {
+        if (len === 0) return
+        const key = ptr + ':' + len
         if (!byPtr.has(key)) {
-            byPtr.set(key, {
-                ptr:        d.samplePtr,
-                len:        d.sampleLen,
-                c4Rate:     d.c4Rate,
-                playStart:  d.playStart,
-                loopStart:  d.loopStart,
-                loopEnd:    d.loopEnd,
-                sampleFlags:d.sampleFlags,
-                usedBy:     [],
-                name:       ''
+            byPtr.set(key, Object.assign({
+                ptr: ptr, len: len, c4Rate: 0, playStart: 0,
+                loopStart: 0, loopEnd: 0, sampleFlags: 0, usedBy: [], name: ''
+            }, extra || {}))
+        }
+        const e = byPtr.get(key)
+        if (e.usedBy.indexOf(slot) < 0) e.usedBy.push(slot)
+    }
+    for (let i = 1; i < TAUT_INST_COUNT; i++) {
+        const rec = readInstRecord(i)
+        // Metainstruments (samplePtr high 16 bits == 0xFFFF) carry no sample of their
+        // own — only a layer table — so skip their bogus base pointer here.
+        if (((rec[2] | (rec[3] << 8)) & 0xFFFF) !== 0xFFFF) {
+            const d = decodeInstRecord(rec)
+            addSample(i, d.samplePtr, d.sampleLen, {
+                c4Rate: d.c4Rate, playStart: d.playStart, loopStart: d.loopStart,
+                loopEnd: d.loopEnd, sampleFlags: d.sampleFlags
             })
         }
-        byPtr.get(key).usedBy.push(i)
+        // Ixmp patch samples (extra multisamples that velocity/key layers reference).
+        forEachIxmpPatchSample(i, (ptr, slen, ex) => addSample(i, ptr, slen, ex))
     }
     const list = Array.from(byPtr.values()).sort((a, b) => a.ptr - b.ptr)
     const names = (songsMeta && songsMeta.sampleNames) || []
@@ -3820,9 +3870,37 @@ function decodeEnvelope(rec, kind) {
     }
 }
 
+// Decode a Metainstrument record (terranmon.txt §"Metainstrument definition"):
+// byte0 = type (0 = layered), byte1 = layer count, bytes2-3 = 0xFFFF identifier,
+// then `count` 10-byte layer descriptors from byte4. Each: u8 instIdx, u8 mixOctet
+// (Perceptually-Significant-Octet dB, 159 = unity), s16 detune (4096-TET),
+// u16 pitchStart, u16 pitchEnd, u8 volStart, u8 volEnd (0..63).
+function decodeMetaRecord(rec) {
+    const count = rec[1] & 0xFF
+    const layers = []
+    let o = 4
+    for (let i = 0; i < count && o + 10 <= 256; i++, o += 10) {
+        let det = rec[o+2] | (rec[o+3] << 8); if (det >= 0x8000) det -= 0x10000
+        layers.push({
+            instIdx:    rec[o] & 0xFF,
+            mixOctet:   rec[o+1] & 0xFF,
+            detune:     det,
+            pitchStart: rec[o+4] | (rec[o+5] << 8),
+            pitchEnd:   rec[o+6] | (rec[o+7] << 8),
+            volStart:   rec[o+8] & 0x3F,
+            volEnd:     rec[o+9] & 0x3F
+        })
+    }
+    return { isMeta: true, metaType: rec[0] & 0xFF, layers }
+}
+
+// True when a 256-byte record is a Metainstrument (samplePtr high 16 bits == 0xFFFF).
+function recordIsMeta(rec) { return ((rec[2] | (rec[3] << 8)) & 0xFFFF) === 0xFFFF }
+
 // Decode the full 256-byte instrument record into a structured object suitable
 // for display. Field offsets/encodings track terranmon.txt §"Instrument bin".
 function decodeInstFull(rec) {
+    if (recordIsMeta(rec)) return decodeMetaRecord(rec)
     const samplePtr      = (rec[0]) | (rec[1] << 8) | (rec[2] << 16) | (rec[3] * 0x1000000)
     const sampleLen      = rec[4]  | (rec[5]  << 8)
     const c4Rate         = rec[6]  | (rec[7]  << 8)
@@ -3845,7 +3923,9 @@ function decodeInstFull(rec) {
     const defReso        = rec[183]
     let   detune         = rec[184] | (rec[185] << 8); if (detune >= 0x8000) detune -= 0x10000
     const instFlag       = rec[186]
-    const nna            = instFlag & 3
+    // NNA UI value: 0..3 = traditional (bits 0-1); 4 = Key Lift (bit 5 set,
+    // bits 0-1 = 00 — the 0b100 "Nnn" pattern, terranmon byte 186).
+    const nna            = ((instFlag >>> 5) & 1) ? 4 : (instFlag & 3)
     const vibWaveform    = (instFlag >>> 2) & 7
     const vibDepth       = rec[187]
     const vibRate        = rec[188]
@@ -4051,11 +4131,13 @@ function loopModeNameInst(flags) {
     const names = ['None', 'Forward', 'Pingpong', 'Oneshot']
     return names[lp] + (sus ? ' (sustain)' : '')
 }
-// Clickable button-group option lists. NNA/DCT use every value; DCA's 4th slot
-// is reserved (dropped); vibrato exposes the 5 engine-supported waves
-// (sine/ramp-dn/square/random/ramp-up — see AudioAdapter.advanceAutoVibrato).
-const NNA_NAMES      = ['Cut', 'Off', 'Continue', 'Fade']
-const DCT_NAMES      = ['Off', 'Note', 'Sample', 'Inst.']
+// Clickable button-group option lists. NNA's 5th option is Key Lift (flag bit 5,
+// the 0b100 pattern: MIDI-exact key-up — envelope jumps to the release nodes);
+// DCT uses every value; DCA's 4th slot is reserved (dropped); vibrato exposes
+// the 5 engine-supported waves (sine/ramp-dn/square/random/ramp-up — see
+// AudioAdapter.advanceAutoVibrato).
+const NNA_NAMES      = ['Off', 'Cut', 'Cont.', 'Fade', 'Lift']
+const DCT_NAMES      = ['Never', 'Note', 'Sample', 'Inst.']
 const DCA_OPTIONS    = ['Cut', 'Off', 'Fade']
 const VIB_WF_OPTIONS = ['\u00D8\u00D9', '\u00A5\u00A6', '\u00B4\u00B4', '\u00F3\u00F3', '\u00B5\u00B6']//['Sine', 'Ramp-dn', 'Square', 'Random', 'Ramp-up']
 
@@ -4464,7 +4546,10 @@ function drawInstTabGeneral2(e) {
     y++
     drawGroupHeader(y++, 'Note actions')
     // NNA — instFlag (byte 186) bits 0..1; DCT/DCA — dcByte (byte 195) bits 0..1 / 2..3.
-    y += buttonGroupRow(y, '  NNA:', NNA_NAMES,   d.nna & 3, (v) => instWriteField(e, 186, 0, 2, v))
+    y += buttonGroupRow(y, '  NNA:', NNA_NAMES,   d.nna, (v) => {
+        instWriteField(e, 186, 5, 1, v === 4 ? 1 : 0)        // Key Lift bit
+        instWriteField(e, 186, 0, 2, v === 4 ? 0 : v)        // traditional nn
+    })
     y += buttonGroupRow(y, '  DCT:', DCT_NAMES,   d.dct & 3, (v) => instWriteField(e, 195, 0, 2, v))
     y += buttonGroupRow(y, '  DCA:', DCA_OPTIONS, d.dca & 3, (v) => instWriteField(e, 195, 2, 2, v))
 
@@ -4707,13 +4792,54 @@ function drawInstTabPitch(e) {
     })
 }
 
+// Metainstrument view (terranmon.txt §"Metainstrument definition"): the record
+// carries no sample of its own — only a layer table fanned out at trigger time.
+// One row per layer: target instrument, mix volume (Perceptually-Significant
+// octet; 159 = unity), sample detune (4096-TET → cents), and the pitch × velocity
+// rectangle that gates the layer.
+function drawInstTabMeta(e) {
+    const d = e.decoded
+    let y = INST_BODY_Y
+    drawGroupHeader(y++, 'Metainstrument  (' + d.layers.length + ' layer' +
+                         (d.layers.length === 1 ? '' : 's') + ')')
+    drawLabelRow(y++, '  Type:', d.metaType === 0 ? 'layered (0)' : '$' + _hex(d.metaType, 2))
+    y++
+    // Column header.
+    con.move(y, INST_RIGHT_X); con.color_pair(colInstGroupHdr, colBackPtn)
+    print(' #  Inst  Mix     Detune    Pitch        Vel'.substring(0, INST_RIGHT_W))
+    y++
+    const maxRows = INST_BTN_Y - y - 1
+    for (let i = 0; i < d.layers.length && i < maxRows; i++) {
+        const L = d.layers[i]
+        const cents = (L.detune * 1200 / 4096)
+        const mix = (L.mixOctet === 159) ? '$9F=1x' : ('$' + _hex(L.mixOctet, 2))
+        const det = (cents >= 0 ? '+' : '') + cents.toFixed(0) + 'c'
+        const pit = noteToStr(L.pitchStart) + sym.doubledot + noteToStr(L.pitchEnd)
+        const vel = L.volStart + sym.doubledot + L.volEnd
+        con.move(y, INST_RIGHT_X); con.color_pair(colInstLabel, colBackPtn)
+        const num = (i + 1).toString().padStart(2)
+        con.color_pair(colInstValue, colBackPtn)
+        const row = ' ' + num + '  $' + _hex(L.instIdx, 2) +
+                    '  ' + mix.padEnd(7) +
+                    ' ' + det.padEnd(8) +
+                    '  ' + pit.padEnd(11) +
+                    '  ' + vel
+        print(row.length > INST_RIGHT_W ? row.substring(0, INST_RIGHT_W) : row)
+        y++
+    }
+    if (d.layers.length > maxRows) {
+        con.move(y, INST_RIGHT_X); con.color_pair(colInstGroupHdr, colBackPtn)
+        print('  … ' + (d.layers.length - maxRows) + ' more layer(s)')
+    }
+}
+
 // ── Edit button (bottom row) ───────────────────────────────────────────────
 function drawInstrumentsEditButton() {
     const y = INST_BTN_Y
     con.move(y, INST_RIGHT_X)
     con.color_pair(colInstGroupHdr, colBackPtn); print('[ E ]')
     con.color_pair(colInstValue,    colBackPtn)
-    const label = ' Edit instrument'
+    const label = ' Advanced Edit'
     print(label)
     const rest = INST_RIGHT_W - (5 + label.length)
     if (rest > 0) print(' '.repeat(rest))
@@ -4749,7 +4875,10 @@ function drawInstrumentsContents(wo) {
     // until after the text tabs are drawn — otherwise plotRect-555 fill at the
     // end of the body redraw would erase the graph again.
     clearInstrumentsEnvelopeArea()
-    if      (instSubTab === INST_TAB_GEN1) drawInstTabGeneral1(e)
+    // Metainstruments have no sample/envelopes — show their layer table on every
+    // sub-tab (the Gen/env drawers would read absent fields and mis-render).
+    if (e.decoded.isMeta)                  drawInstTabMeta(e)
+    else if (instSubTab === INST_TAB_GEN1) drawInstTabGeneral1(e)
     else if (instSubTab === INST_TAB_GEN2) drawInstTabGeneral2(e)
     else if (instSubTab === INST_TAB_VOL)  drawInstTabVolume(e)
     else if (instSubTab === INST_TAB_PAN)  drawInstTabPanning(e)

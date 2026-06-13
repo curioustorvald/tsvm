@@ -545,18 +545,94 @@ def _name_table_blob(names) -> bytes:
 
 # ── Ixmp encoder (terranmon.txt §Project Data → Ixmp) ───────────────────────
 
-# Per-patch byte layout. Field offsets must match AudioJSR223Delegate.uploadInstrumentPatches
-# (Kotlin parser) and terranmon.txt "Ixmp. Instrument extra samples".
-IXMP_PATCH_SIZE     = 31
+# Per-patch byte layout. Field offsets / version flags must match
+# AudioJSR223Delegate.uploadInstrumentPatches (Kotlin parser) and terranmon.txt
+# "Ixmp. Instrument extra samples". Patches are VARIABLE LENGTH since 2026-06-13:
+# a version byte (feature bit-flags) + 30 common bytes + optional blocks. A
+# version byte with only the 'i' bit set yields the legacy 31-byte record.
+IXMP_COMMON_SIZE    = 31     # version byte + 30 common bytes (legacy record size)
 IXMP_PAN_NO_OVERRIDE = 0xFF
 IXMP_DNV_NO_OVERRIDE = 0
 IXMP_VIBWAVE_NO_OVERRIDE = 0xFF
 
+# Version byte feature bits (terranmon.txt 0b x00Pfpvi).
+IXMP_VER_I = 0x01            # always set (version 1)
+IXMP_VER_V = 0x02            # has volume envelope block
+IXMP_VER_P = 0x04            # has panning envelope block
+IXMP_VER_F = 0x08            # has filter envelope block
+IXMP_VER_PITCH = 0x10        # has pitch envelope block ('P')
+IXMP_VER_X = 0x80            # has extra-base-info block
+
+
+# "Perceptually Significant Octet to Decibel Table" → linear gain (octet → amplitude).
+# The canonical perceptual loudness curve shared by the engine (AudioAdapter.META_MIX_GAIN),
+# the Metainstrument layer mix volume, and the base/patch initialAttenuation octet.
+# Octet 0 = silence, 159 = unity (0 dB), 255 = +24 dB.
+META_GAIN = (
+    0.0, 5e-05, 5.6e-05, 6.3e-05, 7.1e-05, 7.9e-05, 8.9e-05, 0.0001,
+    0.000112, 0.000126, 0.000141, 0.000158, 0.000178, 0.0002, 0.000224, 0.000251,
+    0.000282, 0.000316, 0.000355, 0.000398, 0.000447, 0.000501, 0.000562, 0.000631,
+    0.000708, 0.000794, 0.000891, 0.001, 0.001122, 0.001259, 0.001413, 0.001585,
+    0.001778, 0.001995, 0.002239, 0.002512, 0.002818, 0.003162, 0.003548, 0.003981,
+    0.004467, 0.005012, 0.005623, 0.00631, 0.007079, 0.007943, 0.008913, 0.01,
+    0.01122, 0.012589, 0.014125, 0.015849, 0.017783, 0.019953, 0.022387, 0.025119,
+    0.028184, 0.031623, 0.035481, 0.039811, 0.044668, 0.050119, 0.056234, 0.063096,
+    0.066834, 0.070795, 0.074989, 0.079433, 0.08414, 0.089125, 0.094406, 0.1,
+    0.105925, 0.112202, 0.11885, 0.125893, 0.133352, 0.141254, 0.149624, 0.158489,
+    0.16788, 0.177828, 0.188365, 0.199526, 0.211349, 0.223872, 0.237137, 0.251189,
+    0.258523, 0.266073, 0.273842, 0.281838, 0.290068, 0.298538, 0.307256, 0.316228,
+    0.325462, 0.334965, 0.344747, 0.354813, 0.365174, 0.375837, 0.386812, 0.398107,
+    0.409732, 0.421697, 0.43401, 0.446684, 0.459727, 0.473151, 0.486968, 0.501187,
+    0.508452, 0.515822, 0.523299, 0.530884, 0.53858, 0.546387, 0.554307, 0.562341,
+    0.570493, 0.578762, 0.587151, 0.595662, 0.604296, 0.613056, 0.621942, 0.630957,
+    0.640103, 0.649382, 0.658795, 0.668344, 0.678032, 0.68786, 0.697831, 0.707946,
+    0.718208, 0.728618, 0.73918, 0.749894, 0.760764, 0.771792, 0.782979, 0.794328,
+    0.805842, 0.817523, 0.829373, 0.841395, 0.853591, 0.865964, 0.878517, 0.891251,
+    0.90417, 0.917276, 0.930572, 0.944061, 0.957745, 0.971628, 0.985712, 1.0,
+    1.014495, 1.029201, 1.044119, 1.059254, 1.074608, 1.090184, 1.105987, 1.122018,
+    1.138282, 1.154782, 1.171521, 1.188502, 1.20573, 1.223207, 1.240938, 1.258925,
+    1.277174, 1.295687, 1.314468, 1.333521, 1.352851, 1.372461, 1.392355, 1.412538,
+    1.433013, 1.453784, 1.474857, 1.496236, 1.517924, 1.539927, 1.562248, 1.584893,
+    1.607867, 1.631173, 1.654817, 1.678804, 1.703139, 1.727826, 1.752871, 1.778279,
+    1.804056, 1.830206, 1.856735, 1.883649, 1.910953, 1.938653, 1.966754, 1.995262,
+    2.053525, 2.113489, 2.175204, 2.238721, 2.304093, 2.371374, 2.440619, 2.511886,
+    2.585235, 2.660725, 2.73842, 2.818383, 2.900681, 2.985383, 3.072557, 3.162278,
+    3.254618, 3.349654, 3.447466, 3.548134, 3.651741, 3.758374, 3.868121, 3.981072,
+    4.216965, 4.466836, 4.731513, 5.011872, 5.308844, 5.623413, 5.956621, 6.309573,
+    6.683439, 7.079458, 7.498942, 7.943282, 8.413951, 8.912509, 9.440609, 10.0,
+    10.592537, 11.220185, 11.885022, 12.589254, 13.335214, 14.125375, 14.962357, 15.848932,
+)
+
+
+def atten_cb_to_octet(atten_cb: float) -> int:
+    """SF2 initialAttenuation (centibels, ≥0) → nearest [META_GAIN] octet (159 = 0 dB /
+    unity). Returns 159 for ~0 attenuation and never 0 — octet 0 is the engine's "unset"
+    sentinel (treated as unity), so emitting it for a real value would silence the voice."""
+    if atten_cb <= 0:
+        return 159
+    g = 10.0 ** (-atten_cb / 200.0)
+    return min(range(1, 160), key=lambda o: abs(META_GAIN[o] - g))
+
+
+def _encode_env_block(env: dict) -> bytes:
+    """One v/p/f/P envelope block: LOOP word + SUSTAIN word + 25 (value, minifloat)
+    node pairs = 54 bytes. `env` keys: 'loop' (u16), 'sustain' (u16), 'nodes'
+    (list of (value 0..255, minifloat_index 0..255); padded/truncated to 25)."""
+    out = bytearray(struct.pack('<HH', int(env.get('loop', 0)) & 0xFFFF,
+                                int(env.get('sustain', 0)) & 0xFFFF))
+    nodes = list(env.get('nodes', []))
+    while len(nodes) < 25:
+        nodes.append((nodes[-1][0] if nodes else 0, 0))
+    for val, mf in nodes[:25]:
+        out.append(int(val) & 0xFF)
+        out.append(int(mf) & 0xFF)
+    return bytes(out)
+
 
 def encode_ixmp_patch(p: dict) -> bytes:
-    """Encode a single patch dict into 31 bytes.
+    """Encode one variable-length patch.
 
-    Expected keys (numeric values; defaults are applied for missing optional fields):
+    Common keys (numeric; defaults applied for missing optionals):
         pitch_start, pitch_end        : Taud 4096-TET noteVal (Uint16)
         volume_start, volume_end      : 0..63 (Uint8)
         sample_ptr                    : Uint32 (sample bin offset)
@@ -569,6 +645,16 @@ def encode_ixmp_patch(p: dict) -> bytes:
         default_note_volume           : Uint8 IT-scaled (0 = no override, default 0)
         vibrato_speed/sweep/depth/rate: Uint8 (default 0)
         vibrato_waveform              : Uint8 (0..7 or 0xFF for no override, default 0xFF)
+
+    Optional blocks (presence sets the version flag; appended in spec order x,v,p,f,P):
+        extra      : dict {fadeout (u16), default_cutoff (u16), default_resonance (u16),
+                           initial_attenuation (u8 dB-table octet),
+                           filter_sf_mode (bool — flag1 bit 0; SoundFont filter params)}
+                     → 'x' block (15 bytes)
+        vol_env    : env-block dict → 'v' block (54 bytes)
+        pan_env    : env-block dict → 'p' block
+        filter_env : env-block dict → 'f' block
+        pitch_env  : env-block dict → 'P' block
     """
     pitch_start = max(0, min(0xFFFF, int(p['pitch_start'])))
     pitch_end   = max(0, min(0xFFFF, int(p['pitch_end'])))
@@ -581,9 +667,23 @@ def encode_ixmp_patch(p: dict) -> bytes:
     loop_end    = max(0, min(0xFFFF, int(p.get('loop_end',   0))))
     rate        = max(0, min(0xFFFF, int(p.get('sampling_rate', 0))))
     detune      = max(-0x8000, min(0x7FFF, int(p.get('sample_detune', 0))))
-    return struct.pack(
+
+    extra  = p.get('extra')
+    vol_e  = p.get('vol_env')
+    pan_e  = p.get('pan_env')
+    filt_e = p.get('filter_env')
+    pit_e  = p.get('pitch_env')
+
+    ver = IXMP_VER_I
+    if extra  is not None: ver |= IXMP_VER_X
+    if vol_e  is not None: ver |= IXMP_VER_V
+    if pan_e  is not None: ver |= IXMP_VER_P
+    if filt_e is not None: ver |= IXMP_VER_F
+    if pit_e  is not None: ver |= IXMP_VER_PITCH
+
+    common = struct.pack(
         '<BHHBBIHHHHHhBBBBBBBB',
-        1,                                       # patch version
+        ver,                                     # patch version / feature flags
         pitch_start, pitch_end,
         vol_start,   vol_end,
         sample_ptr,
@@ -600,6 +700,22 @@ def encode_ixmp_patch(p: dict) -> bytes:
         int(p.get('vibrato_rate',  0))        & 0xFF,
         int(p.get('vibrato_waveform', IXMP_VIBWAVE_NO_OVERRIDE)) & 0xFF,
     )
+    out = bytearray(common)
+    if extra is not None:                        # 'x' block (15 bytes), spec order
+        # flags1 bit 0 (m): 0 = IT filter params, 1 = SoundFont (Fc cents / Q centibels).
+        flags1 = 0x01 if extra.get('filter_sf_mode') else 0x00
+        out += struct.pack('<I', flags1)         # Bit32 extra-feature-flags 1..32
+        out += struct.pack('<I', 0)              # Bit32 extra-feature-flags 33..64 (reserved)
+        out += struct.pack('<H', int(extra.get('fadeout', 0)) & 0xFFFF)
+        out += struct.pack('<H', int(extra.get('default_cutoff', 0xFFFF)) & 0xFFFF)
+        out += struct.pack('<H', int(extra.get('default_resonance', 0xFFFF)) & 0xFFFF)
+        # per-patch initialAttenuation as a dB-table octet (159 = unity); 0 = unset sentinel.
+        out.append(int(extra.get('initial_attenuation', 0)) & 0xFF)
+    if vol_e  is not None: out += _encode_env_block(vol_e)
+    if pan_e  is not None: out += _encode_env_block(pan_e)
+    if filt_e is not None: out += _encode_env_block(filt_e)
+    if pit_e  is not None: out += _encode_env_block(pit_e)
+    return bytes(out)
 
 
 def encode_ixmp_payload(patches_by_inst: dict) -> bytes:

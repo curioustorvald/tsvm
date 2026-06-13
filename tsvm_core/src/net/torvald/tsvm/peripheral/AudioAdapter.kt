@@ -131,7 +131,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         const val SCOPE_BUFFER_SIZE = 2048
         // Mixer-private background-voice pool size per playhead. NNA "Continue/Note Off/Note Fade"
         // ghosts displaced foreground voices into this pool; oldest is evicted on overflow.
-        const val MAX_BG_VOICES = 64
+        const val MAX_BG_VOICES = 256
         const val MIDDLE_C = 0x5000   // reference C for instrument samplingRate (terranmon.txt:2000)
         // Amiga period at MIDDLE_C for a standard 8363 Hz instrument (NTSC clock 3579545 Hz).
         // PT "C-2" period 428 ↔ TSVM MIDDLE_C ↔ 8363 Hz; mod2taud uses the same convention.
@@ -1360,6 +1360,44 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     // Active-sample-aware playback rate. Reads from the Voice's snapshotted sample
     // view (set by [applyActiveSample]) so Ixmp-overlaid instruments use the patch's
     // samplingRate / detune, not the base inst's.
+    // Metainstrument layer mix-gain lookup — the "Perceptually Significant Octet to
+    // Decibel Table" (terranmon.txt) converted to linear amplitude (10^(dB/20)).
+    // Octet 0 = silence, 159 = unity (0 dB), 255 = +24 dB.
+    private val META_MIX_GAIN = doubleArrayOf(
+        0.0, 5e-05, 5.6e-05, 6.3e-05, 7.1e-05, 7.9e-05, 8.9e-05, 0.0001,
+        0.000112, 0.000126, 0.000141, 0.000158, 0.000178, 0.0002, 0.000224, 0.000251,
+        0.000282, 0.000316, 0.000355, 0.000398, 0.000447, 0.000501, 0.000562, 0.000631,
+        0.000708, 0.000794, 0.000891, 0.001, 0.001122, 0.001259, 0.001413, 0.001585,
+        0.001778, 0.001995, 0.002239, 0.002512, 0.002818, 0.003162, 0.003548, 0.003981,
+        0.004467, 0.005012, 0.005623, 0.00631, 0.007079, 0.007943, 0.008913, 0.01,
+        0.01122, 0.012589, 0.014125, 0.015849, 0.017783, 0.019953, 0.022387, 0.025119,
+        0.028184, 0.031623, 0.035481, 0.039811, 0.044668, 0.050119, 0.056234, 0.063096,
+        0.066834, 0.070795, 0.074989, 0.079433, 0.08414, 0.089125, 0.094406, 0.1,
+        0.105925, 0.112202, 0.11885, 0.125893, 0.133352, 0.141254, 0.149624, 0.158489,
+        0.16788, 0.177828, 0.188365, 0.199526, 0.211349, 0.223872, 0.237137, 0.251189,
+        0.258523, 0.266073, 0.273842, 0.281838, 0.290068, 0.298538, 0.307256, 0.316228,
+        0.325462, 0.334965, 0.344747, 0.354813, 0.365174, 0.375837, 0.386812, 0.398107,
+        0.409732, 0.421697, 0.43401, 0.446684, 0.459727, 0.473151, 0.486968, 0.501187,
+        0.508452, 0.515822, 0.523299, 0.530884, 0.53858, 0.546387, 0.554307, 0.562341,
+        0.570493, 0.578762, 0.587151, 0.595662, 0.604296, 0.613056, 0.621942, 0.630957,
+        0.640103, 0.649382, 0.658795, 0.668344, 0.678032, 0.68786, 0.697831, 0.707946,
+        0.718208, 0.728618, 0.73918, 0.749894, 0.760764, 0.771792, 0.782979, 0.794328,
+        0.805842, 0.817523, 0.829373, 0.841395, 0.853591, 0.865964, 0.878517, 0.891251,
+        0.90417, 0.917276, 0.930572, 0.944061, 0.957745, 0.971628, 0.985712, 1.0,
+        1.014495, 1.029201, 1.044119, 1.059254, 1.074608, 1.090184, 1.105987, 1.122018,
+        1.138282, 1.154782, 1.171521, 1.188502, 1.20573, 1.223207, 1.240938, 1.258925,
+        1.277174, 1.295687, 1.314468, 1.333521, 1.352851, 1.372461, 1.392355, 1.412538,
+        1.433013, 1.453784, 1.474857, 1.496236, 1.517924, 1.539927, 1.562248, 1.584893,
+        1.607867, 1.631173, 1.654817, 1.678804, 1.703139, 1.727826, 1.752871, 1.778279,
+        1.804056, 1.830206, 1.856735, 1.883649, 1.910953, 1.938653, 1.966754, 1.995262,
+        2.053525, 2.113489, 2.175204, 2.238721, 2.304093, 2.371374, 2.440619, 2.511886,
+        2.585235, 2.660725, 2.73842, 2.818383, 2.900681, 2.985383, 3.072557, 3.162278,
+        3.254618, 3.349654, 3.447466, 3.548134, 3.651741, 3.758374, 3.868121, 3.981072,
+        4.216965, 4.466836, 4.731513, 5.011872, 5.308844, 5.623413, 5.956621, 6.309573,
+        6.683439, 7.079458, 7.498942, 7.943282, 8.413951, 8.912509, 9.440609, 10.0,
+        10.592537, 11.220185, 11.885022, 12.589254, 13.335214, 14.125375, 14.962357, 15.848932
+    )
+
     private fun computePlaybackRate(voice: Voice, noteVal: Int): Double =
         voice.activeSamplingRate.toDouble() / SAMPLING_RATE *
         2.0.pow((noteVal - MIDDLE_C + voice.activeSampleDetune) / 4096.0)
@@ -1405,7 +1443,77 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             voice.activeVibratoWaveform  =
                 if (patch.vibratoWaveform == 0xFF) inst.vibratoWaveform else patch.vibratoWaveform
         }
+        resolveActiveEnvelopes(voice, inst, patch)
     }
+
+    /**
+     * Snapshot the active volume / pan / pitch / filter envelopes and the fadeout +
+     * cutoff + resonance scalars onto [voice] from either the base instrument or a
+     * resolved Ixmp patch. Called by [applyActiveSample] (every trigger).
+     *
+     * The base instrument exposes two pf-envelope slots (bytes 19.. and 197..); each is
+     * routed into the pitch or filter role by its m-bit (LOOP-word bit 7). A patch's 'P'
+     * (pitch) / 'f' (filter) blocks override the corresponding role; its 'v' / 'p' / 'x'
+     * blocks override the volume / pan envelopes and the fadeout/cutoff/resonance. Any
+     * block the patch does not carry defers to the base instrument.
+     */
+    private fun resolveActiveEnvelopes(voice: Voice, inst: TaudInst, patch: TaudInstPatch?) {
+        val volEnv = patch?.volEnv
+        if (volEnv != null) {
+            voice.activeVolEnv = volEnv; voice.activeVolEnvLoop = patch.volEnvLoop; voice.activeVolEnvSustain = patch.volEnvSustain
+        } else {
+            voice.activeVolEnv = inst.volEnvelopes; voice.activeVolEnvLoop = inst.volEnvLoop; voice.activeVolEnvSustain = inst.volEnvSustainWord
+        }
+        val panEnv = patch?.panEnv
+        if (panEnv != null) {
+            voice.activePanEnv = panEnv; voice.activePanEnvLoop = patch.panEnvLoop; voice.activePanEnvSustain = patch.panEnvSustain
+        } else {
+            voice.activePanEnv = inst.panEnvelopes; voice.activePanEnvLoop = inst.panEnvLoop; voice.activePanEnvSustain = inst.panEnvSustainWord
+        }
+
+        // Pitch + filter: route the base inst's two pf-slots by their m-bit, then let the
+        // patch override the matching role. m-bit (LOOP-word bit 7): 0 = pitch, 1 = filter.
+        var pitEnv = inst.pfEnvelopes;  var pitLoop = 0; var pitSus = 0; var pitOn = false
+        var filEnv = inst.pfEnvelopes;  var filLoop = 0; var filSus = 0; var filOn = false
+        // base slot 1 (bytes 19..)
+        if (envPresent(inst.pfEnvLoop)) {
+            if ((inst.pfEnvLoop ushr 7) and 1 != 0) { filEnv = inst.pfEnvelopes; filLoop = inst.pfEnvLoop; filSus = inst.pfEnvSustainWord; filOn = true }
+            else                                    { pitEnv = inst.pfEnvelopes; pitLoop = inst.pfEnvLoop; pitSus = inst.pfEnvSustainWord; pitOn = true }
+        }
+        // base slot 2 (bytes 197..)
+        if (envPresent(inst.pf2EnvLoop)) {
+            if ((inst.pf2EnvLoop ushr 7) and 1 != 0) { filEnv = inst.pf2Envelopes; filLoop = inst.pf2EnvLoop; filSus = inst.pf2EnvSustainWord; filOn = true }
+            else                                     { pitEnv = inst.pf2Envelopes; pitLoop = inst.pf2EnvLoop; pitSus = inst.pf2EnvSustainWord; pitOn = true }
+        }
+        // patch overrides by role
+        val pPit = patch?.pitchEnv
+        if (pPit != null)  { pitEnv = pPit; pitLoop = patch.pitchEnvLoop; pitSus = patch.pitchEnvSustain; pitOn = envPresent(patch.pitchEnvLoop) }
+        val pFil = patch?.filterEnv
+        if (pFil != null)  { filEnv = pFil; filLoop = patch.filterEnvLoop; filSus = patch.filterEnvSustain; filOn = envPresent(patch.filterEnvLoop) }
+        voice.activePitchEnv = pitEnv;  voice.activePitchEnvLoop = pitLoop;  voice.activePitchEnvSustain = pitSus;  voice.hasPitchEnv = pitOn
+        voice.activeFilterEnv = filEnv; voice.activeFilterEnvLoop = filLoop; voice.activeFilterEnvSustain = filSus; voice.hasFilterEnv = filOn
+
+        // Fadeout / cutoff / resonance / initialAttenuation / filter mode (patch 'x' block,
+        // else base inst). In SF mode the cutoff/resonance are 16-bit (cents / centibels).
+        if (patch != null && patch.hasExtra) {
+            voice.activeFadeoutStep = patch.fadeoutStep
+            voice.filterSfMode = patch.filterSfMode
+            voice.activeDefaultCutoff = patch.extraCutoff
+            voice.activeDefaultResonance = patch.extraResonance
+            voice.activeAttenGain = attenGainOf(patch.extraInitialAttenOctet)
+        } else {
+            voice.activeFadeoutStep = inst.volumeFadeoutLow or ((inst.fadeoutHigh and 0x0F) shl 8)
+            voice.filterSfMode = inst.filterSfMode
+            voice.activeDefaultCutoff = inst.defaultCutoff16
+            voice.activeDefaultResonance = inst.defaultResonance16
+            voice.activeAttenGain = attenGainOf(inst.initialAttenOctet)
+        }
+    }
+
+    /** initialAttenuation octet ("Perceptually Significant Octet to Decibel Table") → linear
+     *  amplitude multiplier. Octet 0 is the unset sentinel (= unity); 159 = 0 dB; 111 = −6 dB. */
+    private fun attenGainOf(octet: Int): Double =
+        if (octet <= 0) 1.0 else META_MIX_GAIN[octet and 0xFF]
 
     // Convert a 4096-TET noteVal to its Amiga-period equivalent (Double, no rounding).
     private fun noteValToAmigaPeriod(noteVal: Int): Double =
@@ -1509,8 +1617,41 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     private val volWrap = IntArray(2)
     private val panWrap = IntArray(2)
     private val pfWrap  = IntArray(2)
+    // Scratch in/out boxes for advancePfRole (shared pitch+filter walk). Single-threaded
+    // per playhead; pitch and filter advance sequentially within one tick.
+    private val pfIdxBox  = IntArray(1)
+    private val pfTimeBox = DoubleArray(1)
 
-    private fun advanceEnvelope(voice: Voice, inst: TaudInst, tickSec: Double) {
+    /**
+     * "Key Lift" (instrument flag byte 186 bit 5; NNA pattern 0b100): MIDI-exact
+     * key release. IT key-off semantics only release the SUSTAIN wrap — the
+     * envelope playhead still walks the remainder of the pre-sustain nodes
+     * (hold/decay) before it ever reaches the release nodes, which makes
+     * held-style instruments (SF2 imports with multi-second hold/decay) ring
+     * long past the key-up like a depressed sustain pedal. A Key Lift
+     * instrument instead jumps the volume-envelope playhead straight to the
+     * sustain-end node on key-off, so the post-sustain (release) nodes play
+     * immediately — exactly what a MIDI synth does when the key is lifted.
+     *
+     * Call wherever `keyOff = true` is applied to a voice (pattern KEY_OFF,
+     * NNA Note Off ghosts, DCA Note Off, past-note S$71). The level step from
+     * the current envelope value to the sustain node is absorbed by the
+     * per-sample envVolMix smoothing.
+     */
+    private fun applyKeyLift(voice: Voice, inst: TaudInst) {
+        if (!inst.nnaKeyLift) return
+        // The volume envelope and its sustain word are the ACTIVE (patch-or-base) ones,
+        // so per-patch SF2 ADSR layers each jump to their own sustain-end node on key-off.
+        val sus = voice.activeVolEnvSustain
+        if ((sus ushr 5) and 1 == 0) return        // no sustain region — nothing to jump to
+        val susEnd = sus and 0x1F
+        if (voice.envIndex >= susEnd) return       // already at/past the release boundary
+        voice.envIndex = susEnd
+        voice.envTimeSec = 0.0
+        voice.envVolume = (voice.activeVolEnv[susEnd].value / 63.0).coerceIn(0.0, 1.0)
+    }
+
+    private fun advanceEnvelope(voice: Voice, tickSec: Double) {
         val maxIdx = 24
 
         // Volume envelope. Evaluation is gated only by voice.volEnvOn (toggled by S$7/$8);
@@ -1523,21 +1664,23 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         // rule below would never fire — voices would hang forever on key-off / NNA-Continue.
         // Default-only envelopes (single full-volume point at value 63 with offset 0) are
         // safe to evaluate: the engine just holds at envVolume = 1.0, no audible effect.
+        // The envelope read is the ACTIVE (patch-or-base) one — see resolveActiveEnvelopes.
+        val volEnv = voice.activeVolEnv
         if (voice.volEnvOn) {
-            resolveEnvWrap(inst.volEnvLoop, inst.volEnvSustainWord, voice.keyOff, volWrap)
+            resolveEnvWrap(voice.activeVolEnvLoop, voice.activeVolEnvSustain, voice.keyOff, volWrap)
             val wStart = volWrap[0]
             val wEnd   = volWrap[1]
             val wrapping = wStart >= 0
 
             if (wrapping && voice.envIndex == wEnd && wStart == wEnd) {
                 // Hold at the wrap point (FT2 single-point sustain).
-                voice.envVolume = (inst.volEnvelopes[voice.envIndex].value / 63.0).coerceIn(0.0, 1.0)
+                voice.envVolume = (volEnv[voice.envIndex].value / 63.0).coerceIn(0.0, 1.0)
             } else if (wrapping && voice.envIndex == wEnd) {
                 voice.envTimeSec = 0.0
                 voice.envIndex = wStart
-                voice.envVolume = (inst.volEnvelopes[voice.envIndex].value / 63.0).coerceIn(0.0, 1.0)
+                voice.envVolume = (volEnv[voice.envIndex].value / 63.0).coerceIn(0.0, 1.0)
             } else if (voice.envIndex >= maxIdx) {
-                val vEnd = inst.volEnvelopes[maxIdx].value
+                val vEnd = volEnv[maxIdx].value
                 voice.envVolume = (vEnd / 63.0).coerceIn(0.0, 1.0)
                 // Schism's "envelope-end + last-value-0 ⇒ cut" rule (player/sndmix.c:493-498):
                 // applies only in fall-through (no active sustain or loop wrap) since Schism
@@ -1549,8 +1692,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 // fires.
                 if (vEnd == 0 && !wrapping) startRampOut(voice)
             } else {
-                val vOffset = inst.volEnvelopes[voice.envIndex].offset.toDouble()
-                val vCurValue = inst.volEnvelopes[voice.envIndex].value
+                val vOffset = volEnv[voice.envIndex].offset.toDouble()
+                val vCurValue = volEnv[voice.envIndex].value
                 if (vOffset == 0.0) {
                     // Reached a terminator point — envelope holds here.
                     voice.envVolume = (vCurValue / 63.0).coerceIn(0.0, 1.0)
@@ -1563,10 +1706,10 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                         val nextIdx = if (wrapping && voice.envIndex == wEnd) wStart
                                       else (voice.envIndex + 1).coerceAtMost(maxIdx)
                         voice.envIndex = nextIdx
-                        voice.envVolume = (inst.volEnvelopes[voice.envIndex].value / 63.0).coerceIn(0.0, 1.0)
+                        voice.envVolume = (volEnv[voice.envIndex].value / 63.0).coerceIn(0.0, 1.0)
                     } else {
                         val cur = (vCurValue / 63.0).coerceIn(0.0, 1.0)
-                        val nxt = (inst.volEnvelopes[(voice.envIndex + 1).coerceAtMost(maxIdx)].value / 63.0).coerceIn(0.0, 1.0)
+                        val nxt = (volEnv[(voice.envIndex + 1).coerceAtMost(maxIdx)].value / 63.0).coerceIn(0.0, 1.0)
                         voice.envVolume = cur + (nxt - cur) * (voice.envTimeSec / vOffset)
                     }
                 }
@@ -1579,23 +1722,24 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         // envelope marked "present but no wrap" still walks forward, matching the IT
         // idiom (pan-env flag=0x01) and Schism player/sndmix.c:470-502.
         if (!voice.hasPanEnv || !voice.panEnvOn) return
-        resolveEnvWrap(inst.panEnvLoop, inst.panEnvSustainWord, voice.keyOff, panWrap)
+        val panEnv = voice.activePanEnv
+        resolveEnvWrap(voice.activePanEnvLoop, voice.activePanEnvSustain, voice.keyOff, panWrap)
         val pStart = panWrap[0]
         val pEnd   = panWrap[1]
         val pWrapping = pStart >= 0
 
         if (pWrapping && voice.envPanIndex == pEnd && pStart == pEnd) {
-            voice.envPan = inst.panEnvelopes[voice.envPanIndex].value / 255.0
+            voice.envPan = panEnv[voice.envPanIndex].value / 255.0
         } else if (pWrapping && voice.envPanIndex == pEnd) {
             voice.envPanTimeSec = 0.0
             voice.envPanIndex = pStart
-            voice.envPan = inst.panEnvelopes[voice.envPanIndex].value / 255.0
+            voice.envPan = panEnv[voice.envPanIndex].value / 255.0
         } else if (voice.envPanIndex >= maxIdx) {
-            voice.envPan = inst.panEnvelopes[maxIdx].value / 255.0
+            voice.envPan = panEnv[maxIdx].value / 255.0
         } else {
-            val pOffset = inst.panEnvelopes[voice.envPanIndex].offset.toDouble()
+            val pOffset = panEnv[voice.envPanIndex].offset.toDouble()
             if (pOffset == 0.0) {
-                voice.envPan = inst.panEnvelopes[voice.envPanIndex].value / 255.0
+                voice.envPan = panEnv[voice.envPanIndex].value / 255.0
             } else {
                 voice.envPanTimeSec += tickSec
                 if (voice.envPanTimeSec >= pOffset) {
@@ -1603,10 +1747,10 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                     val nextIdx = if (pWrapping && voice.envPanIndex == pEnd) pStart
                                   else (voice.envPanIndex + 1).coerceAtMost(maxIdx)
                     voice.envPanIndex = nextIdx
-                    voice.envPan = inst.panEnvelopes[voice.envPanIndex].value / 255.0
+                    voice.envPan = panEnv[voice.envPanIndex].value / 255.0
                 } else {
-                    val cur = inst.panEnvelopes[voice.envPanIndex].value / 255.0
-                    val nxt = inst.panEnvelopes[(voice.envPanIndex + 1).coerceAtMost(maxIdx)].value / 255.0
+                    val cur = panEnv[voice.envPanIndex].value / 255.0
+                    val nxt = panEnv[(voice.envPanIndex + 1).coerceAtMost(maxIdx)].value / 255.0
                     voice.envPan = cur + (nxt - cur) * (voice.envPanTimeSec / pOffset)
                 }
             }
@@ -1614,47 +1758,63 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     }
 
     /**
-     * Advance the pitch/filter envelope by `tickSec`. Same loop / sustain semantics
-     * as advanceEnvelope. Result is stored in `voice.envPfValue` (0.0..1.0; 0.5 = unity).
+     * Generic 25-node envelope walk shared by the pitch and filter envelopes. Reads the
+     * active env array + LOOP/SUSTAIN words and the supplied playhead state, returns the
+     * new value (0.0..1.0; 0.5 = unity) and writes back the advanced index/time via the
+     * 2-element [stateIO] scratch ([0]=index, [1] holds the elapsed time as raw bits is
+     * impractical, so time is passed/returned through [timeBox]). Kept allocation-free.
      */
-    private fun advancePfEnvelope(voice: Voice, inst: TaudInst, tickSec: Double) {
-        // Same gate semantics as the pan envelope above: presence (voice.hasPfEnv) is
-        // latched at trigger time from LOOP.P; evaluation is unconditional once
-        // present, so an enabled-no-wrap envelope animates.
-        if (!voice.hasPfEnv || !voice.pfEnvOn) return
+    private fun advancePfRole(
+        env: Array<TaudInstEnvPoint>, loopWord: Int, susWord: Int, keyOff: Boolean,
+        tickSec: Double, wrapScratch: IntArray, idxBox: IntArray, timeBox: DoubleArray
+    ): Double {
         val maxIdx = 24
-        resolveEnvWrap(inst.pfEnvLoop, inst.pfEnvSustainWord, voice.keyOff, pfWrap)
-        val pSusStart = pfWrap[0]
-        val pSusEnd   = pfWrap[1]
-        val pSusOn    = pSusStart >= 0
-
-        if (pSusOn && voice.envPfIndex == pSusEnd && pSusStart == pSusEnd) {
-            voice.envPfValue = inst.pfEnvelopes[voice.envPfIndex].value / 255.0
-        } else if (pSusOn && voice.envPfIndex == pSusEnd) {
-            voice.envPfTimeSec = 0.0
-            voice.envPfIndex = pSusStart
-            voice.envPfValue = inst.pfEnvelopes[voice.envPfIndex].value / 255.0
-        } else if (voice.envPfIndex >= maxIdx) {
-            voice.envPfValue = inst.pfEnvelopes[maxIdx].value / 255.0
+        resolveEnvWrap(loopWord, susWord, keyOff, wrapScratch)
+        val susStart = wrapScratch[0]
+        val susEnd   = wrapScratch[1]
+        val susOn    = susStart >= 0
+        var idx = idxBox[0]
+        if (susOn && idx == susEnd && susStart == susEnd) {
+            return env[idx].value / 255.0
+        } else if (susOn && idx == susEnd) {
+            timeBox[0] = 0.0; idx = susStart; idxBox[0] = idx
+            return env[idx].value / 255.0
+        } else if (idx >= maxIdx) {
+            return env[maxIdx].value / 255.0
         } else {
-            val pOffset = inst.pfEnvelopes[voice.envPfIndex].offset.toDouble()
-            if (pOffset == 0.0) {
-                voice.envPfValue = inst.pfEnvelopes[voice.envPfIndex].value / 255.0
-            } else {
-                voice.envPfTimeSec += tickSec
-                if (voice.envPfTimeSec >= pOffset) {
-                    voice.envPfTimeSec -= pOffset
-                    val nextIdx = if (pSusOn && voice.envPfIndex == pSusEnd) pSusStart
-                                  else (voice.envPfIndex + 1).coerceAtMost(maxIdx)
-                    voice.envPfIndex = nextIdx
-                    voice.envPfValue = inst.pfEnvelopes[voice.envPfIndex].value / 255.0
-                } else {
-                    val cur = inst.pfEnvelopes[voice.envPfIndex].value / 255.0
-                    val nxt = inst.pfEnvelopes[(voice.envPfIndex + 1).coerceAtMost(maxIdx)].value / 255.0
-                    voice.envPfValue = cur + (nxt - cur) * (voice.envPfTimeSec / pOffset)
-                }
+            val offset = env[idx].offset.toDouble()
+            if (offset == 0.0) {
+                return env[idx].value / 255.0
             }
+            timeBox[0] += tickSec
+            if (timeBox[0] >= offset) {
+                timeBox[0] -= offset
+                idx = if (susOn && idx == susEnd) susStart else (idx + 1).coerceAtMost(maxIdx)
+                idxBox[0] = idx
+                return env[idx].value / 255.0
+            }
+            val cur = env[idx].value / 255.0
+            val nxt = env[(idx + 1).coerceAtMost(maxIdx)].value / 255.0
+            return cur + (nxt - cur) * (timeBox[0] / offset)
         }
+    }
+
+    /** Advance the pitch envelope (drives playback rate; 0.5 = unity). */
+    private fun advancePitchEnvelope(voice: Voice, tickSec: Double) {
+        if (!voice.hasPitchEnv || !voice.pfEnvOn) return
+        pfIdxBox[0] = voice.envPitchIndex; pfTimeBox[0] = voice.envPitchTimeSec
+        voice.envPitchValue = advancePfRole(voice.activePitchEnv, voice.activePitchEnvLoop,
+            voice.activePitchEnvSustain, voice.keyOff, tickSec, pfWrap, pfIdxBox, pfTimeBox)
+        voice.envPitchIndex = pfIdxBox[0]; voice.envPitchTimeSec = pfTimeBox[0]
+    }
+
+    /** Advance the filter envelope (drives cutoff; 0.5 = unity). */
+    private fun advanceFilterEnvelope(voice: Voice, tickSec: Double) {
+        if (!voice.hasFilterEnv || !voice.pfEnvOn) return
+        pfIdxBox[0] = voice.envFilterIndex; pfTimeBox[0] = voice.envFilterTimeSec
+        voice.envFilterValue = advancePfRole(voice.activeFilterEnv, voice.activeFilterEnvLoop,
+            voice.activeFilterEnvSustain, voice.keyOff, tickSec, pfWrap, pfIdxBox, pfTimeBox)
+        voice.envFilterIndex = pfIdxBox[0]; voice.envFilterTimeSec = pfTimeBox[0]
     }
 
     /**
@@ -1682,23 +1842,32 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
      *   y[n]      = A0 × x[n] + B0 × y[n−1] + B1 × y[n−2]
      */
     private fun refreshVoiceFilter(voice: Voice) {
-        val cut = voice.currentCutoff.coerceIn(0, 255)
-        val res = voice.currentResonance.coerceIn(0, 255)
+        val cut = voice.currentCutoff
+        val res = voice.currentResonance
         if (cut == voice.filterCutoffCached && res == voice.filterResonanceCached) return
         voice.filterCutoffCached = cut
         voice.filterResonanceCached = res
 
-        if (cut >= 255) {
-            voice.filterActive = false
-            return
+        val nyquist = SAMPLING_RATE * 0.5 - 1.0
+        val frequency: Double
+        val dmpfac: Double
+        if (voice.filterSfMode) {
+            // SoundFont mode: cutoff = absolute cents, resonance = centibels above DC gain.
+            //   freq = 8.176 Hz × 2^(cents/1200)   (cents are relative to 8.176 Hz = MIDI 0)
+            // SF2 Q is the resonant-peak height in dB×10. For this IT-style 2-pole IIR the
+            // peak gain ≈ −20·log10(dmpfac) dB, so dmpfac = 10^(−dB/20) = 10^(−Qcb/200).
+            if (cut >= 0xFFFF) { voice.filterActive = false; return }
+            frequency = (8.176 * 2.0.pow(cut / 1200.0)).coerceIn(1.0, nyquist)
+            val qcb = if (res >= 0xFFFF) 0 else res
+            // Clamp to the IT filter's max resonance (≈24 dB) to keep the IIR stable / unclipped.
+            dmpfac = 10.0.pow(-qcb / 200.0).coerceIn(0.0625, 1.0)
+        } else {
+            if (cut.coerceIn(0, 255) >= 255) { voice.filterActive = false; return }
+            val itCutoff    = cut.coerceIn(0, 254) * 0.5                 // 0..127
+            val itResonance = if (res >= 255) 0.0 else res.coerceIn(0, 254) * 0.5
+            frequency = (110.0 * 2.0.pow(itCutoff / 24.0 + 0.25)).coerceAtMost(nyquist)
+            dmpfac    = 10.0.pow(-itResonance * (24.0 / 128.0) / 20.0)
         }
-
-        val itCutoff    = cut * 0.5                                     // 0..127
-        val itResonance = if (res >= 255) 0.0 else res * 0.5            // 0..127
-
-        val nyquist   = SAMPLING_RATE * 0.5 - 1.0
-        val frequency = (110.0 * 2.0.pow(itCutoff / 24.0 + 0.25)).coerceAtMost(nyquist)
-        val dmpfac    = 10.0.pow(-itResonance * (24.0 / 128.0) / 20.0)
 
         val r = SAMPLING_RATE / (2.0 * PI * frequency)
         val d = dmpfac * r + dmpfac - 1.0
@@ -2036,6 +2205,90 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         return if (dnv == 0) 0x3F else (dnv * 63 + 127) / 255
     }
 
+    /** Cap [TrackerState.backgroundVoices] to [MAX_BG_VOICES], preferring to evict the
+     *  oldest NON-layer ghost so a live Metainstrument note never loses one of its layers. */
+    private fun capBackgroundVoices(ts: TrackerState) {
+        while (ts.backgroundVoices.size > MAX_BG_VOICES) {
+            val idx = ts.backgroundVoices.indexOfFirst { !it.isLayerChild }
+            if (idx >= 0) ts.backgroundVoices.removeAt(idx) else ts.backgroundVoices.removeFirst()
+        }
+    }
+
+    /** Release the layer children of channel [vi] (from a previous Metainstrument note):
+     *  detach them and apply each layer instrument's own NNA so the displaced note's tail
+     *  rides on as an ordinary background ghost. Called at the start of a fresh trigger. */
+    private fun releaseLayerChildren(ts: TrackerState, vi: Int) {
+        for (bg in ts.backgroundVoices) {
+            if (!bg.isLayerChild || bg.sourceChannel != vi) continue
+            bg.isLayerChild = false
+            when (instruments[bg.instrumentId].newNoteAction) {
+                0 -> if (!bg.keyOff) { bg.keyOff = true; applyKeyLift(bg, instruments[bg.instrumentId]) }
+                1 -> bg.active = false        // note cut
+                3 -> bg.noteFading = true     // note fade
+                // 2 = continue
+            }
+        }
+    }
+
+    /** Hard-cut the layer children of channel [vi] (pattern note-cut 0x0002 on the channel). */
+    private fun cutLayerChildren(ts: TrackerState, vi: Int) {
+        for (bg in ts.backgroundVoices) if (bg.isLayerChild && bg.sourceChannel == vi) bg.active = false
+    }
+
+    /**
+     * Trigger [noteVal]/[instId] on the foreground [voice] of channel [vi]. When [instId]
+     * is a Metainstrument (terranmon.txt "Metainstrument definition"), fan out: the first
+     * layer whose (pitch × volume) rectangle contains the trigger plays on the foreground
+     * voice; every other matching layer spawns a tracked background "layer child". Old
+     * layer children of the channel are released first (per their own NNA). For a normal
+     * instrument this is exactly the historical [triggerNote] call (volOverride = -1), so
+     * non-meta playback is byte-identical.
+     *
+     * [rowVolOverride] is the V-column-derived trigger volume (or -1). For metas it is the
+     * velocity used to resolve velocity-conditional layers and the layers' note volume;
+     * the normal path ignores it to preserve legacy patch-seed semantics.
+     */
+    private fun triggerMetaOrNote(ts: TrackerState, voice: Voice, vi: Int,
+                                  noteVal: Int, instId: Int, rowVolOverride: Int) {
+        releaseLayerChildren(ts, vi)
+        val inst = if (instId != 0) instruments[instId] else instruments[voice.instrumentId]
+        if (!inst.isMeta) {
+            triggerNote(voice, noteVal, instId, -1)   // legacy path, unchanged
+            voice.layerMixGain = 1.0
+            voice.layerRelDetune = 0
+            voice.isLayerChild = false
+            return
+        }
+        val seedVol = if (rowVolOverride in 0..0x3F) rowVolOverride else 0x3F
+        val layers = inst.resolveMetaLayers(noteVal, seedVol)
+        if (layers.isEmpty()) {                       // no layer covers this note: silence
+            voice.active = false
+            voice.layerMixGain = 1.0
+            voice.layerRelDetune = 0
+            return
+        }
+        val l0 = layers[0]
+        triggerNote(voice, (noteVal + l0.detune).coerceIn(0x20, 0xFFFF), l0.instIdx, rowVolOverride)
+        voice.layerMixGain   = META_MIX_GAIN[l0.mixOctet and 0xFF]
+        voice.layerRelDetune = 0
+        voice.isLayerChild   = false
+        for (k in 1 until layers.size) {
+            val lk = layers[k]
+            val child = Voice()
+            triggerNote(child, (noteVal + lk.detune).coerceIn(0x20, 0xFFFF), lk.instIdx, rowVolOverride)
+            child.isLayerChild   = true
+            child.sourceChannel  = vi
+            child.layerRelDetune = lk.detune - l0.detune
+            child.layerMixGain   = META_MIX_GAIN[lk.mixOctet and 0xFF]
+            // Match layer 0's channel context so M/pan and the first tick agree.
+            child.channelVolume = voice.channelVolume
+            child.channelPan    = voice.channelPan
+            child.rowPan        = voice.rowPan
+            ts.backgroundVoices.addLast(child)
+        }
+        capBackgroundVoices(ts)
+    }
+
     private fun triggerNote(voice: Voice, noteVal: Int, instId: Int, volOverride: Int) {
         if (instId != 0) voice.instrumentId = instId
         val inst = instruments[voice.instrumentId]
@@ -2056,7 +2309,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         voice.keyOff = false
         voice.envIndex = 0
         voice.envTimeSec = 0.0
-        voice.envVolume = (inst.volEnvelopes[0].value / 63.0).coerceIn(0.0, 1.0)
+        voice.envVolume = (voice.activeVolEnv[0].value / 63.0).coerceIn(0.0, 1.0)
         // Snap the per-sample-smoothed envelope to the fresh starting value so attack
         // transients land at the envelope's node-0 value immediately. Per-tick step is
         // recomputed by applyTrackerTick on the next tick boundary.
@@ -2064,20 +2317,20 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         voice.envVolStep = 0.0
         voice.envPanIndex = 0
         voice.envPanTimeSec = 0.0
-        voice.envPan = inst.panEnvelopes[0].value / 255.0
+        voice.envPan = voice.activePanEnv[0].value / 255.0
         // Envelope-present gate (added 2026-05-06). Driven by the P bit at LOOP-word
         // bit 13 (high byte's bit 5; offsets 16/18/20 bit 5), set by converters
-        // whenever they emit envelope nodes. See terranmon.txt at byte 15/17/19 for
-        // the bit layout and the file-header preamble for the presence-vs-wrap
-        // distinction.
-        voice.hasPanEnv = envPresent(inst.panEnvLoop)
-        // Pitch/filter envelope state.
-        voice.hasPfEnv      = envPresent(inst.pfEnvLoop)
-        // The pf 'm' mode bit (pitch=0, filter=1) lives in the LOOP word at bit 7.
-        voice.envPfIsFilter = (inst.pfEnvLoop ushr 7) and 1 != 0
-        voice.envPfIndex    = 0
-        voice.envPfTimeSec  = 0.0
-        voice.envPfValue    = if (voice.hasPfEnv) inst.pfEnvelopes[0].value / 255.0 else 0.5
+        // whenever they emit envelope nodes. The active LOOP word is the patch-or-base
+        // one (resolveActiveEnvelopes); hasPitchEnv/hasFilterEnv are already latched there.
+        voice.hasPanEnv = envPresent(voice.activePanEnvLoop)
+        // Pitch / filter envelope playhead seeds (the role split + presence were resolved
+        // by resolveActiveEnvelopes from the base inst's two pf-slots and any patch override).
+        voice.envPitchIndex   = 0
+        voice.envPitchTimeSec = 0.0
+        voice.envPitchValue   = if (voice.hasPitchEnv) voice.activePitchEnv[0].value / 255.0 else 0.5
+        voice.envFilterIndex   = 0
+        voice.envFilterTimeSec = 0.0
+        voice.envFilterValue   = if (voice.hasFilterEnv) voice.activeFilterEnv[0].value / 255.0 else 0.5
         // Fadeout starts at unity; advances only after key-off.
         voice.fadeoutVolume = 1.0
         // Cancel any sample-end ramp left over from the previous note — a fresh trigger's
@@ -2108,7 +2361,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             // The pan envelope's 'p' flag ("use default pan") lives in the pan LOOP word at bit 7.
             // An Ixmp patch's defaultPan (when non-sentinel, i.e. != 0xFF) takes precedence over
             // the base instrument's defaultPan.
-            if ((inst.panEnvLoop ushr 7) and 1 != 0) {
+            if ((voice.activePanEnvLoop ushr 7) and 1 != 0) {
                 val patchPan = patch?.defaultPan?.takeIf { it != 0xFF }
                 voice.channelPan = patchPan ?: inst.defaultPan
                 voice.rowPan = (voice.channelPan ushr 2).coerceIn(0, 63)
@@ -2122,10 +2375,11 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 voice.rowPan = (voice.channelPan ushr 2).coerceIn(0, 63)
             }
         }
-        // Filter cutoff/resonance defaults — adjusted per-tick by the pf envelope when in filter mode.
+        // Filter cutoff/resonance defaults — adjusted per-tick by the filter envelope. Uses
+        // the ACTIVE values (patch 'x' block overrides the base inst's defaultCutoff/Resonance).
         // 255 = filter off (IT high-bit-clear); 0..254 = active range matching IT 0..127 at double resolution.
-        voice.currentCutoff = inst.defaultCutoff
-        voice.currentResonance = inst.defaultResonance
+        voice.currentCutoff = voice.activeDefaultCutoff
+        voice.currentResonance = voice.activeDefaultResonance
         voice.filterY1 = 0.0; voice.filterY2 = 0.0
         voice.filterCutoffCached = -1   // force coefficient refresh on first tick
         voice.filterResonanceCached = -1
@@ -2218,7 +2472,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             val existInst = instruments[v.instrumentId]
             when (existInst.duplicateCheckAction) {
                 0 -> { v.fadeoutVolume = 0.0; v.active = false }
-                1 -> v.keyOff = true
+                1 -> { v.keyOff = true; applyKeyLift(v, existInst) }
                 2 -> v.noteFading = true
             }
         }
@@ -2254,14 +2508,15 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
         val bg = ghostVoice(voice, channel)
         when (nna) {
-            0 -> bg.keyOff = true       // Note Off — release sustain; fadeout starts naturally.
+            0 -> {                      // Note Off — release sustain; fadeout starts naturally.
+                bg.keyOff = true
+                applyKeyLift(bg, instruments[bg.instrumentId])
+            }
             3 -> bg.noteFading = true   // Note Fade — fadeout immediately, sustain still loops.
             // 2 (Continue) — ghost continues unchanged.
         }
         ts.backgroundVoices.addLast(bg)
-        while (ts.backgroundVoices.size > MAX_BG_VOICES) {
-            ts.backgroundVoices.removeFirst()
-        }
+        capBackgroundVoices(ts)
     }
 
     /** Snapshot the playback-relevant state of [src] into a fresh Voice tagged for [channel]. */
@@ -2293,16 +2548,20 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         v.envPanTimeSec = src.envPanTimeSec
         v.envPan = src.envPan
         v.hasPanEnv = src.hasPanEnv
-        v.hasPfEnv = src.hasPfEnv
-        v.envPfIndex = src.envPfIndex
-        v.envPfTimeSec = src.envPfTimeSec
-        v.envPfValue = src.envPfValue
-        v.envPfIsFilter = src.envPfIsFilter
+        v.hasPitchEnv = src.hasPitchEnv
+        v.envPitchIndex = src.envPitchIndex
+        v.envPitchTimeSec = src.envPitchTimeSec
+        v.envPitchValue = src.envPitchValue
+        v.hasFilterEnv = src.hasFilterEnv
+        v.envFilterIndex = src.envFilterIndex
+        v.envFilterTimeSec = src.envFilterTimeSec
+        v.envFilterValue = src.envFilterValue
         v.fadeoutVolume = src.fadeoutVolume
         v.autoVibPhase = src.autoVibPhase
         v.autoVibTicksSinceTrigger = src.autoVibTicksSinceTrigger
         v.currentCutoff = src.currentCutoff
         v.currentResonance = src.currentResonance
+        v.filterSfMode = src.filterSfMode
         v.filterActive = src.filterActive
         v.filterA0 = src.filterA0
         v.filterB0 = src.filterB0
@@ -2321,6 +2580,10 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         v.panEnvOn = src.panEnvOn
         v.pfEnvOn = src.pfEnvOn
         v.noteFading = src.noteFading
+        // Keep the source's Metainstrument layer-0 mix gain on the ghost so an NNA tail of
+        // a layered note fades at the same level it was sounding (isLayerChild stays false:
+        // a ghost is a free-running tail, not a tracked child of the live note).
+        v.layerMixGain = src.layerMixGain
         // Voice-FX state (effects 8/9): preserve so the NNA-ghosted tail keeps the same timbre.
         v.clipMode = src.clipMode
         v.bitcrusherDepth = src.bitcrusherDepth
@@ -2345,6 +2608,24 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         v.activeVibratoDepth     = src.activeVibratoDepth
         v.activeVibratoRate      = src.activeVibratoRate
         v.activeVibratoWaveform  = src.activeVibratoWaveform
+        // Active-envelope view must follow too, so the ghost keeps its patch's ADSR /
+        // pan / pitch / filter envelopes + fadeout/cutoff/resonance (not the base inst's).
+        v.activeVolEnv           = src.activeVolEnv
+        v.activeVolEnvLoop       = src.activeVolEnvLoop
+        v.activeVolEnvSustain    = src.activeVolEnvSustain
+        v.activePanEnv           = src.activePanEnv
+        v.activePanEnvLoop       = src.activePanEnvLoop
+        v.activePanEnvSustain    = src.activePanEnvSustain
+        v.activePitchEnv         = src.activePitchEnv
+        v.activePitchEnvLoop     = src.activePitchEnvLoop
+        v.activePitchEnvSustain  = src.activePitchEnvSustain
+        v.activeFilterEnv        = src.activeFilterEnv
+        v.activeFilterEnvLoop    = src.activeFilterEnvLoop
+        v.activeFilterEnvSustain = src.activeFilterEnvSustain
+        v.activeFadeoutStep      = src.activeFadeoutStep
+        v.activeDefaultCutoff    = src.activeDefaultCutoff
+        v.activeDefaultResonance = src.activeDefaultResonance
+        v.activeAttenGain        = src.activeAttenGain
         return v
     }
 
@@ -2356,7 +2637,10 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 while (iter.hasNext()) if (iter.next().sourceChannel == channel) iter.remove()
             }
             1 -> ts.backgroundVoices.forEach { bg ->  // Past Note Off — sustain release.
-                if (bg.sourceChannel == channel) bg.keyOff = true
+                if (bg.sourceChannel == channel) {
+                    bg.keyOff = true
+                    applyKeyLift(bg, instruments[bg.instrumentId])
+                }
             }
             2 -> ts.backgroundVoices.forEach { bg ->  // Past Note Fade — start fadeout.
                 if (bg.sourceChannel == channel) bg.noteFading = true
@@ -2522,7 +2806,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 // silences after the first row because the slide saturates at 0 and there's
                 // nothing to lift the volume back up before the next slide starts.
                 0x0000 -> {
-                    if (row.instrment != 0) {
+                    if (row.instrment != 0 && !instruments[row.instrment].isMeta) {
                         voice.instrumentId = row.instrment
                         // Re-resolve the patch on the new instrument against the voice's
                         // current note so multi-sample IT/XM instruments pick up the right
@@ -2545,8 +2829,28 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 // fadeoutVolume reaches 0, or immediately if FT2-mode fadeStep == 0. Setting
                 // voice.active = false here would defeat both — instruments with sustain points
                 // and non-zero fadeout (FT2 sustain-then-fade idiom) would be cut on the spot.
-                0x0001 -> { voice.keyOff = true }
-                0x0002 -> voice.active = false                  // note cut (immediate)
+                0x0001 -> {
+                    // A sub-row key-off (KEY_OFF + S$Dx) defers to the requested tick instead of
+                    // firing at tick 0 — otherwise the note is released early and, on instruments
+                    // that rely on the release leg to end, can ring on / cut short (issues 3 & 5).
+                    val dTick = if ((row.effect == EffectOp.OP_S) && ((row.effectArg ushr 12) and 0xF) == 0xD)
+                                (row.effectArg ushr 8) and 0xF else 0
+                    if (dTick > 0) {
+                        voice.noteDelayTick = dTick; voice.delayedNote = 0x0001
+                        voice.delayedInst = 0; voice.delayedVol = -1
+                    } else {
+                        voice.keyOff = true
+                        applyKeyLift(voice, instruments[voice.instrumentId])
+                    }
+                }
+                0x0002 -> {
+                    val dTick = if ((row.effect == EffectOp.OP_S) && ((row.effectArg ushr 12) and 0xF) == 0xD)
+                                (row.effectArg ushr 8) and 0xF else 0
+                    if (dTick > 0) {
+                        voice.noteDelayTick = dTick; voice.delayedNote = 0x0002
+                        voice.delayedInst = 0; voice.delayedVol = -1
+                    } else { voice.active = false; cutLayerChildren(ts, vi) }  // note cut (immediate)
+                }
                 in 0x0003..0x000F -> { /* reserved sentinel range, no engine handler */ }
                 in 0x0010..0x001F -> { /* Int0..IntF: reserved interrupt slots, no engine handler yet */ }
                 else -> {
@@ -2567,7 +2871,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                         // to full level on every porta-with-inst row (e.g.
                         // nearly_there_.mod ord 0x1B ch 4 r49 jumped from ~35 to 63
                         // and the bump persisted through the following vibrato rows).
-                        if (row.instrment != 0) {
+                        if (row.instrment != 0 && !instruments[row.instrment].isMeta) {
                             voice.instrumentId = row.instrment
                             // Porta + inst-byte: re-resolve the patch on the new instrument
                             // against the voice's current note (Schism evaluates the keyboard
@@ -2596,7 +2900,11 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                     } else {
                         applyDuplicateCheck(ts, vi, row.instrment, row.note)
                         maybeSpawnBackgroundForNNA(ts, voice, vi)
-                        triggerNote(voice, row.note, row.instrment, -1)
+                        // V-column SET value (selector 0) is the trigger velocity; passed so a
+                        // Metainstrument resolves velocity-conditional layers correctly. The
+                        // non-meta path inside triggerMetaOrNote ignores it (legacy semantics).
+                        val trigVol = if (row.volumeEff == 0) row.volume else -1
+                        triggerMetaOrNote(ts, voice, vi, row.note, row.instrment, trigVol)
                     }
                 }
             }
@@ -3023,12 +3331,23 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 voice.noteWasCut = true
             }
 
-            // Note delay — fire deferred trigger when the requested tick arrives.
-            // NNA fires now (not at row parse) so that delayed retriggers ghost correctly.
+            // Note delay — fire the deferred event when the requested tick arrives. A delayed
+            // KEY_OFF / note-cut (converters emit sub-row key-offs as KEY_OFF + S$Dx) applies the
+            // release/cut here instead of at tick 0; a delayed NOTE triggers with NNA now (not at
+            // row parse) so that delayed retriggers ghost correctly.
             if (voice.noteDelayTick == ts.tickInRow) {
-                applyDuplicateCheck(ts, vi, voice.delayedInst, voice.delayedNote)
-                maybeSpawnBackgroundForNNA(ts, voice, vi)
-                triggerNote(voice, voice.delayedNote, voice.delayedInst, voice.delayedVol)
+                when (voice.delayedNote) {
+                    0x0001 -> {                                   // delayed KEY_OFF
+                        voice.keyOff = true
+                        applyKeyLift(voice, instruments[voice.instrumentId])
+                    }
+                    0x0002 -> { voice.active = false; cutLayerChildren(ts, vi) }  // delayed note cut
+                    else -> {
+                        applyDuplicateCheck(ts, vi, voice.delayedInst, voice.delayedNote)
+                        maybeSpawnBackgroundForNNA(ts, voice, vi)
+                        triggerMetaOrNote(ts, voice, vi, voice.delayedNote, voice.delayedInst, voice.delayedVol)
+                    }
+                }
                 voice.noteDelayTick = -1
                 // triggerNote may have swapped in a new instrument; re-bind so the rest of this
                 // tick's per-voice work (playbackRate at L3090, envelope/fadeout/auto-vibrato)
@@ -3040,7 +3359,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             }
 
             if (!voice.active) {
-                advanceEnvelope(voice, inst, tickSec)
+                advanceEnvelope(voice, tickSec)
                 voice.envVolStep = if (spt > 0.0) (voice.envVolume - voice.envVolMix) / spt else 0.0
                 continue
             }
@@ -3174,7 +3493,6 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 voice.retrigCounter++
                 if (voice.retrigCounter >= voice.retrigInterval) {
                     voice.retrigCounter = 0
-                    val retrigInst = instruments[voice.instrumentId]
                     // Use the voice's active sample's playStart (patch-aware) — without this
                     // a Q retrigger on a multi-sample instrument would jump to the base sample
                     // even though the voice is bound to a patch.
@@ -3182,9 +3500,11 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                     voice.keyOff = false
                     voice.envIndex = 0; voice.envTimeSec = 0.0
                     voice.envPanIndex = 0; voice.envPanTimeSec = 0.0
-                    voice.envPan = retrigInst.panEnvelopes[0].value / 255.0
-                    voice.envPfIndex = 0; voice.envPfTimeSec = 0.0
-                    voice.envPfValue = if (voice.hasPfEnv) retrigInst.pfEnvelopes[0].value / 255.0 else 0.5
+                    voice.envPan = voice.activePanEnv[0].value / 255.0
+                    voice.envPitchIndex = 0; voice.envPitchTimeSec = 0.0
+                    voice.envPitchValue = if (voice.hasPitchEnv) voice.activePitchEnv[0].value / 255.0 else 0.5
+                    voice.envFilterIndex = 0; voice.envFilterTimeSec = 0.0
+                    voice.envFilterValue = if (voice.hasFilterEnv) voice.activeFilterEnv[0].value / 255.0 else 0.5
                     voice.fadeoutVolume = 1.0
                     voice.autoVibPhase = 0
                     voice.autoVibTicksSinceTrigger = 0
@@ -3201,24 +3521,33 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             // IT pitch envelope max is ±16 semitones (Schism sndmix.c:455-462 indexes
             // linear_slide_up_table[abs(envpitch)] where envpitch ∈ [-256,+256] and
             // table[255] = 65536·2^(255/192) ≈ 2.504, i.e. 15.94 semitones).
-            val pitchEnvDelta = if (voice.hasPfEnv && voice.pfEnvOn && !voice.envPfIsFilter)
-                ((voice.envPfValue - 0.5) * 2.0 * 16.0 * 4096.0 / 12.0).toInt()
+            val pitchEnvDelta = if (voice.hasPitchEnv && voice.pfEnvOn)
+                ((voice.envPitchValue - 0.5) * 2.0 * 16.0 * 4096.0 / 12.0).toInt()
             else 0
 
             val finalPitch = (pitchToMixer + autoVibDelta + pitchEnvDelta).coerceIn(0x20, 0xFFFF)
             voice.playbackRate = computePlaybackRate(voice, finalPitch)
 
-            // Filter envelope (filter mode): scale baseCut by envValue (0..1, 0.5 = unity).
+            // Filter envelope: scale baseCut by envValue (0..1, 0.5 = unity).
             // Schism filters.c:80-86 computes `cutoff_used = chan->cutoff * (flt_modifier+256)/256`
             // where flt_modifier = (env_value_0..64 - 32) * 8. Mapping TSVM's [0..1] env to Schism's
             // [-256..+256] modifier and accounting for our pre-doubled defaultCutoff (it2taud.py
-            // stores IFC*2 in 0..254) gives `currentCutoff = baseCut * envPfValue` — at unity (0.5)
+            // stores IFC*2 in 0..254) gives `currentCutoff = baseCut * envFilterValue` — at unity (0.5)
             // the filter sits at IFC, at max (1.0) it opens to 2*IFC, at min (0.0) it closes.
             // If the instrument has no initial cutoff (255 = off), the envelope drives the filter
             // from the maximum active value (254) so the filter can become audible during the note.
-            if (voice.hasPfEnv && voice.pfEnvOn && voice.envPfIsFilter) {
-                val baseCut = if (inst.defaultCutoff < 255) inst.defaultCutoff else 254
-                voice.currentCutoff = (baseCut * voice.envPfValue).toInt().coerceIn(0, 254)
+            // baseCut is the ACTIVE cutoff (patch 'x' override or base inst).
+            if (voice.hasFilterEnv && voice.pfEnvOn) {
+                if (voice.filterSfMode) {
+                    // SF mode: activeDefaultCutoff is the PEAK cutoff in cents; the env scales it
+                    // down (envFilterValue 1.0 = peak/open, 0 = closed). Converter sets node values
+                    // = targetCents/peakCents so the SF2 mod-env sweep is reproduced exactly.
+                    val baseCut = if (voice.activeDefaultCutoff < 0xFFFF) voice.activeDefaultCutoff else 13500
+                    voice.currentCutoff = (baseCut * voice.envFilterValue).toInt().coerceIn(0, 0xFFFF)
+                } else {
+                    val baseCut = if (voice.activeDefaultCutoff < 255) voice.activeDefaultCutoff else 254
+                    voice.currentCutoff = (baseCut * voice.envFilterValue).toInt().coerceIn(0, 254)
+                }
             }
 
             // Refresh biquad filter coefficients once per tick (only recomputes when changed).
@@ -3235,21 +3564,22 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             // of the same field; converters scale source values into Taud's 0..4095 unit so the engine
             // sees one consistent encoding.
             if (voice.keyOff || voice.noteFading) {
-                val fadeStep = inst.volumeFadeoutLow or ((inst.fadeoutHigh and 0x0F) shl 8)
+                val fadeStep = voice.activeFadeoutStep
                 if (fadeStep > 0) {
                     voice.fadeoutVolume = (voice.fadeoutVolume - fadeStep / 1024.0).coerceAtLeast(0.0)
                     if (voice.fadeoutVolume <= 0.0) voice.active = false
                 }
             }
 
-            advanceEnvelope(voice, inst, tickSec)
+            advanceEnvelope(voice, tickSec)
             // Compute per-sample slope so envVolMix walks smoothly to the new envVolume
             // across the next tick interval; this turns the mixer's view of the envelope
             // from a stair-step into a continuous ramp and removes the per-tick clicks
             // that are otherwise audible on steep envelope slopes (e.g., XM volume
             // envelopes with fast attack/decay nodes — the slumberjack.xm symptom).
             voice.envVolStep = if (spt > 0.0) (voice.envVolume - voice.envVolMix) / spt else 0.0
-            advancePfEnvelope(voice, inst, tickSec)
+            advancePitchEnvelope(voice, tickSec)
+            advanceFilterEnvelope(voice, tickSec)
         }
 
         // Tempo slide — applied once per tick at the playhead level (any channel that armed it).
@@ -3293,12 +3623,34 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         while (bgIt.hasNext()) {
             val bg = bgIt.next()
             if (!bg.active) { bgIt.remove(); continue }
+            // Metainstrument layer child: re-sync pitch / key-off / volume / pan from the
+            // parent foreground voice each tick so tone-portamento, slides, KEY_OFF, M
+            // channel-volume and panning carry to every layer of the note. When the parent
+            // note ends, detach so this layer finishes its own release as a plain ghost.
+            if (bg.isLayerChild) {
+                val parent = ts.voices.getOrNull(bg.sourceChannel)
+                if (parent == null || !parent.active) {
+                    bg.isLayerChild = false
+                } else {
+                    bg.noteVal   = (parent.noteVal + bg.layerRelDetune).coerceIn(0x20, 0xFFFF)
+                    bg.basePitch = bg.noteVal
+                    bg.amigaPeriod = -1.0; bg.linearFreq = -1.0
+                    if (parent.keyOff && !bg.keyOff) { bg.keyOff = true; applyKeyLift(bg, instruments[bg.instrumentId]) }
+                    if (parent.noteFading && !bg.noteFading) bg.noteFading = true
+                    bg.channelVolume = parent.channelVolume
+                    bg.noteVolume    = parent.noteVolume
+                    bg.rowVolume     = parent.rowVolume
+                    bg.channelPan    = parent.channelPan
+                    bg.rowPan        = parent.rowPan
+                }
+            }
             val inst = instruments[bg.instrumentId]
-            advanceEnvelope(bg, inst, tickSec)
+            advanceEnvelope(bg, tickSec)
             bg.envVolStep = if (spt > 0.0) (bg.envVolume - bg.envVolMix) / spt else 0.0
-            advancePfEnvelope(bg, inst, tickSec)
+            advancePitchEnvelope(bg, tickSec)
+            advanceFilterEnvelope(bg, tickSec)
             if (bg.keyOff || bg.noteFading) {
-                val fadeStep = inst.volumeFadeoutLow or ((inst.fadeoutHigh and 0x0F) shl 8)
+                val fadeStep = bg.activeFadeoutStep
                 if (fadeStep > 0) {
                     // Mirrors the foreground-voice fade path above — single divisor of 1024.
                     bg.fadeoutVolume = (bg.fadeoutVolume - fadeStep / 1024.0).coerceAtLeast(0.0)
@@ -3306,15 +3658,15 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             }
             // Auto-vibrato keeps running on backgrounds — it's an instrument-intrinsic LFO.
             val autoVibDelta = advanceAutoVibrato(bg, inst)
-            val pitchEnvDelta = if (bg.hasPfEnv && bg.pfEnvOn && !bg.envPfIsFilter)
-                ((bg.envPfValue - 0.5) * 2.0 * 16.0 * 4096.0 / 12.0).toInt()
+            val pitchEnvDelta = if (bg.hasPitchEnv && bg.pfEnvOn)
+                ((bg.envPitchValue - 0.5) * 2.0 * 16.0 * 4096.0 / 12.0).toInt()
             else 0
             val finalPitch = (bg.noteVal + autoVibDelta + pitchEnvDelta).coerceIn(0x20, 0xFFFF)
             bg.playbackRate = computePlaybackRate(bg, finalPitch)
-            // Filter-mode pf envelope: same scaling rule as foreground.
-            if (bg.hasPfEnv && bg.pfEnvOn && bg.envPfIsFilter) {
-                val baseCut = if (inst.defaultCutoff < 255) inst.defaultCutoff else 254
-                bg.currentCutoff = (baseCut * bg.envPfValue).toInt().coerceIn(0, 254)
+            // Filter envelope: same scaling rule as foreground, using the active cutoff.
+            if (bg.hasFilterEnv && bg.pfEnvOn) {
+                val baseCut = if (bg.activeDefaultCutoff < 255) bg.activeDefaultCutoff else 254
+                bg.currentCutoff = (baseCut * bg.envFilterValue).toInt().coerceIn(0, 254)
             }
             refreshVoiceFilter(bg)
             // Reap fully-faded ghosts so the pool stays drained.
@@ -3419,7 +3771,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 // Split the gain stack so the soundscope can see the voice amplitude independently
                 // of the playhead-wide faders (master / mixing / global volume).
                 val perVoiceGain = effEnvVol * voice.fadeoutVolume * voice.currentMixVolume *
-                                   swingScale * instGv * faderGain
+                                   swingScale * instGv * faderGain * voice.layerMixGain * voice.activeAttenGain
                 val globalGain = gvol * mvol * playhead.masterVolume / 255.0
                 val vol = perVoiceGain * globalGain
                 val pan = if (voice.hasPanEnv && voice.panEnvOn) {
@@ -3464,7 +3816,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 // changes to the source slot's fader don't affect already-ghosted voices.
                 val faderGain = (255 - bg.fader) / 255.0
                 val vol = effEnvVol * bg.fadeoutVolume * bg.currentMixVolume *
-                          swingScale * gvol * mvol * instGv * faderGain * playhead.masterVolume / 255.0
+                          swingScale * gvol * mvol * instGv * faderGain * bg.layerMixGain * bg.activeAttenGain * playhead.masterVolume / 255.0
                 val pan = if (bg.hasPanEnv && bg.panEnvOn) {
                     val envPanRaw = (bg.envPan * 255.0).roundToInt().coerceIn(0, 255)
                     (bg.channelPan + envPanRaw - 128 + bg.randomPanBias).coerceIn(0, 255)
@@ -3715,6 +4067,19 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         // -1 for live foreground voices held by TrackerState.voices[]; 0..19 for background
         // (mixer-private) ghosts spawned by NNA on the matching channel index.
         var sourceChannel = -1
+
+        // ── Metainstrument layering ──
+        // A meta trigger plays its first matching layer on the foreground voice and spawns
+        // the remaining matching layers as background voices tagged [isLayerChild]. Each
+        // tick those children re-sync pitch / key-off / volume / pan from their parent
+        // foreground voice (ts.voices[sourceChannel]); [layerRelDetune] is the child's
+        // 4096-TET offset relative to the parent (layer 0), so tone-portamento and slides
+        // on the channel carry to every layer. [layerMixGain] is the per-layer static mix
+        // multiplier (from the layer's mix-volume octet) applied in the mixer; it is set on
+        // the foreground voice too (layer 0's gain) and defaults to 1.0 for normal notes.
+        var isLayerChild = false
+        var layerRelDetune = 0
+        var layerMixGain = 1.0
         // -1 = use instrument-default NNA; otherwise overrides the next NNA event on this voice
         // (see S $73..$76). Cleared on every fresh trigger.
         var nnaOverride = -1
@@ -3780,12 +4145,19 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         var envPan = 0.5                   // 0.0=full-left, 1.0=full-right, 0.5=centre
         var hasPanEnv = false
 
-        // Pitch / filter envelope (instrument-supplied, byte 19-20 + bytes 121-170).
-        var hasPfEnv = false
-        var envPfIndex = 0
-        var envPfTimeSec = 0.0
-        var envPfValue = 0.5               // 0.0..1.0; 0.5 = unity (no pitch shift / unmodulated cutoff)
-        var envPfIsFilter = false          // mirror of inst.pfEnvLoop bit 7 latched at trigger
+        // Pitch and filter envelopes. The Taud instrument carries two pf-env slots
+        // (base bytes 19.. and 197..); they are routed by their m-bit into the pitch
+        // and filter roles here so SF2's single mod-env can drive both at once. IT/XM
+        // instruments populate only one role (pitch XOR filter). Per-patch Ixmp 'P'/'f'
+        // blocks override the corresponding role. 0.5 = unity (no shift / unmodulated cutoff).
+        var hasPitchEnv = false
+        var envPitchIndex = 0
+        var envPitchTimeSec = 0.0
+        var envPitchValue = 0.5
+        var hasFilterEnv = false
+        var envFilterIndex = 0
+        var envFilterTimeSec = 0.0
+        var envFilterValue = 0.5
 
         // Volume fadeout — engaged after key-off, decays to 0 at rate inst.volumeFadeoutLow.
         var fadeoutVolume = 1.0
@@ -3823,6 +4195,37 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         var activeVibratoWaveform  = 0     // bits 0-2 only
         val activeSampleLoopSustain: Boolean get() = (activeLoopMode and 0x04) != 0
 
+        // Active-envelope view — snapshot of the base instrument's envelopes or, when an
+        // Ixmp patch overrides them (v/p/f/P/x blocks), the patch's. The advance / key-lift
+        // / fadeout / filter code reads these instead of inst.* so per-patch SF2 ADSR works.
+        // Set by [resolveActiveEnvelopes] from every trigger (alongside the active sample).
+        var activeVolEnv: Array<TaudInstEnvPoint> = Array(25) { TaudInstEnvPoint(0x3F, ThreeFiveMiniUfloat(0)) }
+        var activeVolEnvLoop = 0
+        var activeVolEnvSustain = 0
+        var activePanEnv: Array<TaudInstEnvPoint> = Array(25) { TaudInstEnvPoint(0x80, ThreeFiveMiniUfloat(0)) }
+        var activePanEnvLoop = 0
+        var activePanEnvSustain = 0
+        var activePitchEnv: Array<TaudInstEnvPoint> = Array(25) { TaudInstEnvPoint(0x80, ThreeFiveMiniUfloat(0)) }
+        var activePitchEnvLoop = 0
+        var activePitchEnvSustain = 0
+        var activeFilterEnv: Array<TaudInstEnvPoint> = Array(25) { TaudInstEnvPoint(0x80, ThreeFiveMiniUfloat(0)) }
+        var activeFilterEnvLoop = 0
+        var activeFilterEnvSustain = 0
+        var activeFadeoutStep = 0          // combined 12-bit fadeout (base byte 172-173 or patch x)
+        var activeDefaultCutoff = 0xFF
+        var activeDefaultResonance = 0xFF
+        // Filter interpretation mode (base byte 173 bit 4 / patch 'x' flag bit 0):
+        //   false (IT) : activeDefaultCutoff/Resonance + currentCutoff/Resonance are IT bytes
+        //                0..254 (255 = off); refreshVoiceFilter uses the IT cutoff/dmpfac maths.
+        //   true  (SF) : they are 16-bit — cutoff = SoundFont absolute cents, resonance =
+        //                centibels above DC gain (0xFFFF = off); refreshVoiceFilter uses the
+        //                SF maths (freq = 8.176·2^(cents/1200), dmpfac = 10^(−Qcb/200)).
+        var filterSfMode = false
+        // SF2 initialAttenuation as a linear amplitude multiplier (1.0 = unity), resolved from
+        // the active patch's 'x' block or the base instrument. Applied in the mixer alongside —
+        // and independently of — velocity / channel volume / instGlobalVolume.
+        var activeAttenGain = 1.0
+
         // NES 2A03 DMC counter for INTERP_NES_DPCM (interpolation mode 5).
         // 7-bit unsigned (0..127), slews ±2 per output sample as the sigma-delta
         // bitstream is generated on the fly. Seeded to mid-rail (63) on every
@@ -3830,9 +4233,10 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         // from 0 to reach a typical instrument's DC level.
         var nesDpcmCounter = 63
 
-        // Filter / cutoff state — drives the per-voice IT-compatible 2-pole resonant LPF.
-        // Convention: 255 = filter off (matches IT's high-bit-clear sentinel);
-        //             0..254 = active range mirroring IT 0..127 at double resolution.
+        // Filter / cutoff state — drives the per-voice 2-pole resonant LPF.
+        // IT mode: 255 = off, 0..254 = IT 0..127 at double resolution.
+        // SF mode (filterSfMode): cutoff = SoundFont absolute cents, resonance = centibels
+        //   above DC gain (0xFFFF = off). See [refreshVoiceFilter].
         var currentCutoff = 0xFF
         var currentResonance = 0xFF
         // IT 2-pole IIR-only state (updated per output sample) and cached coefficients
@@ -4192,6 +4596,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                     it.nnaOverride = -1
                     it.volEnvOn = true; it.panEnvOn = true; it.pfEnvOn = true
                     it.noteFading = false
+                    it.layerMixGain = 1.0; it.isLayerChild = false; it.layerRelDetune = 0
                     // "What's playing" state — must be cleared alongside the volume reset
                     // above, otherwise a voice can carry a stale instrumentId from a prior
                     // session into a freshly-reset volume slot. Concretely: end of session
@@ -4212,8 +4617,9 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                     it.envIndex = 0; it.envTimeSec = 0.0; it.envVolume = 1.0
                     it.envPanIndex = 0; it.envPanTimeSec = 0.0; it.envPan = 0.5
                     it.hasPanEnv = false
-                    it.envPfIndex = 0; it.envPfTimeSec = 0.0; it.envPfValue = 0.5
-                    it.hasPfEnv = false; it.envPfIsFilter = false
+                    it.envPitchIndex = 0; it.envPitchTimeSec = 0.0; it.envPitchValue = 0.5
+                    it.envFilterIndex = 0; it.envFilterTimeSec = 0.0; it.envFilterValue = 0.5
+                    it.hasPitchEnv = false; it.hasFilterEnv = false
                     it.fadeoutVolume = 1.0
                     it.rampOutSamples = 0; it.rampOutGain = 0.0; it.rampOutStep = 0.0
                     it.noteVal = 0x0000; it.basePitch = 0x4000
@@ -4310,9 +4716,11 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     /**
      * One Ixmp "extra sample" patch — overlays sample-scope state on a base instrument
      * for a (noteVal, rowVolume) rectangle. See terranmon.txt "Ixmp. Instrument extra
-     * samples" for the on-wire layout. Envelopes, fadeout, NNA / DCT / DCA, filter,
-     * pitch-pan, IGV and other instrument-scope fields stay on the base TaudInst —
-     * only the fields below override.
+     * samples" for the on-wire layout. Sample-scope fields always override; the optional
+     * v / p / f / P / x blocks (since 2026-06-13) additionally override the base
+     * instrument's volume / pan / filter / pitch envelopes and fadeout+cutoff+resonance.
+     * Any block left absent (null env / hasExtra == false) defers to the base TaudInst,
+     * along with NNA / DCT / DCA, pitch-pan, IGV and other instrument-scope fields.
      *
      * Sentinels: defaultPan == 0xFF, defaultNoteVolume == 0, vibratoWaveform == 0xFF
      * all mean "inherit the base instrument's value". samplingRate == 0 would silence
@@ -4337,10 +4745,48 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         val vibratoSweep: Int,
         val vibratoDepth: Int,
         val vibratoRate: Int,
-        val vibratoWaveform: Int          // 0..7; 0xFF = no override
+        val vibratoWaveform: Int,         // 0..7; 0xFF = no override
+        // Optional per-patch envelope/scalar overrides (null/false = defer to base inst).
+        // Each env carries its own LOOP and SUSTAIN words (same encoding as the base inst).
+        val volEnv: Array<TaudInstEnvPoint>? = null,   // 'v' block
+        val volEnvLoop: Int = 0,
+        val volEnvSustain: Int = 0,
+        val panEnv: Array<TaudInstEnvPoint>? = null,   // 'p' block
+        val panEnvLoop: Int = 0,
+        val panEnvSustain: Int = 0,
+        val filterEnv: Array<TaudInstEnvPoint>? = null,// 'f' block → drives cutoff
+        val filterEnvLoop: Int = 0,
+        val filterEnvSustain: Int = 0,
+        val pitchEnv: Array<TaudInstEnvPoint>? = null, // 'P' block → drives pitch
+        val pitchEnvLoop: Int = 0,
+        val pitchEnvSustain: Int = 0,
+        val hasExtra: Boolean = false,                 // 'x' block present
+        val fadeoutStep: Int = 0,                      // combined 12-bit fadeout
+        val filterSfMode: Boolean = false,             // 'x' flag bit 0: false = IT, true = SoundFont
+        val extraCutoff: Int = 0xFF,                   // default cutoff — IT byte (255=off) or 16-bit SF cents (0xFFFF=off)
+        val extraResonance: Int = 0xFF,                // default resonance — IT byte (255=off) or 16-bit SF centibels (0xFFFF=off)
+        val extraInitialAttenOctet: Int = 0            // 'x' block per-patch initialAttenuation (dB-table octet; 0 = unity sentinel)
     ) {
         val sampleLoopSustain: Boolean get() = (loopMode and 0x04) != 0
     }
+
+    /**
+     * One layer of a Metainstrument (terranmon.txt "Metainstrument definition").
+     * References a NORMAL instrument sounded simultaneously with the other layers,
+     * gated by its (pitch × volume) rectangle, pitch-shifted by [detune] (added to
+     * the trigger noteVal) and mixed at [mixOctet] (Perceptually-Significant-Octet
+     * dB; 159 = unity). The raw octet is kept; the engine converts it to a linear
+     * gain via [META_MIX_GAIN] at trigger time. */
+    data class MetaLayer(
+        val instIdx: Int,
+        val mixOctet: Int,
+        val detune: Int,            // signed 4096-TET
+        val pitchStart: Int,
+        val pitchEnd: Int,
+        val volStart: Int,
+        val volEnd: Int,
+    )
+
     /**
      * 256-byte instrument record (terranmon.txt:2001+).
      *
@@ -4433,7 +4879,13 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         var panEnvSustainWord: Int,         // bytes 191-192
         var pfEnvSustainWord: Int,          // bytes 193-194
         var dupCheckFlag: Int,              // byte 195 (relocated from 189)
-        var defaultNoteVolume: Int          // byte 196 — per-trigger rowVolume default
+        var defaultNoteVolume: Int,         // byte 196 — per-trigger rowVolume default
+        // 2nd pitch/filter envelope (bytes 197-250) — the mandatory complement of the
+        // byte 19.. pf-env (one pitch, one filter). Lets SF2's single modulation
+        // envelope drive both targets at once; IT/XM leave this absent (LOOP-word P=0).
+        var pf2EnvLoop: Int,                // bytes 197-198 (LOOP word, m-bit complements byte 19)
+        var pf2EnvSustainWord: Int,         // bytes 199-200
+        var pf2Envelopes: Array<TaudInstEnvPoint>  // bytes 201-250
     ) {
         constructor(index: Int) : this(
             index, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF,
@@ -4442,12 +4894,20 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             Array(25) { TaudInstEnvPoint(0x80, ThreeFiveMiniUfloat(0)) },
             0, 0, 0, 0, 0, 0x80, 0x5000, 0, 0, 0xFF, 0,
             0, 0, 0, 0, 0, 0, 0, 0,
-            0
+            0,
+            0, 0,
+            Array(25) { TaudInstEnvPoint(0x80, ThreeFiveMiniUfloat(0)) }
         )
 
         /** Sample-flag byte 14 bit 2 — when set, the sample loop is a sustain loop:
          *  it loops while the note is held and is escaped on key-off. */
         val sampleLoopSustain: Boolean get() = (loopMode and 0x04) != 0
+        /** Key Lift — instrumentFlag bit 5 (terranmon byte 186, NNA pattern 0b100).
+         *  MIDI-exact key release: on key-off the volume-envelope playhead jumps
+         *  straight to the sustain-end node so the post-sustain (release) nodes
+         *  play immediately, instead of IT's walk through the remaining
+         *  hold/decay nodes first. See [applyKeyLift]. */
+        val nnaKeyLift: Boolean get() = (instrumentFlag ushr 5) and 1 != 0
         /** New note action — instrumentFlag bits 0-1.
          *  0=note off, 1=note cut, 2=continue, 3=note fade. */
         val newNoteAction: Int get() = instrumentFlag and 0x03
@@ -4461,9 +4921,22 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         /** Duplicate Check Action — 0=note cut, 1=note off, 2=note fade. */
         val duplicateCheckAction: Int get() = (dupCheckFlag ushr 2) and 0x03
 
-        // Reserved padding at offsets 197..255 (59 bytes per instrument).
-        // Byte 196 is the new "default note volume" field — see triggerNote.
-        private val reserved = ByteArray(59)
+        /** Filter interpretation mode — byte 173 bit 4 (`0b 000m_ffff`). false = ImpulseTracker
+         *  (8-bit cutoff/resonance in bytes 182/183), true = SoundFont (16-bit: cutoff cents in
+         *  byte 182<<8|252, resonance centibels in byte 183<<8|253). See [refreshVoiceFilter]. */
+        val filterSfMode: Boolean get() = (fadeoutHigh ushr 4) and 1 != 0
+        /** Default cutoff resolved for the active filter mode: 8-bit IT byte, or the 16-bit
+         *  SF absolute-cents value (high byte 182, low byte 252). */
+        val defaultCutoff16: Int get() =
+            if (filterSfMode) ((defaultCutoff and 0xFF) shl 8) or (reserved[1].toInt() and 0xFF) else defaultCutoff
+        /** Default resonance resolved for the active filter mode: 8-bit IT byte, or the 16-bit
+         *  SF centibel value (high byte 183, low byte 253). */
+        val defaultResonance16: Int get() =
+            if (filterSfMode) ((defaultResonance and 0xFF) shl 8) or (reserved[2].toInt() and 0xFF) else defaultResonance
+
+        // Reserved padding at offsets 251..255 (5 bytes per instrument). Bytes
+        // 197..250 are now the 2nd pf-envelope (pf2EnvLoop/pf2EnvSustainWord/pf2Envelopes).
+        private val reserved = ByteArray(5)
 
         // Optional Ixmp "extra sample" patches — non-null when an Ixmp block was uploaded
         // for this instrument. Patches are scanned in order at trigger time; first hit on
@@ -4479,6 +4952,68 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                     rowVolume in p.volumeStart..p.volumeEnd) return p
             }
             return null
+        }
+
+        // ── Metainstrument (terranmon.txt "Metainstrument definition") ──
+        // Non-null when this slot's u32 sample pointer has its high 16 bits == 0xFFFF.
+        // The instrument then carries NO sample of its own; a trigger fans out into one
+        // voice per matching layer. metaRaw retains the verbatim 256-byte record so
+        // [getByte]/capture round-trips losslessly (parsing octet→gain is one-way).
+        var metaLayers: Array<MetaLayer>? = null
+        var metaRaw: IntArray? = null
+        val isMeta: Boolean get() = metaLayers != null
+
+        // initialAttenuation — a static per-instrument gain as a "Perceptually Significant
+        // Octet to Decibel Table" octet (byte 251; 159 = unity, 111 = −6 dB; same table as the
+        // Metainstrument layer mix). 0 = unity (unset sentinel) so legacy files (byte 251 was
+        // reserved/zero) are unaffected. Applied as a velocity-INDEPENDENT amplitude multiplier
+        // in the mixer, NOT folded into the volume envelope (so the envelope keeps full 0..63
+        // resolution). The per-patch 'x' block carries its own override. See [attenGainOf].
+        var initialAttenOctet: Int = 0
+
+        /** All layers whose (pitch × volume) rectangle contains the trigger, in record
+         *  order. Empty when none match (the trigger then sounds nothing). */
+        fun resolveMetaLayers(noteVal: Int, rowVolume: Int): List<MetaLayer> {
+            val layers = metaLayers ?: return emptyList()
+            return layers.filter {
+                noteVal in it.pitchStart..it.pitchEnd && rowVolume in it.volStart..it.volEnd
+            }
+        }
+
+        /** Load a full 256-byte instrument record. Detects the Metainstrument sentinel
+         *  (u32 sample-pointer high 16 bits == 0xFFFF) and parses its layer table;
+         *  otherwise falls back to the per-byte [setByte] field assignment. */
+        fun loadRecord(b: IntArray) {
+            val sp = (b[0] and 0xFF) or ((b[1] and 0xFF) shl 8) or
+                     ((b[2] and 0xFF) shl 16) or ((b[3] and 0xFF) shl 24)
+            if ((sp ushr 16) and 0xFFFF == 0xFFFF) {
+                val count = (sp ushr 8) and 0xFF                     // byte 1 = layer count
+                val layers = ArrayList<MetaLayer>(count)
+                var o = 4
+                repeat(count) {
+                    if (o + 10 > b.size) return@repeat
+                    val instIdx = b[o] and 0xFF
+                    val mixOctet = b[o + 1] and 0xFF
+                    val detRaw = (b[o + 2] and 0xFF) or ((b[o + 3] and 0xFF) shl 8)
+                    val detune = if (detRaw >= 0x8000) detRaw - 0x10000 else detRaw
+                    val pStart = (b[o + 4] and 0xFF) or ((b[o + 5] and 0xFF) shl 8)
+                    val pEnd   = (b[o + 6] and 0xFF) or ((b[o + 7] and 0xFF) shl 8)
+                    val vStart = b[o + 8] and 0xFF
+                    val vEnd   = b[o + 9] and 0xFF
+                    // Skip self-/zero-/out-of-range references; no recursion into metas
+                    // is validated here (the trigger path also guards).
+                    if (instIdx in 1..255 && instIdx != index)
+                        layers.add(MetaLayer(instIdx, mixOctet, detune, pStart, pEnd, vStart, vEnd))
+                    o += 10
+                }
+                metaLayers = if (layers.isEmpty()) null else layers.toTypedArray()
+                metaRaw = if (metaLayers != null) b.copyOf(256) else null
+                extraPatches = null
+            } else {
+                metaLayers = null
+                metaRaw = null
+                for (i in 0 until minOf(256, b.size)) setByte(i, b[i] and 0xFF)
+            }
         }
 
         // Funk repeat (S$Fx00) bit-mask — non-destructive XOR overlay across the loop region.
@@ -4523,6 +5058,13 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         }
 
         fun getByte(offset: Int): Byte = when (offset) {
+            // Metainstrument records play back verbatim from the stored raw bytes so
+            // capture (captureSampleInstBlob) round-trips them losslessly.
+            in 0..255 -> metaRaw?.let { return (it[offset] and 0xFF).toByte() } ?: getByteNormal(offset)
+            else -> throw InternalError("Bad offset $offset")
+        }
+
+        private fun getByteNormal(offset: Int): Byte = when (offset) {
             0 -> samplePtr.toByte()
             1 -> samplePtr.ushr(8).toByte()
             2 -> samplePtr.ushr(16).toByte()
@@ -4581,7 +5123,13 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             194 -> pfEnvSustainWord.ushr(8).toByte()
             195 -> dupCheckFlag.toByte()
             196 -> defaultNoteVolume.toByte()
-            in 197..255 -> reserved[offset - 197]
+            197 -> pf2EnvLoop.toByte()
+            198 -> pf2EnvLoop.ushr(8).toByte()
+            199 -> pf2EnvSustainWord.toByte()
+            200 -> pf2EnvSustainWord.ushr(8).toByte()
+            in 201..250 -> envPointGet(pf2Envelopes, 201, offset)
+            251 -> initialAttenOctet.toByte()
+            in 252..255 -> reserved[offset - 251]
             else -> throw InternalError("Bad offset $offset")
         }
 
@@ -4620,7 +5168,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
             171 -> { instGlobalVolume = byte and 0xFF }
             172 -> { volumeFadeoutLow = byte and 0xFF }
-            173 -> { fadeoutHigh = byte and 0x0F }
+            173 -> { fadeoutHigh = byte and 0x1F }   // bits 0-3 = fadeout high, bit 4 = SF filter mode
             174 -> { volumeSwing = byte and 0xFF }
             175 -> { vibratoSpeed = byte and 0xFF }
             176 -> { vibratoSweep = byte and 0xFF }
@@ -4644,7 +5192,13 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             194 -> { pfEnvSustainWord = (pfEnvSustainWord and 0x00ff) or (byte shl 8) }
             195 -> { dupCheckFlag = byte and 0x0F }
             196 -> { defaultNoteVolume = byte and 0xFF }
-            in 197..255 -> { reserved[offset - 197] = byte.toByte() }
+            197 -> { pf2EnvLoop = (pf2EnvLoop and 0xff00) or byte }
+            198 -> { pf2EnvLoop = (pf2EnvLoop and 0x00ff) or (byte shl 8) }
+            199 -> { pf2EnvSustainWord = (pf2EnvSustainWord and 0xff00) or byte }
+            200 -> { pf2EnvSustainWord = (pf2EnvSustainWord and 0x00ff) or (byte shl 8) }
+            in 201..250 -> envPointSet(pf2Envelopes, 201, offset, byte)
+            251 -> { initialAttenOctet = byte and 0xFF }
+            in 252..255 -> { reserved[offset - 251] = byte.toByte() }
             else -> throw InternalError("Bad offset $offset")
         }
     }

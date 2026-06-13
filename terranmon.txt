@@ -2170,9 +2170,11 @@ from source.
           beyond it; multiply by (255/64) and round. The XM samplewise
           volume goes into byte 196.
 172 Uint8  Volume Fadeout low bits
-173 Bit8   Volume Fadeout high bits
-        0b 0000 ffff
+173 Bit8   Volume Fadeout high bits & Filter interpretation mode
+        0b 000m ffff
             f: Volume Fadeout high bits (low nibble of byte 173; high nibble reserved, must be zero)
+            m-unset: Default Cutoff (offset 182) and Default Resonance (offset 183) works like ImpulseTracker
+            m-set: Default Cutoff (offset 182 << 8 | offset 252) and Default Resonance (offset 183 << 8 | offset 253) works like SoundFont (absolute cents for Fc, height above DC gain in centibels for Q)
         * Combined 12-bit unsigned value (range 0..4095). The engine maintains
           a per-voice fadeoutVolume ∈ [0, 1] initialised to 1.0 on note-on, and
           while the voice is in key-off or NNA Note-Fade state applies once per
@@ -2346,7 +2348,15 @@ from source.
 201 Bit16x25 Filter/Pitch envelopes ; if offset 19 specified 'Pitch', this field is automatically 'filter', and vice-versa
       Byte 1: Value (00..FF)
       Byte 2: Time until the next point, in seconds (3.5 Unsigned Minifloat, biased; range 0..15.75 s, smallest non-zero step 1/256 s ≈ 3.91 ms — chosen so single tracker ticks resolve at every supported BPM). 0 = hold at this point indefinitely.
-251..255 Reserved (5 bytes free for future per-instrument fields)
+251 Uint8  initialAttenuation ; static per-instrument gain as a "Perceptually Significant Octet
+        to Decibel Table" octet (octet 159 = 0 dB / unity; −6 dB = octet 111), same table as the
+        Metainstrument layer mix volume. **0 = unity (the unset sentinel)** so legacy files
+        (these bytes were reserved/zero) are unaffected. Applied by the mixer as a
+        velocity-INDEPENDENT amplitude multiplier; NOT folded into the volume envelope, so the
+        envelope keeps full 0..63 resolution. A per-patch Ixmp 'x' block carries its own override.
+252 Uint8  Default Cutoff low bits (SoundFont mode; see offset 73)
+253 Uint8  Default Resonance low bits (SoundFont mode; see offset 73)
+254..255 Reserved (2 bytes free for future per-instrument fields)
 
 ### Metainstrument definition
 
@@ -2369,7 +2379,7 @@ instrument record). Layer records begin at byte 4.
     Uint8  Mix volume according to "Perceptually Significant Octet to Decibel Table" (octet 159 = 0 dB / unity)
     Sint16 Sample detune (in 4096-TET unit)
     Uint16 Pitch start                 ; note-range low,  4096-TET noteVal (same scale as pattern-cell note); full range = 0x0000
-    Uint16 Pitch end (inclusive)       ; note-range high;                                                     full range = 0xFFFF
+    Uint16 Pitch end (inclusive)       ; note-range high; full range = 0xFFFF
     Uint8  Volume start                ; velocity/volume-range low,  0..0x3F; full range = 0x00
     Uint8  Volume end (inclusive)      ; velocity/volume-range high, 0..0x3F; full range = 0x3F
 
@@ -2766,7 +2776,30 @@ TODO:
         For UI concerns, taut_instredit.js will take care of it (aka problem for later)
     [x] .sf2 import module (for generic use, including "Import instrument from soundfont" and midi2taud conversion)
         [x] Midi2Taud using .mid and .sf2 as input, trim unused samples and Ixmp patches
-        [ ] auto-set optimal-ish Tickspeed and RPB by MIDI analysis?
+        [ ] .sf2 specific resample handling
+            1. If length exceeds 65535 samples, calculate resampling.
+            2. If calculated resampling >= 32000, use that.
+            3. If not, resample at 32000. If there is no loop defined, then loop the last 8192 samples (converter SHOULD NOT take that number at face value; perform waveform analysis to derive a smoother loop; converter MAY use that number as a starting number) and modify the fade value such that it decays to zero after 10 or so seconds of firing.
+        [ ] Faithful .sf2 "release segment": Set NNA to 'Note Fade' (incl. drumkits), and make sure Volume Fadeout to have a correct number derived from the SF2 timecent unit (it seems SF2 defines envelope floor as 100 dB; needs check)
+        [ ] auto-set optimal-ish Tickspeed and RPB using MIDI Time Signature events and note analysis. Break pattern when Time Signature changes.
+
+            Time Signature
+
+            FF 58 04 nn dd cc bb
+
+            Time signature is expressed as 4 numbers. nn and dd represent the "numerator" and "denominator" of the signature as notated on sheet music. The denominator is a negative power of 2: 2 = quarter note, 3 = eighth, etc.
+
+            The cc expresses the number of MIDI clocks in a metronome click.
+
+            The bb parameter expresses the number of notated 32nd notes in a MIDI quarter note (24 MIDI clocks). This event allows a program to relate what MIDI thinks of as a quarter, to something entirely different.
+
+            For example, 6/8 time with a metronome click every 3 eighth notes and 24 clocks per quarter note would be the following event:
+
+            FF 58 04 06 03 18 08
+
+            NOTE: If there are no time signature events in a MIDI file, then the time signature is assumed to be 4/4.
+
+            In a format 0 file, the time signatures changes are scattered throughout the one MTrk. In format 1, the very first MTrk should consist of only the time signature (and tempo) events so that it could be read by some device capable of generating a "tempo map". It is best not to place MIDI events in this MTrk. In format 2, each MTrk should begin with at least one initial time signature (and tempo) event.
 
 TODO - list of demo songs that MUST ship with Microtone:
     * 4THSYM (rename to Fourth Symmetriad) — excellent piece for demonstrating NNAs and filter envelopes
@@ -3164,11 +3197,15 @@ prefixes:
         Uint8  vibratoRate                 ; per-sample auto-vibrato (mirrors base inst byte 188)
         Uint8  vibratoWaveform             ; bits 0-2 only (mirrors instrumentFlag bits 2-4); 0xFF = "no override"
         * Patch definition flag 'x'
-        Bit32  Extra feature flags 1..32 (reserved; keep it as all-unset)
+        Bit32  Extra feature flags 1..32
+            0b 0000 000m ; 0b 0000 0000 ; 0b 0000 0000 ; 0b 0000 0000
+                m-unset: filter params (Fc and Q) works like ImpulseTracker
+                m-set: filter params (Fc and Q) works like SoundFont
         Bit32  Extra feature flags 33..64 (reserved; keep it as all-unset)
         Uint16 Volume Fadeout    ; same encoding as identical base instrument byte 172-173
-        Uint8  Default cutoff     ; identical to base instrument byte 182
-        Uint8  Default resonance  ; identical to base instrument byte 183
+        Uint16 Default cutoff     ; identical to base instrument byte 182 and 252
+        Uint16 Default resonance  ; identical to base instrument byte 183 and 253
+        Uint8  SF2 Initial Attenuation according to "Perceptually Significant Octet to Decibel Table" (octet 159 = 0 dB, attenuation by 6 dB = octet 111). 0 = unity (unset sentinel). Overrides the base record's byte-251 attenuation for this patch; applied as a velocity-independent gain, NOT folded into the envelope.
         * Patch definition flag 'v'
         Bit16  Volume envelope LOOP word    ; identical to base instrument byte 15..16
         Bit16  Volume envelope SUSTAIN word ; identical to base instrument byte 189..190

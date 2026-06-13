@@ -169,7 +169,14 @@ function uploadTaudFile(inFile, songIndex, playhead) {
             if ((sys.peek(filePtr + projOff + i) & 0xFF) !== projMagic[i]) { prjOk = false; break }
         }
         if (prjOk) {
-            const PATCH_SIZE = 31
+            // Patches are VARIABLE LENGTH (since 2026-06-13): a version byte (feature
+            // bit-flags 0b x00Pfpvi) + 30 common bytes, then optional x/v/p/f/P blocks.
+            const patchLen = (ver) => 31
+                + ((ver & 0x80) ? 15 : 0)   // x: extra-base-info (u32 flags1 + u32 flags2 + u16 fadeout + u16 cutoff + u16 reson + u8 initialAttenuation octet)
+                + ((ver & 0x02) ? 54 : 0)   // v: volume envelope
+                + ((ver & 0x04) ? 54 : 0)   // p: panning envelope
+                + ((ver & 0x08) ? 54 : 0)   // f: filter envelope
+                + ((ver & 0x10) ? 54 : 0)   // P: pitch envelope
             let p = projOff + 16  // skip magic(8) + reserved(8)
             while (p + 8 <= fileSize) {
                 const fc = String.fromCharCode(
@@ -179,7 +186,7 @@ function uploadTaudFile(inFile, songIndex, playhead) {
                 const payload = p + 8
                 if (payload + secLen > fileSize) break
                 if (fc === 'Ixmp') {
-                    // Each entry: Uint8 instId + Uint24 patchCount + (patchCount × PATCH_SIZE) bytes.
+                    // Each entry: Uint8 instId + Uint24 patchCount + variable-length patches.
                     let q = payload
                     const qEnd = payload + secLen
                     while (q + 4 <= qEnd) {
@@ -188,8 +195,15 @@ function uploadTaudFile(inFile, songIndex, playhead) {
                         const cntMid   = sys.peek(filePtr + q) & 0xFF; q++
                         const cntHi    = sys.peek(filePtr + q) & 0xFF; q++
                         const patchCnt = cntLo | (cntMid << 8) | (cntHi << 16)
-                        const blobLen  = patchCnt * PATCH_SIZE
-                        if (q + blobLen > qEnd) break
+                        // Walk the patches to find the blob length (each depends on its version byte).
+                        let blobLen = 0, scan = q, ok = true
+                        for (let i = 0; i < patchCnt; i++) {
+                            if (scan + 31 > qEnd) { ok = false; break }
+                            const len = patchLen(sys.peek(filePtr + scan) & 0xFF)
+                            if (scan + len > qEnd) { ok = false; break }
+                            scan += len; blobLen += len
+                        }
+                        if (!ok) break
                         let buf = new Array(blobLen)
                         for (let k = 0; k < blobLen; k++) buf[k] = sys.peek(filePtr + q + k) & 0xFF
                         audio.uploadInstrumentPatches(instId, buf)
@@ -291,6 +305,35 @@ function captureTrackerDataToFile(outFile) {
     // Layout: header(32) + compressed(compressedSize) + songTable(1 × TAUD_SONG_ENTRY)
     let songOffset = TAUD_HEADER_SIZE + compressedSize + 1 * TAUD_SONG_ENTRY
 
+    // -- 6.5 Build Ixmp project-data block (preserves multi-sample instruments)
+    // Without this, saving a song whose instruments carry Ixmp patches (IT/XM
+    // keyboard tables, SF2 imports) would silently collapse every instrument to
+    // its base sample on the next load. Section format per terranmon.txt
+    // §"Project Data" / §"Ixmp": magic(8) + reserved(8) + FourCC + Uint32 len +
+    // repetition of { Uint8 instId, Uint24 count, count × variable-length patches }.
+    let ixmpPayload = []
+    for (let s = 0; s < 256; s++) {
+        const cnt = audio.getInstrumentPatchCount(s)
+        if (cnt <= 0) continue
+        const blob = audio.getInstrumentPatches(s)   // flat variable-length patch bytes
+        ixmpPayload.push(s & 0xFF, cnt & 0xFF, (cnt >>> 8) & 0xFF, (cnt >>> 16) & 0xFF)
+        for (let k = 0; k < blob.length; k++) ixmpPayload.push(blob[k] & 0xFF)
+    }
+    let projData = []
+    let projOff  = 0
+    if (ixmpPayload.length > 0) {
+        projData = [
+            0x1E, 0x54, 0x61, 0x75, 0x64, 0x50, 0x72, 0x4A,   // \x1ETaudPrJ
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,   // reserved
+            0x49, 0x78, 0x6D, 0x70,                            // 'Ixmp'
+            (ixmpPayload.length        ) & 0xFF,
+            (ixmpPayload.length >>>  8) & 0xFF,
+            (ixmpPayload.length >>> 16) & 0xFF,
+            (ixmpPayload.length >>> 24) & 0xFF,
+        ].concat(ixmpPayload)
+        projOff = songOffset + patCompSize + cueCompSize
+    }
+
     // -- 7. Build header byte array (32 bytes) --------------------------------
     let sigBytes = new Array(14)
     for (let i = 0; i < 14; i++)
@@ -306,8 +349,11 @@ function captureTrackerDataToFile(outFile) {
         (compressedSize >>>  8) & 0xFF,
         (compressedSize >>> 16) & 0xFF,
         (compressedSize >>> 24) & 0xFF,
-        // project data offset (4) -- not emitted
-        0x00, 0x00, 0x00, 0x00,
+        // project data offset (4) -- zero when no Ixmp/etc. to carry
+        (projOff        ) & 0xFF,
+        (projOff >>>  8) & 0xFF,
+        (projOff >>> 16) & 0xFF,
+        (projOff >>> 24) & 0xFF,
     ].concat(sigBytes)  // 8 + 2 + 4 + 4 + 14 = 32 bytes
 
     // -- 8. Build song-table row (32 bytes) -----------------------------------
@@ -360,6 +406,13 @@ function captureTrackerDataToFile(outFile) {
         TAUD_HEADER_SIZE + compressedSize + songTable.length + patCompSize)
     sys.free(cueCompBuf)
 
+    // -- 14. Append project data (Ixmp) at projOff ----------------------------
+    if (projData.length > 0) {
+        let projBuf = sys.malloc(projData.length)
+        for (let k = 0; k < projData.length; k++) sys.poke(projBuf + k, projData[k])
+        fileHandle.pwrite(projBuf, projData.length, projOff)
+        sys.free(projBuf)
+    }
 
     fileHandle.flush(); fileHandle.close()
 }

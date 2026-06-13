@@ -243,17 +243,17 @@ class AudioJSR223Delegate(private val vm: VM) {
         return v.envPanTimeSec
     }
 
-    /** Pitch/filter-envelope segment index — see [getVoiceEnvVolIndex]. */
+    /** Pitch-envelope segment index — see [getVoiceEnvVolIndex]. */
     fun getVoiceEnvPitchIndex(playhead: Int, voice: Int): Int {
         val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19)) ?: return -1
         if (!v.active) return -1
-        return v.envPfIndex
+        return v.envPitchIndex
     }
-    /** Seconds elapsed into the current pitch/filter-envelope segment. */
+    /** Seconds elapsed into the current pitch-envelope segment. */
     fun getVoiceEnvPitchTime(playhead: Int, voice: Int): Double {
         val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19)) ?: return 0.0
         if (!v.active) return 0.0
-        return v.envPfTimeSec
+        return v.envPitchTimeSec
     }
 
     /** Set the starting row for the next play call, resetting per-row timing and silencing active voices. */
@@ -269,26 +269,26 @@ class AudioJSR223Delegate(private val vm: VM) {
         }
     }
 
-    /** Upload up to 192 bytes defining instrument `slot` (0-255). */
+    /** Upload up to 256 bytes defining instrument `slot` (0-255). (The record was
+     *  widened from 192 to 256 bytes on 2026-05-06; the old cap silently dropped
+     *  the pan/pf SUSTAIN-word tails, DCT/DCA and the Default Note Volume byte.) */
     fun uploadInstrument(slot: Int, bytes: IntArray) {
         getFirstSnd()?.instruments?.get(slot and 0xFF)?.let { inst ->
-            for (i in 0 until minOf(192, bytes.size)) inst.setByte(i, bytes[i] and 0xFF)
+            val rec = IntArray(256)
+            for (i in 0 until minOf(256, bytes.size)) rec[i] = bytes[i] and 0xFF
+            inst.loadRecord(rec)   // detects the Metainstrument sentinel; else per-byte fields
         }
     }
 
-    /** Upload an Ixmp "extra samples" block for instrument [slot] (0-255). The payload is
-     *  a flat byte array of `count × 31` patch records — see terranmon.txt "Ixmp. Instrument
-     *  extra samples" for the on-wire field layout. Passing an empty array clears any
-     *  previously-installed patches on this instrument. */
+    /** Upload an Ixmp "extra samples" block for instrument [slot] (0-255). Patches are
+     *  VARIABLE LENGTH (since 2026-06-13): each begins with a version byte (feature
+     *  bit-flags 0b x00Pfpvi) + 30 common bytes, optionally followed by the x/v/p/f/P
+     *  blocks in that order — see terranmon.txt "Ixmp. Instrument extra samples". A
+     *  version byte with only the 'i' bit set is the legacy 31-byte record. Passing an
+     *  empty array clears any previously-installed patches on this instrument. */
     fun uploadInstrumentPatches(slot: Int, bytes: IntArray) {
         val inst = getFirstSnd()?.instruments?.get(slot and 0xFF) ?: return
-        val recordSize = 31
-        if (bytes.isEmpty() || bytes.size < recordSize) {
-            inst.extraPatches = null
-            return
-        }
-        val count = bytes.size / recordSize
-        if (count == 0) { inst.extraPatches = null; return }
+        if (bytes.size < 31) { inst.extraPatches = null; return }
         fun u8 (o: Int) = bytes[o] and 0xFF
         fun u16(o: Int) = (bytes[o] and 0xFF) or ((bytes[o + 1] and 0xFF) shl 8)
         fun s16(o: Int): Int { val v = u16(o); return if (v >= 0x8000) v - 0x10000 else v }
@@ -296,11 +296,39 @@ class AudioJSR223Delegate(private val vm: VM) {
                           ((bytes[o + 1] and 0xFF) shl 8) or
                           ((bytes[o + 2] and 0xFF) shl 16) or
                           ((bytes[o + 3] and 0xFF) shl 24)
-        val patches = Array(count) { i ->
-            val o = i * recordSize
-            // Patch version byte at offset 0 is parsed but only version 1 is recognised;
-            // a future version bump would gate alternate field layouts here.
-            AudioAdapter.TaudInstPatch(
+        val patches = ArrayList<AudioAdapter.TaudInstPatch>()
+        var o = 0
+        while (o + 31 <= bytes.size) {
+            val ver = u8(o)
+            var p = o + 31                       // version byte + 30 common bytes
+            // Optional blocks, walked in the canonical on-wire order x, v, p, f, P.
+            var hasExtra = false; var fadeoutStep = 0; var extraCutoff = 0xFF; var extraResonance = 0xFF
+            var extraAttenOctet = 0; var filterSfMode = false
+            if (ver and 0x80 != 0) {             // 'x' block (15 bytes): u32 flags1 + u32 flags2 + u16 fadeout + u16 cutoff + u16 reson + u8 initialAttenuation octet
+                if (p + 15 > bytes.size) break
+                filterSfMode = (u8(p) and 0x01) != 0           // flags1 bit 0: 0 = IT filter, 1 = SoundFont
+                fadeoutStep = u16(p + 8); extraCutoff = u16(p + 10); extraResonance = u16(p + 12)
+                extraAttenOctet = u8(p + 14)
+                hasExtra = true; p += 15
+            }
+            fun readEnv(): Triple<Array<AudioAdapter.TaudInstEnvPoint>, Int, Int>? {
+                if (p + 54 > bytes.size) return null
+                val loop = u16(p); val sus = u16(p + 2)
+                val arr = Array(25) { k ->
+                    AudioAdapter.TaudInstEnvPoint(u8(p + 4 + 2 * k), ThreeFiveMiniUfloat(u8(p + 5 + 2 * k)))
+                }
+                p += 54
+                return Triple(arr, loop, sus)
+            }
+            var volEnv: Array<AudioAdapter.TaudInstEnvPoint>? = null; var volLoop = 0; var volSus = 0
+            var panEnv: Array<AudioAdapter.TaudInstEnvPoint>? = null; var panLoop = 0; var panSus = 0
+            var filEnv: Array<AudioAdapter.TaudInstEnvPoint>? = null; var filLoop = 0; var filSus = 0
+            var pitEnv: Array<AudioAdapter.TaudInstEnvPoint>? = null; var pitLoop = 0; var pitSus = 0
+            if (ver and 0x02 != 0) { val e = readEnv() ?: break; volEnv = e.first; volLoop = e.second; volSus = e.third }
+            if (ver and 0x04 != 0) { val e = readEnv() ?: break; panEnv = e.first; panLoop = e.second; panSus = e.third }
+            if (ver and 0x08 != 0) { val e = readEnv() ?: break; filEnv = e.first; filLoop = e.second; filSus = e.third }
+            if (ver and 0x10 != 0) { val e = readEnv() ?: break; pitEnv = e.first; pitLoop = e.second; pitSus = e.third }
+            patches.add(AudioAdapter.TaudInstPatch(
                 pitchStart        = u16(o + 1),
                 pitchEnd          = u16(o + 3),
                 volumeStart       = u8 (o + 5),
@@ -319,15 +347,64 @@ class AudioJSR223Delegate(private val vm: VM) {
                 vibratoSweep      = u8 (o + 27),
                 vibratoDepth      = u8 (o + 28),
                 vibratoRate       = u8 (o + 29),
-                vibratoWaveform   = u8 (o + 30)
-            )
+                vibratoWaveform   = u8 (o + 30),
+                volEnv = volEnv, volEnvLoop = volLoop, volEnvSustain = volSus,
+                panEnv = panEnv, panEnvLoop = panLoop, panEnvSustain = panSus,
+                filterEnv = filEnv, filterEnvLoop = filLoop, filterEnvSustain = filSus,
+                pitchEnv = pitEnv, pitchEnvLoop = pitLoop, pitchEnvSustain = pitSus,
+                hasExtra = hasExtra, fadeoutStep = fadeoutStep, filterSfMode = filterSfMode,
+                extraCutoff = extraCutoff, extraResonance = extraResonance,
+                extraInitialAttenOctet = extraAttenOctet
+            ))
+            o = p
         }
-        inst.extraPatches = patches
+        inst.extraPatches = if (patches.isEmpty()) null else patches.toTypedArray()
     }
 
     /** Number of Ixmp patches currently installed on instrument [slot], or 0 if none. */
     fun getInstrumentPatchCount(slot: Int): Int =
         getFirstSnd()?.instruments?.get(slot and 0xFF)?.extraPatches?.size ?: 0
+
+    /** Read back instrument [slot]'s Ixmp patches as a flat variable-length byte array in
+     *  the upload wire format (exact inverse of [uploadInstrumentPatches]) so capture
+     *  code can re-emit the Ixmp project-data section. Empty array when none. */
+    fun getInstrumentPatches(slot: Int): IntArray {
+        val patches = getFirstSnd()?.instruments?.get(slot and 0xFF)?.extraPatches
+            ?: return IntArray(0)
+        val out = ArrayList<Int>(patches.size * 31)
+        fun w8(v: Int)  { out.add(v and 0xFF) }
+        fun w16(v: Int) { out.add(v and 0xFF); out.add((v ushr 8) and 0xFF) }
+        fun w32(v: Int) { w16(v); w16(v ushr 16) }
+        fun wEnv(env: Array<AudioAdapter.TaudInstEnvPoint>, loop: Int, sus: Int) {
+            w16(loop); w16(sus)
+            for (k in 0 until 25) { w8(env[k].value); w8(env[k].offset.index) }
+        }
+        patches.forEach { p ->
+            // Reconstruct the version byte from which optional blocks are present.
+            var ver = 0x01
+            if (p.hasExtra)         ver = ver or 0x80
+            if (p.volEnv != null)   ver = ver or 0x02
+            if (p.panEnv != null)   ver = ver or 0x04
+            if (p.filterEnv != null) ver = ver or 0x08
+            if (p.pitchEnv != null) ver = ver or 0x10
+            w8(ver)
+            w16(p.pitchStart); w16(p.pitchEnd)
+            w8(p.volumeStart); w8(p.volumeEnd)
+            w32(p.samplePtr)
+            w16(p.sampleLength); w16(p.playStart); w16(p.loopStart); w16(p.loopEnd)
+            w16(p.samplingRate); w16(p.sampleDetune)     // two's complement round-trips
+            w8(p.loopMode); w8(p.defaultPan); w8(p.defaultNoteVolume)
+            w8(p.vibratoSpeed); w8(p.vibratoSweep); w8(p.vibratoDepth)
+            w8(p.vibratoRate); w8(p.vibratoWaveform)
+            // Blocks in the canonical on-wire order x, v, p, f, P.
+            if (p.hasExtra) { w32(if (p.filterSfMode) 1 else 0); w32(0); w16(p.fadeoutStep); w16(p.extraCutoff); w16(p.extraResonance); w8(p.extraInitialAttenOctet) }
+            p.volEnv?.let    { wEnv(it, p.volEnvLoop, p.volEnvSustain) }
+            p.panEnv?.let    { wEnv(it, p.panEnvLoop, p.panEnvSustain) }
+            p.filterEnv?.let { wEnv(it, p.filterEnvLoop, p.filterEnvSustain) }
+            p.pitchEnv?.let  { wEnv(it, p.pitchEnvLoop, p.pitchEnvSustain) }
+        }
+        return out.toIntArray()
+    }
 
     /** Clear any Ixmp patches previously uploaded to instrument [slot]. */
     fun clearInstrumentPatches(slot: Int) {
@@ -430,9 +507,17 @@ class AudioJSR223Delegate(private val vm: VM) {
             null, snd.sampleBin.ptr,
             sampleSize.toLong()
         )
-        for (i in 0 until instSize) {
-            snd.instruments[i / 256].setByte(i % 256, bytes[sampleSize + i].toInt() and 0xFF)
+        val rec = IntArray(256)
+        for (instIdx in 0 until (instSize / 256)) {
+            val base = sampleSize + instIdx * 256
+            for (k in 0 until 256) rec[k] = bytes[base + k].toInt() and 0xFF
+            snd.instruments[instIdx].loadRecord(rec)   // meta-aware
         }
+        // The blob replaces the entire sample+instrument image, so any Ixmp patches
+        // installed for the previous song are now stale (they point into the old
+        // sample pool). Drop them all; the loader re-uploads the new song's Ixmp
+        // section (if any) after this call.
+        snd.instruments.forEach { it.extraPatches = null }
         return bytes.size
     }
 
