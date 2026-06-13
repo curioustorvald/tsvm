@@ -4286,7 +4286,7 @@ function drawNumCapsule(y, x, digits, numStr) {
 // Emit a small-slider row: label, editable raw-number capsule, annotation, knob.
 // `ann(val)` returns the short annotation (or null); `encode(val)` returns the
 // byte pairs to poke on commit.
-function sliderRow(y, e, label, val0, min, max, ann, encode) {
+function sliderRow(y, e, label, val0, min, max, ann, encode, reupload) {
     const sx = SLIDER_SMALL_SX, tw = SLIDER_TW_SMALL
     const digits = Math.max(String(min).length, String(max).length)
     const nx = SLIDER_NUM_X, nw = digits + 2
@@ -4307,7 +4307,22 @@ function sliderRow(y, e, label, val0, min, max, ann, encode) {
         y, sx, tw, troughLeftPx: sx * CELL_PW, min, max, render,
         numY: y, numX: nx, numW: nw, ndig: digits,   // raw-number capsule geometry
         val: val0,                                    // base for wheel ±1 / edit prefill (clamped on use)
-        commit: (v) => { instWriteBytes(e.slot, encode(v)); e.decoded = decodeInstFull(readInstRecord(e.slot)) }
+        commit: (v) => {
+            if (reupload) {
+                // Metainstrument: a live poke is invisible — getByte serves the cached
+                // metaRaw and setByte uses the normal-record layout. So read the current
+                // record, splice in the edited byte(s), and re-upload; loadRecord then
+                // re-parses metaRaw + the layer table.
+                const rec = Array.prototype.slice.call(readInstRecord(e.slot))
+                const pairs = encode(v)
+                for (let k = 0; k < pairs.length; k++) rec[pairs[k][0]] = pairs[k][1] & 0xFF
+                audio.uploadInstrument(e.slot, rec)
+                hasUnsavedChanges = true
+            } else {
+                instWriteBytes(e.slot, encode(v))
+            }
+            e.decoded = decodeInstFull(readInstRecord(e.slot))
+        }
     })
 }
 
@@ -4346,8 +4361,15 @@ function detuneRow(y, e, val0) {
 
 // Hit-test the live instSliders list (Gen.1/Gen.2 only). Separate tests for the
 // knob trough (drag / wheel) and the raw-number capsule (click-to-edit / wheel).
+// Sliders are live on the Gen.1/Gen.2 tabs, and on the Metainstrument layer view
+// (which registers per-layer Mix/Detune sliders regardless of sub-tab).
+function instSlidersActive() {
+    if (instSubTab === INST_TAB_GEN1 || instSubTab === INST_TAB_GEN2) return true
+    const e = instrumentsCache && instrumentsCache[instListCursor]
+    return !!(e && e.decoded && e.decoded.isMeta)
+}
 function sliderTroughAt(cy, cx) {
-    if (instSubTab !== INST_TAB_GEN1 && instSubTab !== INST_TAB_GEN2) return null
+    if (!instSlidersActive()) return null
     for (let i = 0; i < instSliders.length; i++) {
         const s = instSliders[i]
         if (cy === s.y && cx >= s.sx && cx <= s.sx + s.tw + 1) return s
@@ -4355,7 +4377,7 @@ function sliderTroughAt(cy, cx) {
     return null
 }
 function sliderCapsuleAt(cy, cx) {
-    if (instSubTab !== INST_TAB_GEN1 && instSubTab !== INST_TAB_GEN2) return null
+    if (!instSlidersActive()) return null
     for (let i = 0; i < instSliders.length; i++) {
         const s = instSliders[i]
         if (cy === s.numY && cx >= s.numX && cx < s.numX + s.numW) return s
@@ -4797,39 +4819,38 @@ function drawInstTabPitch(e) {
 // One row per layer: target instrument, mix volume (Perceptually-Significant
 // octet; 159 = unity), sample detune (4096-TET → cents), and the pitch × velocity
 // rectangle that gates the layer.
+function metaMixAnn(v)  { return (v === 159) ? 'unity' : ('$' + _hex(v, 2)) }
+function metaDetAnn(v)  { const c = v * 1200 / 4096; return (c >= 0 ? '+' : '') + c.toFixed(0) + 'c' }
+
 function drawInstTabMeta(e) {
     const d = e.decoded
     let y = INST_BODY_Y
     drawGroupHeader(y++, 'Metainstrument  (' + d.layers.length + ' layer' +
                          (d.layers.length === 1 ? '' : 's') + ')')
-    drawLabelRow(y++, '  Type:', d.metaType === 0 ? 'layered (0)' : '$' + _hex(d.metaType, 2))
-    y++
-    // Column header.
-    con.move(y, INST_RIGHT_X); con.color_pair(colInstGroupHdr, colBackPtn)
-    print(' #  Inst  Mix     Detune    Pitch        Vel'.substring(0, INST_RIGHT_W))
-    y++
-    const maxRows = INST_BTN_Y - y - 1
-    for (let i = 0; i < d.layers.length && i < maxRows; i++) {
+    // Each layer gets a read-only context line (target inst + pitch/vel rect) plus an
+    // editable Mix-volume and Detune slider (registered in instSliders, so mouse drag /
+    // wheel / click-to-type all work; commit re-uploads the record so the engine re-parses
+    // the layer table). Fit as many as the body allows.
+    const rowsPerLayer = 3
+    const avail = INST_BTN_Y - y - 1
+    const shown = Math.min(d.layers.length, Math.max(1, (avail / rowsPerLayer) | 0))
+    for (let i = 0; i < shown; i++) {
         const L = d.layers[i]
-        const cents = (L.detune * 1200 / 4096)
-        const mix = (L.mixOctet === 159) ? '$9F=1x' : ('$' + _hex(L.mixOctet, 2))
-        const det = (cents >= 0 ? '+' : '') + cents.toFixed(0) + 'c'
-        const pit = noteToStr(L.pitchStart) + sym.doubledot + noteToStr(L.pitchEnd)
-        const vel = L.volStart + sym.doubledot + L.volEnd
-        con.move(y, INST_RIGHT_X); con.color_pair(colInstLabel, colBackPtn)
-        const num = (i + 1).toString().padStart(2)
-        con.color_pair(colInstValue, colBackPtn)
-        const row = ' ' + num + '  $' + _hex(L.instIdx, 2) +
-                    '  ' + mix.padEnd(7) +
-                    ' ' + det.padEnd(8) +
-                    '  ' + pit.padEnd(11) +
-                    '  ' + vel
-        print(row.length > INST_RIGHT_W ? row.substring(0, INST_RIGHT_W) : row)
-        y++
-    }
-    if (d.layers.length > maxRows) {
+        const o = 4 + i * 10                       // byte offset of this layer's descriptor
+        const rect = 'pitch ' + noteToStr(L.pitchStart) + sym.doubledot + noteToStr(L.pitchEnd) +
+                     '  vel ' + L.volStart + sym.doubledot + L.volEnd
         con.move(y, INST_RIGHT_X); con.color_pair(colInstGroupHdr, colBackPtn)
-        print('  … ' + (d.layers.length - maxRows) + ' more layer(s)')
+        print((' L' + i + ' \u008426u inst $' + _hex(L.instIdx, 2) + '  ' + rect + ' '.repeat(INST_RIGHT_W))
+              .substring(0, INST_RIGHT_W))
+        y++
+        sliderRow(y++, e, '  Mix:', L.mixOctet, 0, 255, metaMixAnn,
+                  (v) => [[o + 1, v & 0xFF]], true)
+        sliderRow(y++, e, '  Detune:', L.detune, -4096, 4096, metaDetAnn,
+                  (v) => [[o + 2, v & 0xFF], [o + 3, (v >> 8) & 0xFF]], true)
+    }
+    if (shown < d.layers.length) {
+        con.move(y, INST_RIGHT_X); con.color_pair(colInstGroupHdr, colBackPtn)
+        print('  … ' + (d.layers.length - shown) + ' more layer(s) (resize / not shown)')
     }
 }
 

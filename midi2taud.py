@@ -1613,6 +1613,16 @@ def emit_cells(song: Song, insts: dict, speed: int, rpb: int,
         if n.drum and not drum_keyoff:
             continue
         row, tick = n.end_ft // speed, n.end_ft % speed
+        srow = n.start_ft // speed
+        if row == srow:
+            # Sub-row note (shorter than one tracker row): its key-off would land on
+            # its OWN trigger row, where the trigger cell already sits — pass 2 would
+            # then skip it ("row taken") and the note would ring forever until the next
+            # trigger on this voice. Push the key-off to the next row (tick 0) so a
+            # staccato note rounds up to ~1 row instead of hanging. If the next row is
+            # itself a fresh trigger, that note cuts/NNAs this one anyway (skip is fine).
+            row = srow + 1
+            tick = 0
         c = cells.get((n.voice, row))
         if c is None:
             c = _cell(cells, n.voice, row)
@@ -1626,7 +1636,7 @@ def emit_cells(song: Song, insts: dict, speed: int, rpb: int,
                 c['eff']  = (TOP_S, 0xD000 | (tick << 8))
                 c['prio'] = PRIO_DELAY
         else:
-            skipped_offs += 1    # row taken by a retrigger — which cuts anyway
+            skipped_offs += 1    # row taken by a retrigger — which cuts/NNAs anyway
     if skipped_offs:
         vprint(f"  info: {skipped_offs} key-off(s) absorbed by same-row retriggers")
 
