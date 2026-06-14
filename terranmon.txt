@@ -3021,8 +3021,8 @@ Play Head Flags
         1111xxxx yyyyyyyy (JMP000) - Go to absolute pattern number 0bxxxxyyyyyyyy
         00000010 00xxxxxx (LEN 00) - Pattern length for this cue (0..63), where 0: 1 row, 63: 64 rows (decoded by AudioAdapter as of 2026-05-05; emitted by xm2taud / it2taud for non-multiple-of-64 source patterns)
         00000001 00000000 - Halt (HALT  ) - Play the full length of the pattern then stop the playback
-        00000001 01xxxxxx - Halt at x (HALT 00)  - Play the specified length of the pattern then stop the playback. x = 0 is identical to regular HALT. (decoded by AudioAdapter as of 2026-06-14; emitted as the final cue by midi2taud / it2taud / xm2taud so a partial last bar halts at its own length)
-        00000001 00xxxxxx - Fadeout (FADOUT) - Gradually decrease global volume such that at row 0bxxxxxx it reaches zero, then stop the playback
+        00000001 01xxxxxx - Halt at x (HALT00)  - Play the specified length of the pattern then stop the playback. x = 0 is identical to regular HALT. (decoded by AudioAdapter as of 2026-06-14; emitted as the final cue by midi2taud / it2taud / xm2taud so a partial last bar halts at its own length)
+        00000001 00xxxxxx - Fadeout (FADE00) - Gradually decrease global volume such that at row 0bxxxxxx it reaches zero, then stop the playback
         00000000 - No operation
 
 65536..131071 RW: PCM Sample buffer

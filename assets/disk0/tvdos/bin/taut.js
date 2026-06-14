@@ -2232,7 +2232,15 @@ function cueInstToStr(inst) {
                 case 0b0010:
                     return "LEN " + arg8.dec02()
                 case 0b0001:
-                    return arg8 ? ("FADE" + arg8.dec02()) : "HALT  "
+                    if (!arg8) return "HALT  "
+                    switch (arg8 >>> 6) {
+                        case 0b00:
+                            return "FADE" + (arg8 & 63).dec02()
+                        case 0b01:
+                            return "HALT" + (arg8 & 63).dec02()
+                        default:
+                            return fallback
+                    }
                 case 0b0000:
                     return "NO-OP "
                 default:
