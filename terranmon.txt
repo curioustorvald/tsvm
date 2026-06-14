@@ -2832,7 +2832,14 @@ TODO:
             - Inst > Gen.2 > filter: IT/SF mode toggle (which also need to redefine slider range and their writebacks as IT takes 8-bit and SF takes 16-bit values)
             - Samples playblobs: only active for actually playing samples
             - Samples playcursor: true cursors for actually playing samples
-        [ ] implement note-fade (0x0003) and wire it to it2taud
+        [x] implement note-fade (0x0003) and wire it to it2taud
+            * DONE 2026-06-14. Engine: note word 0x0003 sets voice.noteFading (IT CHN_NOTEFADE,
+              Schism effects.c:1505-1509) — the instrument's own activeFadeoutStep drives
+              fadeoutVolume to 0 in the line ~3676 fade path while sustain loop + vol envelope
+              keep running; no applyKeyLift (sustain kept), no rate override (unlike fast fade
+              0x0004); a zero fadeout rings on, matching IT. Honours sub-row S$Dx delay (delayed
+              dispatch L3453). it2taud: IT_NOTE_FADE (246) now emits NOTE_NOTEFADE (0x0003)
+              instead of collapsing to key-off; NOTE_NOTEFADE added to taud_common.py.
         [x] taut.js quit with TypeError: Cannot read property 'terminatorIdx' of undefined:
             TypeError: Cannot read property 'terminatorIdx' of undefined
                 at drawEnvelopeCursor (<eval>:5312:22)

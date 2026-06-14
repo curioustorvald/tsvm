@@ -2959,8 +2959,25 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                         startFastFade(voice, playhead)
                     }
                 }
-                // 0x0003 (IT-style slow note fade, "~~~~") not yet implemented; 0x0005..0x000F reserved.
-                in 0x0003..0x000F -> { /* reserved sentinel range, no engine handler */ }
+                // IT-style note fade ("~~~~"): set the Note-Fade flag (Schism CHN_NOTEFADE,
+                // effects.c:1505-1509) — the voice's own fadeout step (activeFadeoutStep, the
+                // instrument's volume fadeout) drives fadeoutVolume to 0 in the line ~3676 fade
+                // path, while the sustain loop and volume envelope keep running. Unlike KEY_OFF
+                // (0x0001) it does NOT release sustain (no applyKeyLift); unlike the fast fade
+                // (0x0004) it does NOT override the fadeout rate. If the instrument's fadeout is
+                // 0 the note rings on — matches IT, where CHN_NOTEFADE with a zero fadeout
+                // subtracts nothing. Honours a sub-row S$Dx delay like KEY_OFF / note-cut do.
+                0x0003 -> {
+                    val dTick = if ((row.effect == EffectOp.OP_S) && ((row.effectArg ushr 12) and 0xF) == 0xD)
+                                (row.effectArg ushr 8) and 0xF else 0
+                    if (dTick > 0) {
+                        voice.noteDelayTick = dTick; voice.delayedNote = 0x0003
+                        voice.delayedInst = 0; voice.delayedVol = -1
+                    } else {
+                        voice.noteFading = true
+                    }
+                }
+                in 0x0005..0x000F -> { /* reserved sentinel range, no engine handler */ }
                 in 0x0010..0x001F -> { /* Int0..IntF: reserved interrupt slots, no engine handler yet */ }
                 else -> {
                     if (toneG && voice.active) {
@@ -3451,6 +3468,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                         applyKeyLift(voice, instruments[voice.instrumentId])
                     }
                     0x0002 -> { voice.active = false; cutLayerChildren(ts, vi) }  // delayed note cut
+                    0x0003 -> voice.noteFading = true                             // delayed note fade (IT CHN_NOTEFADE)
                     0x0004 -> startFastFade(voice, playhead)                      // delayed fast fade
                     else -> {
                         applyDuplicateCheck(ts, vi, voice.delayedInst, voice.delayedNote)

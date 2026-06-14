@@ -99,7 +99,7 @@ SAMPLE_LEN_LIMIT = 65535
 NOTE_NOP    = 0x0000
 NOTE_KEYOFF = 0x0001
 NOTE_CUT    = 0x0002
-# 0x0003 reserved for Impulse Tracker Note Fade.
+NOTE_NOTEFADE = 0x0003   # IT Note Fade ("~~~"): CHN_NOTEFADE — fade by instrument fadeout, sustain kept
 NOTE_FASTFADE = 0x0004   # ~0.3 s note-fade (SF2 exclusiveClass choke; fluid_voice_kill_excl)
 TAUD_C4     = 0x5000   # The audio engine's Middle C
 

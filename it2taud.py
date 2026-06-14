@@ -44,7 +44,7 @@ from taud_common import (
     TAUD_MAGIC, TAUD_VERSION, TAUD_HEADER_SIZE, TAUD_SONG_ENTRY,
     SAMPLEBIN_SIZE, INSTBIN_SIZE, SAMPLEINST_SIZE, SAMPLE_LEN_LIMIT,
     PATTERN_ROWS, PATTERN_BYTES, NUM_PATTERNS_MAX, NUM_CUES, CUE_SIZE, NUM_VOICES,
-    NOTE_NOP, NOTE_KEYOFF, NOTE_CUT, TAUD_C4,
+    NOTE_NOP, NOTE_KEYOFF, NOTE_CUT, NOTE_NOTEFADE, TAUD_C4,
     TOP_NONE, TOP_A, TOP_B, TOP_C, TOP_D, TOP_E, TOP_F, TOP_G, TOP_H, TOP_I,
     TOP_J, TOP_K, TOP_L, TOP_M, TOP_N, TOP_O, TOP_P, TOP_Q, TOP_R, TOP_S, TOP_T, TOP_U, TOP_V, TOP_W, TOP_Y,
     SEL_SET, SEL_UP, SEL_DOWN, SEL_FINE,
@@ -69,7 +69,7 @@ IT_INST_MAGIC = b'IMPI'
 
 IT_NOTE_OFF   = 255
 IT_NOTE_CUT   = 254
-IT_NOTE_FADE  = 246   # treated as key-off
+IT_NOTE_FADE  = 246   # → Taud Note Fade (0x0003): fade by instrument fadeout, sustain kept
 
 IT_ORD_END    = 255
 IT_ORD_SKIP   = 254
@@ -709,8 +709,13 @@ def parse_patterns(data: bytes, h: ITHeader) -> list:
 # ── Note encoding (IT linear 0-119 → Taud pitch units) ───────────────────────
 
 def encode_note_it(it_note: int) -> int:
-    if it_note == IT_NOTE_OFF or it_note == IT_NOTE_FADE:
+    if it_note == IT_NOTE_OFF:
         return NOTE_KEYOFF
+    if it_note == IT_NOTE_FADE:
+        # IT "~~~" Note Fade: CHN_NOTEFADE — begins the instrument's volume fadeout
+        # without releasing the sustain loop (Schism effects.c:1505-1509). Distinct from
+        # key-off (0x0001), which lifts sustain. Engine handles it via voice.noteFading.
+        return NOTE_NOTEFADE
     if it_note == IT_NOTE_CUT:
         return NOTE_CUT
     if 0 <= it_note <= 119:
