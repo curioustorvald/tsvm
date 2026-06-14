@@ -2808,25 +2808,41 @@ TODO:
               If you find sustained pads now cut a touch short (their long tails are more noticeable),
               nudging it toward 0.30–0.35 lengthens the tail without returning to the old over-long
               behaviour.
-        [ ] auto-set optimal-ish Tickspeed and RPB using MIDI Time Signature events and note analysis. Break pattern when Time Signature changes.
-
-            Time Signature
-
-            FF 58 04 nn dd cc bb
-
-            Time signature is expressed as 4 numbers. nn and dd represent the "numerator" and "denominator" of the signature as notated on sheet music. The denominator is a negative power of 2: 2 = quarter note, 3 = eighth, etc.
-
-            The cc expresses the number of MIDI clocks in a metronome click.
-
-            The bb parameter expresses the number of notated 32nd notes in a MIDI quarter note (24 MIDI clocks). This event allows a program to relate what MIDI thinks of as a quarter, to something entirely different.
-
-            For example, 6/8 time with a metronome click every 3 eighth notes and 24 clocks per quarter note would be the following event:
-
-            FF 58 04 06 03 18 08
-
-            NOTE: If there are no time signature events in a MIDI file, then the time signature is assumed to be 4/4.
-
-            In a format 0 file, the time signatures changes are scattered throughout the one MTrk. In format 1, the very first MTrk should consist of only the time signature (and tempo) events so that it could be read by some device capable of generating a "tempo map". It is best not to place MIDI events in this MTrk. In format 2, each MTrk should begin with at least one initial time signature (and tempo) event.
+        [x] auto-set optimal-ish Tickspeed and RPB using MIDI Time Signature events and note analysis. Break pattern when Time Signature changes.
+            * DONE 2026-06-14. midi2taud.py now parses the time-signature meta event (FF 58) and
+              auto-sets the grid by DEFAULT (--rpb/--speed default to auto; passing one pins that
+              axis and auto-fits the other, pass both to override). auto_timing() picks F = rpb·speed
+              fine-ticks/beat to (a) represent the finest onset subdivision actually used
+              (_detect_subdivision: smallest 1/D-of-quarter grid covering >=95% of note onsets,
+              D in {1,2,3,4,6,8,12,16}), (b) keep every tempo inside the Taud BPM register [25,280],
+              and (c) anchor at the proven 24-fts/beat grid (smallest multiple of D that is >=24), so
+              plain material reproduces the old speed 6 / rpb 4. Lexicographic key: init-tempo-fits >
+              fewest-clamped-tempos > prefer-rpb-4 (rows = beats×rpb, so rpb caps pattern count;
+              speed is "free" sub-row + tempo precision) > closeness-to-F_want > exact-grid > near
+              speed 6. Verified rpb4/speed6 on Onestop / E1M1 / E2M1 / flourish / keep_on_rolling /
+              pokemon-theme. RPB bump (final step, both axes auto only): a bend-heavy (>=24 non-centre
+              bend events AND >=0.25/note) OR many-polyphony (peak simultaneous notes >= 10) song with
+              rpb < 8 gets rpb doubled / speed halved (F=rpb·speed, hence tempo, UNCHANGED) up to rpb 8,
+              so more rows host key-offs / chokes / bend-G / channel-M and fewer are eaten by same-row &
+              per-cell-slot collisions. Guarded by a cue/pattern-budget estimate so it can't flip a long
+              dense song into a hard error (pin --rpb 4 to opt out). Measured on Onestop: key-offs
+              absorbed 1856→1574, bend segments 266→552. All six demo MIDIs are dense → rpb8/speed3.
+              Pattern breaking: plan_cues() breaks a cue at every time-sig change and
+              packs each section into whole-bar cues (largest multiple of the bar length that fits in
+              64 rows) via the LEN cue instruction (constant 4/4 still = 64-row cues; 7/8 flourish =
+              56-row cues; mid-song change starts the new section on a fresh cue). The project-data
+              sMet block gets Primary beat division = rows per NOTATED beat (the time-sig denominator,
+              = round(rpb·4/2^dpow): 4 for x/4, 2 for x/8 — always a divisor of the bar so the highlight
+              stays bar-aligned; rpb=rows-per-quarter would drift on 7/8 since 14%4!=0) and Secondary =
+              rows per bar, so the tracker's bar/beat highlight lines up. sMet notation = 120 (12-TET;
+              MIDI is 12-TET) — REQUIRED now that taut.js honours notation on load (the taud_common
+              default 0 = "Raw format" would show hex note numbers). build_pattern_bin now takes
+              (cue_starts, cue_lens) instead of a flat 64-row chunking.
+              taut.js side: loadTaudSongList now reads beat_pri/beat_sec from sMet (were skipped) into
+              songsMeta.songs[i]; applySongBeatDiv() + applySongPitchPreset() apply per-song beat
+              divisions AND notation/pitch-preset on BOTH initial open and switchSong (initial open
+              previously left both at the 4/16 + 12-TET defaults — the latent pitch-preset gap is now
+              closed too). Only midi2taud emits sMet; the other 2taud converters omit it → 12-TET default.
         [x] Taut UI commit
             - Inst > Gen.1 > sample binding: ~~~....[two doubledots] et al. (n extra samples)
             - Inst > Gen.2 > filter: IT/SF mode toggle (which also need to redefine slider range and their writebacks as IT takes 8-bit and SF takes 16-bit values)

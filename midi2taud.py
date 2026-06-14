@@ -54,10 +54,25 @@ Behaviour (per midi2taud.md):
     The choke is the new fast note-fade (note 0x0004, ~0.3 s) emitted at the next
     same-class onset; without it long percussion tails wash over the whole beat.
   * Sub-row timing is carried by S $Dx note delays (one row = `--speed`
-    ticks, default 6; one beat = `--rpb` rows, default 4 → 1/24-beat grid).
+    ticks; one beat = `--rpb` rows). The grid (Tickspeed + RPB) is auto-set by
+    default from the tempo map, the MIDI time signatures and onset-subdivision
+    analysis: rpb·speed fine-ticks per beat is chosen to represent the finest
+    subdivision actually used, keep every tempo inside the Taud BPM register
+    (25..280), and stay near the proven 24-fts/beat grid — so plain 4/4 @ 120
+    BPM still reproduces the old speed 6 / rpb 4. Passing --rpb or --speed pins
+    that axis and auto-fits the other; pass both to fully override. As a final
+    step, a bend- or polyphony-heavy song with rpb < 8 has its rpb doubled (and
+    speed halved, so F and the tempo are unchanged) up to 8: the extra rows give
+    key-offs, exclusiveClass chokes, bend portamento (G) and channel-volume (M)
+    effects more distinct rows to land on, so fewer are eaten by same-row / per-
+    cell-slot collisions. Disabled by pinning --rpb or --speed.
     MIDI tempo changes map to T $xx00 set-tempo effects; channel volume /
     expression (CC7 × CC11) map to M $xx00 channel-volume effects so they
     never disturb the velocity-driven patch selection axis.
+  * Cues are broken at every time-signature change, and each section is packed
+    into whole-bar cues (the largest multiple of its bar length that fits in 64
+    rows) so the tracker's bar/beat highlighting (sMet beat divisions) lines up
+    with the music.
 """
 
 import argparse
@@ -142,6 +157,11 @@ def _parse_track(data: bytes, pos: int, end: int) -> list:
                 txt = payload.decode('latin-1', errors='replace').strip()
                 if txt:
                     evs.append((tick, ('title', txt)))
+            elif mtype == 0x58 and ln >= 2:        # time signature (FF 58 04 nn dd cc bb)
+                # nn = numerator, dd = denominator as a negative power of 2
+                # (2 = quarter, 3 = eighth). cc/bb (clocks-per-click, 32nds-per-
+                # quarter) carry no information the Taud grid needs.
+                evs.append((tick, ('timesig', payload[0], payload[1])))
             elif mtype == 0x2F:
                 evs.append((tick, ('eot',)))
                 break
@@ -278,7 +298,8 @@ def _curve_push(fts: list, vals: list, ft: int, val):
 
 
 class Song:
-    __slots__ = ('notes', 'channels', 'tempo_ft', 'tempo_bpm', 'title', 'end_ft')
+    __slots__ = ('notes', 'channels', 'tempo_ft', 'tempo_bpm', 'title', 'end_ft',
+                 'timesig_ft', 'timesig')
 
 
 def extract_song(division, merged, rpb: int, speed: int) -> Song:
@@ -301,6 +322,7 @@ def extract_song(division, merged, rpb: int, speed: int) -> Song:
     chs = [_ChState() for _ in range(16)]
     notes = []
     tempo_ft, tempo_bpm = [], []
+    timesig_ft, timesig = [], []          # ft → (numerator, denom_power)
     title = None
     max_ft = 0
 
@@ -401,6 +423,13 @@ def extract_song(division, merged, rpb: int, speed: int) -> Song:
         elif kind == 'tempo':
             tempo_ft.append(ft); tempo_bpm.append(ev[1])
 
+        elif kind == 'timesig':
+            sig = (ev[1], ev[2])
+            if timesig_ft and timesig_ft[-1] == ft:
+                timesig[-1] = sig             # last event at this ft wins
+            elif not timesig or timesig[-1] != sig:
+                timesig_ft.append(ft); timesig.append(sig)
+
         elif kind == 'title':
             if title is None:
                 title = ev[1]
@@ -425,9 +454,182 @@ def extract_song(division, merged, rpb: int, speed: int) -> Song:
     song.channels  = chs
     song.tempo_ft  = tempo_ft
     song.tempo_bpm = tempo_bpm
+    song.timesig_ft = timesig_ft
+    song.timesig    = timesig
     song.title     = title
     song.end_ft    = max_ft
     return song
+
+
+# ── Auto timing (Tickspeed + RPB) ──────────────────────────────────────────────
+
+# Candidate beat subdivisions tested by the onset analyser (per quarter note).
+_SUBDIV_CANDIDATES = (1, 2, 3, 4, 6, 8, 12, 16)
+# Fraction-of-a-quarter tolerance for an onset to count as "on" a 1/D grid.
+_SUBDIV_TOL = 0.04
+# Coverage at which a subdivision is accepted as the finest one in use. 0.95
+# keeps the picker from chasing the last few percent of ornament/swing onsets
+# into a needlessly fine grid (those land on the sub-row S$Dx grid anyway).
+_SUBDIV_THRESHOLD = 0.95
+# The proven default resolution (rpb 4 × speed 6). The picker anchors F=rpb·speed
+# at the smallest multiple of the detected subdivision that is >= this, so any
+# subdivision dividing 24 (1/2..1/12 and triplets) reproduces the old 6/4 grid.
+# NOTE: row/pattern count depends only on rpb (rows = beats×rpb); speed is "free"
+# sub-row + tempo precision, so the picker spends it rather than minimising F.
+_F_TARGET = 24
+# Taud BPM register is bias-25 in [25, 280]; tick rate Hz = bpm·2/5.
+_TAUD_BPM_LO, _TAUD_BPM_HI = 25, 280
+
+# RPB bump: bend- or polyphony-heavy songs cram more triggers / key-offs / chokes
+# / bend-G / channel-M into each beat than emit_cells can place on distinct rows,
+# so events get eaten by same-row & per-cell-slot collisions. Raising rows-per-beat
+# (doubling rpb, halving tickspeed so F=rpb·speed — hence the tempo — is unchanged)
+# spreads them out. Applied only when both axes are auto and rpb < 8.
+_BUMP_TARGET_RPB       = 8     # raise rpb up to (at least) this
+_BUMP_BEND_MIN_EVENTS  = 24    # "significant pitch-bend": at least this many...
+_BUMP_BEND_MIN_DENSITY = 0.25  # ... non-centre bend events, and >= this per note
+_BUMP_POLY_PEAK        = 10    # "many polyphony": peak simultaneous notes >= this
+
+
+def _peak_polyphony(merged) -> int:
+    """Peak count of simultaneously-sounding (channel, key) notes across the song.
+    Sustain pedal is ignored — this is a polyphony proxy, not exact voicing."""
+    active = set()
+    cur = peak = 0
+    for _tick, _seq, ev in merged:
+        if ev[0] == 'on':
+            k = (ev[1], ev[2])
+            if k not in active:
+                active.add(k); cur += 1
+                if cur > peak:
+                    peak = cur
+        elif ev[0] == 'off':
+            k = (ev[1], ev[2])
+            if k in active:
+                active.discard(k); cur -= 1
+    return peak
+
+
+def _detect_subdivision(onsets, tpq: int) -> int:
+    """Finest beat subdivision (per quarter) the onsets actually use.
+
+    Returns the smallest D from _SUBDIV_CANDIDATES whose 1/D grid covers
+    >= _SUBDIV_THRESHOLD of onsets within _SUBDIV_TOL; else the best-covering
+    candidate (so heavily syncopated/swing material lands on a usable grid
+    rather than forcing the maximum)."""
+    if not onsets:
+        return 1
+    best_d, best_cov = 1, -1.0
+    for d in _SUBDIV_CANDIDATES:
+        hits = 0
+        for t in onsets:
+            frac = (t % tpq) / tpq
+            if abs(frac - round(frac * d) / d) <= _SUBDIV_TOL:
+                hits += 1
+        cov = hits / len(onsets)
+        if cov >= _SUBDIV_THRESHOLD:
+            return d
+        if cov > best_cov:
+            best_d, best_cov = d, cov
+    return best_d
+
+
+def auto_timing(division, merged, rpb_fixed, speed_fixed, max_voices) -> tuple:
+    """Choose (rpb, speed, info) for the Taud grid from the tempo map, the MIDI
+    time signatures and onset-subdivision analysis. A non-None rpb_fixed /
+    speed_fixed pins that axis (the user passed it); the other is auto-fit. Both
+    pinned → returned verbatim. When both are auto, a final RPB bump raises
+    rows-per-beat for bend/polyphony-heavy songs (see the _BUMP_* constants)."""
+    # SMPTE has no musical beat grid; the ft mapping pins a 120 BPM equivalent,
+    # so there is nothing to optimise — keep the proven default / pinned values.
+    if division[0] != 'ppq':
+        return (rpb_fixed or 4, speed_fixed or 6,
+                "SMPTE division — auto timing skipped")
+    tpq = division[1]
+
+    onsets = [tick for (tick, _seq, ev) in merged if ev[0] == 'on']
+    tempos = sorted((tick, ev[1]) for (tick, _seq, ev) in merged if ev[0] == 'tempo')
+    first_onset = onsets[0] if onsets else 0
+    last_tick = max((tick for tick, _s, _e in merged), default=0)
+
+    def bpm_at(tick):
+        i = bisect.bisect_right([t for t, _ in tempos], tick) - 1
+        return tempos[i][1] if i >= 0 else 120.0
+
+    bpm0 = bpm_at(first_onset)
+    all_bpms = {b for _t, b in tempos} or {120.0}
+    bend_events = sum(1 for (_t, _s, ev) in merged if ev[0] == 'bend' and ev[2] != 8192)
+    bends_present = bend_events > 0
+    peak_poly = _peak_polyphony(merged)
+
+    subdiv = _detect_subdivision(onsets, tpq)
+    # Anchor: smallest multiple of the subdivision that is >= the proven grid, so
+    # it represents the rhythm exactly (F % subdiv == 0) without going below 24.
+    f_want = -(-_F_TARGET // subdiv) * subdiv
+
+    rpb_opts   = [rpb_fixed] if rpb_fixed else [4, 8, 2, 16]
+    speed_lo   = 2 if bends_present else 1
+    speed_opts = [speed_fixed] if speed_fixed else list(range(1, 16))
+
+    def taud_bpm(bpm, F):
+        return round(bpm * F / 24.0)
+
+    best = None       # (sort_key, rpb, speed)
+    for rpb in rpb_opts:
+        for speed in speed_opts:
+            if speed < speed_lo:
+                continue
+            F = rpb * speed
+            init_ok   = _TAUD_BPM_LO <= taud_bpm(bpm0, F) <= _TAUD_BPM_HI
+            rhythm_ok = (F % subdiv == 0)
+            clamped   = sum(1 for b in all_bpms
+                            if not _TAUD_BPM_LO <= taud_bpm(b, F) <= _TAUD_BPM_HI)
+            key = (0 if init_ok else 1,        # initial tempo must fit the register
+                   clamped,                    # fewest tempo changes forced to clamp
+                   [4, 8, 2, 16].index(rpb),   # prefer the conventional rpb=4 (rows
+                                               #   = beats×rpb, so this caps pattern
+                                               #   count and keeps the highlight grid)
+                   abs(F - f_want),            # spend speed to reach the subdiv grid
+                   0 if rhythm_ok else 1,      # ... exactly, if a tie remains
+                   abs(speed - 6))              # tie-break: near the proven speed 6
+            if best is None or key < best[0]:
+                best = (key, rpb, speed)
+
+    _, rpb, speed = best
+
+    # ── RPB bump for bend/polyphony-heavy songs (both axes auto only) ──
+    # Double rpb / halve speed (F, hence tempo, unchanged) until rpb reaches the
+    # target, while speed stays an integer >= the portamento floor and the bumped
+    # grid is estimated to fit the cue / pattern budget (so a long dense song does
+    # not flip a working conversion into a hard error — pin --rpb 4 to opt out).
+    bend_heavy = (bend_events >= _BUMP_BEND_MIN_EVENTS and
+                  bend_events >= _BUMP_BEND_MIN_DENSITY * max(1, len(onsets)))
+    many_poly  = peak_poly >= _BUMP_POLY_PEAK
+    bumped = False
+    if rpb_fixed is None and speed_fixed is None and rpb < _BUMP_TARGET_RPB \
+            and (bend_heavy or many_poly):
+        total_quarters = max(0, last_tick - first_onset) / tpq
+        nvoices_est = min(max_voices, peak_poly + 1)
+
+        def fits(rpb_try):
+            est_rows = math.ceil(total_quarters * rpb_try) + rpb_try
+            est_cues = math.ceil(est_rows / 56) + 4   # /56 (not 64) + margin: odd meters
+            return est_cues <= NUM_CUES and est_cues * nvoices_est <= NUM_PATTERNS_MAX
+
+        while (rpb < _BUMP_TARGET_RPB and speed % 2 == 0
+               and speed // 2 >= speed_lo and rpb * 2 <= 16 and fits(rpb * 2)):
+            rpb *= 2; speed //= 2; bumped = True
+
+    info = (f"bpm0 {bpm0:.1f}, finest 1/{subdiv}-quarter subdivision, "
+            f"{'bends present, ' if bends_present else ''}"
+            f"F={rpb * speed} fts/beat (want {f_want}) → Taud BPM "
+            f"{taud_bpm(bpm0, rpb * speed)}")
+    if bumped:
+        why = " + ".join(w for w, on in
+                         (("dense bends", bend_heavy), ("high polyphony", many_poly)) if on)
+        info += (f"; RPB bumped to {rpb} / speed {speed} to spread events "
+                 f"({why}; peak poly {peak_poly})")
+    return rpb, speed, info
 
 
 # ── SF2 parser ────────────────────────────────────────────────────────────────
@@ -2071,14 +2273,55 @@ def emit_cells(song: Song, insts: dict, speed: int, rpb: int,
 
 # ── Pattern / cue emission and final assembly ────────────────────────────────
 
-def build_pattern_bin(cells: dict, n_voices: int, n_cues: int) -> bytes:
+def plan_cues(timesig_ft: list, timesig: list, total_rows: int,
+              shift_ft: int, speed: int, rpb: int) -> tuple:
+    """Plan the cue layout: break a cue at every time-signature change, and pack
+    each section into whole-bar cues — the largest multiple of the section's bar
+    length that fits in 64 rows (so the tracker's bar/beat highlight lines up).
+
+    Returns (cue_starts, cue_lens, init_bar_rows). cue_starts[i] is the absolute
+    starting row of cue i; cue_lens[i] is its playable row count (<= 64). A
+    constant 4/4 song still yields 64-row (= 4-bar) cues."""
+    def timesig_at(row):
+        ft = row * speed + shift_ft
+        i = bisect.bisect_right(timesig_ft, ft) - 1
+        return timesig[i] if i >= 0 else (4, 2)   # MIDI default = 4/4
+
+    def bar_rows_of(sig):
+        num, dpow = sig
+        bar_quarters = num * 4.0 / (2 ** dpow)    # bar length in quarter notes
+        return max(1, round(bar_quarters * rpb))
+
+    breaks = {(ft - shift_ft) // speed for ft in timesig_ft}
+    bounds = sorted({0, total_rows} | {r for r in breaks if 0 < r < total_rows})
+
+    cue_starts, cue_lens = [], []
+    for bi in range(len(bounds) - 1):
+        seg_start, seg_end = bounds[bi], bounds[bi + 1]
+        br = bar_rows_of(timesig_at(seg_start))
+        cue_max = br * (PATTERN_ROWS // br) if br <= PATTERN_ROWS else PATTERN_ROWS
+        r = seg_start
+        while r < seg_end:
+            length = min(cue_max, seg_end - r)
+            cue_starts.append(r)
+            cue_lens.append(length)
+            r += length
+    return cue_starts, cue_lens, bar_rows_of(timesig_at(0))
+
+
+def build_pattern_bin(cells: dict, n_voices: int,
+                      cue_starts: list, cue_lens: list) -> bytes:
+    """Pack patterns for cues that may start at arbitrary rows and run fewer
+    than 64 rows (bar-aligned / time-signature-broken cues). Rows past a cue's
+    length are silent padding (the LEN cue instruction stops playback there)."""
+    n_cues = len(cue_starts)
     out = bytearray(n_cues * n_voices * PATTERN_BYTES)
     pos = 0
-    for cue in range(n_cues):
+    for ci, (start, length) in enumerate(zip(cue_starts, cue_lens)):
         for v in range(n_voices):
             for r in range(PATTERN_ROWS):
                 base = pos + r * 8
-                c = cells.get((v, cue * PATTERN_ROWS + r))
+                c = cells.get((v, start + r)) if r < length else None
                 if c is None:
                     out[base + 3] = 0xC0
                     out[base + 4] = 0xC0
@@ -2117,7 +2360,11 @@ def assemble_taud(sf: SF2, song: Song, layer_insts: list, meta_records: list,
         song, None, speed, rpb, eps_units, args.drum_keyoff, shift_ft,
         args.max_voices)
 
-    n_cues = (total_rows + PATTERN_ROWS - 1) // PATTERN_ROWS
+    # Cue layout: break at time-signature changes, pack into whole-bar cues.
+    cue_starts, cue_lens, init_bar_rows = plan_cues(
+        song.timesig_ft, song.timesig, total_rows, shift_ft, speed, rpb)
+    n_cues = len(cue_starts)
+
     if n_cues > NUM_CUES:
         sys.exit(f"error: song needs {n_cues} cues > {NUM_CUES} limit "
                  f"(try a smaller --rpb)")
@@ -2125,21 +2372,23 @@ def assemble_taud(sf: SF2, song: Song, layer_insts: list, meta_records: list,
         sys.exit(f"error: {n_cues} cues × {n_voices} voices "
                  f"> {NUM_PATTERNS_MAX} pattern limit")
 
-    pat_bin = build_pattern_bin(cells, n_voices, n_cues)
+    pat_bin = build_pattern_bin(cells, n_voices, cue_starts, cue_lens)
     pat_bin, remap, n_unique = deduplicate_patterns(pat_bin, n_cues * n_voices)
+    n_breaks = sum(1 for ft in song.timesig_ft
+                   if 0 < (ft - shift_ft) // speed < total_rows)
     vprint(f"  patterns: {n_cues * n_voices} → {n_unique} unique; "
-           f"{n_cues} cue(s), {n_voices} voice(s), {total_rows} rows")
+           f"{n_cues} cue(s), {n_voices} voice(s), {total_rows} rows"
+           + (f"; {n_breaks} time-signature break(s)" if n_breaks > 0 else ""))
 
     sheet = bytearray(NUM_CUES * CUE_SIZE)
     for ci in range(NUM_CUES):
         sheet[ci*CUE_SIZE:(ci+1)*CUE_SIZE] = encode_cue([], 0)
     for ci in range(n_cues):
         pats = [remap[ci * n_voices + v] for v in range(n_voices)]
-        tail = total_rows - ci * PATTERN_ROWS
         if ci == n_cues - 1:
             instr = CUE_INST_HALT
-        elif tail < PATTERN_ROWS:
-            instr = cue_instruction_len(tail)
+        elif cue_lens[ci] < PATTERN_ROWS:
+            instr = cue_instruction_len(cue_lens[ci])
         else:
             instr = CUE_INST_NOP
         sheet[ci*CUE_SIZE:(ci+1)*CUE_SIZE] = encode_cue(pats, instr)
@@ -2194,10 +2443,23 @@ def assemble_taud(sf: SF2, song: Song, layer_insts: list, meta_records: list,
             vprint(f"  ixmp: {sum(len(p) for p in ixmp.values())} patch(es) "
                    f"across {len(ixmp)} instrument(s)")
         title = song.title or os.path.splitext(os.path.basename(args.input))[0]
+        # sMet beat divisions drive the tracker's row highlighting: primary =
+        # rows per NOTATED beat (the time-sig denominator), secondary = rows per
+        # bar. Using the denominator beat (not the rpb=rows-per-quarter) keeps the
+        # primary highlight a divisor of the bar — e.g. 7/8 → 2 rows (eighth), bar
+        # 14: 14 % 2 == 0, aligned; rpb=4 would drift (14 % 4 != 0). 4/4 → 4.
+        i = bisect.bisect_right(song.timesig_ft, shift_ft) - 1
+        _, init_dpow = song.timesig[i] if i >= 0 else (4, 2)
+        beat_pri = max(1, round(rpb * 4 / (2 ** init_dpow)))
+        song_meta = [{'index': 0, 'name': title,
+                      'notation': 240,    # 24-TET (MIDI is 12-TET but 24 is harmless & cleaner pre-pitchbend transpose notation); 0 = raw/hex display
+                      'beat_pri': max(1, min(255, beat_pri)),
+                      'beat_sec': max(1, min(255, init_bar_rows))}]
         proj_data = build_project_data(
             project_name=title,
             instrument_names=inst_names,
             sample_names=smp_names,
+            song_metadata=song_meta,
             ixmp_patches=ixmp or None,
         )
 
@@ -2236,10 +2498,13 @@ def main():
                     metavar=('BANK', 'INST'),
                     help='Force the percussion channel to this SF2 preset '
                          '(default: bank 128, channel program)')
-    ap.add_argument('--rpb', type=int, default=4, choices=(2, 4, 8, 16),
-                    help='Rows per beat (default 4 = 16th-note rows)')
-    ap.add_argument('--speed', type=int, default=6,
-                    help='Ticks per row, 1..15 (default 6)')
+    ap.add_argument('--rpb', type=int, default=None, choices=(2, 4, 8, 16),
+                    help='Rows per beat (default: auto from time signatures + '
+                         'onset analysis). Passing a value pins this axis and '
+                         'auto-fits --speed')
+    ap.add_argument('--speed', type=int, default=None,
+                    help='Ticks per row, 1..15 (default: auto, see --rpb). '
+                         'Passing a value pins this axis and auto-fits --rpb')
     ap.add_argument('--fadeout', type=int, default=None,
                     help='Override the computed fadeout step (0..4095). By '
                          'default each instrument/patch gets a Volume Fadeout '
@@ -2271,7 +2536,7 @@ def main():
     args = ap.parse_args()
     set_verbose(args.verbose)
 
-    if not (1 <= args.speed <= 15):
+    if args.speed is not None and not (1 <= args.speed <= 15):
         sys.exit("error: --speed must be 1..15")
     if not (1 <= args.max_voices <= 20):
         sys.exit("error: --max-voices must be 1..20")
@@ -2282,8 +2547,16 @@ def main():
 
     vprint(f"parsing MIDI '{args.input}'…")
     division, merged = parse_midi(args.input)
+
+    # Resolve the Taud grid (Tickspeed + RPB) before mapping ticks to fine-ticks.
+    # A pinned --rpb/--speed fixes that axis; the rest is auto-fit.
+    args.rpb, args.speed, timing_info = auto_timing(
+        division, merged, args.rpb, args.speed, args.max_voices)
+    vprint(f"  timing: rpb {args.rpb}, speed {args.speed} ({timing_info})")
+
     song = extract_song(division, merged, args.rpb, args.speed)
-    vprint(f"  {len(song.notes)} note(s), {len(song.tempo_ft)} tempo event(s)")
+    vprint(f"  {len(song.notes)} note(s), {len(song.tempo_ft)} tempo event(s), "
+           f"{len(song.timesig_ft)} time-signature event(s)")
     if not song.notes:
         sys.exit("error: MIDI contains no playable notes")
 

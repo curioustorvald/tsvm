@@ -300,9 +300,31 @@ const colEffArg = 231
 const colBackPtn = 255
 
 const PITCH_PRESET_IDX_DEFAULT = 120
-let PITCH_PRESET_IDX = PITCH_PRESET_IDX_DEFAULT // TODO read from the Project Data section of the .taud
-let beatDivPrimary = 4 // TODO read from the Project Data section of the .taud
-let beatDivSecondary = 16
+// Seed value used during global init (integrity check + first rebuildPitchLut);
+// the open/switch paths override it per-song from sMet via applySongPitchPreset().
+let PITCH_PRESET_IDX = PITCH_PRESET_IDX_DEFAULT
+// Row-highlight grid. Populated per-song from the sMet block's beat divisions
+// (Primary = rows per beat, Secondary = rows per bar); 4/16 is the 4/4 default
+// used when a song carries no sMet entry. See applySongBeatDiv().
+const BEAT_DIV_PRIMARY_DEFAULT = 4
+const BEAT_DIV_SECONDARY_DEFAULT = 16
+let beatDivPrimary = BEAT_DIV_PRIMARY_DEFAULT
+let beatDivSecondary = BEAT_DIV_SECONDARY_DEFAULT
+
+// Set the row-highlight grid from a per-song metadata record (songsMeta.songs[i]).
+function applySongBeatDiv(s) {
+    beatDivPrimary   = (s && s.beatDivPrimary)   ? s.beatDivPrimary   : BEAT_DIV_PRIMARY_DEFAULT
+    beatDivSecondary = (s && s.beatDivSecondary) ? s.beatDivSecondary : BEAT_DIV_SECONDARY_DEFAULT
+}
+
+// Set the active pitch/notation preset from a per-song metadata record (the sMet
+// 'notation' field) and rebuild the pitch LUT. Falls back to the default when the
+// song carries no notation or an unknown preset index.
+function applySongPitchPreset(s) {
+    const idx = s ? s.pitchPresetIdx : null
+    PITCH_PRESET_IDX = (idx != null && pitchTablePresets[idx]) ? idx : PITCH_PRESET_IDX_DEFAULT
+    rebuildPitchLut()
+}
 let hasUnsavedChanges = false
 let patternsOutOfSync = false  // in-memory song.patterns has edits not yet pushed to the audio adapter
 
@@ -901,6 +923,8 @@ function loadTaudSongList(filePath) {
             composer: '',
             copyright: '',
             pitchPresetIdx: null,
+            beatDivPrimary: null,
+            beatDivSecondary: null,
         }
     }
 
@@ -973,6 +997,8 @@ function loadTaudSongList(filePath) {
                         // payload: notation(u16) + beat_pri(u8) + beat_sec(u8) + name\0 + composer\0 + copyright\0
                         const notation = (sys.peek(ptr + subStart) & 0xFF) |
                                          ((sys.peek(ptr + subStart + 1) & 0xFF) << 8)
+                        const beatPri = sys.peek(ptr + subStart + 2) & 0xFF
+                        const beatSec = sys.peek(ptr + subStart + 3) & 0xFF
                         let r = subStart + 4   // skip notation(2) + pri(1) + sec(1)
                         const strs = []
                         while (strs.length < 3 && r < subStart + subLen) {
@@ -986,6 +1012,9 @@ function loadTaudSongList(filePath) {
                         }
                         if (idx < numSongs) {
                             songs[idx].pitchPresetIdx = notation
+                            // 0 = unset → applySongBeatDiv falls back to the 4/4 default
+                            songs[idx].beatDivPrimary = beatPri || null
+                            songs[idx].beatDivSecondary = beatSec || null
                             if (strs[0] !== undefined) songs[idx].name = strs[0]
                             if (strs[1] !== undefined) songs[idx].composer = strs[1]
                             if (strs[2] !== undefined) songs[idx].copyright = strs[2]
@@ -1977,6 +2006,8 @@ const PROJ_META_FLAGS = 0
 const PROJ_META_GVOL  = 1
 const PROJ_META_MVOL  = 2
 let song = loadTaud(fullPathObj.full, currentSongIndex)
+applySongPitchPreset(songsMeta.songs[currentSongIndex])
+applySongBeatDiv(songsMeta.songs[currentSongIndex])
 
 const voiceMutes = new Array(NUM_VOICES).fill(false)
 let timelineMuteSnapshot = null
@@ -2017,11 +2048,8 @@ function switchSong(newIndex) {
     song = loadTaud(fullPathObj.full, newIndex)
     refreshSamplesCache()
 
-    const newPitchIdx = songsMeta.songs[newIndex].pitchPresetIdx
-    PITCH_PRESET_IDX = (newPitchIdx != null && pitchTablePresets[newPitchIdx])
-        ? newPitchIdx
-        : PITCH_PRESET_IDX_DEFAULT
-    rebuildPitchLut()
+    applySongPitchPreset(songsMeta.songs[newIndex])
+    applySongBeatDiv(songsMeta.songs[newIndex])
 
     taud.uploadTaudFile(fullPathObj.full, newIndex, PLAYHEAD)
     patternsOutOfSync = false
