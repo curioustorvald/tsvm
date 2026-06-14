@@ -2812,7 +2812,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 val length = (rawRow.effectArg ushr 8) and 0xFF
                 val repeats = rawRow.effectArg and 0xFF
                 if (length > 0 && repeats > 0 && length <= n) {
-                    val patLen = (cue.instruction as? PlayInstPatLen)?.rows ?: 64
+                    val patLen = cueRowLimit(cue.instruction)
                     voice.dittoSourceStart = n - length
                     voice.dittoLength = length
                     voice.dittoEndRow = minOf(n + length * repeats - 1, patLen - 1)
@@ -3823,9 +3823,16 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         else -> vol
     }.coerceIn(0, 0x3F)
 
+    /** Effective playable row count for a cue: LEN and "halt at x" both shorten it. */
+    private fun cueRowLimit(instr: PlayInstruction): Int = when (instr) {
+        is PlayInstPatLen -> instr.rows
+        is PlayInstHaltAt -> instr.rows
+        else -> 64
+    }
+
     private fun advanceTrackerCue(ts: TrackerState, playhead: Playhead) {
         val instr = cueSheet[ts.cuePos].instruction
-        if (instr is PlayInstHalt) { playhead.isPlaying = false; return }
+        if (instr is PlayInstHalt || instr is PlayInstHaltAt) { playhead.isPlaying = false; return }
         ts.cuePos = when (instr) {
             is PlayInstGoBack -> (ts.cuePos - instr.arg).coerceAtLeast(0)
             is PlayInstSkip   -> (ts.cuePos + instr.arg).coerceAtMost(1023)
@@ -4056,12 +4063,11 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             }
             else -> {
                 ts.rowIndex++
-                // LEN cue instruction shortens the effective row count so the
-                // engine wraps to the next cue early. Patterns fed by the
-                // converter are still 64 rows long; rows past `rowLimit` are
-                // silent padding that we skip here.
-                val currentInst = cueSheet[ts.cuePos].instruction
-                val rowLimit = if (currentInst is PlayInstPatLen) currentInst.rows else 64
+                // LEN / "halt at x" cue instructions shorten the effective row
+                // count so the engine wraps to the next cue (or halts) early.
+                // Patterns fed by the converter are still 64 rows long; rows past
+                // `rowLimit` are silent padding that we skip here.
+                val rowLimit = cueRowLimit(cueSheet[ts.cuePos].instruction)
                 if (ts.rowIndex >= rowLimit) {
                     ts.rowIndex = 0
                     advanceTrackerCue(ts, playhead)
@@ -4085,18 +4091,24 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         //   byte  30:    instruction (low byte)
         //   byte  31:    instruction arg byte (used by 2-byte forms: LEN, BAK, FWD, JMP)
         // Decoding rules per terranmon.txt §"Cue Sheet":
-        //   00000010 00xxxxxx (LEN)  pattern length: rows = (xxxxxx) + 1, range 1..64
-        //   00000001          (HALT) end of song
-        //   00000000          (NOP)  default 64-row cue
-        //   1000xxxx yyyyyyyy (BAK)  go back 12-bit arg
-        //   1001xxxx yyyyyyyy (FWD)  skip forward 12-bit arg
-        //   1111xxxx yyyyyyyy (JMP)  go to absolute pattern (currently unused)
+        //   00000010 00xxxxxx (LEN)    pattern length: rows = (xxxxxx) + 1, range 1..64
+        //   00000001 00000000 (HALT)   play the full pattern then stop
+        //   00000001 01xxxxxx (HALT x) play x rows then stop (x = 0 ⇒ full length)
+        //   00000000          (NOP)    default 64-row cue
+        //   1000xxxx yyyyyyyy (BAK)    go back 12-bit arg
+        //   1001xxxx yyyyyyyy (FWD)    skip forward 12-bit arg
+        //   1111xxxx yyyyyyyy (JMP)    go to absolute pattern (currently unused)
         private fun recomputeInstruction() {
             val b30 = instByte30
             val b31 = instByte31
             instruction = when {
                 b30 == 0x02 -> PlayInstPatLen((b31 and 0x3F) + 1)
-                b30 == 0x01 -> PlayInstHalt
+                // HALT family: arg byte 01xxxxxx ⇒ "halt at x" (play x rows; x = 0 ⇒
+                // full length, identical to a plain HALT). Any other arg ⇒ plain HALT.
+                b30 == 0x01 -> if ((b31 and 0xC0) == 0x40) {
+                    val x = b31 and 0x3F
+                    PlayInstHaltAt(if (x == 0) 64 else x)
+                } else PlayInstHalt
                 b30 == 0x00 -> PlayInstNop
                 // BAK: 1000xxxx yyyyyyyy — 12-bit arg combining b30 low nybble + b31.
                 (b30 and 0xF0) == 0x80 -> PlayInstGoBack(((b30 and 0xF) shl 8) or (b31 and 0xFF))
@@ -4149,6 +4161,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     internal class PlayInstGoBack(arg: Int) : PlayInstruction(arg)
     internal class PlayInstSkip(arg: Int) : PlayInstruction(arg)
     internal class PlayInstPatLen(val rows: Int) : PlayInstruction(rows)
+    /** "Halt at x": play [rows] rows of the pattern (1..64) then stop. */
+    internal class PlayInstHaltAt(val rows: Int) : PlayInstruction(rows)
     internal object PlayInstHalt : PlayInstruction(0)
     internal object PlayInstNop : PlayInstruction(0)
 

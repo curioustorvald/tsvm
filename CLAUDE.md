@@ -200,6 +200,9 @@ The Taud playback engine lives in `tsvm_core/src/net/torvald/tsvm/peripheral/Aud
 
 **SoundFont filter mode uses an RBJ biquad, NOT the IT all-pole filter.** `refreshVoiceFilter` has two topologies. The IT/tracker path (`else` branch) is the all-pole 2-pole resonant LPF from `reference_materials/tracker_filter/` (no feedforward zeros) — must stay byte-faithful for tracker playback, do not touch it. The **`filterSfMode` branch ports FluidSynth's voice filter** (`reference_materials/fluidsynth/`, see its `README.md`): cutoff = absolute cents → Hz via `8.176·2^(cents/1200)` clamped to `[5 Hz, 0.45·fs]`; Q from centibels with FluidSynth's **−3.01 dB offset** (so Q=0 cB ⇒ q_lin = 1/√2 Butterworth, no resonance hump); RBJ cookbook low-pass coefficients with the SF2 `1/√Q` passband gain-norm. `applyVoiceFilter` runs the biquad (Direct Form I: `y = b02·(x+x₂) + b1·x₁ − a1·y₁ − a2·y₂`) when `voice.filterIsBiquad`. The old code reused the all-pole filter for SF mode too; it is overdamped and rolled the passband off ~3 dB @ 8 kHz / ~5 dB @ 12 kHz vs FluidSynth → audible muffling on every filtered GM instrument. Per-voice biquad state (`filterBqB02/B1/A1/A2`, input history `filterX1/X2`) must be reset on trigger/retrigger and copied in `copyVoice` (NNA ghost) alongside the output history. The background-voice filter-env path must branch on `filterSfMode` too, else an SF-mode ghost's cents-domain cutoff gets clamped into the IT 0..254 byte range (≈9 Hz → silence).
 
+### System Soundfont Location
+Look for `/media/torvald/Warehouse/*.sf2` and `/media/torvald/Warehouse/*.SF2`
+
 ## TVDOS
 
 ### TVDOS Movie Formats

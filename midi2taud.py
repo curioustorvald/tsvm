@@ -37,8 +37,7 @@ Behaviour (per midi2taud.md):
     while the key is on. There is NO release leg — the SF2 *release segment*
     is the Volume Fadeout (with NNA Note Fade): on key-off the voice holds at
     the sustain node and fades to silence over the SF2 releaseVolEnv time
-    (measured against the 100 dB envelope floor: releaseVolEnv·(1000−sus_cb)/
-    1000 seconds, then scaled to FluidSynth's PERCEIVED release length because
+    (the full release, scaled to FluidSynth's PERCEIVED release length because
     the engine's fadeout is linear in amplitude, not dB — see _zone_fadeout).
     Per-layer Ixmp patches carry their own fadeout when their release differs.
     The canonical zone's ADSR represents the instrument.
@@ -93,7 +92,8 @@ from taud_common import (
     SEL_SET, SEL_FINE,
     CUE_INST_NOP, CUE_INST_HALT,
     resample_linear, encode_cue, deduplicate_patterns, encode_song_entry,
-    compress_blob, build_project_data, cue_instruction_len, nearest_minifloat,
+    compress_blob, build_project_data, cue_instruction_len,
+    cue_instruction_halt_at, last_note_cue_index, nearest_minifloat,
     IXMP_PAN_NO_OVERRIDE, atten_cb_to_octet,
 )
 
@@ -1254,10 +1254,14 @@ class Patch:
         # Volume Fadeout = this patch's own SF2 release segment; emit 'x' when it (or any
         # filter / atten field) differs from the canonical zone so the per-layer release
         # time is faithful (an absent 'x' falls through to the base record's fadeout). A
-        # synthesized-loop sample disables its key-off fadeout (its decay is the vol-env,
-        # which runs from note-on regardless of key state).
-        fo_s = 0 if self.ms.synth_loop is not None else _zone_fadeout(z, bpm0, fadeout_override)
-        fo_c = 0 if canonical.ms.synth_loop is not None else _zone_fadeout(c, bpm0, fadeout_override)
+        # synthesized-loop sample keeps its key-off fadeout too: the peak->0 decay vol-env
+        # (no sustain wrap) only fades the HELD note to silence ~SF2_SYNTH_DECAY_SEC after
+        # note-on; on key-off the voice must still release over the SF2 release time as
+        # FluidSynth does. Forcing 0 here left key-off inert, so released notes rang for the
+        # whole 10 s decay (audible on piano/pizz/mallet patches in Musyng Kite & Timbres
+        # of Heaven 4.00 whose long unlooped samples take the synth-loop path).
+        fo_s = _zone_fadeout(z, bpm0, fadeout_override)
+        fo_c = _zone_fadeout(c, bpm0, fadeout_override)
         filt_differs = (filt_s != filt_c)
         if (sf_s != sf_c or cut_s != cut_c or res_s != res_c or att_s != att_c
                 or filt_differs or fo_s != fo_c):
@@ -1587,21 +1591,35 @@ _RELEASE_PERCEPTUAL_SCALE = 0.25
 def _zone_fadeout(z: SFZone, bpm0: int, fadeout_override) -> int:
     """Volume Fadeout step encoding the zone's SF2 release segment (gen 38,
     releaseVolEnv). With NNA Note Fade the fadeout IS the release: on key-off the
-    voice holds at the sustain level and fades to silence. The SF2 release ramps a
-    constant 100 dB per `releaseVolEnv` seconds (spec sfspec24.txt:1934-1941 — "until
-    100dB attenuation were reached"), so the time from the sustain level (sus_cb cB of
-    attenuation) down to the 100 dB floor is releaseVolEnv·(1000−sus_cb)/1000.
+    voice fades to silence over the release time.
 
-    But the engine's fadeout is linear in AMPLITUDE while FluidSynth's release is linear
-    in dB (see [_RELEASE_PERCEPTUAL_SCALE]); matching the floor-reaching time would make
-    the audible tail ~4× too long, so fade_sec is scaled to FluidSynth's perceived release.
+    FluidSynth's release (fluid_rvoice.c:54-55, fluid_voice.c:1092-1094) ramps the
+    volume-envelope coefficient LINEARLY from its value at key-off down to 0, where
+    amplitude = cb2amp(960·(1−volenv_val)) — i.e. the coefficient is linear in dB. The
+    release rate is fixed: a full 1.0→0 ramp takes `releaseVolEnv` seconds, so a note
+    released at coefficient v reaches silence in v·releaseVolEnv. v is HIGH whenever the
+    note is still audible at key-off — which is the norm for the long-decay instruments
+    (bells, organs, harpsichord, sitar, mute guitar) that Timbres of Heaven & friends
+    encode with a silent sustain (sustainVolEnv≈1000 cB) and a multi-second decay: the
+    decay IS the sound, and the key is lifted long before it reaches the silent sustain.
+    So the fadeout must reflect the FULL releaseVolEnv, NOT a sustain-scaled fraction.
+
+    The earlier model scaled by (1000−sus_cb)/1000 (the release time FROM the sustain
+    level), which is only correct for a note held all the way to its sustain. For the
+    decay instruments above (sus_cb≈1000) it collapsed to ~0 → an instant cut on key-off
+    instead of FluidSynth's seconds-long release — released organ/bell/harpsichord notes
+    were chopped off. Dropping the factor leaves the common sustained instruments
+    (sus_cb≈0, factor was ≈1) unchanged and gives the decay instruments a real release.
+
+    The engine's fadeout is linear in AMPLITUDE while FluidSynth's release is linear in
+    dB (see [_RELEASE_PERCEPTUAL_SCALE]); matching the floor-reaching time would make the
+    audible tail ~4× too long, so fade_sec is scaled to FluidSynth's perceived release.
     fadeStep makes the fadeout complete in fade_sec at bpm0: the engine subtracts
     fadeStep/1024 of unit volume per song tick, and the tick rate is bpm0·2/5 Hz, giving
     fadeStep = 2560/(fade_sec·bpm0)."""
     if fadeout_override is not None:
         return min(0xFFF, max(0, fadeout_override))
-    sus_cb   = min(max(0.0, z.env_sustain_cb), 1000.0)
-    fade_sec = max(0.02, _RELEASE_PERCEPTUAL_SCALE * z.env_release * (1000.0 - sus_cb) / 1000.0)
+    fade_sec = max(0.02, _RELEASE_PERCEPTUAL_SCALE * z.env_release)
     return max(1, min(0xFFF, round(2560.0 / (fade_sec * bpm0))))
 
 
@@ -1934,11 +1952,13 @@ def build_sample_inst_bin(sf: SF2, pool: list, layer_insts: list, meta_records: 
             wenv(197, 199, 201, pit_env)
 
         # Volume Fadeout = the SF2 release segment (NNA Note Fade below). Derived from
-        # the canonical zone's releaseVolEnv against the 100 dB envelope floor; see
-        # _zone_fadeout for the timecent→step derivation. A synthesized-loop sample
-        # disables the key-off fadeout (its decay is the vol-envelope, which runs from
-        # note-on regardless of key state) so key-off does not cut it short.
-        fo = 0 if ms.synth_loop is not None else _zone_fadeout(c.zone, bpm0, fadeout_override)
+        # the canonical zone's full releaseVolEnv; see _zone_fadeout for the timecent→step
+        # derivation and why it is NOT sustain-scaled. A synthesized-loop sample keeps
+        # its key-off fadeout too: the peak->0 decay vol-env (no sustain wrap) only fades
+        # the HELD note to silence over ~SF2_SYNTH_DECAY_SEC from note-on; on key-off the
+        # voice must still release over the SF2 release time (FluidSynth does), else the
+        # released note rings for the whole decay span instead of stopping.
+        fo = _zone_fadeout(c.zone, bpm0, fadeout_override)
         inst_bin[base + 171] = 0xFF                              # IGV (unit)
         inst_bin[base + 172] = fo & 0xFF
         # byte 173: bits 0-3 = fadeout high nibble, bit 4 = SF filter mode (cutoff/resonance
@@ -2373,6 +2393,21 @@ def assemble_taud(sf: SF2, song: Song, layer_insts: list, meta_records: list,
                  f"> {NUM_PATTERNS_MAX} pattern limit")
 
     pat_bin = build_pattern_bin(cells, n_voices, cue_starts, cue_lens)
+
+    # Trim trailing note-free cues: the MIDI release pass emits a final cue that
+    # is just key-offs (and the silence after the song's last note), which shows
+    # up as a dead bar at the end (e.g. M_E1M1's lone-key-off terminus cue). Drop
+    # whole cues with no actual note; the new last cue then HALTs at its own
+    # length. Special notes (key-off/cut/fade) are not notes here.
+    last_cue = last_note_cue_index(pat_bin, n_cues, n_voices)
+    if 0 <= last_cue < n_cues - 1:
+        dropped = n_cues - 1 - last_cue
+        n_cues = last_cue + 1
+        cue_starts = cue_starts[:n_cues]
+        cue_lens   = cue_lens[:n_cues]
+        pat_bin    = pat_bin[:n_cues * n_voices * PATTERN_BYTES]
+        vprint(f"  info: trimmed {dropped} trailing note-free cue(s)")
+
     pat_bin, remap, n_unique = deduplicate_patterns(pat_bin, n_cues * n_voices)
     n_breaks = sum(1 for ft in song.timesig_ft
                    if 0 < (ft - shift_ft) // speed < total_rows)
@@ -2386,7 +2421,9 @@ def assemble_taud(sf: SF2, song: Song, layer_insts: list, meta_records: list,
     for ci in range(n_cues):
         pats = [remap[ci * n_voices + v] for v in range(n_voices)]
         if ci == n_cues - 1:
-            instr = CUE_INST_HALT
+            # Halt after this cue's own length (a partial final bar plays only its
+            # rows instead of the full 64-row pattern).
+            instr = cue_instruction_halt_at(cue_lens[ci])
         elif cue_lens[ci] < PATTERN_ROWS:
             instr = cue_instruction_len(cue_lens[ci])
         else:
@@ -2508,8 +2545,8 @@ def main():
     ap.add_argument('--fadeout', type=int, default=None,
                     help='Override the computed fadeout step (0..4095). By '
                          'default each instrument/patch gets a Volume Fadeout '
-                         'reproducing its SF2 release segment (releaseVolEnv vs '
-                         'the 100 dB floor), played out via NNA Note Fade')
+                         'reproducing its SF2 release segment (the full '
+                         'releaseVolEnv), played out via NNA Note Fade')
     ap.add_argument('--max-voices', type=int, default=20,
                     help='Voice-column budget, 1..20 (default 20). NNA '
                          'background ghosts carry release/ring tails, so '

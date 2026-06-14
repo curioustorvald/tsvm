@@ -105,12 +105,13 @@ TAUD_C4     = 0x5000   # The audio engine's Middle C
 
 # Cue sheet instruction byte (cue offset 30; offset 31 = arg byte for 2-byte forms).
 # Per terranmon.txt §"Cue Sheet":
-#   00000010 00xxxxxx (LEN)  pattern length: rows = (xxxxxx) + 1, range 1..64
-#   00000001          (HALT) end of song
-#   00000000          (NOP)  default 64-row cue
-#   1000xxxx yyyyyyyy (BAK)  go back 12-bit arg
-#   1001xxxx yyyyyyyy (FWD)  skip forward 12-bit arg
-#   1111xxxx yyyyyyyy (JMP)  go to absolute pattern
+#   00000010 00xxxxxx (LEN)    pattern length: rows = (xxxxxx) + 1, range 1..64
+#   00000001 00000000 (HALT)   play the full pattern then stop (end of song)
+#   00000001 01xxxxxx (HALT x) play x rows then stop (x = 0 ⇒ full length)
+#   00000000          (NOP)    default 64-row cue
+#   1000xxxx yyyyyyyy (BAK)    go back 12-bit arg
+#   1001xxxx yyyyyyyy (FWD)    skip forward 12-bit arg
+#   1111xxxx yyyyyyyy (JMP)    go to absolute pattern
 CUE_INST_NOP  = 0x00
 CUE_INST_HALT = 0x01
 CUE_INST_LEN  = 0x02
@@ -357,6 +358,44 @@ def cue_instruction_len(rows: int) -> tuple:
     if not 1 <= rows <= 64:
         raise ValueError(f"LEN row count must be 1..64, got {rows}")
     return (CUE_INST_LEN, (rows - 1) & 0x3F)
+
+
+def cue_instruction_halt_at(rows: int) -> tuple:
+    """Build the 2-byte 'Halt at x' cue instruction (terranmon.txt §"Cue Sheet").
+
+    Plays `rows` rows of the pattern (1..64) then stops playback. Encoding is
+    byte30 = 0x01, byte31 = 0b01xxxxxx where x is the row count itself (NOT
+    rows-1 like LEN); x = 0 means "full length". A full-length halt (rows >= 64)
+    is therefore emitted as a plain HALT (byte31 = 0) so existing full-pattern
+    final cues stay byte-identical.
+    """
+    if not 1 <= rows <= 64:
+        raise ValueError(f"halt-at row count must be 1..64, got {rows}")
+    if rows >= 64:
+        return (CUE_INST_HALT, 0x00)
+    return (CUE_INST_HALT, 0x40 | (rows & 0x3F))
+
+
+def last_note_cue_index(pat_bin: bytes, num_cues: int, num_channels: int) -> int:
+    """Index of the last cue holding an *actual* note, or -1 if none.
+
+    `pat_bin` is the raw (pre-dedup) pattern binary, laid out as
+    `num_cues × num_channels` consecutive PATTERN_BYTES blocks, channel-minor
+    within each cue (block = (cue*num_channels + ch)*PATTERN_BYTES; each row is
+    8 bytes, note = little-endian u16 at offset 0). Special notes — NOP,
+    key-off, cut, note-fade, fast-fade (values 0..NOTE_FASTFADE) — are not
+    notes; only pitches above that count. Used to trim trailing note-free cues
+    (e.g. a MIDI conversion's final all-key-off release cue).
+    """
+    for cue in range(num_cues - 1, -1, -1):
+        for ch in range(num_channels):
+            block = (cue * num_channels + ch) * PATTERN_BYTES
+            for row in range(PATTERN_ROWS):
+                rb = block + row * 8
+                note = pat_bin[rb] | (pat_bin[rb + 1] << 8)
+                if note > NOTE_FASTFADE:
+                    return cue
+    return -1
 
 
 def deduplicate_patterns(pat_bin: bytes, num_pats: int) -> tuple:

@@ -64,7 +64,8 @@ from taud_common import (
     d_arg_to_col, resample_linear, rescale_offset_effects_per_slot,
     encode_cue, deduplicate_patterns,
     normalise_sample, encode_song_entry, nearest_minifloat, compress_blob,
-    CUE_INST_NOP, CUE_INST_HALT, CUE_INST_LEN, cue_instruction_len,
+    CUE_INST_NOP, CUE_INST_HALT, cue_instruction_len,
+    cue_instruction_halt_at,
     build_project_data, detect_subsongs,
 )
 
@@ -1376,28 +1377,26 @@ def _build_song_payload_xm(h: XMHeader, patterns_template: list,
     for c in range(NUM_CUES):
         sheet[c * CUE_SIZE:c * CUE_SIZE + CUE_SIZE] = encode_cue([], 0)
 
-    last_active = -1
+    n_emit = min(len(cue_list), NUM_CUES)
     len_cue_count = 0
-    for cue_idx, ci in enumerate(cue_list):
-        if cue_idx >= NUM_CUES: break
+    for cue_idx in range(n_emit):
+        ci = cue_list[cue_idx]
         base_pat = cue_idx * C
         pats = [pat_remap[base_pat + vi] for vi in range(C)]
         clen = chunk_lens[ci] if ci < len(chunk_lens) else PATTERN_ROWS
-        if clen < PATTERN_ROWS:
+        if cue_idx == n_emit - 1:
+            # Final cue: play its own length then HALT. "Halt at x" preserves the
+            # partial length (a short terminal pattern halts at `clen` instead of
+            # running the full 64-row padding); a full-length cue emits a plain HALT.
+            instr = cue_instruction_halt_at(clen)
+        elif clen < PATTERN_ROWS:
             instr = cue_instruction_len(clen)
             len_cue_count += 1
         else:
             instr = CUE_INST_NOP
         sheet[cue_idx * CUE_SIZE:(cue_idx + 1) * CUE_SIZE] = encode_cue(pats, instr)
-        last_active = cue_idx
 
-    if last_active >= 0:
-        if sheet[last_active * CUE_SIZE + 30] == CUE_INST_LEN:
-            vprint(f"  [{song_label}] warning: last active cue {last_active} "
-                   f"had LEN; replaced with HALT (partial tail at song terminus)")
-        sheet[last_active * CUE_SIZE + 30] = CUE_INST_HALT
-        sheet[last_active * CUE_SIZE + 31] = 0x00
-    else:
+    if n_emit == 0:
         sheet[30] = CUE_INST_HALT
     if len_cue_count:
         vprint(f"  [{song_label}] emitted {len_cue_count} LEN cue instruction(s) "
