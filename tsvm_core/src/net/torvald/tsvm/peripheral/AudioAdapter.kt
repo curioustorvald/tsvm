@@ -3758,6 +3758,22 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             if (bg.isLayerChild) {
                 val parent = ts.voices.getOrNull(bg.sourceChannel)
                 if (parent == null || !parent.active) {
+                    // Parent note ended: detach so this layer finishes its own release as a
+                    // plain ghost. But if the parent was RELEASED (key-off / note-fade) and its
+                    // own fadeout deactivated it in the SAME tick the release fired — a fast
+                    // fadeout, e.g. fo≈1067 (a 1-tick cut) — the parent-sync below never ran
+                    // while it was active, so the release was never carried across and a still
+                    // looping/sustaining child would ring on until the next note displaces it.
+                    // Inherit the parent's final release here before detaching (parent.keyOff /
+                    // noteFading survive deactivation; both are reset on retrigger, so a true
+                    // value means THIS note was released, not a stale flag). A parent that ended
+                    // without release (natural sample/env end) leaves the child to finish on its
+                    // own, unchanged. Symptom: long tails on multi-layer SF2 presets with a short
+                    // release, e.g. Timbres of Heaven's sustained guitars/organs.
+                    if (parent != null && !bg.keyOff && !bg.noteFading) {
+                        if (parent.keyOff) { bg.keyOff = true; applyKeyLift(bg, instruments[bg.instrumentId]) }
+                        else if (parent.noteFading) bg.noteFading = true
+                    }
                     bg.isLayerChild = false
                 } else {
                     bg.noteVal   = (parent.noteVal + bg.layerRelDetune).coerceIn(0x20, 0xFFFF)

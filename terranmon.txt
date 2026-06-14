@@ -2868,7 +2868,18 @@ TODO:
                 at execApp (<eval>:1457:16)
                 at Object.execute (<eval>:893:38)
                 at <eval>:867:31
-        [ ] Timbres of Heaven's Overdriven Gt decays EXTREMELY SLOWLY even after the fix
+        [x] Timbres of Heaven's Overdriven Gt decays EXTREMELY SLOWLY even after the fix
+            * DONE 2026-06-15. Root cause (engine). Overdriven Gt becomes a 4-layer Metainstrument.
+              Layer children inherit the parent's key-off only via the per-tick background-voice sync
+              (AudioAdapter.kt:3782), which requires parent.active. With a fast fadeout (fo=1067 = 1-tick
+              cut), the foreground voice deactivates in the same tick KEY_OFF fires — before the sync runs —
+              so the children were detached as orphans that never picked up the release and kept looping at
+              the ~0.70 sustain until the next note. That's the "extremely slow decay"/ringing tail, and it's
+              ToH-specific because ToH leans on multi-layer presets with short releases.
+              Fix (AudioAdapter.kt, inactive-parent branch): inherit parent.keyOff/noteFading before
+              detaching, mirroring the existing active-branch. parent.keyOff survives deactivation and is
+              reset on retrigger, so a true value means this note was released. A parent that ended naturally
+              (no release) still leaves the child to finish on its own.
         [ ] Some ways to decouple Sample+Inst and patterns into separate files (tsvm-doom needs separate file access; samplepack can be uploaded once on init)
 
 TODO - list of demo songs that MUST ship with Microtone:
