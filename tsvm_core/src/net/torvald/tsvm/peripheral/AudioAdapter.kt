@@ -18,6 +18,7 @@ import kotlin.math.roundToInt
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin
+import kotlin.math.sqrt
 import kotlin.math.exp
 
 private class RenderRunnable(val playhead: AudioAdapter.Playhead) : Runnable {
@@ -1840,6 +1841,15 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
      *   B0        = (d + 2e) / denom
      *   B1        = −e / denom
      *   y[n]      = A0 × x[n] + B0 × y[n−1] + B1 × y[n−2]
+     *
+     * SoundFont mode uses a different, faithful port of FluidSynth's filter
+     * (reference_materials/fluidsynth/src/rvoice/fluid_iir_filter_impl.cpp):
+     * the RBJ biquad low-pass with the SF2 `sqrt(1/Q)` resonance gain-norm.
+     * The IT all-pole filter is overdamped — even at the SF2 "open" default
+     * (13500 cents) it loses ~3 dB at 8 kHz / ~5 dB at 12 kHz, which is audible
+     * muffling against FluidSynth on every default-filter GM instrument. The
+     * biquad's passband is maximally flat (Butterworth at the default Q), so
+     * SF mode now switches topology rather than just remapping cutoff/Q.
      */
     private fun refreshVoiceFilter(voice: Voice) {
         val cut = voice.currentCutoff
@@ -1849,26 +1859,45 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         voice.filterResonanceCached = res
 
         val nyquist = SAMPLING_RATE * 0.5 - 1.0
-        val frequency: Double
-        val dmpfac: Double
 //        println("voice.filterSfMode = ${voice.filterSfMode}")
         if (voice.filterSfMode) {
             // SoundFont mode: cutoff = absolute cents, resonance = centibels above DC gain.
-            //   freq = 8.176 Hz × 2^(cents/1200)   (cents are relative to 8.176 Hz = MIDI 0)
-            // SF2 Q is the resonant-peak height in dB×10. For this IT-style 2-pole IIR the
-            // peak gain ≈ −20·log10(dmpfac) dB, so dmpfac = 10^(−dB/20) = 10^(−Qcb/200).
+            //   freq = 8.176 Hz × 2^(cents/1200)   (cents relative to 8.176 Hz = MIDI 0)
+            // FluidSynth clamps fres to [5 Hz, 0.45·fs] and uses it as an anti-alias
+            // filter rather than switching off near Nyquist (fluid_iir_filter_calc).
             if (cut >= 0xFFFF) { voice.filterActive = false; return }
-            frequency = (8.176 * 2.0.pow(cut / 1200.0)).coerceIn(1.0, nyquist)
+            val fres = (8.176 * 2.0.pow(cut / 1200.0)).coerceIn(5.0, 0.45 * SAMPLING_RATE)
+
+            // SF2 Q (centibels) → linear Q, with FluidSynth's −3.01 dB offset so that
+            // Q=0 cB is Butterworth (q_lin = 1/√2), i.e. no resonance hump
+            // (fluid_iir_filter_q_from_dB). Clamp dB to [0, 96] as FluidSynth does.
             val qcb = if (res >= 0xFFFF) 0 else res
-            // Clamp to the IT filter's max resonance (≈24 dB) to keep the IIR stable / unclipped.
-            dmpfac = 10.0.pow(-qcb / 200.0).coerceIn(0.0625, 1.0)
-        } else {
-            if (cut.coerceIn(0, 255) >= 255) { voice.filterActive = false; return }
-            val itCutoff    = cut.coerceIn(0, 254) * 0.5                 // 0..127
-            val itResonance = if (res >= 255) 0.0 else res.coerceIn(0, 254) * 0.5
-            frequency = (110.0 * 2.0.pow(itCutoff / 24.0 + 0.25)).coerceAtMost(nyquist)
-            dmpfac    = 10.0.pow(-itResonance * (24.0 / 128.0) / 20.0)
+            val qDb = (qcb / 10.0).coerceIn(0.0, 96.0) - 3.01
+            val qLin = 10.0.pow(qDb / 20.0).coerceAtLeast(0.001)
+
+            // RBJ cookbook low-pass (bilinear-transformed), normalised to a0.
+            val omega = 2.0 * PI * fres / SAMPLING_RATE
+            val sinC = sin(omega)
+            val cosC = cos(omega)
+            val alpha = sinC / (2.0 * qLin)
+            val a0inv = 1.0 / (1.0 + alpha)
+            // SF2 §2.01 p.59: halve the resonance-peak height by scaling the gain
+            // with sqrt(1/Q); folded into the b coefficients here.
+            val gain = a0inv / sqrt(qLin)
+            voice.filterBqB1  = (1.0 - cosC) * gain
+            voice.filterBqB02 = voice.filterBqB1 * 0.5
+            voice.filterBqA1  = -2.0 * cosC * a0inv
+            voice.filterBqA2  = (1.0 - alpha) * a0inv
+            voice.filterIsBiquad = true
+            voice.filterActive = true
+            return
         }
+
+        if (cut.coerceIn(0, 255) >= 255) { voice.filterActive = false; return }
+        val itCutoff    = cut.coerceIn(0, 254) * 0.5                 // 0..127
+        val itResonance = if (res >= 255) 0.0 else res.coerceIn(0, 254) * 0.5
+        val frequency = (110.0 * 2.0.pow(itCutoff / 24.0 + 0.25)).coerceAtMost(nyquist)
+        val dmpfac    = 10.0.pow(-itResonance * (24.0 / 128.0) / 20.0)
 
         val r = SAMPLING_RATE / (2.0 * PI * frequency)
         val d = dmpfac * r + dmpfac - 1.0
@@ -1878,15 +1907,33 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         voice.filterA0 = 1.0 / denom
         voice.filterB0 = (d + e + e) / denom
         voice.filterB1 = -e / denom
+        voice.filterIsBiquad = false
         voice.filterActive = true
     }
 
-    /** Apply the cached IT-style 2-pole LPF to one mono sample. Caller must
-     *  have called refreshVoiceFilter at the start of the tick. The history
-     *  taps are clipped to ±2.0 to tame resonance ringing on extreme settings,
-     *  matching OpenMPT's ClipFilter helper. */
+    /** Apply the cached voice low-pass to one mono sample. Caller must have
+     *  called refreshVoiceFilter at the start of the tick.
+     *
+     *  SoundFont voices run FluidSynth's RBJ biquad (Direct Form I):
+     *    y[n] = b02·(x[n]+x[n-2]) + b1·x[n-1] - a1·y[n-1] - a2·y[n-2]
+     *
+     *  Tracker voices run the IT all-pole recurrence, whose history taps are
+     *  clipped to ±2.0 to tame resonance ringing on extreme settings (matching
+     *  OpenMPT's ClipFilter helper). The biquad does not clip — FluidSynth runs
+     *  it unclamped, and the SF2 gain-norm already bounds the resonance peak. */
     private fun applyVoiceFilter(voice: Voice, x0: Double): Double {
         if (!voice.filterActive) return x0
+        if (voice.filterIsBiquad) {
+            val y0 = voice.filterBqB02 * (x0 + voice.filterX2) +
+                     voice.filterBqB1 * voice.filterX1 -
+                     voice.filterBqA1 * voice.filterY1 -
+                     voice.filterBqA2 * voice.filterY2
+            voice.filterX2 = voice.filterX1
+            voice.filterX1 = x0
+            voice.filterY2 = voice.filterY1
+            voice.filterY1 = y0
+            return y0
+        }
         val y1Clipped = voice.filterY1.coerceIn(-2.0, 2.0)
         val y2Clipped = voice.filterY2.coerceIn(-2.0, 2.0)
         val y0 = voice.filterA0 * x0 +
@@ -2381,7 +2428,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         // 255 = filter off (IT high-bit-clear); 0..254 = active range matching IT 0..127 at double resolution.
         voice.currentCutoff = voice.activeDefaultCutoff
         voice.currentResonance = voice.activeDefaultResonance
-        voice.filterY1 = 0.0; voice.filterY2 = 0.0
+        voice.filterY1 = 0.0; voice.filterY2 = 0.0; voice.filterX1 = 0.0; voice.filterX2 = 0.0
         voice.filterCutoffCached = -1   // force coefficient refresh on first tick
         voice.filterResonanceCached = -1
         voice.noteVal = noteVal
@@ -2569,6 +2616,13 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         v.filterB1 = src.filterB1
         v.filterY1 = src.filterY1
         v.filterY2 = src.filterY2
+        v.filterIsBiquad = src.filterIsBiquad
+        v.filterBqB02 = src.filterBqB02
+        v.filterBqB1 = src.filterBqB1
+        v.filterBqA1 = src.filterBqA1
+        v.filterBqA2 = src.filterBqA2
+        v.filterX1 = src.filterX1
+        v.filterX2 = src.filterX2
         v.filterCutoffCached = src.filterCutoffCached
         v.filterResonanceCached = src.filterResonanceCached
         v.randomVolBias = src.randomVolBias
@@ -3509,7 +3563,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                     voice.fadeoutVolume = 1.0
                     voice.autoVibPhase = 0
                     voice.autoVibTicksSinceTrigger = 0
-                    voice.filterY1 = 0.0; voice.filterY2 = 0.0
+                    voice.filterY1 = 0.0; voice.filterY2 = 0.0; voice.filterX1 = 0.0; voice.filterX2 = 0.0
                     voice.noteVolume = applyRetrigVolMod(voice.noteVolume, voice.retrigVolMod)
                     voice.rowVolume = voice.noteVolume
                 }
@@ -3665,9 +3719,16 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             val finalPitch = (bg.noteVal + autoVibDelta + pitchEnvDelta).coerceIn(0x20, 0xFFFF)
             bg.playbackRate = computePlaybackRate(bg, finalPitch)
             // Filter envelope: same scaling rule as foreground, using the active cutoff.
+            // Must branch on SF mode too — an SF-mode ghost's cutoff is in cents (0..0xFFFF),
+            // so the IT 0..254 clamp would otherwise collapse it to ~9 Hz (total muffling).
             if (bg.hasFilterEnv && bg.pfEnvOn) {
-                val baseCut = if (bg.activeDefaultCutoff < 255) bg.activeDefaultCutoff else 254
-                bg.currentCutoff = (baseCut * bg.envFilterValue).toInt().coerceIn(0, 254)
+                if (bg.filterSfMode) {
+                    val baseCut = if (bg.activeDefaultCutoff < 0xFFFF) bg.activeDefaultCutoff else 13500
+                    bg.currentCutoff = (baseCut * bg.envFilterValue).toInt().coerceIn(0, 0xFFFF)
+                } else {
+                    val baseCut = if (bg.activeDefaultCutoff < 255) bg.activeDefaultCutoff else 254
+                    bg.currentCutoff = (baseCut * bg.envFilterValue).toInt().coerceIn(0, 254)
+                }
             }
             refreshVoiceFilter(bg)
             // Reap fully-faded ghosts so the pool stays drained.
@@ -4249,6 +4310,18 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         var filterB1 = 0.0
         var filterY1 = 0.0
         var filterY2 = 0.0
+        // SoundFont mode uses a proper RBJ biquad low-pass (matching FluidSynth's
+        // fluid_iir_filter, not the IT all-pole topology — see refreshVoiceFilter).
+        // When true, applyVoiceFilter runs the biquad recurrence:
+        //   y[n] = b02·(x[n]+x[n-2]) + b1·x[n-1] - a1·y[n-1] - a2·y[n-2]
+        // sharing filterY1/Y2 as the output history and adding x[n-1]/x[n-2].
+        var filterIsBiquad = false
+        var filterBqB02 = 0.0
+        var filterBqB1 = 0.0
+        var filterBqA1 = 0.0
+        var filterBqA2 = 0.0
+        var filterX1 = 0.0
+        var filterX2 = 0.0
         // Snapshot of cutoff/resonance the cached coefficients correspond to.
         var filterCutoffCached = -1
         var filterResonanceCached = -1
@@ -4626,7 +4699,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                     it.noteVal = 0x0000; it.basePitch = 0x4000
                     it.amigaPeriod = -1.0; it.linearFreq = -1.0
                     it.tonePortaTarget = -1; it.tonePortaSpeed = 0
-                    it.filterY1 = 0.0; it.filterY2 = 0.0
+                    it.filterY1 = 0.0; it.filterY2 = 0.0; it.filterX1 = 0.0; it.filterX2 = 0.0
                     it.filterCutoffCached = -1; it.filterResonanceCached = -1
                     it.currentCutoff = 0xFF; it.currentResonance = 0xFF
                     it.nesDpcmCounter = 63

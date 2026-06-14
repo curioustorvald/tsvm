@@ -2782,7 +2782,7 @@ TODO:
             3. If not, resample at 32000. If there is no loop defined, then loop the last 8192 samples (converter SHOULD NOT take that number at face value; perform waveform analysis to derive a smoother loop; converter MAY use that number as a starting number) and modify the fade value such that it decays to zero after 10 or so seconds of firing.
         [x] Faithful .sf2 "release segment": Set NNA to 'Note Fade' (incl. drumkits), and make sure Volume Fadeout to have a correct number derived from the SF2 timecent unit (it seems SF2 defines envelope floor as 100 dB; needs check)
             * DONE 2026-06-14. Floor CONFIRMED 100 dB (sfspec24.txt:1934-1941: releaseVolEnv ramps a constant 100 dB per its timecent value, "until 100dB attenuation were reached"). midi2taud.py now: (a) byte 186 NNA = Note Fade (0b11) for every instrument incl. drum kits (was melodic Key-Lift 0b100000 / drum Continue 0b10); (b) the vol-env no longer carries a release leg — it ENDS at the sustain node and the engine holds there on key-off (AudioAdapter.kt:1697-1701 holds a non-zero terminator, doesn't cut); (c) Volume Fadeout (base bytes 172-173 AND per-patch Ixmp 'x' block) = the release segment, fade_sec = releaseVolEnv·(1000−sus_cb)/1000 (the sustain-level → 100 dB-floor time), fadeStep = 2560/(fade_sec·bpm0) so the linear fade completes in that wall-clock time. Per-patch 'x' now also emits when only the release differs (faithful per-layer release). The engine's Key-Lift feature is unchanged (still used by KeyLiftTest); midi2taud simply stopped emitting it. See _zone_fadeout / _adsr_to_env in midi2taud.py.
-        [ ] SF2 filter still sounds way too muffled?
+        [x] SF2 filter still sounds way too muffled?
         [ ] Drum notes get eaten (E2M1.mid)
         [ ] auto-set optimal-ish Tickspeed and RPB using MIDI Time Signature events and note analysis. Break pattern when Time Signature changes.
 
@@ -2803,6 +2803,11 @@ TODO:
             NOTE: If there are no time signature events in a MIDI file, then the time signature is assumed to be 4/4.
 
             In a format 0 file, the time signatures changes are scattered throughout the one MTrk. In format 1, the very first MTrk should consist of only the time signature (and tempo) events so that it could be read by some device capable of generating a "tempo map". It is best not to place MIDI events in this MTrk. In format 2, each MTrk should begin with at least one initial time signature (and tempo) event.
+        [ ] Taut UI commit
+            - Inst > Gen.1 > sample binding: ~~~....[two doubledots] et al. (n extra samples)
+            - Inst > Gen.2 > filter: IT/SF mode toggle
+            - Samples playblobs: only active for actually playing samples
+            - Samples playcursor: true cursors for actually playing samples
 
 TODO - list of demo songs that MUST ship with Microtone:
     * 4THSYM (rename to Fourth Symmetriad) — excellent piece for demonstrating NNAs and filter envelopes
