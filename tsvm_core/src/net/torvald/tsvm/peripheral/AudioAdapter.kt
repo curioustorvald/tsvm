@@ -1788,14 +1788,34 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         } else if (idx >= maxIdx) {
             return env[maxIdx].value / 255.0
         } else {
-            val offset = env[idx].offset.toDouble()
-            if (offset == 0.0) {
+            // Advance through zero-duration nodes rather than freezing on them. A node
+            // whose offset rounds to 0 (sub-4 ms — ThreeFiveMinifloat's smallest non-zero
+            // step is ≈3.9 ms, so e.g. an SF2 filter mod-env's 1 ms attack stores offset 0)
+            // is passed instantly, so the envelope must move on to the next node. The old
+            // code returned here WITHOUT advancing the index, stranding fast-attack filter
+            // mod-envs at their first node: the filter never opened from its base cutoff to
+            // the sustain cutoff, so Strings/Flute/Guitar (SF2 base ~600 Hz, sustain ~6 kHz)
+            // played permanently muffled. The loop stops at a sustain/loop boundary (handled
+            // by the susEnd branch below and the top-of-function checks) or at maxIdx.
+            while (idx < maxIdx && !(susOn && idx == susEnd) && env[idx].offset.toDouble() == 0.0) {
+                idx++
+            }
+            if (susOn && idx == susEnd) {
+                // Reached the sustain/loop end while skipping: hold (single-node sustain) or
+                // loop back to susStart, mirroring the top-of-function dispatch.
+                if (susStart != susEnd) { timeBox[0] = 0.0; idx = susStart }
+                idxBox[0] = idx
                 return env[idx].value / 255.0
             }
+            idxBox[0] = idx
+            if (idx >= maxIdx) {
+                return env[maxIdx].value / 255.0
+            }
+            val offset = env[idx].offset.toDouble()
             timeBox[0] += tickSec
             if (timeBox[0] >= offset) {
                 timeBox[0] -= offset
-                idx = if (susOn && idx == susEnd) susStart else (idx + 1).coerceAtMost(maxIdx)
+                idx = (idx + 1).coerceAtMost(maxIdx)
                 idxBox[0] = idx
                 return env[idx].value / 255.0
             }

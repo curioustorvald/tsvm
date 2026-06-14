@@ -1986,7 +1986,7 @@ Endianness: little
 
 TSVM Audio Adapter is consisted of 4 playheads, each playhead is capable of playing one PCM or Tracker track.
 
-Synchronisation between playheads are not guaranteed. Do not play music in multiple tracks.
+Synchronisation between playheads are not guaranteed. Do not play a music across multiple playheads.
 
 
 Memory Space
@@ -2799,6 +2799,7 @@ TODO:
         [ ] midi2taud: toggleable option for disabling filter for percussions [default: on]
             - Anything on bank 127 and 128 (usually asso siated with ch 10)
             - GeneralMIDI instruments 113..128
+        [ ] midi2taud: instrument fadeout (release) is significantly longer than Fluidsynth
         [ ] auto-set optimal-ish Tickspeed and RPB using MIDI Time Signature events and note analysis. Break pattern when Time Signature changes.
 
             Time Signature
@@ -2820,7 +2821,7 @@ TODO:
             In a format 0 file, the time signatures changes are scattered throughout the one MTrk. In format 1, the very first MTrk should consist of only the time signature (and tempo) events so that it could be read by some device capable of generating a "tempo map". It is best not to place MIDI events in this MTrk. In format 2, each MTrk should begin with at least one initial time signature (and tempo) event.
         [ ] Taut UI commit
             - Inst > Gen.1 > sample binding: ~~~....[two doubledots] et al. (n extra samples)
-            - Inst > Gen.2 > filter: IT/SF mode toggle
+            - Inst > Gen.2 > filter: IT/SF mode toggle (which also need to redefine slider range and their writebacks as IT takes 8-bit and SF takes 16-bit values)
             - Samples playblobs: only active for actually playing samples
             - Samples playcursor: true cursors for actually playing samples
         [ ] implement note-fade (0x0003) and wire it to it2taud
