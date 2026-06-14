@@ -2775,112 +2775,111 @@ TODO:
         [x] Ixmp version 2, supporting per-patch ADSR
         For UI concerns, taut_instredit.js will take care of it (aka problem for later)
     [x] .sf2 import module (for generic use, including "Import instrument from soundfont" and midi2taud conversion)
-        [x] Midi2Taud using .mid and .sf2 as input, trim unused samples and Ixmp patches
-        [x] .sf2 specific resample handling
-            1. If length exceeds 65535 samples, calculate resampling.
-            2. If calculated resampling >= 32000, use that.
-            3. If not, resample at 32000. If there is no loop defined, then loop the last 8192 samples (converter SHOULD NOT take that number at face value; perform waveform analysis to derive a smoother loop; converter MAY use that number as a starting number) and modify the fade value such that it decays to zero after 10 or so seconds of firing.
-        [x] Faithful .sf2 "release segment": Set NNA to 'Note Fade' (incl. drumkits), and make sure Volume Fadeout to have a correct number derived from the SF2 timecent unit (it seems SF2 defines envelope floor as 100 dB; needs check)
-            * DONE 2026-06-14. Floor CONFIRMED 100 dB (sfspec24.txt:1934-1941: releaseVolEnv ramps a constant 100 dB per its timecent value, "until 100dB attenuation were reached"). midi2taud.py now: (a) byte 186 NNA = Note Fade (0b11) for every instrument incl. drum kits (was melodic Key-Lift 0b100000 / drum Continue 0b10); (b) the vol-env no longer carries a release leg — it ENDS at the sustain node and the engine holds there on key-off (AudioAdapter.kt:1697-1701 holds a non-zero terminator, doesn't cut); (c) Volume Fadeout (base bytes 172-173 AND per-patch Ixmp 'x' block) = the release segment, fade_sec = releaseVolEnv·(1000−sus_cb)/1000 (the sustain-level → 100 dB-floor time), fadeStep = 2560/(fade_sec·bpm0) so the linear fade completes in that wall-clock time. Per-patch 'x' now also emits when only the release differs (faithful per-layer release). The engine's Key-Lift feature is unchanged (still used by KeyLiftTest); midi2taud simply stopped emitting it. See _zone_fadeout / _adsr_to_env in midi2taud.py.
-        [x] SF2 filter still sounds way too muffled?
-        [x] Drum notes get eaten (E2M1.mid)
-            * DONE 2026-06-14. Root cause: midi2taud ignored SF2 exclusiveClass (gen 57). SGM's
-              STANDARD 1 puts the closed/pedal/open hi-hats (keys 42/44/46) in class 1; without the
-              choke the open hi-hat's multi-second tail (≈4.9 s) washes over the whole beat and
-              buries the other hits. FluidSynth kills same-class voices on note-on
-              (fluid_synth_kill_by_exclusive_class → fluid_voice_kill_excl, a fast −2000-timecent
-              release ≈ 0.3 s). Fix in two parts: (a) midi2taud.py parses gen 57, and per drum
-              channel chokes each note at the next same-class onset — emitting the new fast-fade
-              note 0x0004 (apply_exclusive_class + emit_cells pass 2b; allocate_voices holds the
-              choked voice foreground until the choke); (b) the engine implements note 0x0004
-              (startFastFade): a ~0.3 s note-fade while the sample keeps playing, distinct from
-              ^^CUT's hard stop. Headless coverage: devtests/ixmp/FastFadeTest. Verified on
-              E2M1 (open hat no longer rings >0.3 s; crashes, not in a class, still ring out).
-        [ ] midi2taud: toggleable option for disabling filter for percussions [default: on]
-            - Anything on bank 127 and 128 (usually asso siated with ch 10)
-            - GeneralMIDI instruments 113..128
-        [x] midi2taud: instrument fadeout (release) is significantly longer than Fluidsynth
-            * DONE 2026-06-14. _zone_fadeout (midi2taud.py) now scales fade_sec by
-              _RELEASE_PERCEPTUAL_SCALE = 0.25, bringing the fadeout in line with FluidSynth's perceived
-              release. fadeStep comes out ~4× larger (faster fade). I kept the IT/FT2 engine path untouched
-              — it's shared, byte-faithful tracker behaviour and must stay linear-amplitude; the
-              compensation belongs on the encoder side. 0.25 targets the ~−22 dB "release ended" point.
-              If you find sustained pads now cut a touch short (their long tails are more noticeable),
-              nudging it toward 0.30–0.35 lengthens the tail without returning to the old over-long
-              behaviour.
-        [x] auto-set optimal-ish Tickspeed and RPB using MIDI Time Signature events and note analysis. Break pattern when Time Signature changes.
-            * DONE 2026-06-14. midi2taud.py now parses the time-signature meta event (FF 58) and
-              auto-sets the grid by DEFAULT (--rpb/--speed default to auto; passing one pins that
-              axis and auto-fits the other, pass both to override). auto_timing() picks F = rpb·speed
-              fine-ticks/beat to (a) represent the finest onset subdivision actually used
-              (_detect_subdivision: smallest 1/D-of-quarter grid covering >=95% of note onsets,
-              D in {1,2,3,4,6,8,12,16}), (b) keep every tempo inside the Taud BPM register [25,280],
-              and (c) anchor at the proven 24-fts/beat grid (smallest multiple of D that is >=24), so
-              plain material reproduces the old speed 6 / rpb 4. Lexicographic key: init-tempo-fits >
-              fewest-clamped-tempos > prefer-rpb-4 (rows = beats×rpb, so rpb caps pattern count;
-              speed is "free" sub-row + tempo precision) > closeness-to-F_want > exact-grid > near
-              speed 6. Verified rpb4/speed6 on Onestop / E1M1 / E2M1 / flourish / keep_on_rolling /
-              pokemon-theme. RPB bump (final step, both axes auto only): a bend-heavy (>=24 non-centre
-              bend events AND >=0.25/note) OR many-polyphony (peak simultaneous notes >= 10) song with
-              rpb < 8 gets rpb doubled / speed halved (F=rpb·speed, hence tempo, UNCHANGED) up to rpb 8,
-              so more rows host key-offs / chokes / bend-G / channel-M and fewer are eaten by same-row &
-              per-cell-slot collisions. Guarded by a cue/pattern-budget estimate so it can't flip a long
-              dense song into a hard error (pin --rpb 4 to opt out). Measured on Onestop: key-offs
-              absorbed 1856→1574, bend segments 266→552. All six demo MIDIs are dense → rpb8/speed3.
-              Pattern breaking: plan_cues() breaks a cue at every time-sig change and
-              packs each section into whole-bar cues (largest multiple of the bar length that fits in
-              64 rows) via the LEN cue instruction (constant 4/4 still = 64-row cues; 7/8 flourish =
-              56-row cues; mid-song change starts the new section on a fresh cue). The project-data
-              sMet block gets Primary beat division = rows per NOTATED beat (the time-sig denominator,
-              = round(rpb·4/2^dpow): 4 for x/4, 2 for x/8 — always a divisor of the bar so the highlight
-              stays bar-aligned; rpb=rows-per-quarter would drift on 7/8 since 14%4!=0) and Secondary =
-              rows per bar, so the tracker's bar/beat highlight lines up. sMet notation = 120 (12-TET;
-              MIDI is 12-TET) — REQUIRED now that taut.js honours notation on load (the taud_common
-              default 0 = "Raw format" would show hex note numbers). build_pattern_bin now takes
-              (cue_starts, cue_lens) instead of a flat 64-row chunking.
-              taut.js side: loadTaudSongList now reads beat_pri/beat_sec from sMet (were skipped) into
-              songsMeta.songs[i]; applySongBeatDiv() + applySongPitchPreset() apply per-song beat
-              divisions AND notation/pitch-preset on BOTH initial open and switchSong (initial open
-              previously left both at the 4/16 + 12-TET defaults — the latent pitch-preset gap is now
-              closed too). Only midi2taud emits sMet; the other 2taud converters omit it → 12-TET default.
-        [x] Taut UI commit
-            - Inst > Gen.1 > sample binding: ~~~....[two doubledots] et al. (n extra samples)
-            - Inst > Gen.2 > filter: IT/SF mode toggle (which also need to redefine slider range and their writebacks as IT takes 8-bit and SF takes 16-bit values)
-            - Samples playblobs: only active for actually playing samples
-            - Samples playcursor: true cursors for actually playing samples
-        [x] implement note-fade (0x0003) and wire it to it2taud
-            * DONE 2026-06-14. Engine: note word 0x0003 sets voice.noteFading (IT CHN_NOTEFADE,
-              Schism effects.c:1505-1509) — the instrument's own activeFadeoutStep drives
-              fadeoutVolume to 0 in the line ~3676 fade path while sustain loop + vol envelope
-              keep running; no applyKeyLift (sustain kept), no rate override (unlike fast fade
-              0x0004); a zero fadeout rings on, matching IT. Honours sub-row S$Dx delay (delayed
-              dispatch L3453). it2taud: IT_NOTE_FADE (246) now emits NOTE_NOTEFADE (0x0003)
-              instead of collapsing to key-off; NOTE_NOTEFADE added to taud_common.py.
-        [x] taut.js quit with TypeError: Cannot read property 'terminatorIdx' of undefined:
-            TypeError: Cannot read property 'terminatorIdx' of undefined
-                at drawEnvelopeCursor (<eval>:5312:22)
-                at drawInstrumentsContents (<eval>:4919:41)
-                at Object.onClick (<eval>:4984:17)
-                at dispatchMouseEvent (<eval>:6275:53)
-                at <eval>:6633:13
-                at Object.withEvent (<eval>:1168:27)
-                at _tvdosExec$microtone$tvdos$bin$taut$js (<eval>:6632:11)
-                at execApp (<eval>:1457:16)
-                at Object.execute (<eval>:893:38)
-                at <eval>:867:31
-        [x] Timbres of Heaven's Overdriven Gt decays EXTREMELY SLOWLY even after the fix
-            * DONE 2026-06-15. Root cause (engine). Overdriven Gt becomes a 4-layer Metainstrument.
-              Layer children inherit the parent's key-off only via the per-tick background-voice sync
-              (AudioAdapter.kt:3782), which requires parent.active. With a fast fadeout (fo=1067 = 1-tick
-              cut), the foreground voice deactivates in the same tick KEY_OFF fires — before the sync runs —
-              so the children were detached as orphans that never picked up the release and kept looping at
-              the ~0.70 sustain until the next note. That's the "extremely slow decay"/ringing tail, and it's
-              ToH-specific because ToH leans on multi-layer presets with short releases.
-              Fix (AudioAdapter.kt, inactive-parent branch): inherit parent.keyOff/noteFading before
-              detaching, mirroring the existing active-branch. parent.keyOff survives deactivation and is
-              reset on retrigger, so a true value means this note was released. A parent that ended naturally
-              (no release) still leaves the child to finish on its own.
-        [ ] Some ways to decouple Sample+Inst and patterns into separate files (tsvm-doom needs separate file access; samplepack can be uploaded once on init)
+    [x] Midi2Taud using .mid and .sf2 as input, trim unused samples and Ixmp patches
+    [x] .sf2 specific resample handling
+        1. If length exceeds 65535 samples, calculate resampling.
+        2. If calculated resampling >= 32000, use that.
+        3. If not, resample at 32000. If there is no loop defined, then loop the last 8192 samples (converter SHOULD NOT take that number at face value; perform waveform analysis to derive a smoother loop; converter MAY use that number as a starting number) and modify the fade value such that it decays to zero after 10 or so seconds of firing.
+        [x] Add option to force this behaviour for samples with loops that are far beyond the 64k limit (e.g. Timbres of Heaven)
+            * DONE 2026-06-15. Added `--force-synth-loop`
+    [x] Faithful .sf2 "release segment": Set NNA to 'Note Fade' (incl. drumkits), and make sure Volume Fadeout to have a correct number derived from the SF2 timecent unit (it seems SF2 defines envelope floor as 100 dB; needs check)
+        * DONE 2026-06-14. Floor CONFIRMED 100 dB (sfspec24.txt:1934-1941: releaseVolEnv ramps a constant 100 dB per its timecent value, "until 100dB attenuation were reached"). midi2taud.py now: (a) byte 186 NNA = Note Fade (0b11) for every instrument incl. drum kits (was melodic Key-Lift 0b100000 / drum Continue 0b10); (b) the vol-env no longer carries a release leg — it ENDS at the sustain node and the engine holds there on key-off (AudioAdapter.kt:1697-1701 holds a non-zero terminator, doesn't cut); (c) Volume Fadeout (base bytes 172-173 AND per-patch Ixmp 'x' block) = the release segment, fade_sec = releaseVolEnv·(1000−sus_cb)/1000 (the sustain-level → 100 dB-floor time), fadeStep = 2560/(fade_sec·bpm0) so the linear fade completes in that wall-clock time. Per-patch 'x' now also emits when only the release differs (faithful per-layer release). The engine's Key-Lift feature is unchanged (still used by KeyLiftTest); midi2taud simply stopped emitting it. See _zone_fadeout / _adsr_to_env in midi2taud.py.
+    [x] SF2 filter still sounds way too muffled?
+    [x] Drum notes get eaten (E2M1.mid)
+        * DONE 2026-06-14. Root cause: midi2taud ignored SF2 exclusiveClass (gen 57). SGM's
+          STANDARD 1 puts the closed/pedal/open hi-hats (keys 42/44/46) in class 1; without the
+          choke the open hi-hat's multi-second tail (≈4.9 s) washes over the whole beat and
+          buries the other hits. FluidSynth kills same-class voices on note-on
+          (fluid_synth_kill_by_exclusive_class → fluid_voice_kill_excl, a fast −2000-timecent
+          release ≈ 0.3 s). Fix in two parts: (a) midi2taud.py parses gen 57, and per drum
+          channel chokes each note at the next same-class onset — emitting the new fast-fade
+          note 0x0004 (apply_exclusive_class + emit_cells pass 2b; allocate_voices holds the
+          choked voice foreground until the choke); (b) the engine implements note 0x0004
+          (startFastFade): a ~0.3 s note-fade while the sample keeps playing, distinct from
+          ^^CUT's hard stop. Headless coverage: devtests/ixmp/FastFadeTest. Verified on
+          E2M1 (open hat no longer rings >0.3 s; crashes, not in a class, still ring out).
+    [x] midi2taud: instrument fadeout (release) is significantly longer than Fluidsynth
+        * DONE 2026-06-14. _zone_fadeout (midi2taud.py) now scales fade_sec by
+          _RELEASE_PERCEPTUAL_SCALE = 0.25, bringing the fadeout in line with FluidSynth's perceived
+          release. fadeStep comes out ~4× larger (faster fade). I kept the IT/FT2 engine path untouched
+          — it's shared, byte-faithful tracker behaviour and must stay linear-amplitude; the
+          compensation belongs on the encoder side. 0.25 targets the ~−22 dB "release ended" point.
+          If you find sustained pads now cut a touch short (their long tails are more noticeable),
+          nudging it toward 0.30–0.35 lengthens the tail without returning to the old over-long
+          behaviour.
+    [x] auto-set optimal-ish Tickspeed and RPB using MIDI Time Signature events and note analysis. Break pattern when Time Signature changes.
+        * DONE 2026-06-14. midi2taud.py now parses the time-signature meta event (FF 58) and
+          auto-sets the grid by DEFAULT (--rpb/--speed default to auto; passing one pins that
+          axis and auto-fits the other, pass both to override). auto_timing() picks F = rpb·speed
+          fine-ticks/beat to (a) represent the finest onset subdivision actually used
+          (_detect_subdivision: smallest 1/D-of-quarter grid covering >=95% of note onsets,
+          D in {1,2,3,4,6,8,12,16}), (b) keep every tempo inside the Taud BPM register [25,280],
+          and (c) anchor at the proven 24-fts/beat grid (smallest multiple of D that is >=24), so
+          plain material reproduces the old speed 6 / rpb 4. Lexicographic key: init-tempo-fits >
+          fewest-clamped-tempos > prefer-rpb-4 (rows = beats×rpb, so rpb caps pattern count;
+          speed is "free" sub-row + tempo precision) > closeness-to-F_want > exact-grid > near
+          speed 6. Verified rpb4/speed6 on Onestop / E1M1 / E2M1 / flourish / keep_on_rolling /
+          pokemon-theme. RPB bump (final step, both axes auto only): a bend-heavy (>=24 non-centre
+          bend events AND >=0.25/note) OR many-polyphony (peak simultaneous notes >= 10) song with
+          rpb < 8 gets rpb doubled / speed halved (F=rpb·speed, hence tempo, UNCHANGED) up to rpb 8,
+          so more rows host key-offs / chokes / bend-G / channel-M and fewer are eaten by same-row &
+          per-cell-slot collisions. Guarded by a cue/pattern-budget estimate so it can't flip a long
+          dense song into a hard error (pin --rpb 4 to opt out). Measured on Onestop: key-offs
+          absorbed 1856→1574, bend segments 266→552. All six demo MIDIs are dense → rpb8/speed3.
+          Pattern breaking: plan_cues() breaks a cue at every time-sig change and
+          packs each section into whole-bar cues (largest multiple of the bar length that fits in
+          64 rows) via the LEN cue instruction (constant 4/4 still = 64-row cues; 7/8 flourish =
+          56-row cues; mid-song change starts the new section on a fresh cue). The project-data
+          sMet block gets Primary beat division = rows per NOTATED beat (the time-sig denominator,
+          = round(rpb·4/2^dpow): 4 for x/4, 2 for x/8 — always a divisor of the bar so the highlight
+          stays bar-aligned; rpb=rows-per-quarter would drift on 7/8 since 14%4!=0) and Secondary =
+          rows per bar, so the tracker's bar/beat highlight lines up. sMet notation = 120 (12-TET;
+          MIDI is 12-TET) — REQUIRED now that taut.js honours notation on load (the taud_common
+          default 0 = "Raw format" would show hex note numbers). build_pattern_bin now takes
+          (cue_starts, cue_lens) instead of a flat 64-row chunking.
+          taut.js side: loadTaudSongList now reads beat_pri/beat_sec from sMet (were skipped) into
+          songsMeta.songs[i]; applySongBeatDiv() + applySongPitchPreset() apply per-song beat
+          divisions AND notation/pitch-preset on BOTH initial open and switchSong (initial open
+          previously left both at the 4/16 + 12-TET defaults — the latent pitch-preset gap is now
+          closed too). Only midi2taud emits sMet; the other 2taud converters omit it → 12-TET default.
+    [x] Taut UI commit
+        - Inst > Gen.1 > sample binding: ~~~....[two doubledots] et al. (n extra samples)
+        - Inst > Gen.2 > filter: IT/SF mode toggle (which also need to redefine slider range and their writebacks as IT takes 8-bit and SF takes 16-bit values)
+        - Samples playblobs: only active for actually playing samples
+        - Samples playcursor: true cursors for actually playing samples
+    [x] implement note-fade (0x0003) and wire it to it2taud
+        * DONE 2026-06-14. Engine: note word 0x0003 sets voice.noteFading (IT CHN_NOTEFADE,
+          Schism effects.c:1505-1509) — the instrument's own activeFadeoutStep drives
+          fadeoutVolume to 0 in the line ~3676 fade path while sustain loop + vol envelope
+          keep running; no applyKeyLift (sustain kept), no rate override (unlike fast fade
+          0x0004); a zero fadeout rings on, matching IT. Honours sub-row S$Dx delay (delayed
+          dispatch L3453). it2taud: IT_NOTE_FADE (246) now emits NOTE_NOTEFADE (0x0003)
+          instead of collapsing to key-off; NOTE_NOTEFADE added to taud_common.py.
+    [x] taut.js quit with TypeError: Cannot read property 'terminatorIdx' of undefined:
+        TypeError: Cannot read property 'terminatorIdx' of undefined
+            at drawEnvelopeCursor (<eval>:5312:22)
+            at drawInstrumentsContents (<eval>:4919:41)
+            at Object.onClick (<eval>:4984:17)
+            at dispatchMouseEvent (<eval>:6275:53)
+            at <eval>:6633:13
+            at Object.withEvent (<eval>:1168:27)
+            at _tvdosExec$microtone$tvdos$bin$taut$js (<eval>:6632:11)
+            at execApp (<eval>:1457:16)
+            at Object.execute (<eval>:893:38)
+            at <eval>:867:31
+    [x] Timbres of Heaven's Overdriven Gt decays EXTREMELY SLOWLY even after the fix
+        * DONE 2026-06-15. Root cause (engine). Overdriven Gt becomes a 4-layer Metainstrument.
+          Layer children inherit the parent's key-off only via the per-tick background-voice sync
+          (AudioAdapter.kt:3782), which requires parent.active. With a fast fadeout (fo=1067 = 1-tick
+          cut), the foreground voice deactivates in the same tick KEY_OFF fires — before the sync runs —
+          so the children were detached as orphans that never picked up the release and kept looping at
+          the ~0.70 sustain until the next note. That's the "extremely slow decay"/ringing tail, and it's
+          ToH-specific because ToH leans on multi-layer presets with short releases.
+          Fix (AudioAdapter.kt, inactive-parent branch): inherit parent.keyOff/noteFading before
+          detaching, mirroring the existing active-branch. parent.keyOff survives deactivation and is
+          reset on retrigger, so a true value means this note was released. A parent that ended naturally
+          (no release) still leaves the child to finish on its own.
+    [ ] Some ways to decouple Sample+Inst and patterns into separate files (tsvm-doom needs separate file access; samplepack can be uploaded once on init)
 
 TODO - list of demo songs that MUST ship with Microtone:
     * 4THSYM (rename to Fourth Symmetriad) — excellent piece for demonstrating NNAs and filter envelopes

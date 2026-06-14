@@ -1785,11 +1785,17 @@ def _effective_vol_env(z: SFZone, ms: 'MonoSample') -> dict:
 
 
 def build_sample_inst_bin(sf: SF2, pool: list, layer_insts: list, meta_records: list,
-                          fadeout_override, bpm0: int):
+                          fadeout_override, bpm0: int, force_synth_loop: bool = False):
     """Render & pool every used MonoSample (with the 65535-byte per-sample
     and 8 MB global caps), write the 256-byte normal-instrument records for every
     layer instrument, then the Metainstrument records. Returns the raw
-    SAMPLEINST_SIZE image."""
+    SAMPLEINST_SIZE image.
+
+    `force_synth_loop`: when a looped sample's loop sits past the 65535-frame cap
+    even at 32 kHz (case 3c), replace its real loop with a synthesized one at the
+    32 kHz floor instead of muffling the whole sample down to fit (the default).
+    Trades the genuine sustain loop for full bandwidth + a 10 s decay — useful for
+    banks of multi-second far-loop instruments (e.g. Timbres of Heaven)."""
     for ms in pool:
         ms.render(sf)
 
@@ -1817,15 +1823,13 @@ def build_sample_inst_bin(sf: SF2, pool: list, layer_insts: list, meta_records: 
             ms.data   = resample_linear(ms.data, r_fit)
             ms.ratio *= len(ms.data) / native_len
 
-        if rate_fit >= SF2_RESAMPLE_FLOOR_HZ:
-            _fit_whole()
-            vprint(f"  info: '{ms.name}' {native_len} frames > 64K cap; "
-                   f"resampling by {r_fit:.4f} (rate {rate_fit:.0f} Hz)")
-        elif ms.loop_native is None:
-            # (3) No loop: resample to the 32 kHz floor (full bandwidth), keep the first
-            # 65535 frames and synthesize a near-seamless sustain loop near the end, plus
-            # a peak->0 decay vol-envelope that fades the looped note to silence from
-            # note-on (the SF2 sample stops on its own otherwise; a loop would ring).
+        def _synth_path():
+            """(3) resample to the 32 kHz floor (full bandwidth), keep the first 65535
+            frames and synthesize a near-seamless sustain loop near the end, plus a
+            peak->0 decay vol-envelope that fades the looped note to silence from
+            note-on. Used for unlooped long samples, and (with --force-synth-loop) for
+            looped samples whose real loop won't fit at the floor. synth_loop takes
+            precedence over any real loop_native in the record/patch writers."""
             resampled = resample_linear(ms.data, r32)
             ms.ratio *= len(resampled) / native_len    # effective rate -> 32 kHz
             ms.data   = resampled
@@ -1833,8 +1837,17 @@ def build_sample_inst_bin(sf: SF2, pool: list, layer_insts: list, meta_records: 
             ms.data        = body
             ms.synth_loop  = (ls, le)
             ms.synth_decay = SF2_SYNTH_DECAY_SEC
+            return ls, le, len(body)
+
+        if rate_fit >= SF2_RESAMPLE_FLOOR_HZ:
+            _fit_whole()
+            vprint(f"  info: '{ms.name}' {native_len} frames > 64K cap; "
+                   f"resampling by {r_fit:.4f} (rate {rate_fit:.0f} Hz)")
+        elif ms.loop_native is None:
+            # (3) No loop: synthesize one at the 32 kHz floor.
+            ls, le, n = _synth_path()
             vprint(f"  info: '{ms.name}' {native_len} frames > 64K cap, long & unlooped; "
-                   f"32 kHz, kept {len(body)} frames, synth loop [{ls}..{le}] "
+                   f"32 kHz, kept {n} frames, synth loop [{ls}..{le}] "
                    f"+ {SF2_SYNTH_DECAY_SEC:.0f}s decay")
         elif le32 <= SAMPLE_LEN_LIMIT - 2:
             # (3) Looped, and the loop fits at the 32 kHz floor: resample to 32 kHz and
@@ -1846,11 +1859,20 @@ def build_sample_inst_bin(sf: SF2, pool: list, layer_insts: list, meta_records: 
             ms.data   = resampled[:SAMPLE_LEN_LIMIT]
             vprint(f"  info: '{ms.name}' {native_len} frames > 64K cap, long & looped; "
                    f"32 kHz, kept first {len(ms.data)} frames (loop_end {le32})")
+        elif force_synth_loop:
+            # (3c, forced) Looped, far loop, but --force-synth-loop: drop the genuine
+            # loop and synthesize one at the 32 kHz floor rather than muffling the whole
+            # sample. Full bandwidth + a 10 s decay, at the cost of the real sustain.
+            ls, le, n = _synth_path()
+            vprint(f"  info: '{ms.name}' {native_len} frames > 64K cap, long, looped, far "
+                   f"loop; FORCED synth: 32 kHz, kept {n} frames, synth loop [{ls}..{le}] "
+                   f"+ {SF2_SYNTH_DECAY_SEC:.0f}s decay")
         else:
             # (3) Looped but the loop sits past the 65535-frame cap at 32 kHz (a far-end
             # sustain loop on a multi-second sample): the floor rate can't hold it, so
             # downsample the whole sample to fit — the ratio-scaled loop stays valid,
-            # at a sub-32 kHz rate. (This is the pre-existing fit-to-cap behaviour.)
+            # at a sub-32 kHz rate. (This is the pre-existing fit-to-cap behaviour;
+            # --force-synth-loop swaps it for the synth path above.)
             _fit_whole()
             vprint(f"  info: '{ms.name}' {native_len} frames > 64K cap, long, looped, "
                    f"far loop; fit-to-cap by {r_fit:.4f} (rate {ms.rate * r_fit:.0f} Hz)")
@@ -2432,7 +2454,8 @@ def assemble_taud(sf: SF2, song: Song, layer_insts: list, meta_records: list,
 
     # ── Sample + instrument bin ──
     sampleinst_raw = build_sample_inst_bin(sf, pool, layer_insts, meta_records,
-                                           args.fadeout, bpm0)
+                                           args.fadeout, bpm0,
+                                           force_synth_loop=args.force_synth_loop)
     assert len(sampleinst_raw) == SAMPLEINST_SIZE
     compressed = compress_blob(sampleinst_raw, "sample+inst bin")
     comp_size  = len(compressed)
@@ -2569,6 +2592,13 @@ def main():
     ap.add_argument('--drum-keyoff', action='store_true',
                     help='Emit KEY_OFF for percussion-channel notes too '
                          '(GM drums normally ignore note-off)')
+    ap.add_argument('--force-synth-loop', action='store_true',
+                    help='For looped samples whose loop sits past the 65535-frame '
+                         'cap even at 32 kHz (multi-second far-loop instruments, '
+                         'e.g. Timbres of Heaven): replace the real loop with a '
+                         'synthesized one at 32 kHz + a 10 s decay, instead of '
+                         'muffling the whole sample down to fit. Trades the genuine '
+                         'sustain loop for full bandwidth')
     ap.add_argument('--no-project-data', action='store_true',
                     help='Omit the Project Data section — NOTE: this also '
                          'omits Ixmp, collapsing every instrument to its '
