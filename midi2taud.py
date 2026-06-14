@@ -2417,7 +2417,7 @@ def assemble_taud(sf: SF2, song: Song, layer_insts: list, meta_records: list,
         pat_bin_comp_size=len(pat_comp),
         cue_sheet_comp_size=len(cue_comp),
         global_vol=0xFF,
-        mixing_vol=0xFF,
+        mixing_vol=args.mixing_vol,
     )
 
     # ── Project data: names + the Ixmp section recreating SF2 layering ──
@@ -2525,6 +2525,10 @@ def main():
     ap.add_argument('--bend-epsilon', type=float, default=4.0,
                     help='Pitch-bend simplification threshold in cents '
                          '(default 4.0); smaller = more faithful')
+    ap.add_argument('--mixingvol', type=int, default=180, dest='mixing_vol',
+                    metavar='0..255',
+                    help='Song Mixingvol, 0..255 (default 180). Headroom for '
+                         'the summed polyphony before the final mix clips')
     ap.add_argument('--drum-keyoff', action='store_true',
                     help='Emit KEY_OFF for percussion-channel notes too '
                          '(GM drums normally ignore note-off)')
@@ -2542,6 +2546,8 @@ def main():
         sys.exit("error: --max-voices must be 1..20")
     if not (1 <= args.max_layers <= 25):
         sys.exit("error: --max-layers must be 1..25")
+    if not (0 <= args.mixing_vol <= 255):
+        sys.exit("error: --mixingvol must be 0..255")
     if args.output is None:
         args.output = os.path.splitext(args.input)[0] + '.taud'
 
