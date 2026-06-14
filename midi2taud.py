@@ -2553,8 +2553,8 @@ def main():
                          'few foreground voices are needed; songs exceeding '
                          'the budget release the oldest pedal-held or '
                          'soonest-ending note early')
-    ap.add_argument('--max-layers', type=int, default=4,
-                    help='Max simultaneous layers per note (default 4). Each SF2 '
+    ap.add_argument('--max-layers', type=int, default=25,
+                    help='Max simultaneous layers per note (default 25). Each SF2 '
                          'preset is split into this many disjoint layers; presets '
                          'needing >1 layer become a Metainstrument. 1 disables '
                          'layering (first-zone-wins, like the old behaviour). '

@@ -4966,7 +4966,7 @@ function drawInstTabMeta(e) {
     }
     if (shown < d.layers.length) {
         con.move(y, INST_RIGHT_X); con.color_pair(colInstGroupHdr, colBackPtn)
-        print('  … ' + (d.layers.length - shown) + ' more layer(s) (resize / not shown)')
+        print(` ${sym.doubledot}${sym.doubledot} ` + (d.layers.length - shown) + ' more layer(s) (resize / not shown)')
     }
 }
 
