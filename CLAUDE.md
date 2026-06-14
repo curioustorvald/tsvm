@@ -38,6 +38,27 @@ Current topics:
 - `reference_materials/MilkyTracker` — FastTracker 2 compatible tracker
 - `reference_materials/schismtracker` — Open-source re-implementation of ImpulseTracker
 - `reference_materials/pt2-clone` — Open-source re-implementation of ProTracker 2
+- `reference_materials/doom/` — id Software's GPL source release of DOOM
+  (linuxdoom-1.10). Reference for the TSVM DOOM port in
+  `assets/disk0/home/doom/`; demo-sync-critical tables, fixed-point maths and
+  playsim call order must be translated from this source, never from memory.
+- `reference_materials/soundfont/` — SoundFont 2.04 spec (PDF + `pdftotext`
+  rendering for citations) for `midi2taud.py`. The `README.md` digests SF2
+  *layering* semantics (all matching preset+instrument zones sound at once —
+  no "first wins"), a generator/modulator census of the three production banks
+  (SGM, Timbres of Heaven, Evanescence2), the spec-vs-files layering table, and
+  what implementing layering in Taud needs (no new per-layer params — Ixmp
+  already carries them; only multi-fire engine semantics + a layer cap of 4–5).
+  Probes: `devtests/sf2_layer_probe.py`, `devtests/sf2_gen_census.py`.
+- `reference_materials/fluidsynth/` — verbatim FluidSynth source, the reference
+  SoundFont 2 synthesiser. The audible ground truth for Taud's **SF2 filter
+  mode**: the SF2 voice low-pass is an **RBJ biquad** (cutoff in absolute cents
+  via `fluid_ct2hz`, Q from cB with FluidSynth's −3.01 dB Butterworth offset,
+  `1/√Q` passband gain-norm), NOT the IT all-pole filter. The `README.md`
+  digests the cutoff/Q/coefficient maths with file:line citations; ported into
+  `AudioAdapter.kt` `refreshVoiceFilter`/`applyVoiceFilter` (`filterSfMode`
+  branch) to fix the muffling vs. the old overdamped all-pole port. Upstream's
+  own README is preserved as `README.upstream.md`.
 
 When fetching new references, copy the relevant upstream files verbatim into
 a topic folder, write a `README.md` summarising the relevant maths /
@@ -171,7 +192,13 @@ The Taud playback engine lives in `tsvm_core/src/net/torvald/tsvm/peripheral/Aud
 
 ### Critical Implementation Notes
 
-**Re-bind the local `inst` after any mid-tick `triggerNote`.** `applyTrackerTick` binds `var inst = instruments[voice.instrumentId]` once at the top of the per-voice loop. When the note-delay (`S$Dx`) deferred trigger fires mid-tick, `triggerNote` swaps the voice's `instrumentId` — but the rest of that tick (playback-rate recompute at the `computePlaybackRate(inst, finalPitch)` line, `advanceEnvelope`, `advancePfEnvelope`, `advanceAutoVibrato`, and the fadeout / filter-env reads of `inst.*`) keeps using the captured binding. The damage on a **never-triggered voice** (`instrumentId == 0` → stale `inst = instruments[0]`, whose `samplingRate == 0`) is that `playbackRate` is overwritten with `0.0`, freezing the sample at its start for the trigger tick — perceived as "the first delayed note on a fresh channel doesn't fire" (canonical: WHEN.taud cue 0 voice 13 pattern 0x0A row 16, inst `0x11` SD2 on a fresh play). On a warm voice the stale `inst` is a real instrument with non-zero rate, so the note sounds (at the wrong rate for one tick — a sub-perceptual glitch). Re-bind `inst = instruments[voice.instrumentId]` immediately after the note-delay fire block. Any future in-tick trigger paths (currently only S$Dx) must do the same.
+**Re-bind the local `inst` after any mid-tick `triggerNote`.** `applyTrackerTick` binds `var inst = instruments[voice.instrumentId]` once at the top of the per-voice loop. When the note-delay (`S$Dx`) deferred trigger fires mid-tick, `triggerNote` swaps the voice's `instrumentId` — but the rest of that tick (playback-rate recompute at the `computePlaybackRate(inst, finalPitch)` line, `advanceEnvelope`, `advancePitchEnvelope`/`advanceFilterEnvelope`, `advanceAutoVibrato`, and the fadeout / filter-env reads of `inst.*`) keeps using the captured binding. The damage on a **never-triggered voice** (`instrumentId == 0` → stale `inst = instruments[0]`, whose `samplingRate == 0`) is that `playbackRate` is overwritten with `0.0`, freezing the sample at its start for the trigger tick — perceived as "the first delayed note on a fresh channel doesn't fire" (canonical: WHEN.taud cue 0 voice 13 pattern 0x0A row 16, inst `0x11` SD2 on a fresh play). On a warm voice the stale `inst` is a real instrument with non-zero rate, so the note sounds (at the wrong rate for one tick — a sub-perceptual glitch). Re-bind `inst = instruments[voice.instrumentId]` immediately after the note-delay fire block. Any future in-tick trigger paths (currently only S$Dx) must do the same.
+
+**Per-patch envelopes go through the Voice's ACTIVE-envelope view, never `inst.*` directly.** Since 2026-06-13 an Ixmp patch can carry its own volume / pan / filter / pitch envelopes (+ fadeout / cutoff / resonance) — see terranmon.txt §Ixmp, variable-length patches. `applyActiveSample` → `resolveActiveEnvelopes(voice, inst, patch)` snapshots the effective envelope source onto `voice.active{Vol,Pan,Pitch,Filter}Env{,Loop,Sustain}`, `voice.has{Pitch,Filter}Env`, and `voice.active{FadeoutStep,DefaultCutoff,DefaultResonance}`. The base instrument exposes **two** pf-envelope slots — bytes 19.. (`pfEnv*`) and bytes 197..250 (`pf2Env*`, the mandatory complement) — routed into the pitch/filter roles by each slot's m-bit (LOOP-word bit 7). `advanceEnvelope` (vol+pan), `advancePitchEnvelope`, `advanceFilterEnvelope`, `applyKeyLift`, the per-tick pitch/filter/fadeout application (foreground AND background), and `triggerNote`'s envelope seeds must ALL read the `voice.active*` view, not `inst.*`. `copyVoice` (NNA ghost) must copy the whole active view so ghosts keep their patch's envelopes. There is no single `envPf*`/`envPfIsFilter` field any more — it was split into explicit `envPitch*`/`envFilter*` pairs. Headless coverage: `devtests/ixmp/PatchEnvTest` (per-patch env applied) + `IxmpFileTest /tmp/m_e1m1.taud`.
+
+**The shared pitch/filter envelope walker (`advancePfRole`) must SKIP zero-duration nodes, not freeze on them.** A node whose `offset` rounds to 0 — sub-4 ms, since `ThreeFiveMinifloat`'s smallest non-zero step is ≈3.9 ms — represents an instant transition; the walk must advance to the next node. The old code `return`ed on `offset == 0.0` without advancing the index, stranding fast-attack envelopes at their first node. The audible damage: SF2 filter mod-envelopes (`midi2taud.py` `_filter_env_block_sf`) routinely have a ~1 ms attack that stores offset 0, so the filter never opened from its base cutoff to its sustain cutoff — Strings/Flute/Guitar (SGM base ~600 Hz, sustain ~6 kHz) and low-base sweep drums played permanently muffled at their floor. The skip loop stops at a sustain/loop boundary (`susEnd`, handled by the dispatch above) or `maxIdx`. This also affects pitch mod-envs and any IT/XM envelope with a zero-tick (vertical-jump) node, all now correct. There is still a one-tick (≈seed) delay before the env opens — inaudible on sustained notes; the seed value is the base node.
+
+**SoundFont filter mode uses an RBJ biquad, NOT the IT all-pole filter.** `refreshVoiceFilter` has two topologies. The IT/tracker path (`else` branch) is the all-pole 2-pole resonant LPF from `reference_materials/tracker_filter/` (no feedforward zeros) — must stay byte-faithful for tracker playback, do not touch it. The **`filterSfMode` branch ports FluidSynth's voice filter** (`reference_materials/fluidsynth/`, see its `README.md`): cutoff = absolute cents → Hz via `8.176·2^(cents/1200)` clamped to `[5 Hz, 0.45·fs]`; Q from centibels with FluidSynth's **−3.01 dB offset** (so Q=0 cB ⇒ q_lin = 1/√2 Butterworth, no resonance hump); RBJ cookbook low-pass coefficients with the SF2 `1/√Q` passband gain-norm. `applyVoiceFilter` runs the biquad (Direct Form I: `y = b02·(x+x₂) + b1·x₁ − a1·y₁ − a2·y₂`) when `voice.filterIsBiquad`. The old code reused the all-pole filter for SF mode too; it is overdamped and rolled the passband off ~3 dB @ 8 kHz / ~5 dB @ 12 kHz vs FluidSynth → audible muffling on every filtered GM instrument. Per-voice biquad state (`filterBqB02/B1/A1/A2`, input history `filterX1/X2`) must be reset on trigger/retrigger and copied in `copyVoice` (NNA ghost) alongside the output history. The background-voice filter-env path must branch on `filterSfMode` too, else an SF-mode ghost's cents-domain cutoff gets clamped into the IT 0..254 byte range (≈9 Hz → silence).
 
 ## TVDOS
 

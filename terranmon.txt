@@ -2799,7 +2799,15 @@ TODO:
         [ ] midi2taud: toggleable option for disabling filter for percussions [default: on]
             - Anything on bank 127 and 128 (usually asso siated with ch 10)
             - GeneralMIDI instruments 113..128
-        [ ] midi2taud: instrument fadeout (release) is significantly longer than Fluidsynth
+        [x] midi2taud: instrument fadeout (release) is significantly longer than Fluidsynth
+            * DONE 2026-06-14. _zone_fadeout (midi2taud.py) now scales fade_sec by
+              _RELEASE_PERCEPTUAL_SCALE = 0.25, bringing the fadeout in line with FluidSynth's perceived
+              release. fadeStep comes out ~4× larger (faster fade). I kept the IT/FT2 engine path untouched
+              — it's shared, byte-faithful tracker behaviour and must stay linear-amplitude; the
+              compensation belongs on the encoder side. 0.25 targets the ~−22 dB "release ended" point.
+              If you find sustained pads now cut a touch short (their long tails are more noticeable),
+              nudging it toward 0.30–0.35 lengthens the tail without returning to the old over-long
+              behaviour.
         [ ] auto-set optimal-ish Tickspeed and RPB using MIDI Time Signature events and note analysis. Break pattern when Time Signature changes.
 
             Time Signature

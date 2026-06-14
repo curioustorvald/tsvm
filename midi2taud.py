@@ -38,8 +38,10 @@ Behaviour (per midi2taud.md):
     is the Volume Fadeout (with NNA Note Fade): on key-off the voice holds at
     the sustain node and fades to silence over the SF2 releaseVolEnv time
     (measured against the 100 dB envelope floor: releaseVolEnv·(1000−sus_cb)/
-    1000 seconds). Per-layer Ixmp patches carry their own fadeout when their
-    release differs. The canonical zone's ADSR represents the instrument.
+    1000 seconds, then scaled to FluidSynth's PERCEIVED release length because
+    the engine's fadeout is linear in amplitude, not dB — see _zone_fadeout).
+    Per-layer Ixmp patches carry their own fadeout when their release differs.
+    The canonical zone's ADSR represents the instrument.
   * Polyphony rides the engine's New Note Action (matching MIDI semantics):
     every instrument (drum kits included) gets NNA = Note Fade, so a voice
     column is reusable the moment its note releases — the release/fade tail
@@ -1368,20 +1370,36 @@ def _filter_env_block_sf(z: SFZone, base_fc: float, amt: float, peak: int) -> di
     return {'loop': loop, 'sustain': sustain, 'nodes': nodes}
 
 
+# The engine's Volume Fadeout is LINEAR IN AMPLITUDE (fadeoutVolume drops 1→0 by
+# fadeStep/1024 per tick — AudioAdapter.kt ~L3679), whereas FluidSynth's release ramps
+# attenuation LINEARLY IN dB (amplitude decays exponentially: −96 dB over releaseVolEnv).
+# Matching the two on "time to the absolute floor" makes the linear fade sound MUCH longer:
+# a linear-amplitude fade is still at −6 dB at 50 % of its length and −20 dB only at 90 %,
+# while FluidSynth is already −96 dB (silent) by then. The perceived release tail ends when
+# FluidSynth has dropped ≈22 dB; for the linear fade to land there at the same wall-clock
+# time it must complete in ≈0.25·releaseVolEnv (see the −18..−24 dB crossing band). This
+# scale brings the fadeout in line with FluidSynth's audible release length.
+_RELEASE_PERCEPTUAL_SCALE = 0.25
+
+
 def _zone_fadeout(z: SFZone, bpm0: int, fadeout_override) -> int:
     """Volume Fadeout step encoding the zone's SF2 release segment (gen 38,
     releaseVolEnv). With NNA Note Fade the fadeout IS the release: on key-off the
-    voice holds at the sustain level and fades linearly to silence. The SF2 release
-    ramps a constant 100 dB per `releaseVolEnv` seconds (spec sfspec24.txt:1934-1941
-    — "until 100dB attenuation were reached"), so the time from the sustain level
-    (sus_cb cB of attenuation) down to the 100 dB floor is
-    releaseVolEnv·(1000−sus_cb)/1000. fadeStep makes the fadeout complete in that
-    wall-clock time at bpm0: the engine subtracts fadeStep/1024 of unit volume per
-    song tick, and the tick rate is bpm0·2/5 Hz, giving fadeStep = 2560/(fade_sec·bpm0)."""
+    voice holds at the sustain level and fades to silence. The SF2 release ramps a
+    constant 100 dB per `releaseVolEnv` seconds (spec sfspec24.txt:1934-1941 — "until
+    100dB attenuation were reached"), so the time from the sustain level (sus_cb cB of
+    attenuation) down to the 100 dB floor is releaseVolEnv·(1000−sus_cb)/1000.
+
+    But the engine's fadeout is linear in AMPLITUDE while FluidSynth's release is linear
+    in dB (see [_RELEASE_PERCEPTUAL_SCALE]); matching the floor-reaching time would make
+    the audible tail ~4× too long, so fade_sec is scaled to FluidSynth's perceived release.
+    fadeStep makes the fadeout complete in fade_sec at bpm0: the engine subtracts
+    fadeStep/1024 of unit volume per song tick, and the tick rate is bpm0·2/5 Hz, giving
+    fadeStep = 2560/(fade_sec·bpm0)."""
     if fadeout_override is not None:
         return min(0xFFF, max(0, fadeout_override))
     sus_cb   = min(max(0.0, z.env_sustain_cb), 1000.0)
-    fade_sec = max(0.02, z.env_release * (1000.0 - sus_cb) / 1000.0)
+    fade_sec = max(0.02, _RELEASE_PERCEPTUAL_SCALE * z.env_release * (1000.0 - sus_cb) / 1000.0)
     return max(1, min(0xFFF, round(2560.0 / (fade_sec * bpm0))))
 
 
