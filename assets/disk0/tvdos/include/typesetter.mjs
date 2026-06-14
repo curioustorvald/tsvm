@@ -70,7 +70,7 @@ function expandEntities(s) {
         .replaceAll('&udlr;',       '\u008428u\u008429u')
         .replaceAll('&keyoffsym;',  '\u00A0\u00B1\u00B1\u00A1')
         .replaceAll('&notecutsym;', '\u00A4\u00A4\u00A4\u00A4')
-        .replaceAll('&nbsp;',       '\u007F')
+        .replaceAll('&nbsp;',       ' ')
         .replaceAll('&shy;',        '')
         .replaceAll('&lt;',        '<')
         .replaceAll('&gt;',        '>')
@@ -105,7 +105,7 @@ function expandEntities(s) {
 // Width accounting:
 //   - ANSI escapes (`\x1B[...m`)         : 0 visible chars
 //   - TSVM unicode escapes (`\u0084..u`) : 1 visible char
-//   - non-breaking space (\u007F)        : 1 visible char (consumed as part of a word)
+//   - non-breaking space (' ')        : 1 visible char (consumed as part of a word)
 //   - soft hyphen (\u00AD)               : dropped (not implemented as a break point)
 //   - everything else                    : 1 visible char
 function tokenise(line) {

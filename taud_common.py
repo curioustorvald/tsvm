@@ -99,6 +99,8 @@ SAMPLE_LEN_LIMIT = 65535
 NOTE_NOP    = 0x0000
 NOTE_KEYOFF = 0x0001
 NOTE_CUT    = 0x0002
+# 0x0003 reserved for Impulse Tracker Note Fade.
+NOTE_FASTFADE = 0x0004   # ~0.3 s note-fade (SF2 exclusiveClass choke; fluid_voice_kill_excl)
 TAUD_C4     = 0x5000   # The audio engine's Middle C
 
 # Cue sheet instruction byte (cue offset 30; offset 31 = arg byte for 2-byte forms).

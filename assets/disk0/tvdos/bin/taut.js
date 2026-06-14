@@ -52,6 +52,8 @@ doubledntick:"\u009D",
 /* special notes */
 keyoff:"\u00A0\u00B1\u00B1\u00A1",
 notecut:"\u00A4\u00A4\u00A4\u00A4",
+notefade:"~~~~",
+notefastfade:"\u0084127u".repeat(4),
 
 /* special effects */
 volset:'',//MIDDOT,
@@ -494,7 +496,7 @@ function retuneAllPatterns(newIdx, method) {
                 for (let row = 0; row < ROWS_PER_PAT; row++) {
                     const off = 8 * row
                     const note = ptn[off] | (ptn[off+1] << 8)
-                    if (note === 0x0000 || note === 0x0001 || note === 0x0002 || (note >= 0x0010 && note <= 0x001F)) continue
+                    if (note >= 0x0000 && note <= 0x001F) continue
                     // Use the full absolute pitch as tonic; the modular ops
                     // in _cadTension / _harmonicCost normalise it.
                     tonic = note
@@ -504,7 +506,7 @@ function retuneAllPatterns(newIdx, method) {
             for (let row = 0; row < ROWS_PER_PAT; row++) {
                 const off = 8 * row
                 const note = ptn[off] | (ptn[off+1] << 8)
-                if (note === 0x0000 || note === 0x0001 || note === 0x0002 || (note >= 0x0010 && note <= 0x001F)) continue
+                if (note >= 0x0000 && note <= 0x001F) continue
                 const origAbs = note
                 let newAbs
                 if ((method === 'delta' || method === 'cadence' || method === 'harmonic') && prevOrigAbs >= 0) {
@@ -589,6 +591,8 @@ function noteToStr(note) {
     if (note === 0x0000) return sym.middot.repeat(4)
     if (note === 0x0001) return sym.keyoff
     if (note === 0x0002) return sym.notecut
+    if (note === 0x0003) return sym.notefade
+    if (note === 0x0004) return sym.notefastfade
     if (note >= 0x0010 && note <= 0x001F) return ('Int' + (note & 0xF).toString(16).toUpperCase()).padEnd(4)
     const preset = pitchTablePresets[PITCH_PRESET_IDX]
     if (preset.table.length === 0) return note.hex04()

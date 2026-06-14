@@ -2783,7 +2783,22 @@ TODO:
         [x] Faithful .sf2 "release segment": Set NNA to 'Note Fade' (incl. drumkits), and make sure Volume Fadeout to have a correct number derived from the SF2 timecent unit (it seems SF2 defines envelope floor as 100 dB; needs check)
             * DONE 2026-06-14. Floor CONFIRMED 100 dB (sfspec24.txt:1934-1941: releaseVolEnv ramps a constant 100 dB per its timecent value, "until 100dB attenuation were reached"). midi2taud.py now: (a) byte 186 NNA = Note Fade (0b11) for every instrument incl. drum kits (was melodic Key-Lift 0b100000 / drum Continue 0b10); (b) the vol-env no longer carries a release leg — it ENDS at the sustain node and the engine holds there on key-off (AudioAdapter.kt:1697-1701 holds a non-zero terminator, doesn't cut); (c) Volume Fadeout (base bytes 172-173 AND per-patch Ixmp 'x' block) = the release segment, fade_sec = releaseVolEnv·(1000−sus_cb)/1000 (the sustain-level → 100 dB-floor time), fadeStep = 2560/(fade_sec·bpm0) so the linear fade completes in that wall-clock time. Per-patch 'x' now also emits when only the release differs (faithful per-layer release). The engine's Key-Lift feature is unchanged (still used by KeyLiftTest); midi2taud simply stopped emitting it. See _zone_fadeout / _adsr_to_env in midi2taud.py.
         [x] SF2 filter still sounds way too muffled?
-        [ ] Drum notes get eaten (E2M1.mid)
+        [x] Drum notes get eaten (E2M1.mid)
+            * DONE 2026-06-14. Root cause: midi2taud ignored SF2 exclusiveClass (gen 57). SGM's
+              STANDARD 1 puts the closed/pedal/open hi-hats (keys 42/44/46) in class 1; without the
+              choke the open hi-hat's multi-second tail (≈4.9 s) washes over the whole beat and
+              buries the other hits. FluidSynth kills same-class voices on note-on
+              (fluid_synth_kill_by_exclusive_class → fluid_voice_kill_excl, a fast −2000-timecent
+              release ≈ 0.3 s). Fix in two parts: (a) midi2taud.py parses gen 57, and per drum
+              channel chokes each note at the next same-class onset — emitting the new fast-fade
+              note 0x0004 (apply_exclusive_class + emit_cells pass 2b; allocate_voices holds the
+              choked voice foreground until the choke); (b) the engine implements note 0x0004
+              (startFastFade): a ~0.3 s note-fade while the sample keeps playing, distinct from
+              ^^CUT's hard stop. Headless coverage: devtests/ixmp/FastFadeTest. Verified on
+              E2M1 (open hat no longer rings >0.3 s; crashes, not in a class, still ring out).
+        [ ] midi2taud: toggleable option for disabling filter for percussions [default: on]
+            - Anything on bank 127 and 128 (usually asso siated with ch 10)
+            - GeneralMIDI instruments 113..128
         [ ] auto-set optimal-ish Tickspeed and RPB using MIDI Time Signature events and note analysis. Break pattern when Time Signature changes.
 
             Time Signature
@@ -2808,6 +2823,19 @@ TODO:
             - Inst > Gen.2 > filter: IT/SF mode toggle
             - Samples playblobs: only active for actually playing samples
             - Samples playcursor: true cursors for actually playing samples
+        [ ] implement note-fade (0x0003) and wire it to it2taud
+        [ ] taut.js quit with TypeError: Cannot read property 'terminatorIdx' of undefined:
+            TypeError: Cannot read property 'terminatorIdx' of undefined
+                at drawEnvelopeCursor (<eval>:5312:22)
+                at drawInstrumentsContents (<eval>:4919:41)
+                at Object.onClick (<eval>:4984:17)
+                at dispatchMouseEvent (<eval>:6275:53)
+                at <eval>:6633:13
+                at Object.withEvent (<eval>:1168:27)
+                at _tvdosExec$microtone$tvdos$bin$taut$js (<eval>:6632:11)
+                at execApp (<eval>:1457:16)
+                at Object.execute (<eval>:893:38)
+                at <eval>:867:31
 
 TODO - list of demo songs that MUST ship with Microtone:
     * 4THSYM (rename to Fourth Symmetriad) — excellent piece for demonstrating NNAs and filter envelopes
@@ -2833,8 +2861,10 @@ notes are tuned as 4096 Tone-Equal Temperament. Tuning is set per-sample using t
 Special values:
 
 note 0x0000: no-op
-note 0x0001: key-off
-note 0x0002: note cut
+note 0x0001: key-off (====)
+note 0x0002: note cut (^^^^)
+note 0x0003: note fade (~~~~)
+note 0x0004: fast fade (vvvv)
 note 0x0010..0x001F: Interrupt 0..F (notation: Int0..IntF) — reserved interrupt slots; engine has no default handler.
 
 inst 0: no instrument change

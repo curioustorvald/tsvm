@@ -150,6 +150,11 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         // 8 ms at 32 kHz — long enough to bury the click, short enough not to read as fade.
         // Applied on sample end only (preserves attack transients on note start).
         const val RAMP_OUT_SAMPLES = 256
+        // Fast note-fade (note word 0x0004): a quick choke for SF2 exclusiveClass (e.g. a
+        // closed hi-hat silencing a ringing open hi-hat). FluidSynth's kill uses
+        // GEN_VOLENVRELEASE = -2000 timecents ≈ 0.315 s (fluid_voice.c:1404); the voice keeps
+        // playing while fadeoutVolume ramps to zero over this time, then deactivates.
+        const val FAST_FADE_SEC = 0.3
         // Volume-change anti-click ramp: voleff/notefx (volume column, D vol-slides,
         // tremor, tremolo, retrig vol-mod, fine slides etc.) mutate Voice.rowVolume
         // and M / N mutate Voice.channelVolume mid-note. The mixer ramps the actual
@@ -2199,6 +2204,22 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     }
 
     /**
+     * Fast note-fade (note word 0x0004 — SF2 exclusiveClass choke). Starts an immediate
+     * note-fade that drives fadeoutVolume from 1.0 to 0.0 over [FAST_FADE_SEC] while the
+     * sample keeps advancing (unlike ^^CUT's hard stop, and far quicker than the
+     * instrument's own release fadeout). The per-tick fadeout step (subtracted as
+     * fadeStep/1024 each song tick at bpm·0.4 Hz) is sized to the current tempo so the
+     * fade lands on [FAST_FADE_SEC] regardless of BPM. Mirrors FluidSynth's
+     * fluid_voice_kill_excl (a −2000-timecent release). No-op on an inactive voice.
+     */
+    private fun startFastFade(voice: Voice, playhead: Playhead) {
+        if (!voice.active) return
+        voice.noteFading = true
+        val ticks = (FAST_FADE_SEC * playhead.bpm * 0.4).coerceAtLeast(1.0)
+        voice.activeFadeoutStep = (1024.0 / ticks).roundToInt().coerceIn(1, 0xFFF)
+    }
+
+    /**
      * Per-sample volume-ramp tick. Smooths [Voice.currentMixVolume] toward
      * `(rowVolume / 63.0) × (channelVolume / 63.0)` over [VOL_RAMP_SAMPLES]
      * samples whenever the mixer detects a discrepancy. Discrepancies arise
@@ -2906,6 +2927,19 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                         voice.delayedInst = 0; voice.delayedVol = -1
                     } else { voice.active = false; cutLayerChildren(ts, vi) }  // note cut (immediate)
                 }
+                // Fast note-fade (SF2 exclusiveClass choke): begin a ~0.3 s fade. Honours a
+                // sub-row S$Dx delay the same way KEY_OFF / note-cut do.
+                0x0004 -> {
+                    val dTick = if ((row.effect == EffectOp.OP_S) && ((row.effectArg ushr 12) and 0xF) == 0xD)
+                                (row.effectArg ushr 8) and 0xF else 0
+                    if (dTick > 0) {
+                        voice.noteDelayTick = dTick; voice.delayedNote = 0x0004
+                        voice.delayedInst = 0; voice.delayedVol = -1
+                    } else {
+                        startFastFade(voice, playhead)
+                    }
+                }
+                // 0x0003 (IT-style slow note fade, "~~~~") not yet implemented; 0x0005..0x000F reserved.
                 in 0x0003..0x000F -> { /* reserved sentinel range, no engine handler */ }
                 in 0x0010..0x001F -> { /* Int0..IntF: reserved interrupt slots, no engine handler yet */ }
                 else -> {
@@ -3397,6 +3431,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                         applyKeyLift(voice, instruments[voice.instrumentId])
                     }
                     0x0002 -> { voice.active = false; cutLayerChildren(ts, vi) }  // delayed note cut
+                    0x0004 -> startFastFade(voice, playhead)                      // delayed fast fade
                     else -> {
                         applyDuplicateCheck(ts, vi, voice.delayedInst, voice.delayedNote)
                         maybeSpawnBackgroundForNNA(ts, voice, vi)

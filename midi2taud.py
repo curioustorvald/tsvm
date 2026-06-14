@@ -46,6 +46,11 @@ Behaviour (per midi2taud.md):
     moves to a background ghost on the next trigger and dies over its own
     release time. Voice budget defaults to 16 columns (--max-voices); overflow
     releases the oldest pedal-held or soonest-ending note early, not cut.
+  * SF2 exclusiveClass (gen 57) is honoured on the percussion channel: a new note
+    in a class chokes any ringing note of the same class (e.g. a closed hi-hat
+    silences a ringing open hi-hat), matching FluidSynth's kill-by-exclusive-class.
+    The choke is the new fast note-fade (note 0x0004, ~0.3 s) emitted at the next
+    same-class onset; without it long percussion tails wash over the whole beat.
   * Sub-row timing is carried by S $Dx note delays (one row = `--speed`
     ticks, default 6; one beat = `--rpb` rows, default 4 → 1/24-beat grid).
     MIDI tempo changes map to T $xx00 set-tempo effects; channel volume /
@@ -66,7 +71,7 @@ from taud_common import (
     TAUD_MAGIC, TAUD_VERSION, TAUD_HEADER_SIZE, TAUD_SONG_ENTRY,
     SAMPLEBIN_SIZE, INSTBIN_SIZE, SAMPLEINST_SIZE, SAMPLE_LEN_LIMIT,
     PATTERN_ROWS, PATTERN_BYTES, NUM_PATTERNS_MAX, NUM_CUES, CUE_SIZE, NUM_VOICES,
-    NOTE_NOP, NOTE_KEYOFF, TAUD_C4,
+    NOTE_NOP, NOTE_KEYOFF, NOTE_FASTFADE, TAUD_C4,
     TOP_G, TOP_M, TOP_S, TOP_T,
     SEL_SET, SEL_FINE,
     CUE_INST_NOP, CUE_INST_HALT,
@@ -220,7 +225,7 @@ def parse_midi(path: str):
 
 class Note:
     __slots__ = ('ch', 'key', 'vel', 'start_ft', 'end_ft', 'inst_key',
-                 'bend0', 'slot', 'voice', 'drum', 'pedal_ft')
+                 'bend0', 'slot', 'voice', 'drum', 'pedal_ft', 'excl_cut_ft')
     def __init__(self, ch, key, vel, start_ft, inst_key, bend0):
         self.ch       = ch
         self.key      = key
@@ -233,6 +238,7 @@ class Note:
         self.voice    = -1
         self.drum     = (inst_key[0] == 'd')
         self.pedal_ft = None     # physical key-up time when only the pedal holds it
+        self.excl_cut_ft = None  # ft at which a same-exclusiveClass note chokes this one
 
 
 class _ChState:
@@ -434,6 +440,7 @@ GEN_FILTERFC         = 8      # initialFilterFc (absolute cents; default 13500 =
 GEN_FILTERQ          = 9      # initialFilterQ (cB of resonance; default 0)
 GEN_MODENV2FILT      = 11     # modEnvToFilterFc (signed cents at full mod-env)
 GEN_END_COARSE       = 12
+GEN_EXCLUSIVECLASS   = 57     # drum mutual-exclusion group (instrument-level; 0 = none)
 GEN_PAN              = 17
 GEN_DELAY_MODENV     = 25
 GEN_ATTACK_MODENV    = 26
@@ -502,7 +509,9 @@ class SFZone:
                  'atten_cb', 'filter_fc', 'filter_q',
                  # modulation envelope (drives pitch and/or filter) + its targets.
                  'm_delay', 'm_attack', 'm_hold', 'm_decay', 'm_sustain_pc',
-                 'm_release', 'me2pitch', 'me2filt')
+                 'm_release', 'me2pitch', 'me2filt',
+                 # exclusiveClass (gen 57): drum mutual-exclusion group (0 = none).
+                 'excl_class')
 
 
 class SF2:
@@ -714,6 +723,11 @@ def parse_sf2(path: str) -> SF2:
                                                 + pz.get(GEN_RELEASE_MODENV, 0))
                 z.me2pitch  = iz.get(GEN_MODENV2PITCH, 0) + pz.get(GEN_MODENV2PITCH, 0)
                 z.me2filt   = iz.get(GEN_MODENV2FILT,  0) + pz.get(GEN_MODENV2FILT,  0)
+                # exclusiveClass is instrument-level and NON-additive (SF2.04 §8.1.2 #57):
+                # a new note in class C kills sounding notes of the same class on the same
+                # channel (FluidSynth fluid_synth_kill_by_exclusive_class). Drum kits use it
+                # so a closed hi-hat (42) chokes a ringing open hi-hat (46).
+                z.excl_class = iz.get(GEN_EXCLUSIVECLASS, 0)
                 z.a_start = (s.start + iz.get(GEN_START_OFF, 0)
                              + 32768 * iz.get(GEN_START_COARSE, 0))
                 z.a_end   = (s.end + iz.get(GEN_END_OFF, 0)
@@ -809,6 +823,54 @@ def merge_stereo_zones(zones: list, shdrs: list) -> list:
                                       z2.a_end - z2.a_start)
         out.append(z)
     return out
+
+
+def apply_exclusive_class(song, sf, perc_force):
+    """SF2 exclusiveClass (gen 57): starting a note in class C kills any ringing note
+    of the same class on the same channel — FluidSynth's
+    fluid_synth_kill_by_exclusive_class (fluid_synth.c:5453). GM drum kits use it so a
+    closed hi-hat (key 42) chokes a ringing open hi-hat (key 46); without it the open
+    hi-hat's multi-second tail washes over the whole beat and buries the other hits.
+
+    Resolve each percussion note's exclusiveClass from the SF2 zone it plays, then within
+    each (channel, class) serialise the chokes: every note is cut at the next note of the
+    same class that starts strictly later. `emit_cells` emits a fast note-fade
+    (NOTE_FASTFADE) at that point and `allocate_voices` keeps the choked voice foreground
+    until then. Drum channel only — GM melodic presets do not set gen 57, and a hard choke
+    would fight the melodic key-off/release machinery."""
+    zone_cache = {}
+    def excl_of(n):
+        if not n.drum:
+            return 0
+        zones = zone_cache.get(n.inst_key)
+        if zones is None:
+            res = resolve_preset(sf, n.inst_key, perc_force)
+            zones = merge_stereo_zones(res[1], sf.shdrs) if res else []
+            zone_cache[n.inst_key] = zones
+        # SF2 zone selection: first zone whose key/velocity rect contains the note.
+        for z in zones:
+            if z.keylo <= n.key <= z.keyhi and z.vello <= n.vel <= z.velhi:
+                return z.excl_class
+        return 0
+
+    groups = {}
+    for n in song.notes:
+        c = excl_of(n)
+        if c:
+            groups.setdefault((n.ch, c), []).append(n)
+
+    n_cut = 0
+    for notes in groups.values():
+        notes.sort(key=lambda n: n.start_ft)
+        for i, n in enumerate(notes):
+            for j in range(i + 1, len(notes)):
+                if notes[j].start_ft > n.start_ft:    # next strictly-later onset chokes n
+                    n.excl_cut_ft = notes[j].start_ft
+                    n_cut += 1
+                    break
+    if n_cut:
+        vprint(f"  exclusiveClass: {n_cut} percussion choke(s) across "
+               f"{len(groups)} group(s)")
 
 
 def _rect_of_zone(z: SFZone):
@@ -1763,6 +1825,14 @@ def allocate_voices(notes: list, speed: int, max_voices: int) -> int:
             end_row = srow + 1                       # ghost carries the ring
         else:
             end_row = max(srow + 1, n.end_ft // speed)   # free at key-off row
+        if n.excl_cut_ft is not None:
+            # exclusiveClass choke: hold the voice through the choke row so this note stays
+            # FOREGROUND until then (the fast-fade cell must land on it, not a ghost), and so
+            # the choking same-class note cannot reuse this column at the choke row.
+            crow = n.excl_cut_ft // speed
+            if crow <= srow:
+                crow = srow + 1
+            end_row = max(end_row, crow + 1)
         n.voice = v
         v_end[v], v_slot[v], v_note[v] = end_row, n.slot, n
     if stolen:
@@ -1847,6 +1917,32 @@ def emit_cells(song: Song, insts: dict, speed: int, rpb: int,
             skipped_offs += 1    # row taken by a retrigger — which cuts/NNAs anyway
     if skipped_offs:
         vprint(f"  info: {skipped_offs} key-off(s) absorbed by same-row retriggers")
+
+    # ── Pass 2b: exclusiveClass chokes (fast note-fade) ──
+    # The choked note holds its voice through the choke row (allocate_voices), so the
+    # NOTE_FASTFADE lands on it while it is still foreground. The next same-class note
+    # plays on a different column, so this never collides with a fresh trigger.
+    for n in notes:
+        if n.excl_cut_ft is None:
+            continue
+        srow = n.start_ft // speed
+        row, tick = n.excl_cut_ft // speed, n.excl_cut_ft % speed
+        if row <= srow:          # choke within the trigger row → round up one row
+            row = srow + 1
+            tick = 0
+        c = cells.get((n.voice, row))
+        if c is None:
+            c = _cell(cells, n.voice, row)
+            c['note'] = NOTE_FASTFADE
+            if tick > 0:
+                c['eff']  = (TOP_S, 0xD000 | (tick << 8))
+                c['prio'] = PRIO_DELAY
+        elif c['note'] in (NOTE_NOP, NOTE_KEYOFF):
+            c['note'] = NOTE_FASTFADE          # choke supersedes a natural key-off
+            if tick > 0 and c['eff'] is None:
+                c['eff']  = (TOP_S, 0xD000 | (tick << 8))
+                c['prio'] = PRIO_DELAY
+        # else: row already holds a fresh trigger — that note cuts/NNAs this one anyway.
 
     # ── Pass 3: pitch-bend portamento segments ──
     # One linear segment per row: the cell carries the exact 4096-TET target
@@ -1995,6 +2091,8 @@ def assemble_taud(sf: SF2, song: Song, layer_insts: list, meta_records: list,
         for n in song.notes:
             n.start_ft -= shift_ft
             n.end_ft   -= shift_ft
+            if n.excl_cut_ft is not None:
+                n.excl_cut_ft -= shift_ft
 
     eps_units = args.bend_epsilon * 4096.0 / 1200.0
     cells, n_voices, total_rows, bpm0 = emit_cells(
@@ -2174,6 +2272,9 @@ def main():
     vprint(f"parsing SF2 '{args.soundfont}'…")
     sf = parse_sf2(args.soundfont)
     vprint(f"  {len(sf.presets)} preset(s), {len(sf.shdrs)} sample header(s)")
+
+    # SF2 exclusiveClass percussion choking (closed hi-hat silences open hi-hat, etc.).
+    apply_exclusive_class(song, sf, args.perc_force_mapping)
 
     # Presets in first-use order; triggers keyed by the exact (noteVal-with-initial-
     # bend, vol6) pair the patterns will carry, so layer trimming sees precisely what
