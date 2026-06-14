@@ -319,7 +319,7 @@ const AG_VIS_H = AG_ROW_VIS_BOT - AG_ROW_VIS_TOP + 1   // 24
 const AG_VIS_W = AG_LANE_W                              // 78
 
 // Palette (TSVM 256-colour indices)
-const AG_COL_BG       = 0
+const AG_COL_BG       = 240
 const AG_COL_BORDER   = 250
 const AG_COL_LABEL    = 220
 const AG_COL_DIM      = 235
@@ -1228,6 +1228,7 @@ function audioInit(params) {
 
     con.curs_set(0)
     con.clear()
+    graphics.setBackground(0,0,0)
     ag_drawFrame()
     ag_drawTitle()
 }

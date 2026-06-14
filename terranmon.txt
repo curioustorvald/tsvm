@@ -2771,16 +2771,19 @@ TODO:
     [x] Samples and Instruments view (viewer on taut.js; editor on separate .js)
         follow the ImpulseTracker design first, then improve from there
     [x] Sample desig for instrument in Pitch-Volume space (one rectangle = one patch). If undefined, the old sample pointer falls thru
-        [ ] taut.js not reading extra samples added by Ixmp process for some reason, which means the samples are on the sample bin but taut.js is not reading them?
+        [x] taut.js not reading extra samples added by Ixmp process for some reason, which means the samples are on the sample bin but taut.js is not reading them?
         [x] Ixmp version 2, supporting per-patch ADSR
         For UI concerns, taut_instredit.js will take care of it (aka problem for later)
     [x] .sf2 import module (for generic use, including "Import instrument from soundfont" and midi2taud conversion)
         [x] Midi2Taud using .mid and .sf2 as input, trim unused samples and Ixmp patches
-        [ ] .sf2 specific resample handling
+        [x] .sf2 specific resample handling
             1. If length exceeds 65535 samples, calculate resampling.
             2. If calculated resampling >= 32000, use that.
             3. If not, resample at 32000. If there is no loop defined, then loop the last 8192 samples (converter SHOULD NOT take that number at face value; perform waveform analysis to derive a smoother loop; converter MAY use that number as a starting number) and modify the fade value such that it decays to zero after 10 or so seconds of firing.
-        [ ] Faithful .sf2 "release segment": Set NNA to 'Note Fade' (incl. drumkits), and make sure Volume Fadeout to have a correct number derived from the SF2 timecent unit (it seems SF2 defines envelope floor as 100 dB; needs check)
+        [x] Faithful .sf2 "release segment": Set NNA to 'Note Fade' (incl. drumkits), and make sure Volume Fadeout to have a correct number derived from the SF2 timecent unit (it seems SF2 defines envelope floor as 100 dB; needs check)
+            * DONE 2026-06-14. Floor CONFIRMED 100 dB (sfspec24.txt:1934-1941: releaseVolEnv ramps a constant 100 dB per its timecent value, "until 100dB attenuation were reached"). midi2taud.py now: (a) byte 186 NNA = Note Fade (0b11) for every instrument incl. drum kits (was melodic Key-Lift 0b100000 / drum Continue 0b10); (b) the vol-env no longer carries a release leg — it ENDS at the sustain node and the engine holds there on key-off (AudioAdapter.kt:1697-1701 holds a non-zero terminator, doesn't cut); (c) Volume Fadeout (base bytes 172-173 AND per-patch Ixmp 'x' block) = the release segment, fade_sec = releaseVolEnv·(1000−sus_cb)/1000 (the sustain-level → 100 dB-floor time), fadeStep = 2560/(fade_sec·bpm0) so the linear fade completes in that wall-clock time. Per-patch 'x' now also emits when only the release differs (faithful per-layer release). The engine's Key-Lift feature is unchanged (still used by KeyLiftTest); midi2taud simply stopped emitting it. See _zone_fadeout / _adsr_to_env in midi2taud.py.
+        [ ] SF2 filter still sounds way too muffled?
+        [ ] Drum notes get eaten (E2M1.mid)
         [ ] auto-set optimal-ish Tickspeed and RPB using MIDI Time Signature events and note analysis. Break pattern when Time Signature changes.
 
             Time Signature

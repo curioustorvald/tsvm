@@ -33,18 +33,19 @@ Behaviour (per midi2taud.md):
     plain instruments. Stereo SF2 samples are mixed to mono. Unused instruments,
     patches, and samples are trimmed.
   * The SF2 volume-envelope ADSR is preserved on the (instrument-scope) Taud
-    volume envelope: delay/attack/hold/decay nodes, a sustain region held
-    while the key is on, and release nodes walked after key-off, plus a
-    safety fadeout (~4× release) that guarantees voices die. The canonical
-    zone's ADSR represents the instrument (Taud envelopes are instrument-
-    scope; differing zone ADSRs are warned). Per the Ixmp per-patch import
-    rule, only initialAttenuation and filters are ignored.
+    volume envelope: delay/attack/hold/decay nodes and a sustain region held
+    while the key is on. There is NO release leg — the SF2 *release segment*
+    is the Volume Fadeout (with NNA Note Fade): on key-off the voice holds at
+    the sustain node and fades to silence over the SF2 releaseVolEnv time
+    (measured against the 100 dB envelope floor: releaseVolEnv·(1000−sus_cb)/
+    1000 seconds). Per-layer Ixmp patches carry their own fadeout when their
+    release differs. The canonical zone's ADSR represents the instrument.
   * Polyphony rides the engine's New Note Action (matching MIDI semantics):
-    melodic instruments get NNA = note-off, drums NNA = continue, so a voice
-    column is reusable the moment its note releases — the release/ring tail
-    moves to a background ghost on the next trigger. Voice budget defaults
-    to 16 columns (--max-voices); overflow releases the oldest pedal-held or
-    soonest-ending note early instead of cutting it.
+    every instrument (drum kits included) gets NNA = Note Fade, so a voice
+    column is reusable the moment its note releases — the release/fade tail
+    moves to a background ghost on the next trigger and dies over its own
+    release time. Voice budget defaults to 16 columns (--max-voices); overflow
+    releases the oldest pedal-held or soonest-ending note early, not cut.
   * Sub-row timing is carried by S $Dx note delays (one row = `--speed`
     ticks, default 6; one beat = `--rpb` rows, default 4 → 1/24-beat grid).
     MIDI tempo changes map to T $xx00 set-tempo effects; channel volume /
@@ -846,7 +847,7 @@ def _rect_subtract(r, k):
 class MonoSample:
     """One pooled (deduplicated) mono u8 sample slice."""
     __slots__ = ('pair', 'a_start', 'frames', 'rate', 'name',
-                 'data', 'ratio', 'offset')
+                 'data', 'ratio', 'offset', 'loop_native', 'synth_loop', 'synth_decay')
     def __init__(self, z: SFZone):
         self.pair    = z.pair                    # None or (idxL, idxR, b_start)
         self.a_start = z.a_start
@@ -856,6 +857,22 @@ class MonoSample:
         self.data    = None
         self.ratio   = 1.0
         self.offset  = 0
+        # SF2 loop in NATIVE frames (mirrors the Patch loop test), or None when this
+        # slice has no loop. Used by build_sample_inst_bin to decide how to fit an
+        # over-length sample: a no-loop sample gets a synthesized loop, a looped one
+        # is preserved (kept at 32 kHz when its loop fits, else fit-to-cap). Dedup
+        # keeps the first zone's loop (same slice ⇒ same loop in practice).
+        ls_n = max(0, min(z.loop_abs_start - z.a_start, self.frames))
+        le_n = max(0, min(z.loop_abs_end   - z.a_start, self.frames))
+        self.loop_native = (ls_n, le_n) if (z.modes in (1, 3) and le_n - ls_n >= 2) else None
+        # Set when a too-long, originally UN-looped sample is resampled to the 32 kHz
+        # floor and given a synthesized sustain loop (see _synth_sustain_loop): a
+        # (loop_start, loop_end) pair in the FINAL output-frame domain (already scaled
+        # by every resample) and the seconds over which a peak->0 vol-envelope fades
+        # the looped note to silence (_synth_decay_vol_env). When set, the loop points
+        # and vol-envelope of EVERY record/patch using this sample are overridden.
+        self.synth_loop  = None
+        self.synth_decay = None
 
     def key(self):
         return (self.pair[0], self.pair[1], self.a_start, self.frames) \
@@ -915,6 +932,15 @@ class Patch:
 
     def to_ixmp_dict(self, canonical, bpm0, fadeout_override):
         r = self.ms.ratio
+        # Synthesized-loop samples carry their loop in the final output-frame domain
+        # (already resampled) and force a plain forward loop; otherwise the zone's SF2
+        # loop scaled by this sample's resample ratio.
+        if self.ms.synth_loop is not None:
+            ls_w, le_w, lm_w = self.ms.synth_loop[0], self.ms.synth_loop[1], 1
+        else:
+            ls_w = round(self.loop_start * r)
+            le_w = round(self.loop_end   * r)
+            lm_w = self.loop_mode
         d = {
             'pitch_start':         self.rect[0],
             'pitch_end':           self.rect[1],
@@ -923,11 +949,11 @@ class Patch:
             'sample_ptr':          self.ms.offset,
             'sample_length':       min(len(self.ms.data), 0xFFFF),
             'play_start':          0,
-            'loop_start':          min(0xFFFF, round(self.loop_start * r)),
-            'loop_end':            min(0xFFFF, round(self.loop_end   * r)),
+            'loop_start':          min(0xFFFF, ls_w),
+            'loop_end':            min(0xFFFF, le_w),
             'sampling_rate':       max(1, min(0xFFFF, round(self.ms.rate * r))),
             'sample_detune':       self.detune,
-            'loop_mode':           self.loop_mode,
+            'loop_mode':           lm_w,
             'default_pan':         self.pan8,
             'default_note_volume': 0,            # no override → base DNV
             'vibrato_speed':       0,
@@ -941,8 +967,10 @@ class Patch:
         # patch falls through to when a block is absent). This is what gives SF2
         # velocity / key layers their own ADSR + filter while keeping patches lean.
         z, c = self.zone, canonical.zone
-        vol_self, _, _ = _vol_env_block(z)
-        vol_canon, _, _ = _vol_env_block(c)
+        # Effective vol-env: a synthesized-loop sample uses a peak->0 decay (no sustain),
+        # else the zone's SF2 ADSR. Emitted only when it differs from the canonical's.
+        vol_self  = _effective_vol_env(z, self.ms)
+        vol_canon = _effective_vol_env(c, canonical.ms)
         if vol_self != vol_canon:
             d['vol_env'] = vol_self
         # SF-mode filter: mode flag + 16-bit cutoff cents / Q centibels + filter env.
@@ -957,9 +985,17 @@ class Patch:
         # because the env's node ratios scale the patch's OWN peak cutoff (the 'x' cutoff).
         att_s = atten_cb_to_octet(z.atten_cb)
         att_c = atten_cb_to_octet(c.atten_cb)
+        # Volume Fadeout = this patch's own SF2 release segment; emit 'x' when it (or any
+        # filter / atten field) differs from the canonical zone so the per-layer release
+        # time is faithful (an absent 'x' falls through to the base record's fadeout). A
+        # synthesized-loop sample disables its key-off fadeout (its decay is the vol-env,
+        # which runs from note-on regardless of key state).
+        fo_s = 0 if self.ms.synth_loop is not None else _zone_fadeout(z, bpm0, fadeout_override)
+        fo_c = 0 if canonical.ms.synth_loop is not None else _zone_fadeout(c, bpm0, fadeout_override)
         filt_differs = (filt_s != filt_c)
-        if (sf_s != sf_c or cut_s != cut_c or res_s != res_c or att_s != att_c or filt_differs):
-            d['extra'] = {'fadeout':            _zone_fadeout(z, bpm0, fadeout_override),
+        if (sf_s != sf_c or cut_s != cut_c or res_s != res_c or att_s != att_c
+                or filt_differs or fo_s != fo_c):
+            d['extra'] = {'fadeout':            fo_s,
                           'filter_sf_mode':     sf_s,
                           'default_cutoff':     cut_s,
                           'default_resonance':  res_s,
@@ -1127,14 +1163,17 @@ def _adsr_to_env(z: SFZone):
 
     env_points is up to 25 (value 0..63, minifloat_idx) pairs; each node's
     minifloat encodes the time to the NEXT node (engine interpolates values
-    linearly across that span). The engine wraps on the sustain node while
-    the key is held (SUSTAIN word) and walks the trailing release nodes after
-    key-off. SF2's decay and release are LINEAR in dB (exponential in amplitude);
-    per the SF2 spec decayVolEnv is the full-100dB time, truncated by the sustain
-    level. Both legs are sampled at equal-time (= equal-dB) points and emitted as
-    a piecewise-linear-amplitude approximation — segment count scales with the
-    leg's duration (issue 4) so multi-second decays don't collapse to a 2-point
-    line.
+    linearly across that span). The envelope carries the delay/attack/hold/decay
+    legs and ENDS at the sustain node — there is NO release leg. The engine wraps
+    on the sustain node while the key is held (SUSTAIN word); on key-off it holds
+    at that terminal node and the Volume Fadeout (emitted with NNA Note Fade) is
+    the SF2 *release segment* (see _zone_fadeout). SF2's decay is LINEAR in dB
+    (exponential in amplitude); per the SF2 spec decayVolEnv is the full-100dB
+    time, truncated by the sustain level. The decay leg is sampled at equal-time
+    (= equal-dB) points and emitted as a piecewise-linear-amplitude approximation
+    — segment count scales with its duration (issue 4) so multi-second decays
+    don't collapse to a 2-point line. release_sec (= SF2 releaseVolEnv) is returned
+    only to feed the fadeout calc.
     """
     EPS = 0.004                       # below the minifloat resolution (1/256 s)
     sus_cb = min(z.env_sustain_cb, 1000.0)     # clamp to 100 dB full-scale
@@ -1163,22 +1202,12 @@ def _adsr_to_env(z: SFZone):
             pts.append((63, hold))
     sustain_idx = len(pts)            # the node appended next is the sustain node
     rel = z.env_release
-    if s63 > 0 and rel >= EPS:
-        # Release leg: sustain (s63) → silence, exponential amplitude over `rel`
-        # seconds (a 100 dB drop ≈ to 0). Sampled at equal-time points.
-        n = _env_seg_count(rel)
-        seg = rel / n
-        pts.append((s63, seg))                                 # sustain node
-        for i in range(1, n):                                  # f = 1/n .. (n-1)/n
-            f = i / n
-            v = round(s63 * 10.0 ** (-5.0 * f))                # −100 dB over the leg
-            pts.append((max(0, min(s63, v)), seg))
-        pts.append((0, 0.0))
-    elif s63 > 0:
-        pts.append((s63, 0.0))
-        pts.append((0, 0.0))          # default 1 ms release = cut at key-off
-    else:
-        pts.append((0, 0.0))
+    # No release leg: the sustain node is the terminal node. While the key is held the
+    # engine wraps on it (SUSTAIN word); after key-off it holds there and the Volume
+    # Fadeout (NNA Note Fade) performs the SF2 release segment (see _zone_fadeout). A
+    # zero sustain leaves a terminal 0 node, so the engine retires the voice naturally
+    # at the end of decay.
+    pts.append((s63, 0.0))            # sustain node = terminator
     env = [(v, nearest_minifloat(d)) for v, d in pts[:25]]
     while len(env) < 25:
         env.append((env[-1][0], 0))
@@ -1278,16 +1307,24 @@ def _filter_env_block_sf(z: SFZone, base_fc: float, amt: float, peak: int) -> di
 
 
 def _zone_fadeout(z: SFZone, bpm0: int, fadeout_override) -> int:
-    """Safety fadeout sized ~4× the zone's SF2 release so released voices / NNA
-    ghosts always die. Mirrors the base-record computation."""
+    """Volume Fadeout step encoding the zone's SF2 release segment (gen 38,
+    releaseVolEnv). With NNA Note Fade the fadeout IS the release: on key-off the
+    voice holds at the sustain level and fades linearly to silence. The SF2 release
+    ramps a constant 100 dB per `releaseVolEnv` seconds (spec sfspec24.txt:1934-1941
+    — "until 100dB attenuation were reached"), so the time from the sustain level
+    (sus_cb cB of attenuation) down to the 100 dB floor is
+    releaseVolEnv·(1000−sus_cb)/1000. fadeStep makes the fadeout complete in that
+    wall-clock time at bpm0: the engine subtracts fadeStep/1024 of unit volume per
+    song tick, and the tick rate is bpm0·2/5 Hz, giving fadeStep = 2560/(fade_sec·bpm0)."""
     if fadeout_override is not None:
         return min(0xFFF, max(0, fadeout_override))
-    fade_sec = max(z.env_release, 0.05) * 4.0
+    sus_cb   = min(max(0.0, z.env_sustain_cb), 1000.0)
+    fade_sec = max(0.02, z.env_release * (1000.0 - sus_cb) / 1000.0)
     return max(1, min(0xFFF, round(2560.0 / (fade_sec * bpm0))))
 
 
 def _extra_block(z: SFZone, bpm0: int, fadeout_override) -> dict:
-    """The 'x' block: safety fadeout + SF-mode static cutoff/resonance + filter mode."""
+    """The 'x' block: release-segment fadeout + SF-mode static cutoff/resonance + filter mode."""
     sf_mode, cut16, res16, _ = _zone_filter_sf(z)
     return {'fadeout':            _zone_fadeout(z, bpm0, fadeout_override),
             'filter_sf_mode':     sf_mode,
@@ -1340,6 +1377,113 @@ def _zone_pf_envs(z: SFZone):
     return filt, pit
 
 
+# ── SF2 long-sample resampling + synthesized sustain loop ─────────────────────
+#
+# Per-sample handling when a rendered MonoSample exceeds the 65535-frame u16 cap
+# (terranmon.txt sample_length is u16). Two strategies, by the rate that fitting
+# the WHOLE sample into 65535 frames would leave:
+#   (1)/(2) rate >= SF2_RESAMPLE_FLOOR_HZ  → downsample the whole sample to 65535
+#           frames (quality stays acceptable, full sample preserved).
+#   (3)     rate <  SF2_RESAMPLE_FLOOR_HZ  → resample to the 32 kHz floor instead
+#           (keeps full bandwidth), keep the first 65535 frames, and — when the
+#           sample has NO loop of its own — synthesize a near-seamless forward
+#           loop near the end so held notes keep sounding, plus a peak->0 decay
+#           vol-envelope (see _synth_decay_vol_env) that retires the voice
+#           ~SF2_SYNTH_DECAY_SEC after the note fires.
+SF2_RESAMPLE_FLOOR_HZ = 32000        # TSVM native audio rate (= full-bandwidth floor)
+SF2_SYNTH_DECAY_SEC   = 10.0         # looped-note fade-to-silence span (from note-on)
+SF2_LOOP_HINT         = 8192         # spec's "last 8192 samples" → MAX loop period searched
+SF2_LOOP_MIN_PERIOD   = 512          # min loop period (avoid buzzy ultra-short loops)
+SF2_LOOP_MATCH_WIN    = 256          # forward-window length used to score a loop seam
+SF2_LOOP_MATCH_STEP   = 2            # stride within the match window (speed/quality trade)
+SF2_LOOP_COARSE_STEP  = 32           # period stride for the coarse search pass
+
+
+def _synth_sustain_loop(data: bytes, cap: int, hint: int):
+    """Pick a near-seamless forward loop near the end of a resampled, originally
+    UN-looped sample, and truncate it to <= `cap` frames. Returns
+    (body, loop_start, loop_end) with the loop region [loop_start, loop_end)
+    (loop_end exclusive — matches the engine's mode-1 wrap, AudioAdapter.kt:2126).
+
+    The loop is chosen by minimising the sum-of-squared-difference between the
+    W-frame windows that FOLLOW loop_start and loop_end. Forward playback wraps
+    loop_end -> loop_start, so matching data[loop_start+k] ~= data[loop_end+k]
+    makes the post-wrap texture continue the pre-wrap texture seamlessly (the k=0
+    term also matches the immediate seam value). `hint` (the spec's "last 8192
+    samples") is the MAXIMUM loop period searched, NOT taken at face value: the
+    analysis settles on the smoothest-looping period in [SF2_LOOP_MIN_PERIOD, hint]
+    via a coarse sweep refined locally."""
+    keep = min(len(data), cap)
+    W    = SF2_LOOP_MATCH_WIN
+    # loop_end sits W frames before the kept end so the forward match window
+    # [loop_end, loop_end + W) stays within the data.
+    loop_end = keep - W
+    p_max = min(hint, loop_end)
+    p_min = min(SF2_LOOP_MIN_PERIOD, p_max)
+    if loop_end <= p_min:                      # too short to loop (not expected in case 3)
+        return data[:keep], max(0, keep - 2), keep
+
+    def seam_err(ls: int) -> int:
+        s  = 0
+        le = loop_end
+        for k in range(0, W, SF2_LOOP_MATCH_STEP):
+            d = data[ls + k] - data[le + k]
+            s += d * d
+        return s
+
+    best_p = p_min
+    best_e = seam_err(loop_end - best_p)
+    p = p_min + SF2_LOOP_COARSE_STEP
+    while p <= p_max:
+        e = seam_err(loop_end - p)
+        if e < best_e:
+            best_e, best_p = e, p
+        p += SF2_LOOP_COARSE_STEP
+    lo = max(p_min, best_p - SF2_LOOP_COARSE_STEP)
+    hi = min(p_max, best_p + SF2_LOOP_COARSE_STEP)
+    for p in range(lo, hi + 1):
+        e = seam_err(loop_end - p)
+        if e < best_e:
+            best_e, best_p = e, p
+
+    loop_start = max(0, min(loop_end - 2, loop_end - best_p))
+    return data[:keep], loop_start, loop_end
+
+
+def _synth_decay_vol_env(decay_sec: float) -> dict:
+    """Volume-envelope block for a synthesized-loop sample: an immediate peak that
+    decays exponentially (linear-dB) to silence over `decay_sec`, with NO sustain
+    or loop wrap. The looped sample would otherwise sound forever; this envelope
+    fades it from the instant the note fires and — because there is no wrap
+    (resolveEnvWrap returns range (-1,-1)) — the engine's fall-through
+    'envelope ends at 0 => cut' rule (AudioAdapter.kt:1693/1701) retires the voice
+    once it reaches the terminal 0 node, ~decay_sec after firing, regardless of
+    key state. The drop spans the representable 63->1 range (~36 dB); the final
+    node is a true 0 terminator."""
+    DROP_CB = 360.0                            # 63 -> 1 fills the whole decay span
+    n   = _env_seg_count(decay_sec)
+    seg = decay_sec / n
+    pts = [(63, seg)]                          # peak, held one segment then decays
+    for i in range(1, n):
+        v = round(63 * 10.0 ** (-(DROP_CB * (i / n)) / 200.0))
+        pts.append((max(1, min(63, v)), seg))
+    pts.append((0, 0.0))                       # terminal 0 node => fall-through cut
+    nodes = [(v, nearest_minifloat(d)) for v, d in pts[:25]]
+    while len(nodes) < 25:
+        nodes.append((0, 0))
+    return {'loop': ENV_PRESENT_BIT, 'sustain': 0, 'nodes': nodes}
+
+
+def _effective_vol_env(z: SFZone, ms: 'MonoSample') -> dict:
+    """Volume-envelope block for a (zone, sample): a synthesized-loop sample fades
+    from note-on via a peak->0 decay (no sustain), overriding the SF2 ADSR;
+    otherwise the zone's SF2 ADSR shape (_vol_env_block)."""
+    if ms is not None and ms.synth_decay is not None:
+        return _synth_decay_vol_env(ms.synth_decay)
+    blk, _, _ = _vol_env_block(z)
+    return blk
+
+
 def build_sample_inst_bin(sf: SF2, pool: list, layer_insts: list, meta_records: list,
                           fadeout_override, bpm0: int):
     """Render & pool every used MonoSample (with the 65535-byte per-sample
@@ -1349,17 +1493,70 @@ def build_sample_inst_bin(sf: SF2, pool: list, layer_insts: list, meta_records: 
     for ms in pool:
         ms.render(sf)
 
-    # Per-sample u16 cap.
+    # Per-sample u16 cap. A sample over the 65535-frame limit is shrunk one of two
+    # ways (see the SF2 long-sample section above): downsample the whole thing when
+    # that keeps the rate >= 32 kHz; otherwise resample to the 32 kHz floor, keep the
+    # first 65535 frames and synthesize a sustain loop + decay (only when the sample
+    # has no loop of its own — a sample with an SF2 loop is left to fall-through, as
+    # its loop already lets it sustain within whatever frames fit).
     for ms in pool:
-        if len(ms.data) > SAMPLE_LEN_LIMIT:
-            r = SAMPLE_LEN_LIMIT / len(ms.data)
-            vprint(f"  info: '{ms.name}' {len(ms.data)} bytes > 64K cap; "
-                   f"resampling by {r:.4f}")
-            old = len(ms.data)
-            ms.data = resample_linear(ms.data, r)
-            ms.ratio *= len(ms.data) / old
+        native_len = len(ms.data)
+        if native_len <= SAMPLE_LEN_LIMIT:
+            continue
+        r_fit    = SAMPLE_LEN_LIMIT / native_len
+        rate_fit = ms.rate * r_fit
+        r32      = SF2_RESAMPLE_FLOOR_HZ / ms.rate
+        # loop_end in 32 kHz frames (0 when unlooped) decides whether a 32 kHz render
+        # still contains the loop within the 65535-frame cap.
+        le32 = round(ms.loop_native[1] * r32) if ms.loop_native else 0
 
-    # Global 8 MB pool cap.
+        def _fit_whole():
+            """(1)/(2) downsample the WHOLE sample to <= 65535 frames. Used when the
+            fitted rate stays >= 32 kHz, or as the fall-back for a looped sample whose
+            loop sits past the cap at 32 kHz (only fit-to-cap keeps that far loop)."""
+            ms.data   = resample_linear(ms.data, r_fit)
+            ms.ratio *= len(ms.data) / native_len
+
+        if rate_fit >= SF2_RESAMPLE_FLOOR_HZ:
+            _fit_whole()
+            vprint(f"  info: '{ms.name}' {native_len} frames > 64K cap; "
+                   f"resampling by {r_fit:.4f} (rate {rate_fit:.0f} Hz)")
+        elif ms.loop_native is None:
+            # (3) No loop: resample to the 32 kHz floor (full bandwidth), keep the first
+            # 65535 frames and synthesize a near-seamless sustain loop near the end, plus
+            # a peak->0 decay vol-envelope that fades the looped note to silence from
+            # note-on (the SF2 sample stops on its own otherwise; a loop would ring).
+            resampled = resample_linear(ms.data, r32)
+            ms.ratio *= len(resampled) / native_len    # effective rate -> 32 kHz
+            ms.data   = resampled
+            body, ls, le = _synth_sustain_loop(ms.data, SAMPLE_LEN_LIMIT, SF2_LOOP_HINT)
+            ms.data        = body
+            ms.synth_loop  = (ls, le)
+            ms.synth_decay = SF2_SYNTH_DECAY_SEC
+            vprint(f"  info: '{ms.name}' {native_len} frames > 64K cap, long & unlooped; "
+                   f"32 kHz, kept {len(body)} frames, synth loop [{ls}..{le}] "
+                   f"+ {SF2_SYNTH_DECAY_SEC:.0f}s decay")
+        elif le32 <= SAMPLE_LEN_LIMIT - 2:
+            # (3) Looped, and the loop fits at the 32 kHz floor: resample to 32 kHz and
+            # keep the first 65535 frames. The per-patch loop points (native * ratio)
+            # land within the kept data, so the SF2 loop + ADSR are preserved at full
+            # bandwidth (a sustain-loop release tail past loop_end is truncated to fit).
+            resampled = resample_linear(ms.data, r32)
+            ms.ratio *= len(resampled) / native_len
+            ms.data   = resampled[:SAMPLE_LEN_LIMIT]
+            vprint(f"  info: '{ms.name}' {native_len} frames > 64K cap, long & looped; "
+                   f"32 kHz, kept first {len(ms.data)} frames (loop_end {le32})")
+        else:
+            # (3) Looped but the loop sits past the 65535-frame cap at 32 kHz (a far-end
+            # sustain loop on a multi-second sample): the floor rate can't hold it, so
+            # downsample the whole sample to fit — the ratio-scaled loop stays valid,
+            # at a sub-32 kHz rate. (This is the pre-existing fit-to-cap behaviour.)
+            _fit_whole()
+            vprint(f"  info: '{ms.name}' {native_len} frames > 64K cap, long, looped, "
+                   f"far loop; fit-to-cap by {r_fit:.4f} (rate {ms.rate * r_fit:.0f} Hz)")
+
+    # Global 8 MB pool cap. Resamples every sample down equally; synthesized loop
+    # points ride the same ratio so the loop stays valid in the shrunken data.
     total = sum(len(ms.data) for ms in pool)
     if total > SAMPLEBIN_SIZE:
         g = SAMPLEBIN_SIZE / total
@@ -1369,6 +1566,10 @@ def build_sample_inst_bin(sf: SF2, pool: list, layer_insts: list, meta_records: 
             old = len(ms.data)
             ms.data = resample_linear(ms.data, g)
             ms.ratio *= len(ms.data) / old
+            if ms.synth_loop is not None:
+                le = min(len(ms.data) - 1, round(ms.synth_loop[1] * g))
+                ls = max(0, min(le - 2, round(ms.synth_loop[0] * g)))
+                ms.synth_loop = (ls, le)
 
     sample_bin = bytearray(SAMPLEBIN_SIZE)
     pos = 0
@@ -1377,6 +1578,9 @@ def build_sample_inst_bin(sf: SF2, pool: list, layer_insts: list, meta_records: 
         if n < len(ms.data):
             vprint(f"  warning: pool full, truncating '{ms.name}'")
             ms.data = ms.data[:n]
+            if ms.synth_loop is not None:        # keep the synthesized loop inside the data
+                le = min(n - 1, ms.synth_loop[1])
+                ms.synth_loop = (max(0, min(le - 2, ms.synth_loop[0])), le)
         sample_bin[pos:pos+n] = ms.data
         ms.offset = pos
         pos += n
@@ -1395,11 +1599,18 @@ def build_sample_inst_bin(sf: SF2, pool: list, layer_insts: list, meta_records: 
         struct.pack_into('<H', inst_bin, base + 6,
                          max(1, min(0xFFFF, round(ms.rate * r))))
         struct.pack_into('<H', inst_bin, base + 8, 0)            # play start
-        struct.pack_into('<H', inst_bin, base + 10,
-                         min(0xFFFF, round(c.loop_start * r)))
-        struct.pack_into('<H', inst_bin, base + 12,
-                         min(0xFFFF, round(c.loop_end * r)))
-        inst_bin[base + 14] = c.loop_mode
+        # Synthesized-loop samples carry their loop in the final output-frame domain
+        # (already scaled by every resample) and force a plain forward loop (mode 1);
+        # otherwise the canonical zone's SF2 loop, scaled by this sample's ratio.
+        if ms.synth_loop is not None:
+            ls_w, le_w, lm_w = ms.synth_loop[0], ms.synth_loop[1], 1
+        else:
+            ls_w = round(c.loop_start * r)
+            le_w = round(c.loop_end   * r)
+            lm_w = c.loop_mode
+        struct.pack_into('<H', inst_bin, base + 10, min(0xFFFF, ls_w))
+        struct.pack_into('<H', inst_bin, base + 12, min(0xFFFF, le_w))
+        inst_bin[base + 14] = lm_w
 
         def wenv(loop_off, sus_off, nodes_off, blk):
             struct.pack_into('<H', inst_bin, base + loop_off, blk['loop'] & 0xFFFF)
@@ -1410,13 +1621,16 @@ def build_sample_inst_bin(sf: SF2, pool: list, layer_insts: list, meta_records: 
                 inst_bin[base + nodes_off + k*2]     = v & 0xFF
                 inst_bin[base + nodes_off + k*2 + 1] = mf & 0xFF
 
-        # Volume envelope from the canonical zone's SF2 ADSR (D/A/H/D shape, single-
-        # node sustain held while key is on, release nodes after key-off), with the
-        # zone's initialAttenuation folded into the 0..63 node peak. Non-canonical
+        # Volume envelope from the canonical zone's SF2 ADSR (delay/attack/hold/decay,
+        # single-node sustain held while key is on). There is NO release leg: on key-off
+        # the voice holds at the sustain node and the Volume Fadeout (NNA Note Fade) is
+        # the SF2 release segment (see _zone_fadeout). initialAttenuation is carried
+        # separately (byte 251 / 'x' octet), not folded into the node peak. Non-canonical
         # zones with a different ADSR carry their own per-patch vol_env (see
-        # Patch.to_ixmp_dict); the base record is the canonical / fall-through.
-        vol_blk, _, rel = _vol_env_block(c.zone)
-        wenv(15, 189, 21, vol_blk)
+        # Patch.to_ixmp_dict); the base record is the canonical / fall-through. A
+        # synthesized-loop sample instead uses a peak->0 decay envelope (no sustain) so
+        # its otherwise-infinite loop fades to silence ~SF2_SYNTH_DECAY_SEC after firing.
+        wenv(15, 189, 21, _effective_vol_env(c.zone, ms))
         # Pan envelope: none (default unity nodes; P bit clear in LOOP word).
         struct.pack_into('<H', inst_bin, base + 17, 0)
         for k in range(25):
@@ -1437,14 +1651,12 @@ def build_sample_inst_bin(sf: SF2, pool: list, layer_insts: list, meta_records: 
         if pit_env is not None:
             wenv(197, 199, 201, pit_env)
 
-        # Fadeout: safety net that guarantees released voices (and NNA ghosts)
-        # eventually die. Sized ~4× the SF2 release so the envelope's release
-        # ramp dominates what you hear.
-        if fadeout_override is not None:
-            fo = min(0xFFF, max(0, fadeout_override))
-        else:
-            fade_sec = max(rel, 0.05) * 4.0
-            fo = max(1, min(0xFFF, round(2560.0 / (fade_sec * bpm0))))
+        # Volume Fadeout = the SF2 release segment (NNA Note Fade below). Derived from
+        # the canonical zone's releaseVolEnv against the 100 dB envelope floor; see
+        # _zone_fadeout for the timecent→step derivation. A synthesized-loop sample
+        # disables the key-off fadeout (its decay is the vol-envelope, which runs from
+        # note-on regardless of key state) so key-off does not cut it short.
+        fo = 0 if ms.synth_loop is not None else _zone_fadeout(c.zone, bpm0, fadeout_override)
         inst_bin[base + 171] = 0xFF                              # IGV (unit)
         inst_bin[base + 172] = fo & 0xFF
         # byte 173: bits 0-3 = fadeout high nibble, bit 4 = SF filter mode (cutoff/resonance
@@ -1458,22 +1670,18 @@ def build_sample_inst_bin(sf: SF2, pool: list, layer_insts: list, meta_records: 
         inst_bin[base + 183] = (res16 >> 8) & 0xFF               # resonance high
         inst_bin[base + 253] = res16 & 0xFF                      # resonance low (SF mode)
         struct.pack_into('<H', inst_bin, base + 184, c.detune & 0xFFFF)
-        # NNA: melodic = Key Lift (flag bit 5, the 0b100 pattern) — MIDI-exact
-        # key release: key-off jumps the envelope playhead to the sustain-end
-        # node so the release nodes play immediately, instead of walking the
-        # remaining hold/decay first (which rings like a held sustain pedal on
-        # SF2 instruments with multi-second hold/decay). Applies to pattern
-        # KEY_OFFs and NNA ghosts alike. Drums = continue (one-shots ring to
-        # their natural end).
-        inst_bin[base + 186] = 0b10 if ti.inst_key[0] == 'd' else 0b100000
+        # NNA = Note Fade (0b11) for every instrument, drum kits included. On any
+        # key-off the voice holds at the sustain node and the Volume Fadeout performs
+        # the SF2 release segment; when a fresh note displaces this voice the engine
+        # ghosts it and starts the same fadeout, so released/displaced notes always
+        # die over their own release time. (Supersedes the old melodic Key-Lift /
+        # drum Continue split — the release now lives in the fadeout, not env nodes.)
+        inst_bin[base + 186] = 0b11
         inst_bin[base + 196] = 255                               # default note vol
         # initialAttenuation (byte 251, dB-table octet) — the canonical zone's static gain,
         # applied per-voice by the mixer (no longer folded into the vol-env). Per-patch zones
         # with a different attenuation carry their own octet in the Ixmp 'x' block.
         inst_bin[base + 251] = atten_cb_to_octet(c.zone.atten_cb) & 0xFF
-        if ti.inst_key[0] == 'd' and (c.loop_mode & 3) != 0:
-            vprint(f"  warning: '{ti.name}': looped drum sample with NNA "
-                   f"continue — ghosts only die via the background-pool cap")
 
     # Metainstrument records: a 0xFFFF-sentinel sample pointer (high 16 bits) plus a
     # layer table (terranmon.txt "Metainstrument definition"). Layers stay neutral
@@ -1516,10 +1724,10 @@ def allocate_voices(notes: list, speed: int, max_voices: int) -> int:
     The engine's New Note Action does the heavy lifting (matching MIDI
     polyphony semantics): a fresh trigger on an occupied voice migrates the
     old note into the mixer's background-ghost pool, so a voice is reusable
-    the moment its note is *released* — the release/ring tail rides the
-    ghost. Melodic voices free at their key-off row; drum voices (NNA
-    continue, no key-off) free on the very next row. Stealing is therefore
-    graceful: the victim is released early, not cut.
+    the moment its note is *released* — the Note-Fade tail rides the ghost
+    (fading over the instrument's SF2 release). Melodic voices free at their
+    key-off row; drum voices (no key-off by default) free on the very next
+    row. Stealing is therefore graceful: the victim is released early, not cut.
 
     Mutates note.voice (and truncates stolen notes' end_ft). Returns the
     number of voices used."""
@@ -1918,9 +2126,9 @@ def main():
                     help='Ticks per row, 1..15 (default 6)')
     ap.add_argument('--fadeout', type=int, default=None,
                     help='Override the computed fadeout step (0..4095). By '
-                         'default each instrument gets a safety fadeout '
-                         'sized ~4× its SF2 release time so the envelope '
-                         'release dominates and NNA ghosts always die')
+                         'default each instrument/patch gets a Volume Fadeout '
+                         'reproducing its SF2 release segment (releaseVolEnv vs '
+                         'the 100 dB floor), played out via NNA Note Fade')
     ap.add_argument('--max-voices', type=int, default=20,
                     help='Voice-column budget, 1..20 (default 20). NNA '
                          'background ghosts carry release/ring tails, so '

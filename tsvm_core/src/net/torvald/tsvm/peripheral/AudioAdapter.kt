@@ -1851,6 +1851,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         val nyquist = SAMPLING_RATE * 0.5 - 1.0
         val frequency: Double
         val dmpfac: Double
+//        println("voice.filterSfMode = ${voice.filterSfMode}")
         if (voice.filterSfMode) {
             // SoundFont mode: cutoff = absolute cents, resonance = centibels above DC gain.
             //   freq = 8.176 Hz × 2^(cents/1200)   (cents are relative to 8.176 Hz = MIDI 0)

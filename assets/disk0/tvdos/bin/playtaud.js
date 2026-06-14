@@ -81,7 +81,7 @@ const PITCH_RANGE_HI = 0xA000   // ~C9
 // Colours — TSVM palette indices.  Picked to read as amber/CRT chrome with
 // archetype-coded events.  Background-transparent (255) lets the cell colour
 // fall through to the terminal default for ergonomic resize behaviour.
-const COL_BG          = 0     // solid black panel background
+const COL_BG          = 240   // solid black panel background
 const COL_BORDER      = 250   // light grey panel chrome
 const COL_LABEL       = 220   // amber panel label
 const COL_DIM         = 235   // muted text
@@ -1155,6 +1155,7 @@ function drawTickLights(tickInRow, tickRate) {
 }
 
 // ── Initial paint ───────────────────────────────────────────────────────────
+graphics.setBackground(0,0,0)
 drawFrame()
 drawTitle()
 drawStatus(0)
