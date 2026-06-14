@@ -2868,7 +2868,8 @@ TODO:
                 at execApp (<eval>:1457:16)
                 at Object.execute (<eval>:893:38)
                 at <eval>:867:31
-        [ ] Timbres of Heaven's Overdriven Gt does not decay even after the fix
+        [ ] Timbres of Heaven's Overdriven Gt decays EXTREMELY SLOWLY even after the fix
+        [ ] Some ways to decouple Sample+Inst and patterns into separate files (tsvm-doom needs separate file access; samplepack can be uploaded once on init)
 
 TODO - list of demo songs that MUST ship with Microtone:
     * 4THSYM (rename to Fourth Symmetriad) — excellent piece for demonstrating NNAs and filter envelopes
