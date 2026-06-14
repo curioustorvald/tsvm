@@ -5349,8 +5349,12 @@ function resolveHairlineHits(hits) {
 }
 
 // Pull the envelope object + JSR223 getter pair for the active inst sub-tab. Returns null
-// for tabs without a graph (Gen.1 / Gen.2).
+// for tabs without a graph (Gen.1 / Gen.2) AND for Metainstruments, whose decoded record has
+// no vol/pan/pf envelopes (it carries a layer table instead) — drawInstTabMeta renders every
+// sub-tab for them, so without this guard the VOL/PAN/PIT branches return { env: undefined }
+// and the cursor walker dereferences env.terminatorIdx on undefined.
 function envBundleForCurrentTab(e) {
+    if (e.decoded.isMeta) return null
     if (instSubTab === INST_TAB_VOL) return { env: e.decoded.volEnv,
         idxFn: 'getVoiceEnvVolIndex',   timeFn: 'getVoiceEnvVolTime' }
     if (instSubTab === INST_TAB_PAN) return { env: e.decoded.panEnv,
@@ -5429,8 +5433,9 @@ function drawEnvelopeCursor() {
     const e = instrumentsCache[instListCursor]
     if (!e) { eraseEnvCursorIfAny(); return }
     const bundle = envBundleForCurrentTab(e)
-    // Gen.1 / Gen.2 have no envelope graph — wipe any stale hairline and bail.
-    if (!bundle) { eraseEnvCursorIfAny(); return }
+    // Gen.1 / Gen.2 (and Metainstruments) have no envelope graph — wipe any stale hairline and
+    // bail. The !bundle.env check also covers a malformed record whose env slot is missing.
+    if (!bundle || !bundle.env) { eraseEnvCursorIfAny(); return }
     const env = bundle.env
     const lastIdx = (env.terminatorIdx >= 0) ? env.terminatorIdx : (env.nodes.length - 1)
     if (lastIdx < 0) { eraseEnvCursorIfAny(); return }

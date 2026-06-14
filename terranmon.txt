@@ -2833,7 +2833,7 @@ TODO:
             - Samples playblobs: only active for actually playing samples
             - Samples playcursor: true cursors for actually playing samples
         [ ] implement note-fade (0x0003) and wire it to it2taud
-        [ ] taut.js quit with TypeError: Cannot read property 'terminatorIdx' of undefined:
+        [x] taut.js quit with TypeError: Cannot read property 'terminatorIdx' of undefined:
             TypeError: Cannot read property 'terminatorIdx' of undefined
                 at drawEnvelopeCursor (<eval>:5312:22)
                 at drawInstrumentsContents (<eval>:4919:41)
