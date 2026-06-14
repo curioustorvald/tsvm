@@ -2827,7 +2827,7 @@ TODO:
             NOTE: If there are no time signature events in a MIDI file, then the time signature is assumed to be 4/4.
 
             In a format 0 file, the time signatures changes are scattered throughout the one MTrk. In format 1, the very first MTrk should consist of only the time signature (and tempo) events so that it could be read by some device capable of generating a "tempo map". It is best not to place MIDI events in this MTrk. In format 2, each MTrk should begin with at least one initial time signature (and tempo) event.
-        [ ] Taut UI commit
+        [x] Taut UI commit
             - Inst > Gen.1 > sample binding: ~~~....[two doubledots] et al. (n extra samples)
             - Inst > Gen.2 > filter: IT/SF mode toggle (which also need to redefine slider range and their writebacks as IT takes 8-bit and SF takes 16-bit values)
             - Samples playblobs: only active for actually playing samples

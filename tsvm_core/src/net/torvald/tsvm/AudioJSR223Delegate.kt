@@ -216,6 +216,25 @@ class AudioJSR223Delegate(private val vm: VM) {
         return v.samplePos
     }
 
+    /** Sample pointer (byte offset into the 8 MB pool) of the sample the voice is ACTUALLY
+     *  sounding right now — the resolved Ixmp patch sample, not just the base record. Returns
+     *  -1 when the voice is inactive. Together with [getVoiceSampleLength] this is the (ptr,len)
+     *  identity of the deduped sample, so visualisers can light only the truly-playing sample of
+     *  a multisample instrument instead of every sample the instrument references. */
+    fun getVoiceSamplePtr(playhead: Int, voice: Int): Int {
+        val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19)) ?: return -1
+        if (!v.active) return -1
+        return v.activeSamplePtr
+    }
+
+    /** Sample length (bytes) of the sample the voice is actually sounding — see [getVoiceSamplePtr].
+     *  Returns 0 when inactive (a real sample is always ≥ 1 byte, so 0 is an unambiguous "none"). */
+    fun getVoiceSampleLength(playhead: Int, voice: Int): Int {
+        val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19)) ?: return 0
+        if (!v.active) return 0
+        return v.activeSampleLength
+    }
+
     /** Volume-envelope segment index — i.e. the node the voice is currently moving *away* from
      *  (the next node it will hit is index + 1). Returns -1 when inactive. */
     fun getVoiceEnvVolIndex(playhead: Int, voice: Int): Int {

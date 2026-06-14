@@ -3286,6 +3286,24 @@ function forEachIxmpPatchSample(slot, cb) {
     }
 }
 
+// Count an instrument's EXTRA samples: distinct Ixmp patch samples (by ptr:len) that differ
+// from the base record's own sample. Drives the Gen.1 "… et al. (N extra samples)" hint for
+// multisample (SF2-derived) instruments. 0 when the host lacks the Ixmp API or the instrument
+// is single-sampled. Patches that re-use the base sample (e.g. velocity layers sharing one
+// slice but with their own envelopes) are NOT counted — "samples", not "patches".
+function instExtraSampleCount(slot, basePtr, baseLen) {
+    if (!hasIxmpAPI) return 0
+    const seen = {}
+    let n = 0
+    forEachIxmpPatchSample(slot, (ptr, len) => {
+        if (len === 0) return
+        if (ptr === basePtr && len === baseLen) return
+        const k = ptr + ':' + len
+        if (!seen[k]) { seen[k] = true; n++ }
+    })
+    return n
+}
+
 function buildSampleIndex() {
     const byPtr = new Map()
     const addSample = (slot, ptr, len, extra) => {
@@ -3925,6 +3943,12 @@ function decodeInstFull(rec) {
     const panSwing       = rec[181]
     const defCutoff      = rec[182]
     const defReso        = rec[183]
+    // Filter interpretation mode — byte 173 bit 4 (terranmon §Instrument bin). false = IT (8-bit
+    // cutoff/resonance in bytes 182/183), true = SoundFont (16-bit: cutoff cents in 182<<8|252,
+    // resonance centibels in 183<<8|253). Mirrors AudioAdapter.TaudInst.filterSfMode.
+    const filterSfMode   = ((fadeoutHi >>> 4) & 1) === 1
+    const defCutoff16    = (rec[182] << 8) | rec[252]
+    const defReso16      = (rec[183] << 8) | rec[253]
     let   detune         = rec[184] | (rec[185] << 8); if (detune >= 0x8000) detune -= 0x10000
     const instFlag       = rec[186]
     // NNA UI value: 0..3 = traditional (bits 0-1); 4 = Key Lift (bit 5 set,
@@ -3941,6 +3965,7 @@ function decodeInstFull(rec) {
         samplePtr, sampleLen, c4Rate, playStart, sLoopStart, sLoopEnd, sampleFlags,
         igv, fadeout, volSwing, vibSpeed, vibSweep, defPan,
         pitchPanCenter, pitchPanSep, panSwing, defCutoff, defReso,
+        filterSfMode, defCutoff16, defReso16,
         detune, nna, vibWaveform, vibDepth, vibRate, dct, dca, defNoteVol,
         volEnv: decodeEnvelope(rec, 'vol'),
         panEnv: decodeEnvelope(rec, 'pan'),
@@ -4143,6 +4168,8 @@ function loopModeNameInst(flags) {
 const NNA_NAMES      = ['Off', 'Cut', 'Cont.', 'Fade', 'Lift']
 const DCT_NAMES      = ['Never', 'Note', 'Sample', 'Inst.']
 const DCA_OPTIONS    = ['Cut', 'Off', 'Fade']
+// Filter interpretation mode (base byte 173 bit 4): IT all-pole vs SoundFont biquad.
+const FILTER_MODE_OPTIONS = ['ImpulseTracker', 'SoundFont2']
 const VIB_WF_OPTIONS = ['\u00D8\u00D9', '\u00A5\u00A6', '\u00B4\u00B4', '\u00F3\u00F3', '\u00B5\u00B6']//['Sine', 'Ramp-dn', 'Square', 'Random', 'Ramp-up']
 
 // Place a value at column INST_RIGHT_X + labelW. Labels are colour
@@ -4274,6 +4301,21 @@ function annFadeout(v) {
     if (v <= 0)    return 'none'
     if (v >= 1024) return 'cut'
     return '~' + Math.round(1024 / v) + 't'
+}
+// SF-mode filter annotations. Cutoff is SoundFont absolute cents → Hz
+// (8.176·2^(cents/1200), matching AudioAdapter.refreshVoiceFilter); resonance is
+// centibels → dB (cb/10). Kept ≤6 cols to fit the narrow value field.
+function annSfCutoff(v) {
+    if (v >= 0xFFFF) return 'off'
+    const hz = 8.176 * Math.pow(2, v / 1200)
+    if (hz >= 10000) return Math.round(hz / 1000) + 'k'
+    if (hz >= 1000)  return (hz / 1000).toFixed(1) + 'k'
+    return Math.round(hz) + ''
+}
+function annSfReso(v) {
+    if (v >= 0xFFFF) return 'flat'
+    const db = v / 10
+    return (db >= 10 ? Math.round(db) : db.toFixed(1)) + 'dB'
 }
 
 // Draw an editable raw-number field: a black (col 240) capsule with CP437
@@ -4521,8 +4563,24 @@ function drawInstTabGeneral1(e) {
         }
     }
 
+    // Multisample (Ixmp) instruments bind extra samples beyond the base record; flag that
+    // inline with "… et al." and a wrapped count line, so the single "Sample:" field isn't
+    // mistaken for the whole instrument.
+    const extraN = instExtraSampleCount(e.slot, d.samplePtr, d.sampleLen)
+
     drawGroupHeader(y++, 'Sample binding')
-    drawLabelRow(y++, '  Sample:',  sampleLabel)
+    let smpVal = sampleLabel
+    if (extraN > 0) {
+        // Truncate the base label first so the multi-byte doubledot escape in the suffix is
+        // never cut by drawLabelRow's own length clamp (which would garble the TTY stream).
+        const suffix  = ' ' + sym.doubledot + ' et al.'
+        const maxBase = (INST_RIGHT_W - 12) - suffix.length
+        if (smpVal.length > maxBase) smpVal = smpVal.substring(0, maxBase)
+        smpVal += suffix
+    }
+    drawLabelRow(y++, '  Sample:',  smpVal)
+    if (extraN > 0)
+        drawLabelRow(y++, '', '(' + extraN + ' extra sample' + (extraN === 1 ? '' : 's') + ')')
     drawLabelRow(y++, '  Length:',  d.sampleLen + ' bytes ($' + _hex(d.sampleLen, 4) + ')  Rate@C4: ' + d.c4Rate + ' Hz')
     drawLabelRow(y++, '  Play st:', '$' + _hex(d.playStart, 4))
     drawLabelRow(y++, '  Loop:',    loopModeNameInst(d.sampleFlags) +
@@ -4556,8 +4614,26 @@ function drawInstTabGeneral2(e) {
     let y = INST_BODY_Y
 
     drawGroupHeader(y++, 'Filter')
-    sliderRow(y++, e, '  Cutoff:', d.defCutoff, 0, 255, annFilter, (v) => [[182, v]])
-    sliderRow(y++, e, '  Reso:',   d.defReso,   0, 255, annFilter, (v) => [[183, v]])
+    // Filter mode — base byte 173 bit 4 (false=IT, true=SoundFont). The two modes use
+    // different value widths, so the cutoff/resonance sliders below switch range, writeback
+    // bytes and annotation with the mode. Toggling re-reads the record (drawInstrumentsContents
+    // re-runs after commit), so the sliders re-render in the new mode. Note: toggling does not
+    // convert the stored numbers — IT byte 182 becomes the SF cutoff high byte, etc.
+    y += buttonGroupRow(y, '  Mode:', FILTER_MODE_OPTIONS, d.filterSfMode ? 1 : 0,
+                        (v) => instWriteField(e, 173, 4, 1, v))
+    if (d.filterSfMode) {
+        // SoundFont: cutoff = absolute cents (high byte 182, low byte 252), resonance =
+        // centibels above DC gain (high byte 183, low byte 253). Slider spans the SF2-spec
+        // initialFilterFc range (1500..13500 cents ≈ 40 Hz..20 kHz) and Q's 0..96 dB (0..960 cB).
+        sliderRow(y++, e, '  Cutoff:', d.defCutoff16, 1500, 13500, annSfCutoff,
+                  (v) => [[182, (v >> 8) & 0xFF], [252, v & 0xFF]])
+        sliderRow(y++, e, '  Reso:',   d.defReso16,   0,    960,   annSfReso,
+                  (v) => [[183, (v >> 8) & 0xFF], [253, v & 0xFF]])
+    } else {
+        // ImpulseTracker: 8-bit cutoff/resonance (byte 182/183); 0xFF = off.
+        sliderRow(y++, e, '  Cutoff:', d.defCutoff, 0, 255, annFilter, (v) => [[182, v]])
+        sliderRow(y++, e, '  Reso:',   d.defReso,   0, 255, annFilter, (v) => [[183, v]])
+    }
 
     y++
     drawGroupHeader(y++, 'Vibrato')
@@ -5059,6 +5135,15 @@ function blobPolyBucket(count) {
 // un-rebuilt host VM it's absent and blobs fall back to the plain number-column colour.
 const hasNoteCountAPI = (typeof audio !== 'undefined' && typeof audio.getActiveNoteCounts === 'function')
 
+// getVoiceSamplePtr/Length expose the sample a voice is ACTUALLY sounding (the resolved Ixmp
+// patch sample, not just the instrument's base record). When present, the Samples blobs and
+// waveform cursor key off the true (ptr,len) so a multisample instrument only lights / cursors
+// the one sample currently playing. Absent on an un-rebuilt host → fall back to instrument match
+// (every sample the playing instrument references lights up, the old behaviour).
+const hasVoiceSampleAPI = (typeof audio !== 'undefined' &&
+    typeof audio.getVoiceSamplePtr === 'function' &&
+    typeof audio.getVoiceSampleLength === 'function')
+
 function invalidateSamplesBlob()     { for (let i = 0; i < smpBlobPrev.length;  i++) smpBlobPrev[i]  = -1 }
 function invalidateInstrumentsBlob() { for (let i = 0; i < instBlobPrev.length; i++) instBlobPrev[i] = -1 }
 
@@ -5078,6 +5163,27 @@ function activeInstVolumes() {
     return out
 }
 
+// Per-SAMPLE live stats keyed by "ptr:len" → { vol, count } across the voices ACTUALLY
+// sounding that exact sample (max effective volume + voice count for the polyphony heat ramp).
+// Only meaningful when hasVoiceSampleAPI; lets the Samples tab light just the playing sample of
+// a multisample instrument rather than every sample it references.
+function activeSampleStats() {
+    const out = {}
+    const numVox = (song && song.numVoices) ? song.numVoices : NUM_VOICES
+    for (let v = 0; v < numVox; v++) {
+        if (!audio.getVoiceActive(PLAYHEAD, v)) continue
+        const len = audio.getVoiceSampleLength(PLAYHEAD, v)
+        if (len <= 0) continue
+        const key = audio.getVoiceSamplePtr(PLAYHEAD, v) + ':' + len
+        const vol = audio.getVoiceEffectiveVolume(PLAYHEAD, v) || 0
+        let s = out[key]
+        if (!s) s = out[key] = { vol: 0, count: 0 }
+        if (vol > s.vol) s.vol = vol
+        s.count++
+    }
+    return out
+}
+
 // 0.0 → 0 (clear); (0, 1] → 1..10 via ceil so the quietest audible voice still shows blob1.
 function blobLevelForVolume(v) {
     if (!(v > 0)) return 0
@@ -5090,22 +5196,32 @@ function blobLevelForVolume(v) {
 function drawSamplesPlayBlobs() {
     if (currentPanel !== VIEW_SAMPLES || !samplesCache) return
     const playing  = (playbackMode !== PLAYMODE_NONE)
-    const instVols = playing ? activeInstVolumes() : null
-    const counts   = (playing && hasNoteCountAPI) ? audio.getActiveNoteCounts(PLAYHEAD) : null
+    // Prefer the per-sample stats (lights only the actually-sounding sample of a multisample
+    // instrument); fall back to the instrument-volume match on hosts without getVoiceSamplePtr.
+    const useSmp   = playing && hasVoiceSampleAPI
+    const smpStats = useSmp ? activeSampleStats() : null
+    const instVols = (playing && !useSmp) ? activeInstVolumes() : null
+    const counts   = (playing && !useSmp && hasNoteCountAPI) ? audio.getActiveNoteCounts(PLAYHEAD) : null
     const n = samplesCache.length
     for (let row = 0; row < SMP_LIST_H; row++) {
         const idx = smpListScroll + row
         let level = 0, poly = 0
         if (playing && idx < n) {
-            const ub = samplesCache[idx].usedBy
-            let m = 0, c = 0
-            for (let j = 0; j < ub.length; j++) {
-                const w = instVols[ub[j]] || 0
-                if (w > m) m = w
-                if (counts) c += counts[ub[j]] || 0
+            const s = samplesCache[idx]
+            if (useSmp) {
+                const st = smpStats[s.ptr + ':' + s.len]
+                if (st) { level = blobLevelForVolume(st.vol); poly = blobPolyBucket(st.count) }
+            } else {
+                const ub = s.usedBy
+                let m = 0, c = 0
+                for (let j = 0; j < ub.length; j++) {
+                    const w = instVols[ub[j]] || 0
+                    if (w > m) m = w
+                    if (counts) c += counts[ub[j]] || 0
+                }
+                level = blobLevelForVolume(m)
+                poly  = blobPolyBucket(c)
             }
-            level = blobLevelForVolume(m)
-            poly  = blobPolyBucket(c)
         }
         // Ghost-only rows have notes sounding but no exposed foreground volume — floor the glyph
         // to blob1 so the colour-coded marker is still visible.
@@ -5198,15 +5314,22 @@ function activeVoicesForInstSlot(slot) {
     return out
 }
 
-// All active voices whose instrument is in `usedBy` (the inst-slot list attached to a
-// samplesCache entry — multiple instruments may share one sample), as {voice, vol}.
-function activeVoicesForSampleEntry(usedBy) {
+// All active voices currently sounding the samplesCache entry `s`, as {voice, vol}. When the
+// host exposes the per-voice active sample (hasVoiceSampleAPI), match on the true (ptr,len) so a
+// voice playing a DIFFERENT sample of an instrument that also references `s` is excluded — its
+// samplePos would normalise against the wrong length and paint a bogus cursor. Without the API,
+// fall back to matching any voice on an instrument in `s.usedBy` (the old behaviour).
+function activeVoicesForSample(s) {
     const out = []
     const numVox = (song && song.numVoices) ? song.numVoices : NUM_VOICES
     for (let v = 0; v < numVox; v++) {
         if (!audio.getVoiceActive(PLAYHEAD, v)) continue
-        const inst = audio.getVoiceInstrument(PLAYHEAD, v)
-        if (usedBy.indexOf(inst) < 0) continue
+        if (hasVoiceSampleAPI) {
+            if (audio.getVoiceSampleLength(PLAYHEAD, v) !== s.len) continue
+            if (audio.getVoiceSamplePtr(PLAYHEAD, v) !== s.ptr) continue
+        } else {
+            if (s.usedBy.indexOf(audio.getVoiceInstrument(PLAYHEAD, v)) < 0) continue
+        }
         out.push({ voice: v, vol: audio.getVoiceEffectiveVolume(PLAYHEAD, v) || 0 })
     }
     return out
@@ -5361,7 +5484,7 @@ function drawSampleCursor() {
     const hits = []
     if (playbackMode !== PLAYMODE_NONE) {
         const r = sampleWaveformRect()
-        const voices = activeVoicesForSampleEntry(s.usedBy)
+        const voices = activeVoicesForSample(s)
         for (let k = 0; k < voices.length; k++) {
             const pos = audio.getVoiceSamplePos(PLAYHEAD, voices[k].voice)
             if (pos < 0) continue
