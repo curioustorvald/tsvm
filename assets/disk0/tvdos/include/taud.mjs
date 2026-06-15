@@ -9,6 +9,15 @@
 const TAUD_MAGIC        = [0x1F,0x54,0x53,0x56,0x4D,0x61,0x75,0x64]  // \x1F TSVMaud
 const TAUD_VERSION      = 1
 const TAUD_HEADER_SIZE  = 32     // magic(8) + version(1) + numSongs(1) + compSize(4) + projOff(4) + sig(14)
+// Container kind = top two bits of the version byte (terranmon.txt:3342-3401).
+//   00 → full .taud  (sample+inst image + song table + patterns)
+//   10 → .tsii       (sample+inst image only; numSongs = 0, no song table)
+//   11 → .tpif       (patterns only; sample+inst compSize = 0 — section absent —
+//                     instruments come from a previously-loaded .tsii)
+const TAUD_KIND_MASK       = 0xC0
+const TAUD_KIND_FULL       = 0x00
+const TAUD_KIND_SAMPLEINST = 0x80
+const TAUD_KIND_PATTERN    = 0xC0
 const TAUD_SONG_ENTRY   = 32     // see encodeSongEntry / decodeSongEntry below
 // Sample+instrument image: 8 MB sample pool (banked, 16 × 512 K) + 64 K instrument bin = 8256 kB total.
 // (terranmon.txt:1985-1997, 2533-2564 — bank-switched via MMIO 46.)
@@ -46,12 +55,18 @@ function _pokeU32LE(ptr, off, v) {
 // ── uploadTaudFile ──────────────────────────────────────────────────────────
 
 /**
- * Load one song from a Taud file into the tracker hardware and configure the
- * given playhead ready to play.
+ * Load a Taud container into the tracker hardware. Handles all three kinds
+ * (terranmon.txt:3342-3401), distinguished by the top two bits of the version
+ * byte:
+ *   - full .taud (00): uploads the sample+instrument image AND loads one song.
+ *   - .tsii (10): uploads the sample+instrument image ONLY (the shared bank for a
+ *     collection of .tpif files). songIndex / playhead are ignored.
+ *   - .tpif (11): loads one song's patterns ONLY, leaving the resident
+ *     sample+instrument bank untouched — load the companion .tsii FIRST.
  *
  * @param inFile             Full path with drive letter, e.g. "A:/music/song.taud"
- * @param songIndex          0-based index of the song in the SONG TABLE
- * @param playhead Playhead number (0-3) to configure
+ * @param songIndex          0-based index of the song in the SONG TABLE (ignored for .tsii)
+ * @param playhead Playhead number (0-3) to configure (ignored for .tsii)
  */
 function uploadTaudFile(inFile, songIndex, playhead) {
     const drive    = inFile[0].toUpperCase()
@@ -92,21 +107,32 @@ function uploadTaudFile(inFile, songIndex, playhead) {
     pos += 14  // signature
     // pos == 32 == TAUD_HEADER_SIZE
 
-    if (songIndex < 0 || songIndex >= numSongs) {
-        sys.free(filePtr)
-        throw Error("taud: songIndex " + songIndex + " out of range (numSongs=" + numSongs + ")")
-    }
+    const kind         = version & TAUD_KIND_MASK
+    const isSampleInst = (kind === TAUD_KIND_SAMPLEINST)   // .tsii: instruments only
+    const isPattern    = (kind === TAUD_KIND_PATTERN)      // .tpif: patterns only
 
     // -- 4. Decompress and upload sample+instrument bin -----------------------
     // The decompressed image is 8256 kB (8 MB samples bank-major + 64 K instruments)
     // which exceeds the 8 MB user-space cap, so we route through a hardware helper
     // that decompresses straight into the adapter's native sample/instrument
     // storage instead of staging a buffer in user memory.
-    audio.uploadSampleInstBlob(filePtr + pos, compressedSize)
-    audio.setSampleBank(0)
-    pos += compressedSize
+    // Skipped for .tpif — its sample+inst section is absent (compSize = 0) and the
+    // resident bank (from a previously-loaded .tsii) must be left intact.
+    if (!isPattern) {
+        audio.uploadSampleInstBlob(filePtr + pos, compressedSize)
+        audio.setSampleBank(0)
+        pos += compressedSize
+    }
 
-    // -- 5. Parse song-table entry for the requested song --------------------
+    // -- 5. Song table → patterns → cues → playhead (full .taud / .tpif only) --
+    // A .tsii carries no song table (numSongs = 0); it stops after the bank + Ixmp.
+    if (!isSampleInst) {
+    if (songIndex < 0 || songIndex >= numSongs) {
+        sys.free(filePtr)
+        throw Error("taud: songIndex " + songIndex + " out of range (numSongs=" + numSongs + ")")
+    }
+
+    // -- 5a. Parse song-table entry for the requested song -------------------
     let entryOff   = pos + songIndex * TAUD_SONG_ENTRY
     let songOffset = _peekU32LE(filePtr, entryOff)
     let numVoices  = sys.peek(filePtr + entryOff + 4) & 0xFF
@@ -156,8 +182,11 @@ function uploadTaudFile(inFile, songIndex, playhead) {
     audio.setTrackerMixerFlags(playhead, mixerflags)
     audio.setSongGlobalVolume(playhead, songGlobalVolume)
     audio.setSongMixingVolume(playhead, songMixingVolume)
+    }  // end !isSampleInst (song table / patterns / cues / playhead)
 
     // -- 9. Project Data — walk Ixmp blocks for multi-sample instruments -----
+    // Runs for every kind: a .tsii carries its instruments' Ixmp patches here; a
+    // .tpif carries only p/s blocks (sMet) and contributes no patches.
     // Terranmon spec: Project Data starts at `projOff` (zero = absent), magic is
     // \x1ETaudPrJ + 8 reserved bytes, then a stream of FourCC + Uint32-length
     // sections. We only consume "Ixmp" here; other sections (PNam, INam, sMet,

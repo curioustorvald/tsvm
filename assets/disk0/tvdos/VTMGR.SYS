@@ -17,7 +17,10 @@
 //   +1  switch_request   u8 (0 = none, 1..6 = target; set by chvt, cleared by dispatcher)
 //   +2  debounce_held    u8
 //   +3  vt_spawned_bits  u8 (bit n-1 set if VT n is alive)
-//   +4..63 reserved
+//   +4  raw_grab_vt      u8 (0 = none; else VT n holding a raw-keyboard grab,
+//        i.e. a fullscreen app reading -41..-48 directly, e.g. DOOM. While set
+//        and == active_vt, the dispatcher stops feeding that pane's ring.)
+//   +5..63 reserved
 // VT block (× MAX_VT) starting at base + 64, each VT_BLOCK_SIZE bytes
 //   +0..7 reserved (cursor & color state lives inside text plane itself)
 //   +8    queue_head       u8 (next-read index)
@@ -38,6 +41,7 @@ const CTRL_ACTIVE_VT      = 0
 const CTRL_SWITCH_REQUEST = 1
 const CTRL_DEBOUNCE_HELD  = 2
 const CTRL_SPAWNED_BITS   = 3
+const CTRL_RAW_GRAB_VT    = 4
 
 const GPU_TEXTAREA_OFFSET = 253950
 const TEXT_COLS = 80
@@ -381,6 +385,8 @@ con.prnch = function(c) {
 // keyboard MMIO — that's the dispatcher's exclusive territory. Cooperative
 // gate on active_vt keeps background panes parked when they call getch.
 
+const RAW_GRAB_ADDR = CTRL + ${CTRL_RAW_GRAB_VT}
+
 function queuePop() {
     let head = sys.peek(QUEUE_HEAD_ADDR)
     let tail = sys.peek(QUEUE_TAIL_ADDR)
@@ -390,6 +396,10 @@ function queuePop() {
     return b
 }
 con.getch = function() {
+    // Reading cooked input means we are NOT a raw-keyboard grabber; drop any
+    // stale grab this VT left set (e.g. a fullscreen app that crashed without
+    // releasing) so the dispatcher resumes feeding our ring.
+    if (sys.peek(RAW_GRAB_ADDR) === VT_NUM) sys.poke(RAW_GRAB_ADDR, 0)
     while (true) {
         if (sys.peek(ACTIVE_VT_ADDR) === VT_NUM) {
             let k = queuePop()
@@ -397,6 +407,18 @@ con.getch = function() {
         }
         sys.sleep(20)
     }
+}
+// A fullscreen app that reads the raw keyboard snapshot (-41..-48) directly,
+// bypassing this ring, must grab so the dispatcher stops piling cooked chars
+// into a ring it never drains. Flush any prior type-ahead on grab; the
+// dispatcher keeps the ring empty while held. Release on exit (or the next
+// con.getch self-heals a grab leaked by a crashed app).
+con.grabRawKeyboard = function() {
+    sys.poke(RAW_GRAB_ADDR, VT_NUM)
+    sys.poke(QUEUE_HEAD_ADDR, sys.peek(QUEUE_TAIL_ADDR))
+}
+con.releaseRawKeyboard = function() {
+    if (sys.peek(RAW_GRAB_ADDR) === VT_NUM) sys.poke(RAW_GRAB_ADDR, 0)
 }
 con.hitterminate = function() { return false }
 con.hiteof = function() { return false }
@@ -555,11 +577,23 @@ while (running) {
     // keyboardBuffer, so doing it every frame would drop chars typed last frame.
     if (sys.peek(-39) === 0) sys.poke(-39, 1)
 
-    // drain typed chars into the active pane's queue
+    // drain typed chars into the active pane's queue — UNLESS that pane holds
+    // a raw-keyboard grab (a fullscreen app reading -41..-48 directly, e.g.
+    // DOOM). Such an app never reads its ring, so cooked chars would pile up
+    // there and flood its shell the instant the app exits. We still drain the
+    // cooked buffer (must read -38 to clear the -50 count) but discard the
+    // chars, and keep the grabbing pane's ring flushed so nothing surfaces
+    // later. Alt-N is unaffected — it reads the raw snapshot above.
+    const rawGrab = sys.peek(CTRL + CTRL_RAW_GRAB_VT)
+    const feedRing = rawGrab !== active
     while (sys.peek(-50) !== 0) {
         let k = sys.peek(-38)
         if (k < 0) k += 256
-        queuePush(active, k)
+        if (feedRing) queuePush(active, k)
+    }
+    if (!feedRing) {
+        const qb = vtBlockAddr(active)
+        sys.poke(qb + 8, sys.peek(qb + 9))   // head = tail: flush stale type-ahead
     }
 
     sys.sleep(33)

@@ -3339,6 +3339,68 @@ prefixes:
 
 --------------------------------------------------------------------------------
 
+**Taud Sample and Instrument Image Format (.tsii)**
+Created by CuriousTorvald on 2026-06-15
+
+This is a file format for storing sample+inst image only, intended for multiple Taud Pattern Images (.tpif) that share a same samples.
+
+Endianness: Little
+
+# Conformance language
+Identical to **Taud serialisation format**.
+
+# File Structure
+
+\x1F T S V M a u d
+[HEADER]
+[SAMPLE+INSTRUMENT BIN IMAGE (GZip or Zstd compressed. Read 4-byte magic to determine)]
+[PROJECT DATA] (optional)
+    [DATA BLOCKS WITH FOURCC HEADER (see Project Data section)]
+
+Basically a specialised "interpretation" of **Taud serialisation format**. The format differs in the following ways:
+
+* Empty song/pattern table. Number of songs is zero
+* Version is always `0b10_xxxxxx`, where 'x' follows the expected Taud version
+* PROJECT DATA has just enough blocks to represent instruments (ones starting with 'I' or 'S')
+
+
+
+**Taud Pattern Image Format (.tpif)**
+Created by CuriousTorvald on 2026-06-15
+
+This is a file format for storing patterns/songs only.
+
+Endianness: Little
+
+# Conformance language
+Identical to **Taud serialisation format**.
+
+# File Structure
+
+\x1F T S V M a u d
+[HEADER]
+[SONG TABLE]
+[PATTERN BIN for SONG 0 (GZip or Zstd compressed)]
+[CUE SHEET for SONG 0 (GZip or Zstd compressed)]
+[PATTERN BIN for SONG 1 (GZip or Zstd compressed)]
+[CUE SHEET for SONG 1 (GZip or Zstd compressed)]
+[PATTERN BIN for SONG 2 (GZip or Zstd compressed)]
+[CUE SHEET for SONG 2 (GZip or Zstd compressed)]
+...
+[PROJECT DATA] (optional)
+    [DATA BLOCKS WITH FOURCC HEADER (see Project Data section)]
+
+Basically a specialised "interpretation" of **Taud serialisation format**. The format differs in the following ways:
+
+* Compressed size of SAMPLE+INST section is zero
+* Version is always `0b11_xxxxxx`, where 'x' follows the expected Taud version
+* PROJECT DATA has just enough blocks to represent patterns and songs (ones starting with 'p' or 's')
+
+# Intended Use Case
+* Converting a collection of MIDI to Taud with single SoundFont for all. SoundFont is translated into .tsii, and MIDI files are translated into .tpif
+
+--------------------------------------------------------------------------------
+
 **S3M (ScreamTracker 3) to Taud conversion notes**
 (Implemented in s3m2taud.py)
 Created by CuriousTorvald on 2026-04-20

@@ -553,6 +553,28 @@ arithmetic (no regression outside vtmgr). Applied so far in
 `assets/disk0/tvdos/bin/taut.js` and `assets/disk0/hopper/include/aa.mjs`
 (used by `bb.js`). Any future direct-VRAM app needs the same one-line `vaddr`.
 
+### Raw-keyboard apps must grab (the `con.grabRawKeyboard` pattern)
+
+Fullscreen apps that poll the **raw key snapshot** (`sys.poke(-40,1)` then
+`sys.peek(-41..-48)`) directly — e.g. the DOOM port's `i_input.mjs` — bypass the
+pane input ring entirely. But the dispatcher keeps the cooked collector (`-39`)
+on and drains typed chars into the *active* pane's ring every frame. While such
+an app is the active pane, every keystroke piles into a ring it never reads, and
+floods its parent shell the instant the app exits (no bug outside vtmgr, where
+`-39` is off while a raw app runs). Fix: the pane bootstrap exposes
+`con.grabRawKeyboard()` / `con.releaseRawKeyboard()` (write the active VT number
+into `CTRL+CTRL_RAW_GRAB_VT`); while the active pane holds the grab the
+dispatcher discards cooked chars and keeps that pane's ring flushed. `con.getch`
+self-heals a grab leaked by a crashed app (a cooked reader isn't a grabber).
+A raw-input app feature-detects (`typeof con.grabRawKeyboard === "function"`) and
+grabs/releases around its fullscreen session — DOOM does it in
+`i_video.mjs` `I_InitGraphics`/`I_ShutdownGraphics` (covers every fullscreen
+mode; shutdown runs in `wadplayer.js`'s `finally`). Complementary: such an app's
+poll should also no-op when it's *not* the active VT (compare `VT_CTRL_ADDR`
+byte 0 to `VT_NUM`) so a backgrounded app doesn't eat the foreground console's
+input — DOOM's `I_PollKeys` does this. Any future raw-key app under vtmgr needs
+both.
+
 ### Files
 
 - New: `assets/disk0/tvdos/VTMGR.SYS` (dispatcher + per-pane bootstrap)
@@ -565,6 +587,10 @@ arithmetic (no regression outside vtmgr). Applied so far in
 - `assets/disk0/AUTOEXEC.BAT`: per-console launch (Korean IME + `command -fancy`)
 - `assets/disk0/tvdos/bin/taut.js`, `assets/disk0/hopper/include/aa.mjs`:
   `vaddr` VT-aware direct-VRAM addressing
+- `assets/disk0/tvdos/VTMGR.SYS`: `CTRL_RAW_GRAB_VT` flag +
+  `con.grabRawKeyboard`/`releaseRawKeyboard` (raw-keyboard apps); dispatcher
+  drain honours it. DOOM consumer: `assets/disk0/home/doom/i_video.mjs`
+  (grab/release) + `i_input.mjs` (active-VT poll guard)
 
 ### Gotcha: injectIntChk vs. embedded source
 

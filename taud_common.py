@@ -71,6 +71,18 @@ TAUD_MAGIC       = bytes([0x1F,0x54,0x53,0x56,0x4D,0x61,0x75,0x64])
 TAUD_VERSION     = 1
 TAUD_HEADER_SIZE = 32       # magic(8)+ver(1)+numSongs(1)+compSize(4)+projOff(4)+sig(14)
 TAUD_SONG_ENTRY  = 32       # full spec entry (see encode_song_entry)
+
+# Container kind = top two bits of the version byte (terranmon.txt §.tsii / §.tpif,
+# 3342-3401). The low six bits always carry TAUD_VERSION, so the full version byte
+# is `kind | TAUD_VERSION`.
+#   00 → full song file (.taud): sample+inst image + song table + patterns
+#   10 → sample+instrument image (.tsii): numSongs = 0, no song table/patterns;
+#        project data carries only I*/S* blocks (INam, SNam, Ixmp)
+#   11 → pattern image (.tpif): sample+inst compSize = 0 (section absent), song
+#        table + patterns present; project data carries only p*/s* blocks (pNam, sMet)
+TAUD_KIND_FULL       = 0x00
+TAUD_KIND_SAMPLEINST = 0x80
+TAUD_KIND_PATTERN    = 0xC0
 INST_RECORD_SIZE = 256      # widened 2026-05-06 (was 192). 256 inst × 256 = 64K.
 # Sample+instrument image (terranmon.txt:1985-1997, 2533-2564 — updated 2026-05-08).
 # Sample pool is now 8 MB, banked through MMIO 46 in 16 × 512 K windows.

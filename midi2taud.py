@@ -8,6 +8,20 @@ Usage:
                          [--bend-epsilon CENTS] [--drum-keyoff]
                          [-v] [--no-project-data]
 
+    # Batch / directory mode (terranmon.txt:3342-3401):
+    python3 midi2taud.py midi_dir/ soundfont.sf2 [out_dir/]
+
+  When the first argument is a DIRECTORY, every .mid/.midi inside it is compiled
+  against the one SoundFont into the split Taud format: a single shared Sample and
+  Instrument Image (<soundfont>.tsii) holding the instrument bank for all the songs,
+  plus one Pattern Image (<song>.tpif) per MIDI carrying just that song's patterns.
+  A .tpif is played by first loading its companion .tsii. The shared bank spans the
+  UNION of every song's instruments, so the 8 MB sample / 255 slot budgets are shared
+  too (overflow degrades exactly as in single-file mode). Instrument fadeouts encode
+  SF2 release times in seconds but the engine fades per song-tick (rate ∝ BPM), so the
+  shared image targets the mean of the songs' initial tempos; pass --fadeout for a
+  tempo-independent step. Output directory defaults to the input directory.
+
 Behaviour (per midi2taud.md):
   * Pitch bends are preserved as much as possible. A note starting under a
     non-zero bend triggers directly at the bent 4096-TET pitch (Taud notes
@@ -85,6 +99,7 @@ import sys
 from taud_common import (
     set_verbose, vprint,
     TAUD_MAGIC, TAUD_VERSION, TAUD_HEADER_SIZE, TAUD_SONG_ENTRY,
+    TAUD_KIND_FULL, TAUD_KIND_SAMPLEINST, TAUD_KIND_PATTERN,
     SAMPLEBIN_SIZE, INSTBIN_SIZE, SAMPLEINST_SIZE, SAMPLE_LEN_LIMIT,
     PATTERN_ROWS, PATTERN_BYTES, NUM_PATTERNS_MAX, NUM_CUES, CUE_SIZE, NUM_VOICES,
     NOTE_NOP, NOTE_KEYOFF, NOTE_FASTFADE, TAUD_C4,
@@ -2382,10 +2397,15 @@ def build_pattern_bin(cells: dict, n_voices: int,
     return bytes(out)
 
 
-def assemble_taud(sf: SF2, song: Song, layer_insts: list, meta_records: list,
-                  slot_name: dict, pool: list, args) -> bytes:
-    speed, rpb = args.speed, args.rpb
+def build_song_section(song: Song, speed: int, rpb: int, src_path: str,
+                       args) -> dict:
+    """Per-song pattern/cue build shared by the full .taud and the .tpif paths.
 
+    Trims leading silence, emits the cell grid, plans cues, builds & dedupes the
+    pattern bin, and packs the cue sheet — everything that depends on this song's
+    notes but NOT on the (possibly shared) sample+instrument image. Returns a dict
+    carrying the compressed pattern bin / cue sheet plus the song-table and sMet
+    fields the container assemblers need."""
     # Leading-silence trim: shift the grid so the first trigger is row 0.
     first_row = min(n.start_ft // speed for n in song.notes if n.slot > 0)
     shift_ft = first_row * speed
@@ -2452,90 +2472,112 @@ def assemble_taud(sf: SF2, song: Song, layer_insts: list, meta_records: list,
             instr = CUE_INST_NOP
         sheet[ci*CUE_SIZE:(ci+1)*CUE_SIZE] = encode_cue(pats, instr)
 
-    # ── Sample + instrument bin ──
-    sampleinst_raw = build_sample_inst_bin(sf, pool, layer_insts, meta_records,
-                                           args.fadeout, bpm0,
-                                           force_synth_loop=args.force_synth_loop)
-    assert len(sampleinst_raw) == SAMPLEINST_SIZE
-    compressed = compress_blob(sampleinst_raw, "sample+inst bin")
-    comp_size  = len(compressed)
+    # sMet beat divisions drive the tracker's row highlighting: primary = rows per
+    # NOTATED beat (the time-sig denominator), secondary = rows per bar. Using the
+    # denominator beat (not the rpb=rows-per-quarter) keeps the primary highlight a
+    # divisor of the bar — e.g. 7/8 → 2 rows (eighth), bar 14: 14 % 2 == 0, aligned;
+    # rpb=4 would drift (14 % 4 != 0). 4/4 → 4.
+    i = bisect.bisect_right(song.timesig_ft, shift_ft) - 1
+    _, init_dpow = song.timesig[i] if i >= 0 else (4, 2)
+    beat_pri = max(1, round(rpb * 4 / (2 ** init_dpow)))
+    title = song.title or os.path.splitext(os.path.basename(src_path))[0]
 
-    pat_comp = compress_blob(pat_bin,      "pattern bin")
-    cue_comp = compress_blob(bytes(sheet), "cue sheet")
+    return {
+        'pat_comp':  compress_blob(pat_bin,      "pattern bin"),
+        'cue_comp':  compress_blob(bytes(sheet), "cue sheet"),
+        'n_voices':  n_voices,
+        'n_unique':  n_unique,
+        'bpm0':      bpm0,
+        'speed':     speed,
+        'title':     title,
+        'beat_pri':  max(1, min(255, beat_pri)),
+        'beat_sec':  max(1, min(255, init_bar_rows)),
+    }
 
-    song_table_off = TAUD_HEADER_SIZE + comp_size
-    song_off       = song_table_off + TAUD_SONG_ENTRY
-    entry = encode_song_entry(
+
+def make_song_entry(section: dict, song_off: int, args) -> bytes:
+    """32-byte song-table row from a build_song_section() result."""
+    return encode_song_entry(
         song_offset=song_off,
-        num_voices=n_voices,
-        num_patterns=n_unique,
-        bpm_stored=(bpm0 - 25) & 0xFF,
-        tick_rate=speed,
+        num_voices=section['n_voices'],
+        num_patterns=section['n_unique'],
+        bpm_stored=(section['bpm0'] - 25) & 0xFF,
+        tick_rate=section['speed'],
         base_note=0xA000,
         base_freq=8363.0,
         flags_byte=0x00,                          # linear pitch mode
-        pat_bin_comp_size=len(pat_comp),
-        cue_sheet_comp_size=len(cue_comp),
+        pat_bin_comp_size=len(section['pat_comp']),
+        cue_sheet_comp_size=len(section['cue_comp']),
         global_vol=0xFF,
         mixing_vol=args.mixing_vol,
     )
 
-    # ── Project data: names + the Ixmp section recreating SF2 layering ──
-    proj_data = b''
-    proj_off  = 0
-    if not args.no_project_data:
-        # Names indexed by slot (0 = unused). Layer slots carry the (suffixed) layer
-        # instrument name; meta slots carry the bare preset name.
-        max_slot = max([0] + list(slot_name))
-        inst_names = ['' for _ in range(max_slot + 1)]
-        for s, nm in slot_name.items():
-            inst_names[s] = nm
-        smp_names  = [''] + [ms.name for ms in pool]
-        ixmp = {}
-        for ti in layer_insts:
-            if not ti.usable:
-                continue
-            pl = [p.to_ixmp_dict(ti.canonical, bpm0, args.fadeout)
-                  for p in ti.patches if p is not ti.canonical]
-            if pl:
-                ixmp[ti.slot] = pl
-        if ixmp:
-            vprint(f"  ixmp: {sum(len(p) for p in ixmp.values())} patch(es) "
-                   f"across {len(ixmp)} instrument(s)")
-        title = song.title or os.path.splitext(os.path.basename(args.input))[0]
-        # sMet beat divisions drive the tracker's row highlighting: primary =
-        # rows per NOTATED beat (the time-sig denominator), secondary = rows per
-        # bar. Using the denominator beat (not the rpb=rows-per-quarter) keeps the
-        # primary highlight a divisor of the bar — e.g. 7/8 → 2 rows (eighth), bar
-        # 14: 14 % 2 == 0, aligned; rpb=4 would drift (14 % 4 != 0). 4/4 → 4.
-        i = bisect.bisect_right(song.timesig_ft, shift_ft) - 1
-        _, init_dpow = song.timesig[i] if i >= 0 else (4, 2)
-        beat_pri = max(1, round(rpb * 4 / (2 ** init_dpow)))
-        song_meta = [{'index': 0, 'name': title,
-                      'notation': 240,    # 24-TET (MIDI is 12-TET but 24 is harmless & cleaner pre-pitchbend transpose notation); 0 = raw/hex display
-                      'beat_pri': max(1, min(255, beat_pri)),
-                      'beat_sec': max(1, min(255, init_bar_rows))}]
-        proj_data = build_project_data(
-            project_name=title,
-            instrument_names=inst_names,
-            sample_names=smp_names,
-            song_metadata=song_meta,
-            ixmp_patches=ixmp or None,
-        )
 
+def make_song_meta(section: dict, index: int) -> dict:
+    """sMet entry (Project Data 's' block) from a build_song_section() result."""
+    return {'index': index, 'name': section['title'],
+            'notation': 240,    # 24-TET (MIDI is 12-TET but 24 is harmless & cleaner pre-pitchbend transpose notation); 0 = raw/hex display
+            'beat_pri': section['beat_pri'],
+            'beat_sec': section['beat_sec']}
+
+
+def build_sampleinst_blob(sf: SF2, pool: list, layer_insts: list,
+                          meta_records: list, bpm0: int, args) -> bytes:
+    """Render + compress the sample+instrument image. MUST run before any
+    to_ixmp_dict() call, as it assigns each MonoSample's pool offset."""
+    sampleinst_raw = build_sample_inst_bin(sf, pool, layer_insts, meta_records,
+                                           args.fadeout, bpm0,
+                                           force_synth_loop=args.force_synth_loop)
+    assert len(sampleinst_raw) == SAMPLEINST_SIZE
+    return compress_blob(sampleinst_raw, "sample+inst bin")
+
+
+def build_inst_names(slot_name: dict, pool: list) -> tuple:
+    """(instrument_names, sample_names) slot-indexed lists for INam / SNam."""
+    max_slot = max([0] + list(slot_name))
+    inst_names = ['' for _ in range(max_slot + 1)]
+    for s, nm in slot_name.items():
+        inst_names[s] = nm
+    smp_names = [''] + [ms.name for ms in pool]
+    return inst_names, smp_names
+
+
+def build_ixmp(layer_insts: list, bpm0: int, args) -> dict:
+    """The Ixmp section recreating SF2 layering (instrument-id → patch dicts).
+    Reads each MonoSample's pool offset, so build_sampleinst_blob() must run first."""
+    ixmp = {}
+    for ti in layer_insts:
+        if not ti.usable:
+            continue
+        pl = [p.to_ixmp_dict(ti.canonical, bpm0, args.fadeout)
+              for p in ti.patches if p is not ti.canonical]
+        if pl:
+            ixmp[ti.slot] = pl
+    if ixmp:
+        vprint(f"  ixmp: {sum(len(p) for p in ixmp.values())} patch(es) "
+               f"across {len(ixmp)} instrument(s)")
+    return ixmp
+
+
+def taud_header(kind: int, num_songs: int, comp_size: int) -> bytes:
+    """32-byte container header with projOff left at zero (patched by
+    finish_container when project data is present). `kind` is one of the
+    TAUD_KIND_* constants; the version byte is `kind | TAUD_VERSION`."""
     header = (TAUD_MAGIC
-              + bytes([TAUD_VERSION, 1])
+              + bytes([(kind & 0xC0) | TAUD_VERSION, num_songs & 0xFF])
               + struct.pack('<I', comp_size)
-              + struct.pack('<I', 0)              # patched below if proj data
+              + struct.pack('<I', 0)              # projOff, patched in finish_container
               + (SIGNATURE + b' ' * 14)[:14])
     assert len(header) == TAUD_HEADER_SIZE
+    return header
 
-    out = bytearray()
-    out += header
-    out += compressed
-    out += entry
-    out += pat_comp
-    out += cue_comp
+
+def finish_container(kind: int, num_songs: int, comp_size: int,
+                     body_parts: list, proj_data: bytes) -> bytes:
+    """Concatenate header + body parts + optional project data, patching projOff."""
+    out = bytearray(taud_header(kind, num_songs, comp_size))
+    for part in body_parts:
+        out += part
     if proj_data:
         proj_off = len(out)
         struct.pack_into('<I', out, 14, proj_off)
@@ -2544,16 +2586,94 @@ def assemble_taud(sf: SF2, song: Song, layer_insts: list, meta_records: list,
     return bytes(out)
 
 
+def assemble_taud(sf: SF2, song: Song, layer_insts: list, meta_records: list,
+                  slot_name: dict, pool: list, args) -> bytes:
+    """Full single-song .taud file: sample+inst image + song table + patterns."""
+    section = build_song_section(song, args.speed, args.rpb, args.input, args)
+    compressed = build_sampleinst_blob(sf, pool, layer_insts, meta_records,
+                                       section['bpm0'], args)
+    comp_size  = len(compressed)
+
+    song_off = TAUD_HEADER_SIZE + comp_size + TAUD_SONG_ENTRY
+    entry    = make_song_entry(section, song_off, args)
+
+    # ── Project data: names + Ixmp (I/S) + song metadata (s) + project name (P) ──
+    proj_data = b''
+    if not args.no_project_data:
+        inst_names, smp_names = build_inst_names(slot_name, pool)
+        ixmp = build_ixmp(layer_insts, section['bpm0'], args)
+        proj_data = build_project_data(
+            project_name=section['title'],
+            instrument_names=inst_names,
+            sample_names=smp_names,
+            song_metadata=[make_song_meta(section, 0)],
+            ixmp_patches=ixmp or None,
+        )
+
+    return finish_container(TAUD_KIND_FULL, 1, comp_size,
+                            [compressed, entry, section['pat_comp'],
+                             section['cue_comp']], proj_data)
+
+
+def assemble_tsii(sf: SF2, pool: list, layer_insts: list, meta_records: list,
+                  slot_name: dict, bpm0: int, args) -> bytes:
+    """Sample and Instrument Image (.tsii): the shared sample+instrument bank for
+    a collection of .tpif pattern files (terranmon.txt:3342). numSongs = 0, no
+    song table / patterns; project data carries only the I/S blocks
+    (INam, SNam, Ixmp)."""
+    compressed = build_sampleinst_blob(sf, pool, layer_insts, meta_records,
+                                       bpm0, args)
+    proj_data = b''
+    if not args.no_project_data:
+        inst_names, smp_names = build_inst_names(slot_name, pool)
+        ixmp = build_ixmp(layer_insts, bpm0, args)
+        proj_data = build_project_data(
+            instrument_names=inst_names,
+            sample_names=smp_names,
+            ixmp_patches=ixmp or None,
+        )
+    return finish_container(TAUD_KIND_SAMPLEINST, 0, len(compressed),
+                            [compressed], proj_data)
+
+
+def assemble_tpif(sections: list, args) -> bytes:
+    """Pattern Image (.tpif): song table + patterns only, sharing the instruments
+    of a separately-loaded .tsii (terranmon.txt:3368). Sample+inst compSize = 0
+    (section absent); project data carries only the p/s blocks (sMet here, no
+    pattern names). `sections` is a list of build_song_section() results — one
+    per song in the file."""
+    n = len(sections)
+    table = bytearray()
+    blobs = bytearray()
+    # Pattern/cue data follows the whole song table; each entry points at its blob.
+    cursor = TAUD_HEADER_SIZE + n * TAUD_SONG_ENTRY
+    for sec in sections:
+        table += make_song_entry(sec, cursor, args)
+        blobs += sec['pat_comp']
+        blobs += sec['cue_comp']
+        cursor += len(sec['pat_comp']) + len(sec['cue_comp'])
+
+    proj_data = b''
+    if not args.no_project_data:
+        metas = [make_song_meta(sec, i) for i, sec in enumerate(sections)]
+        proj_data = build_project_data(song_metadata=metas)
+
+    return finish_container(TAUD_KIND_PATTERN, n, 0,
+                            [bytes(table), bytes(blobs)], proj_data)
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
     ap = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('input',     help='Input .mid file')
+    ap.add_argument('input',     help='Input .mid file, OR a directory of MIDIs '
+                                      '(batch mode → shared .tsii + per-file .tpif)')
     ap.add_argument('soundfont', help='SoundFont 2 (.sf2) sample library')
     ap.add_argument('output', nargs='?', default=None,
-                    help='Output .taud (default: input stem + .taud)')
+                    help='Output .taud (default: input stem + .taud). In directory '
+                         'mode: output directory (default: the input directory)')
     ap.add_argument('--perc-force-mapping', nargs=2, type=int, default=None,
                     metavar=('BANK', 'INST'),
                     help='Force the percussion channel to this SF2 preset '
@@ -2615,37 +2735,52 @@ def main():
         sys.exit("error: --max-layers must be 1..25")
     if not (0 <= args.mixing_vol <= 255):
         sys.exit("error: --mixingvol must be 0..255")
-    if args.output is None:
-        args.output = os.path.splitext(args.input)[0] + '.taud'
 
-    vprint(f"parsing MIDI '{args.input}'…")
-    division, merged = parse_midi(args.input)
+    if os.path.isdir(args.input):
+        run_directory(args)
+    else:
+        run_single(args)
+
+
+# ── Pipeline helpers (shared by single-file and directory modes) ───────────────
+
+def load_sf2_verbose(path: str) -> SF2:
+    vprint(f"parsing SF2 '{path}'…")
+    sf = parse_sf2(path)
+    vprint(f"  {len(sf.presets)} preset(s), {len(sf.shdrs)} sample header(s)")
+    return sf
+
+
+def load_midi_song(path: str, sf: SF2, args):
+    """Parse one MIDI into a Song with its resolved Taud grid, then apply SF2
+    exclusive-class percussion choking. Returns (song, rpb, speed), or None when
+    the MIDI carries no playable notes."""
+    vprint(f"parsing MIDI '{path}'…")
+    division, merged = parse_midi(path)
 
     # Resolve the Taud grid (Tickspeed + RPB) before mapping ticks to fine-ticks.
     # A pinned --rpb/--speed fixes that axis; the rest is auto-fit.
-    args.rpb, args.speed, timing_info = auto_timing(
+    rpb, speed, timing_info = auto_timing(
         division, merged, args.rpb, args.speed, args.max_voices)
-    vprint(f"  timing: rpb {args.rpb}, speed {args.speed} ({timing_info})")
+    vprint(f"  timing: rpb {rpb}, speed {speed} ({timing_info})")
 
-    song = extract_song(division, merged, args.rpb, args.speed)
+    song = extract_song(division, merged, rpb, speed)
     vprint(f"  {len(song.notes)} note(s), {len(song.tempo_ft)} tempo event(s), "
            f"{len(song.timesig_ft)} time-signature event(s)")
     if not song.notes:
-        sys.exit("error: MIDI contains no playable notes")
-
-    vprint(f"parsing SF2 '{args.soundfont}'…")
-    sf = parse_sf2(args.soundfont)
-    vprint(f"  {len(sf.presets)} preset(s), {len(sf.shdrs)} sample header(s)")
+        return None
 
     # SF2 exclusiveClass percussion choking (closed hi-hat silences open hi-hat, etc.).
     apply_exclusive_class(song, sf, args.perc_force_mapping)
+    return song, rpb, speed
 
-    # Presets in first-use order; triggers keyed by the exact (noteVal-with-initial-
-    # bend, vol6) pair the patterns will carry, so layer trimming sees precisely what
-    # the engine matches at runtime.
-    slot_keys = []
-    seen_keys = set()
-    triggers  = {}
+
+def collect_triggers(song: Song, slot_keys: list, seen_keys: set,
+                     triggers: dict) -> None:
+    """Append this song's presets (first-use order) to slot_keys and merge its
+    trigger (noteVal-with-initial-bend, vol6) histogram into `triggers`. The keys
+    match exactly what the patterns will carry, so layer trimming sees precisely
+    what the engine matches at runtime."""
     for n in song.notes:
         if n.inst_key not in seen_keys:
             seen_keys.add(n.inst_key)
@@ -2653,15 +2788,13 @@ def main():
         t = triggers.setdefault(n.inst_key, {})
         k = (key_to_noteval(n.key + n.bend0), round(n.vel * 63 / 127))
         t[k] = t.get(k, 0) + 1
-    vprint(f"  {len(slot_keys)} preset(s) in use")
 
-    registry = {}
-    presets = build_presets(sf, slot_keys, triggers, args.perc_force_mapping,
-                            registry, args.max_layers)
 
-    # Allocate instrument-bin slots: each layer is a normal instrument; a preset with
-    # >1 layer also takes a Metainstrument slot the note references. Single-layer
-    # presets stay plain instruments (no meta, no extra slot).
+def allocate_slots(presets: dict, slot_keys: list):
+    """Assign instrument-bin slots across `slot_keys`. Each layer is a normal
+    instrument; a preset with >1 layer also takes a Metainstrument slot the note
+    references. Single-layer presets stay plain instruments (no meta, no extra
+    slot). Returns (layer_insts, meta_records, slot_name, note_slot)."""
     next_slot   = 1
     layer_insts = []      # all normal instruments, .slot assigned
     meta_records = []     # (meta_slot, name, [(layer_slot, bbox_rect)])
@@ -2691,8 +2824,12 @@ def main():
             note_slot[ik] = meta_slot
     vprint(f"  slots: {next_slot - 1} used — {len(layer_insts)} instrument(s), "
            f"{len(meta_records)} Metainstrument(s)")
+    return layer_insts, meta_records, slot_name, note_slot
 
-    # Tag notes with their trigger slot; notes whose preset failed to resolve drop.
+
+def tag_notes(song: Song, note_slot: dict) -> bool:
+    """Tag each note with its trigger slot and drop the unresolvable ones. Returns
+    True when the song keeps at least one note."""
     unplayable = 0
     for n in song.notes:
         n.slot = note_slot.get(n.inst_key, 0)
@@ -2701,11 +2838,12 @@ def main():
     if unplayable:
         vprint(f"  warning: {unplayable} note(s) dropped (unresolvable preset)")
     song.notes = [n for n in song.notes if n.slot > 0]
-    if not song.notes:
-        sys.exit("error: no notes survived preset resolution")
+    return bool(song.notes)
 
-    # Pool = every sample referenced by a kept patch (canonical included), in
-    # deterministic first-reference order. Everything else is trimmed.
+
+def build_pool(layer_insts: list) -> list:
+    """Pool = every sample referenced by a kept patch (canonical included), in
+    deterministic first-reference order. Everything else is trimmed."""
     pool = []
     seen = set()
     for ti in layer_insts:
@@ -2713,6 +2851,46 @@ def main():
             if id(p.ms) not in seen:
                 seen.add(id(p.ms))
                 pool.append(p.ms)
+    return pool
+
+
+def find_midi_files(dir_path: str) -> list:
+    """Top-level .mid / .midi files in `dir_path`, sorted for deterministic order."""
+    out = []
+    for name in sorted(os.listdir(dir_path)):
+        full = os.path.join(dir_path, name)
+        if (os.path.isfile(full)
+                and os.path.splitext(name)[1].lower() in ('.mid', '.midi')):
+            out.append(full)
+    return out
+
+
+# ── Conversion entry points ────────────────────────────────────────────────────
+
+def run_single(args) -> None:
+    """Single MIDI → one self-contained .taud."""
+    if args.output is None:
+        args.output = os.path.splitext(args.input)[0] + '.taud'
+
+    sf = load_sf2_verbose(args.soundfont)
+    loaded = load_midi_song(args.input, sf, args)
+    if loaded is None:
+        sys.exit("error: MIDI contains no playable notes")
+    song, args.rpb, args.speed = loaded
+
+    slot_keys, seen_keys, triggers = [], set(), {}
+    collect_triggers(song, slot_keys, seen_keys, triggers)
+    vprint(f"  {len(slot_keys)} preset(s) in use")
+
+    registry = {}
+    presets = build_presets(sf, slot_keys, triggers, args.perc_force_mapping,
+                            registry, args.max_layers)
+    layer_insts, meta_records, slot_name, note_slot = allocate_slots(
+        presets, slot_keys)
+
+    if not tag_notes(song, note_slot):
+        sys.exit("error: no notes survived preset resolution")
+    pool = build_pool(layer_insts)
 
     taud = assemble_taud(sf, song, layer_insts, meta_records, slot_name, pool, args)
     sf.file.close()
@@ -2720,6 +2898,79 @@ def main():
     with open(args.output, 'wb') as f:
         f.write(taud)
     print(f"wrote {len(taud)} bytes to '{args.output}'")
+
+
+def run_directory(args) -> None:
+    """Directory of MIDIs → one shared .tsii (sample+instrument bank spanning the
+    union of every song) + one .tpif per MIDI (patterns only). terranmon.txt:3342."""
+    out_dir = args.output or args.input
+    midis = find_midi_files(args.input)
+    if not midis:
+        sys.exit(f"error: no .mid/.midi files in directory '{args.input}'")
+    os.makedirs(out_dir, exist_ok=True)
+    vprint(f"directory mode: {len(midis)} MIDI file(s) → shared .tsii + per-file .tpif")
+
+    sf = load_sf2_verbose(args.soundfont)
+
+    # Phase 1: parse every MIDI, aggregating the preset/trigger universe so the
+    # shared instrument bank covers the union of all songs.
+    jobs = []     # (path, song, rpb, speed) for files with playable notes
+    slot_keys, seen_keys, triggers = [], set(), {}
+    for path in midis:
+        loaded = load_midi_song(path, sf, args)
+        if loaded is None:
+            vprint(f"  warning: '{os.path.basename(path)}' has no playable notes — skipped")
+            continue
+        song, rpb, speed = loaded
+        collect_triggers(song, slot_keys, seen_keys, triggers)
+        jobs.append((path, song, rpb, speed))
+    if not jobs:
+        sys.exit("error: no MIDI file produced playable notes")
+    vprint(f"  {len(slot_keys)} preset(s) across {len(jobs)} song(s)")
+
+    # Phase 2: build the one shared instrument set for the whole union.
+    registry = {}
+    presets = build_presets(sf, slot_keys, triggers, args.perc_force_mapping,
+                            registry, args.max_layers)
+    layer_insts, meta_records, slot_name, note_slot = allocate_slots(
+        presets, slot_keys)
+
+    # Phase 3: per song — tag notes against the shared slots, build the pattern
+    # section, and write its .tpif. (Independent of the sample+inst image below.)
+    sections = []
+    for path, song, rpb, speed in jobs:
+        stem = os.path.splitext(os.path.basename(path))[0]
+        vprint(f"building '{stem}'…")
+        if not tag_notes(song, note_slot):
+            vprint(f"  warning: '{stem}' lost all notes to preset resolution — skipped")
+            continue
+        section = build_song_section(song, speed, rpb, path, args)
+        tpif = assemble_tpif([section], args)
+        out_path = os.path.join(out_dir, stem + '.tpif')
+        with open(out_path, 'wb') as f:
+            f.write(tpif)
+        print(f"wrote {len(tpif)} bytes to '{out_path}'")
+        sections.append(section)
+    if not sections:
+        sys.exit("error: no song survived preset resolution")
+
+    # Phase 4: the shared .tsii. Its fadeouts encode SF2 release times in seconds,
+    # but the engine fades per song-tick (rate ∝ BPM), so one image matches only one
+    # tempo exactly — target the mean of the songs' initial BPMs (override per-step
+    # with --fadeout). build_pool / build_sampleinst_blob run last because they
+    # assign the sample offsets the .tsii's Ixmp reads.
+    pool = build_pool(layer_insts)
+    ref_bpm0 = round(sum(s['bpm0'] for s in sections) / len(sections))
+    vprint(f"building shared .tsii (reference BPM {ref_bpm0})…")
+    tsii = assemble_tsii(sf, pool, layer_insts, meta_records, slot_name,
+                         ref_bpm0, args)
+    sf.file.close()
+
+    sf_stem = os.path.splitext(os.path.basename(args.soundfont))[0]
+    tsii_path = os.path.join(out_dir, sf_stem + '.tsii')
+    with open(tsii_path, 'wb') as f:
+        f.write(tsii)
+    print(f"wrote {len(tsii)} bytes to '{tsii_path}'")
 
 
 if __name__ == '__main__':
