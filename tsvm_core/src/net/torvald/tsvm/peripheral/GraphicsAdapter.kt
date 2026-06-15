@@ -431,7 +431,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
                 for (it in 0 until 1024) {
                     val rgba = DEFAULT_PALETTE[it / 4]
                     val channel = it % 4
-                    rgba.shr((3 - channel) * 8).and(255) / 255f
+                    paletteOfFloats[it] = rgba.shr((3 - channel) * 8).and(255) / 255f
                 }
             }
             2 -> {
@@ -450,7 +450,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
                 for (it in 0 until 1024) {
                     val rgba = DEFAULT_PALETTE[it / 4]
                     val channel = it % 4
-                    rgba.shr((3 - channel) * 8).and(255) / 255f
+                    paletteOfFloats[it] = rgba.shr((3 - channel) * 8).and(255) / 255f
                 }
                 framebuffer.fillWith(arg1.toByte())
                 framebuffer2?.fillWith(arg2.toByte())
@@ -1392,7 +1392,8 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
 
         val highvalue = paletteOfFloats[offset * 2] // R, B
         val lowvalue = paletteOfFloats[offset * 2 + 1] // G, A
-        return (highvalue.div(15f).toInt().shl(4) or lowvalue.div(15f).toInt()).toByte()
+        // channels are stored as 0..1 floats (n/15); recover the 4-bit nibble
+        return ((highvalue * 15f + 0.5f).toInt().shl(4) or (lowvalue * 15f + 0.5f).toInt()).toByte()
     }
 
     private fun pokePalette(offset: Int, byte: Byte) {
