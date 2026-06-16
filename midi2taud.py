@@ -6,6 +6,7 @@ Usage:
                          [--perc-force-mapping BANK INST]
                          [--rpb N] [--speed N] [--fadeout N]
                          [--bend-epsilon CENTS] [--drum-keyoff]
+                         [--loop] [--loop-at-eot]
                          [-v] [--no-project-data]
 
     # Batch / directory mode (terranmon.txt:3342-3401):
@@ -86,6 +87,24 @@ Behaviour (per midi2taud.md):
     into whole-bar cues (the largest multiple of its bar length that fits in 64
     rows) so the tracker's bar/beat highlighting (sMet beat divisions) lines up
     with the music.
+  * Looping. A MIDI that carries its own loop markers is ALWAYS made to loop at
+    those points (regardless of --loop); --loop additionally loops a marker-less
+    MIDI start-to-end. Recognised loop-marker conventions (case-insensitive,
+    first occurrence wins; resolved in this priority):
+      - FF 06 / FF 01 text STARTING with "loops" (loop start) / "loope" (end);
+      - CC #116 (loop start) + CC #117 (loop end);
+      - CC #110 (loop start) + CC #111 (loop end);
+      - CC #111 alone = loop START, loop end = End-of-Track (FF 2F 00).
+    A missing loop end defaults to End-of-Track. The loop is realised as a cue
+    jump: when it spans complete full-length cues from a cue boundary, the final
+    cue's HALT is replaced with a JMP back to the loop-start cue; otherwise an
+    in-pattern order jump (effect B → loop-start cue, plus effect C → row when
+    the loop start is mid-cue) is placed on the last looped row. Cues after the
+    loop end are dropped.
+    --loop (whole song) rounds its loop-end UP to the next bar line by default,
+    so the loop seam stays on the beat grid (and usually lands on a full cue → a
+    clean JMP); --loop-at-eot loops exactly at End-of-Track instead. Bar rounding
+    never applies to explicit MIDI loop markers — those loop verbatim.
 """
 
 import argparse
@@ -103,12 +122,13 @@ from taud_common import (
     SAMPLEBIN_SIZE, INSTBIN_SIZE, SAMPLEINST_SIZE, SAMPLE_LEN_LIMIT,
     PATTERN_ROWS, PATTERN_BYTES, NUM_PATTERNS_MAX, NUM_CUES, CUE_SIZE, NUM_VOICES,
     NOTE_NOP, NOTE_KEYOFF, NOTE_FASTFADE, TAUD_C4,
-    TOP_G, TOP_M, TOP_S, TOP_T,
+    TOP_B, TOP_C, TOP_G, TOP_M, TOP_S, TOP_T,
     SEL_SET, SEL_FINE,
     CUE_INST_NOP, CUE_INST_HALT,
     resample_linear, encode_cue, deduplicate_patterns, encode_song_entry,
     compress_blob, build_project_data, cue_instruction_len,
-    cue_instruction_halt_at, last_note_cue_index, nearest_minifloat,
+    cue_instruction_halt_at, cue_instruction_jump,
+    last_note_cue_index, nearest_minifloat,
     IXMP_PAN_NO_OVERRIDE, atten_cb_to_octet,
 )
 
@@ -172,6 +192,15 @@ def _parse_track(data: bytes, pos: int, end: int) -> list:
                 txt = payload.decode('latin-1', errors='replace').strip()
                 if txt:
                     evs.append((tick, ('title', txt)))
+            elif mtype in (0x01, 0x06):                # text (0x01) / marker (0x06)
+                # Loop points by text convention: a marker/text whose ASCII
+                # STARTS with "loops" / "loope" (case-insensitive) — see the
+                # loop-convention list in the module docstring.
+                tag = payload.decode('latin-1', errors='replace').strip().lower()
+                if tag.startswith('loops'):
+                    evs.append((tick, ('loopstart',)))
+                elif tag.startswith('loope'):
+                    evs.append((tick, ('loopend',)))
             elif mtype == 0x58 and ln >= 2:        # time signature (FF 58 04 nn dd cc bb)
                 # nn = numerator, dd = denominator as a negative power of 2
                 # (2 = quarter, 3 = eighth). cc/bb (clocks-per-click, 32nds-per-
@@ -314,7 +343,35 @@ def _curve_push(fts: list, vals: list, ft: int, val):
 
 class Song:
     __slots__ = ('notes', 'channels', 'tempo_ft', 'tempo_bpm', 'title', 'end_ft',
-                 'timesig_ft', 'timesig')
+                 'timesig_ft', 'timesig', 'loop_start_ft', 'loop_end_ft', 'eot_ft')
+
+
+# CC numbers used as loop start / end markers by various sequencers (see the
+# loop-convention list in the module docstring). Values are ignored — only the
+# tick matters.
+CC_LOOP_START_A = 110    # 0x6E  (paired with CC 111 as end)
+CC_LOOP_END_A   = 111    # 0x6F  (also a loop-START when 110 is absent → end = EoT)
+CC_LOOP_START_B = 116    # 0x74
+CC_LOOP_END_B   = 117    # 0x75
+
+
+def _resolve_loop(text_start, text_end, cc, eot_ft, max_ft):
+    """Resolve the song's loop region (start_ft, end_ft) from the collected loop
+    markers, or (None, None) when the MIDI defines none. `cc` maps each loop CC
+    number to its first occurrence ft. Priority: text markers > CC 116/117 >
+    CC 110/111 > CC 111-only (RPG-Maker style; loop-end = End-of-Track). An
+    absent end falls back to End-of-Track (or the last event when no EoT)."""
+    end_default = eot_ft if eot_ft is not None else max_ft
+    if text_start is not None or text_end is not None:
+        return (text_start if text_start is not None else 0,
+                text_end   if text_end   is not None else end_default)
+    if CC_LOOP_START_B in cc:
+        return cc[CC_LOOP_START_B], cc.get(CC_LOOP_END_B, end_default)
+    if CC_LOOP_START_A in cc:                       # 110 present ⇒ 111 is the end
+        return cc[CC_LOOP_START_A], cc.get(CC_LOOP_END_A, end_default)
+    if CC_LOOP_END_A in cc:                          # 111 alone ⇒ it is the start
+        return cc[CC_LOOP_END_A], end_default
+    return None, None
 
 
 def extract_song(division, merged, rpb: int, speed: int) -> Song:
@@ -340,6 +397,9 @@ def extract_song(division, merged, rpb: int, speed: int) -> Song:
     timesig_ft, timesig = [], []          # ft → (numerator, denom_power)
     title = None
     max_ft = 0
+    loop_text_start = loop_text_end = None    # FF 06/01 "loops"/"loope" ft
+    loop_cc = {}                              # loop CC number → first occurrence ft
+    eot_ft = None                             # latest End-of-Track ft (loop-end fallback)
 
     def end_note(n: Note, ft: int):
         if n.end_ft is None:
@@ -386,6 +446,9 @@ def extract_song(division, merged, rpb: int, speed: int) -> Song:
         elif kind == 'cc':
             _, ch, num, val = ev
             st = chs[ch]
+            if num in (CC_LOOP_START_A, CC_LOOP_END_A,
+                       CC_LOOP_START_B, CC_LOOP_END_B):
+                loop_cc.setdefault(num, ft)        # first occurrence wins
             if num == 0:
                 st.bank = val
             elif num == 7:
@@ -449,6 +512,16 @@ def extract_song(division, merged, rpb: int, speed: int) -> Song:
             if title is None:
                 title = ev[1]
 
+        elif kind == 'loopstart':
+            if loop_text_start is None:
+                loop_text_start = ft
+        elif kind == 'loopend':
+            if loop_text_end is None:
+                loop_text_end = ft
+        elif kind == 'eot':
+            if eot_ft is None or ft > eot_ft:
+                eot_ft = ft
+
     # Close anything still ringing at end-of-file.
     for st in chs:
         for n in list(st.active.values()):
@@ -473,6 +546,9 @@ def extract_song(division, merged, rpb: int, speed: int) -> Song:
     song.timesig    = timesig
     song.title     = title
     song.end_ft    = max_ft
+    song.eot_ft = eot_ft
+    song.loop_start_ft, song.loop_end_ft = _resolve_loop(
+        loop_text_start, loop_text_end, loop_cc, eot_ft, max_ft)
     return song
 
 
@@ -2285,6 +2361,22 @@ def emit_cells(song: Song, insts: dict, speed: int, rpb: int,
 
     total_rows = max(r for (_v, r) in cells) + 1
 
+    # Anchor the song's length to the MIDI End-of-Track, NOT to the last
+    # surviving note. Preset resolution drops notes whose SoundFont preset is
+    # missing, so a sparse bank can drop the trailing notes and silently shorten
+    # the song (E2M1: 3453 rows on a full GM bank vs 3449 when the last notes are
+    # dropped) — the cue layout and final HALT then depend on the SoundFont. EoT
+    # is a fixed MIDI property, so the row count is the same for every bank: the
+    # dropped notes' time becomes trailing silence instead of vanishing. `max`
+    # with the last trigger row still honours a note that (pathologically) starts
+    # past EoT. The EoT row itself is the end-of-song boundary (exclusive), so a
+    # final key-off landing exactly on it is dropped (the HALT cuts the note),
+    # which also avoids the lone-key-off terminus cue the trim below handled.
+    if song.eot_ft is not None:
+        eot_row = (song.eot_ft - shift_ft) // speed
+        last_trigger = max((n.start_ft // speed for n in notes), default=0)
+        total_rows = max(eot_row, last_trigger + 1)
+
     # ── Pass 5: T tempo changes ──
     bpm0 = midi_bpm_at(shift_ft)                  # tempo in effect at row 0
     last = taud_bpm(bpm0)
@@ -2329,6 +2421,23 @@ def emit_cells(song: Song, insts: dict, speed: int, rpb: int,
 
 
 # ── Pattern / cue emission and final assembly ────────────────────────────────
+
+def _bar_align_up(row: int, timesig_ft: list, timesig: list,
+                  shift_ft: int, speed: int, rpb: int) -> int:
+    """Smallest bar-line row >= `row`, using the time signature of the section
+    `row` falls in (sections start at time-sig changes, as in plan_cues). A row
+    already on a bar line is returned unchanged. Used to bar-align the --loop
+    whole-song loop-end so the loop seam lands on a bar (and a full cue)."""
+    def bar_rows_of(r):
+        ft = r * speed + shift_ft
+        i = bisect.bisect_right(timesig_ft, ft) - 1
+        num, dpow = timesig[i] if i >= 0 else (4, 2)
+        return max(1, round(num * 4.0 / (2 ** dpow) * rpb))
+    breaks = sorted({0} | {(ft - shift_ft) // speed for ft in timesig_ft})
+    sec_start = max(b for b in breaks if b <= row)
+    br = bar_rows_of(sec_start)
+    return sec_start + ((row - sec_start + br - 1) // br) * br
+
 
 def plan_cues(timesig_ft: list, timesig: list, total_rows: int,
               shift_ft: int, speed: int, rpb: int) -> tuple:
@@ -2397,6 +2506,79 @@ def build_pattern_bin(cells: dict, n_voices: int,
     return bytes(out)
 
 
+def _inject_loop(pat_bin: bytes, cue_starts: list, cue_lens: list, n_voices: int,
+                 rs: int, re: int) -> tuple:
+    """Make the song loop from row `re` (exclusive) back to row `rs`.
+
+    Returns (pat_bin, cue_starts, cue_lens, jump_instr). When the loop covers
+    complete full-length cues from a cue boundary, `jump_instr` is the 2-byte JMP
+    cue instruction to place on the (new) last cue — the clean "replace HALT with
+    JMP000" case. Otherwise an in-pattern order jump (effect B → cue cs, plus
+    effect C → row when the loop-start is mid-cue) is written on the last looped
+    row and `jump_instr` is None. Cues after the loop-end are unreachable once we
+    loop, so they are dropped."""
+    n_cues = len(cue_starts)
+    song_end_row = cue_starts[-1] + cue_lens[-1]
+    rs = max(0, min(rs, song_end_row - 1))
+    re = max(rs + 1, min(re, song_end_row))
+    last_played = re - 1
+
+    def cue_of(row):
+        for ci in range(n_cues):
+            if cue_starts[ci] <= row < cue_starts[ci] + cue_lens[ci]:
+                return ci
+        return n_cues - 1
+    cs = cue_of(rs)
+    ce = cue_of(last_played)
+    rs_off = rs - cue_starts[cs]
+    re_off = last_played - cue_starts[ce]
+
+    # Drop the now-unreachable tail cues (after the loop-end cue).
+    if ce < n_cues - 1:
+        cue_starts = cue_starts[:ce + 1]
+        cue_lens   = cue_lens[:ce + 1]
+        pat_bin    = pat_bin[:(ce + 1) * n_voices * PATTERN_BYTES]
+        n_cues = ce + 1
+
+    # Clean whole-cue case: loop-start on a cue boundary AND loop-end on the last
+    # row of a FULL 64-row cue. A cue-level JMP fires at the cue's full-pattern
+    # end, which only lines up here; partial / mid-pattern loops use effect B.
+    if rs_off == 0 and re_off == cue_lens[ce] - 1 and cue_lens[ce] == PATTERN_ROWS:
+        return pat_bin, cue_starts, cue_lens, cue_instruction_jump(cs)
+
+    buf = bytearray(pat_bin)
+
+    def free_voice(skip):
+        # Prefer a fully-empty cell, then any cell without an effect.
+        for want_empty in (True, False):
+            for v in range(n_voices):
+                if v in skip:
+                    continue
+                off = (ce * n_voices + v) * PATTERN_BYTES + re_off * 8
+                if buf[off + 5] != 0:
+                    continue
+                if want_empty and (buf[off] != 0 or buf[off + 1] != 0):
+                    continue
+                return v, off
+        return None, None
+
+    vb, ob = free_voice(set())
+    if vb is None:                       # every cell on this row already has an effect
+        vb, ob = 0, (ce * n_voices) * PATTERN_BYTES + re_off * 8
+        vprint("  warning: loop-end row crowded — overwriting an effect with the B jump")
+    buf[ob + 5] = TOP_B
+    struct.pack_into('<H', buf, ob + 6, cs & 0xFFFF)
+    if rs_off > 0:
+        vc, oc = free_voice({vb})
+        if vc is None:
+            vprint("  warning: no free slot for the C row-jump — looping to the "
+                   "loop-start cue's first row instead")
+        else:
+            buf[oc + 5] = TOP_C
+            struct.pack_into('<H', buf, oc + 6, rs_off & 0xFFFF)
+    return bytes(buf), cue_starts, cue_lens, None
+
+
 def build_song_section(song: Song, speed: int, rpb: int, src_path: str,
                        args) -> dict:
     """Per-song pattern/cue build shared by the full .taud and the .tpif paths.
@@ -2422,6 +2604,18 @@ def build_song_section(song: Song, speed: int, rpb: int, src_path: str,
         song, None, speed, rpb, eps_units, args.drum_keyoff, shift_ft,
         args.max_voices)
 
+    # --loop (whole song, no MIDI markers) bar-aligns its loop-end by DEFAULT:
+    # extend the song to the next bar line so the loop seam stays on the beat grid
+    # (and lands on a full cue → a clean cue-level JMP). --loop-at-eot opts out,
+    # looping exactly at End-of-Track. The extension is silent padding past EoT;
+    # MIDI loop markers are always honoured verbatim, never bar-rounded.
+    if args.loop and song.loop_start_ft is None and not args.loop_at_eot:
+        aligned = _bar_align_up(total_rows, song.timesig_ft, song.timesig,
+                                shift_ft, speed, rpb)
+        if aligned != total_rows:
+            vprint(f"  loop: bar-aligning song end {total_rows} → {aligned} rows")
+        total_rows = aligned
+
     # Cue layout: break at time-signature changes, pack into whole-bar cues.
     cue_starts, cue_lens, init_bar_rows = plan_cues(
         song.timesig_ft, song.timesig, total_rows, shift_ft, speed, rpb)
@@ -2436,12 +2630,29 @@ def build_song_section(song: Song, speed: int, rpb: int, src_path: str,
 
     pat_bin = build_pattern_bin(cells, n_voices, cue_starts, cue_lens)
 
+    # The song length is anchored to End-of-Track (emit_cells), so when the MIDI
+    # carries an EoT the last cue IS the EoT cue: keep the whole span (n_cues-1
+    # floor) so the trailing-rest trim can't shorten it — dropped trailing notes
+    # must stay as silence, not vanish, or the length would again depend on the
+    # SoundFont. Without an EoT, fall back to the note-based trim; an explicit
+    # loop-end marker still floors it at the cue holding the loop-end row (the
+    # marker may sit in a trailing rest before EoT).
+    keep_floor = 0
+    if song.eot_ft is not None:
+        keep_floor = n_cues - 1
+    elif song.loop_end_ft is not None:
+        end_row = max(0, (song.loop_end_ft - shift_ft) // speed - 1)
+        for ci in range(n_cues):
+            if cue_starts[ci] <= end_row < cue_starts[ci] + cue_lens[ci]:
+                keep_floor = ci
+                break
+
     # Trim trailing note-free cues: the MIDI release pass emits a final cue that
     # is just key-offs (and the silence after the song's last note), which shows
     # up as a dead bar at the end (e.g. M_E1M1's lone-key-off terminus cue). Drop
     # whole cues with no actual note; the new last cue then HALTs at its own
     # length. Special notes (key-off/cut/fade) are not notes here.
-    last_cue = last_note_cue_index(pat_bin, n_cues, n_voices)
+    last_cue = max(last_note_cue_index(pat_bin, n_cues, n_voices), keep_floor)
     if 0 <= last_cue < n_cues - 1:
         dropped = n_cues - 1 - last_cue
         n_cues = last_cue + 1
@@ -2449,6 +2660,33 @@ def build_song_section(song: Song, speed: int, rpb: int, src_path: str,
         cue_lens   = cue_lens[:n_cues]
         pat_bin    = pat_bin[:n_cues * n_voices * PATTERN_BYTES]
         vprint(f"  info: trimmed {dropped} trailing note-free cue(s)")
+
+    # Looping. MIDI loop markers (loops/loope text, CC 110/111/116/117) ALWAYS
+    # convert to a pattern jump; the --loop flag additionally loops a marker-less
+    # MIDI start-to-end. Markers win when both are present.
+    loop_jump = None
+    song_end_row = cue_starts[-1] + cue_lens[-1]
+    if song.loop_start_ft is not None:
+        rs = (song.loop_start_ft - shift_ft) // speed
+        re = (song.loop_end_ft   - shift_ft) // speed
+        loop_src = "MIDI loop marker"
+    elif args.loop:
+        rs, re = 0, song_end_row
+        loop_src = "--loop (whole song)"
+    else:
+        rs = re = None
+    if rs is not None:
+        rs = max(0, min(rs, song_end_row - 1))
+        re = min(re, song_end_row)
+        if re <= rs:
+            vprint(f"  warning: {loop_src} loop region empty after clamping — not looping")
+        else:
+            pat_bin, cue_starts, cue_lens, loop_jump = _inject_loop(
+                pat_bin, cue_starts, cue_lens, n_voices, rs, re)
+            n_cues = len(cue_starts)
+            how = "JMP cue jump" if loop_jump is not None else "in-pattern B jump"
+            vprint(f"  loop: {loop_src} → rows [{rs}, {re}) via {how} "
+                   f"({n_cues} cue(s) after loop trim)")
 
     pat_bin, remap, n_unique = deduplicate_patterns(pat_bin, n_cues * n_voices)
     n_breaks = sum(1 for ft in song.timesig_ft
@@ -2463,9 +2701,11 @@ def build_song_section(song: Song, speed: int, rpb: int, src_path: str,
     for ci in range(n_cues):
         pats = [remap[ci * n_voices + v] for v in range(n_voices)]
         if ci == n_cues - 1:
-            # Halt after this cue's own length (a partial final bar plays only its
-            # rows instead of the full 64-row pattern).
-            instr = cue_instruction_halt_at(cue_lens[ci])
+            # Loop back via a cue-level JMP when the loop is whole-cue clean; else
+            # halt after this cue's own length (an in-pattern B jump, if any, fires
+            # first, so the HALT is just the never-reached safety terminus).
+            instr = loop_jump if loop_jump is not None \
+                else cue_instruction_halt_at(cue_lens[ci])
         elif cue_lens[ci] < PATTERN_ROWS:
             instr = cue_instruction_len(cue_lens[ci])
         else:
@@ -2712,6 +2952,18 @@ def main():
     ap.add_argument('--drum-keyoff', action='store_true',
                     help='Emit KEY_OFF for percussion-channel notes too '
                          '(GM drums normally ignore note-off)')
+    ap.add_argument('--loop', action='store_true',
+                    help='Loop a non-looping MIDI start-to-end (replace the final '
+                         'HALT with a jump back to the first cue). The loop-end is '
+                         'rounded up to the next BAR LINE by default so the loop '
+                         'seam stays on the beat (use --loop-at-eot to loop exactly '
+                         'at End-of-Track instead). MIDIs that carry their own loop '
+                         'markers (loops/loope text, or CC 110/111/116/117) are '
+                         'ALWAYS looped at those points regardless of this flag')
+    ap.add_argument('--loop-at-eot', action='store_true',
+                    help='With --loop: loop precisely at End-of-Track instead of '
+                         'rounding the loop-end up to a full bar (no effect without '
+                         '--loop, or when the MIDI has its own loop markers)')
     ap.add_argument('--force-synth-loop', action='store_true',
                     help='For looped samples whose loop sits past the 65535-frame '
                          'cap even at 32 kHz (multi-second far-loop instruments, '

@@ -3852,6 +3852,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         ts.cuePos = when (instr) {
             is PlayInstGoBack -> (ts.cuePos - instr.arg).coerceAtLeast(0)
             is PlayInstSkip   -> (ts.cuePos + instr.arg).coerceAtMost(1023)
+            is PlayInstJump   -> instr.arg.coerceIn(0, 1023)
             else              -> (ts.cuePos + 1).coerceAtMost(1023)
         }
         playhead.position = ts.cuePos
@@ -4113,7 +4114,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         //   00000000          (NOP)    default 64-row cue
         //   1000xxxx yyyyyyyy (BAK)    go back 12-bit arg
         //   1001xxxx yyyyyyyy (FWD)    skip forward 12-bit arg
-        //   1111xxxx yyyyyyyy (JMP)    go to absolute pattern (currently unused)
+        //   1111xxxx yyyyyyyy (JMP)    go to absolute cue (loop back to cue arg)
         private fun recomputeInstruction() {
             val b30 = instByte30
             val b31 = instByte31
@@ -4130,7 +4131,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 (b30 and 0xF0) == 0x80 -> PlayInstGoBack(((b30 and 0xF) shl 8) or (b31 and 0xFF))
                 // FWD: 1001xxxx yyyyyyyy — 12-bit arg.
                 (b30 and 0xF0) == 0x90 -> PlayInstSkip(((b30 and 0xF) shl 8) or (b31 and 0xFF))
-                // JMP: 1111xxxx yyyyyyyy — reserved (decoder TBD).
+                // JMP: 1111xxxx yyyyyyyy — go to absolute cue 0bxxxxyyyyyyyy.
+                (b30 and 0xF0) == 0xF0 -> PlayInstJump(((b30 and 0xF) shl 8) or (b31 and 0xFF))
                 else -> PlayInstNop
             }
         }
@@ -4176,6 +4178,9 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     internal open class PlayInstruction(val arg: Int)
     internal class PlayInstGoBack(arg: Int) : PlayInstruction(arg)
     internal class PlayInstSkip(arg: Int) : PlayInstruction(arg)
+    /** "JMP": go to absolute cue [arg]. Used by looping converters to jump back
+     *  to the loop-start cue (e.g. midi2taud's whole-song / loop-marker loop). */
+    internal class PlayInstJump(arg: Int) : PlayInstruction(arg)
     internal class PlayInstPatLen(val rows: Int) : PlayInstruction(rows)
     /** "Halt at x": play [rows] rows of the pattern (1..64) then stop. */
     internal class PlayInstHaltAt(val rows: Int) : PlayInstruction(rows)

@@ -19,13 +19,11 @@ import net.torvald.terrarum.DefaultGL32Shaders
 import net.torvald.terrarum.modulecomputers.virtualcomputer.tvd.toUint
 import net.torvald.tsvm.*
 import net.torvald.tsvm.peripheral.GraphicsAdapter.Companion.DRAW_SHADER_FRAG
-import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
 import java.util.*
 import kotlin.experimental.and
 import kotlin.math.floor
-import kotlin.math.min
 
 data class AdapterConfig(
     val theme: String,
@@ -114,7 +112,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
 
     override var blinkCursor = true
     override var ttyRawMode = false
-    private var graphicsUseSprites = false
+    private var graphicsDisableTexts = false
     private var lastUsedColour = (-1).toByte()
     private var currentChrRom = 0
     private var chrWidth = 7f
@@ -346,7 +344,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
             ttyRawMode.toInt(1) or
             blinkCursor.toInt()).toByte()
 
-    private fun getGraphicsAttributes(): Byte = graphicsUseSprites.toInt().toByte()
+    private fun getGraphicsAttributes(): Byte = graphicsDisableTexts.toInt().toByte()
 
     private fun setTextmodeAttributes(rawbyte: Byte) {
         currentChrRom = rawbyte.toInt().and(0b11110000).ushr(4)
@@ -355,7 +353,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
     }
 
     private fun setGraphicsAttributes(rawbyte: Byte) {
-        graphicsUseSprites = rawbyte.and(1) == 1.toByte()
+        graphicsDisableTexts = rawbyte.and(1) == 1.toByte()
     }
 
     override fun mmio_read(addr: Long): Byte? {
@@ -1248,7 +1246,7 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
 
                 outFBObatch.color = Color.WHITE
 
-                if (!graphicsUseSprites) {
+                if (!graphicsDisableTexts) {
                     // draw texts
                     val (cx, cy) = getCursorPos()
 

@@ -256,7 +256,24 @@ MMIO
     0b 0000 00rc (r: TTY Raw mode, c: Cursor blink)
 7 RW
     Graphics-mode attributes
-    0b 0000 rrrr (r: Resolution/colour depth)
+    0b 00ii 000t (t: disable text, i: interlaced mode)
+
+    When interlace is enabled (i > 0), the layers are overlaind in the checkerboard pattern, allowing blending.
+
+    On graphics mode 2, the pattern is:
+         [L1  L2]
+         [L2  L1]
+    for all nonzero i.
+
+    On graphics mode 3, the pattern is:
+    i=1 [L1  L2]
+         [L2  L1] (where L1: mid-low layer, L2: mid-high layer; low-layer is drawn behind, high-layer is drawn over)
+    i=2 [L1  L2]
+         [L3  L1] (where L1: low layer, L2: mid-low layer, L3: mid-high layer; high-layer is always drawn over)
+    i=3 [L1  L2]
+         [L3  L4]
+
+    On the other graphics modes, the flag has no effect and always zero when read
 8 RO
     Last used colour (set by poking at the framebuffer)
 9 RW
@@ -266,17 +283,18 @@ MMIO
 11 RO
     Number of Banks, or VRAM size (1 = 256 kB, max 4)
 12 RW
-    Graphics Mode
-    0: 560x448,  256 Colours, 1 layer
-    1: 280x224,  256 Colours, 4 layers
-    2: 280x224, 4096 Colours, 2 layers
-    3: 560x448,  256 Colours, 2 layers (if bank 2 is not installed, mode change will not happen)
-    4: 560x448, 4096 Colours, 1 layer  (if bank 2 is not installed, mode change will not happen)
-    5: 560x448, 15-bit colour, 1 layer (if bank 2 is not installed, mode change will not happen)
-    8: 560x448, 24-bit colour, 1 layer (if bank 3 and 4 are not installed, mode change will not happen)
-    4096 is also known as "direct colour mode" (4096 colours * 16 transparency -> 65536 colours)
-        Two layers are grouped to make a frame, "low layer" contains RG colours and "high layer" has BA colours,
-        Red and Blue occupies MSBs
+    0b 0000 mmmm, where:
+    mmmm: Graphics Mode
+        0: 560x448,  256 Colours, 1 layer
+        1: 280x224,  256 Colours, 4 layers
+        2: 280x224, 4096 Colours, 2 layers
+        3: 560x448,  256 Colours, 2 layers (if bank 2 is not installed, mode change will not happen)
+        4: 560x448, 4096 Colours, 1 layer  (if bank 2 is not installed, mode change will not happen)
+        5: 560x448, 15-bit colour, 1 layer (if bank 2 is not installed, mode change will not happen)
+        8: 560x448, 24-bit colour, 1 layer (if bank 3 and 4 are not installed, mode change will not happen)
+        4096 is also known as "direct colour mode" (4096 colours * 16 transparency -> 65536 colours)
+            Two layers are grouped to make a frame, "low layer" contains RG colours and "high layer" has BA colours,
+            Red and Blue occupies MSBs
 13 RW
     Layer Arrangement
     If 4 layers are used:
@@ -2879,7 +2897,8 @@ TODO:
           detaching, mirroring the existing active-branch. parent.keyOff survives deactivation and is
           reset on retrigger, so a true value means this note was released. A parent that ended naturally
           (no release) still leaves the child to finish on its own.
-    [ ] Some ways to decouple Sample+Inst and patterns into separate files (tsvm-doom needs separate file access; samplepack can be uploaded once on init)
+    [x] Some ways to decouple Sample+Inst and patterns into separate files (tsvm-doom needs separate file access; samplepack can be uploaded once on init)
+    [ ] The same VT-aware patch thing for all fullscreen apps, possibly made simple by only requiring one row of simple code
 
 TODO - list of demo songs that MUST ship with Microtone:
     * 4THSYM (rename to Fourth Symmetriad) — excellent piece for demonstrating NNAs and filter envelopes
@@ -3028,7 +3047,7 @@ Play Head Flags
     Byte 31..32: instruction
         1000xxxx yyyyyyyy (BAK000) - Go back 0bxxxxyyyyyyyy patterns
         1001xxxx yyyyyyyy (FWD000) - Skip forward 0bxxxxyyyyyyyy patterns
-        1111xxxx yyyyyyyy (JMP000) - Go to absolute pattern number 0bxxxxyyyyyyyy
+        1111xxxx yyyyyyyy (JMP000) - Go to absolute pattern number 0bxxxxyyyyyyyy (decoded by AudioAdapter as of 2026-06-15; emitted by midi2taud --loop / loop-marker conversion to jump back to the loop-start cue)
         00000010 00xxxxxx (LEN 00) - Pattern length for this cue (0..63), where 0: 1 row, 63: 64 rows (decoded by AudioAdapter as of 2026-05-05; emitted by xm2taud / it2taud for non-multiple-of-64 source patterns)
         00000001 00000000 - Halt (HALT  ) - Play the full length of the pattern then stop the playback
         00000001 01xxxxxx - Halt at x (HALT00)  - Play the specified length of the pattern then stop the playback. x = 0 is identical to regular HALT. (decoded by AudioAdapter as of 2026-06-14; emitted as the final cue by midi2taud / it2taud / xm2taud so a partial last bar halts at its own length)

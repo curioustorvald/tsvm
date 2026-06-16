@@ -388,6 +388,18 @@ def cue_instruction_halt_at(rows: int) -> tuple:
     return (CUE_INST_HALT, 0x40 | (rows & 0x3F))
 
 
+def cue_instruction_jump(cue: int) -> tuple:
+    """Build the 2-byte JMP cue instruction (terranmon.txt §"Cue Sheet").
+
+    Go to absolute cue `cue` (0..4095) when this cue finishes its full pattern —
+    the engine never halts here, so it loops. Encoding is byte30 = 0b1111xxxx
+    (high nybble of the 12-bit cue) and byte31 = low 8 bits.
+    """
+    if not 0 <= cue <= 0xFFF:
+        raise ValueError(f"JMP cue target must be 0..4095, got {cue}")
+    return (0xF0 | ((cue >> 8) & 0x0F), cue & 0xFF)
+
+
 def last_note_cue_index(pat_bin: bytes, num_cues: int, num_channels: int) -> int:
     """Index of the last cue holding an *actual* note, or -1 if none.
 
