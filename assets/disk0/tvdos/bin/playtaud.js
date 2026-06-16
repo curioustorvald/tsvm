@@ -206,6 +206,7 @@ function parseTaud(path, songIndex) {
         // HALT terminates traversal — anything past it is unreachable.
         if (i30 === CUE_HALT) break
     }
+    sys.free(cuePtr)
     if (lastCue < 0) lastCue = 0
 
     // Decode an 0x1E-separated name table into a 256-slot array.  Names in the
