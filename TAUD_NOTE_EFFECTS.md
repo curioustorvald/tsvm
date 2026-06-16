@@ -793,6 +793,26 @@ Peak at maximum settings: $7F × $FF >> 9 = $3F — the full panning range. Retr
 
 ---
 
+## 5 $xxyy and 6 $xxyy — Filter Cutoff/Resonance Control
+
+**Plain.** `5` sets the cutoff and `6` sets the resonance of the instrument's filter directly. When the filter is in ImpulseTracker mode, only the high byte (the `xx` part) is read; when the filter is in SoundFont2 mode, both bytes are read. Argument `$FFFF` resets the parameter to its default value (for both IT and SF2 mode). Every note that shares the instrument is affected — the change is **instrument-wide**, not per-voice. If cutoff vibrato is what you are after, modify the filter envelope directly.
+
+**Compatibility.** Unique to Taud — no ST3/IT/PT equivalent. The effect has **no memory** (`$0000` is a literal "set to zero", not a recall).
+
+**Implementation.** The effect writes a per-instrument **cutoff / resonance override** that supersedes the value loaded from the instrument record (bytes 182/183, plus 252/253 in SF mode). The argument is decoded in the instrument's active filter mode:
+
+- **ImpulseTracker mode:** only the high byte `$xx` is read (0..254 active; 255 = filter off), matching the 8-bit cutoff/resonance storage.
+- **SoundFont2 mode:** the full 16-bit argument `$xxyy` is read (cutoff in absolute cents, resonance in centibels), matching the 16-bit storage.
+- **`$FFFF`** clears the override, restoring the value loaded from the record. The engine **MUST** test for `$FFFF` *before* the mode split, so it is always the reset sentinel regardless of filter mode.
+
+Because the override is instrument-wide, an engine **MUST** apply it to **every note that is already sounding** on that instrument — not only to notes triggered afterwards. The reference engine does this in two parts: (a) it stores the override on the instrument so subsequent triggers seed from it, and (b) it walks the live foreground voices and background ghosts and re-seeds the cutoff/resonance of every voice bound to the affected instrument, forcing a filter-coefficient refresh. A voice with a filter **envelope** recomputes its working cutoff from the (now-overridden) default each tick, so the envelope sweep is rescaled to the new base; a voice without one reads the overridden value directly.
+
+This effect applies to ordinary instruments. When used on a **metainstrument**, the override **MUST** be applied to the constituent instruments all at once — the reference engine fans the write out across the foreground layer plus every layer-child voice sounding on the channel, so the whole stack moves together.
+
+The override is **runtime state**: it persists across rows and pattern boundaries within one playback, but **MUST** be cleared when the song is restarted (so a loop or replay begins from the file defaults) and when a fresh instrument record is uploaded into the slot.
+
+---
+
 ## 7 $xxyy — Pattern Ditto
 
 **Plain.** A per-channel "fill the rest from above" marker: the engine copies the **$xx rows immediately preceding this cell on the same channel** and pastes them $yy times starting on this row. The destination block therefore covers `$xx × $yy` rows beginning at the ditto row inclusive. Any field (note, instrument, vol-column, pan-column, effect) that the composer has explicitly written into a destination row stays put and patches the corresponding field of the copied source cell — empty fields fall through to the source. The ditto opcode itself is consumed by the marker on its arming row; the rest of that row's columns are patched from the source as usual, so an empty arming row plays back identically to the first row of the source block.
@@ -1114,8 +1134,12 @@ S $6x and S $Ex are orthogonal: when S $Ex is active the current row repeats `$x
 | $A | Panning Envelope On | Enables the currently active note's panning envelope |
 | $B | Pitch Envelope Off | Disables the currently active note's pitch or filter envelope |
 | $C | Pitch Envelope On | Enables the currently active note's pitch envelope  |
+| $D | Filter Envelope Off | Disables the currently active note's filter envelope |
+| $E | Filter Envelope On | Enables the currently active note's filter envelope  |
 
-**Compatibility.** IT `S7x` maps directly.
+When the instrument have both pitch and filter envelopes defined, $B/$C toggles pitch envelope only.
+
+**Compatibility.** For $x in 0..$C, IT `S7x` maps directly. $D and $E differs from MPTM and unique to Taud
 
 **Implementation.** Engines maintain a *mixer-private* background-voice pool per playhead, separate from the addressable foreground voices. When a fresh note retriggers a still-active foreground voice, the engine reads the effective NNA — the per-voice override set by `S $73..$76` if present, otherwise the instrument's default NNA (instrument record byte 186, low two bits) — and acts on the displaced voice as follows:
 
@@ -1132,7 +1156,18 @@ The background pool is reaped when a ghost's `fadeoutVolume` drops to zero or it
 
 `S $73..$76` write the per-voice NNA override on the **currently active foreground voice** so that *its* next NNA event uses the overridden action. The override is cleared on every fresh trigger.
 
-`S $77..$7C` toggle the volume / panning / pitch-or-filter envelope on the currently active voice. While disabled, the envelope is frozen (no advancement) and the mixer treats its contribution as unity (envVolume / envPan / envPfValue all replaced by the neutral 1.0 / 0.5 / 0.5).
+`S $77..$7E` toggle an envelope on the currently active voice. The engine **MUST** keep **four independent gates** — volume, panning, pitch, filter — so the four pairs act on disjoint state:
+
+- `$77 / $78` — volume envelope off / on.
+- `$79 / $7A` — panning envelope off / on.
+- `$7B / $7C` — **pitch** envelope off / on, *when the instrument defines a pitch envelope*. On an instrument that defines only a filter envelope (the IT case where the single pitch/filter slot is flagged as a filter env), `$7B / $7C` fall back to toggling that filter envelope — this is the IT "pitch or filter envelope" semantics. When the instrument defines **both** envelopes, `$7B / $7C` toggle the pitch gate only and leave the filter gate untouched.
+- `$7D / $7E` — **filter** envelope off / on (Taud-specific; differs from MPTM). These always target the filter gate regardless of what else is defined.
+
+While a gate is disabled the corresponding envelope is frozen (no advancement) and the mixer treats its contribution as unity (volume / pan / pitch / filter value replaced by the neutral 1.0 / 0.5 / 0.5 / 0.5).
+
+Because the engine resolves the byte-19 and byte-197 envelope slots into explicit pitch and filter roles at trigger time (by reading each slot's `m`-bit — the slot order is undefined: on some songs offset 19 is the pitch env, on others it is the filter env), the `$7B`/`$7C` vs `$7D`/`$7E` dispatch reads those resolved roles directly and does not re-inspect the `m`-bits per event.
+
+Effect $7..$E applies to ordinary instruments. When used on a metainstrument, the effect **MUST** be applied onto the constituent instruments all at once — the reference engine fans the toggle out across the foreground layer plus every layer-child voice sounding on the channel. Effect $0..$6 is a **no-op** on metainstruments: a live meta's layer-child voices are themselves background ghosts, so a Past-Note action ($70..$72) would otherwise cull the very layers that make up the sounding note.
 
 ---
 
