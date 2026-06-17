@@ -265,7 +265,7 @@ MMIO
          [L2  L1]
     for all nonzero i.
 
-    On graphics mode 3, the pattern is:
+    On graphics mode 1, the pattern is:
     i=1 [L1  L2]
          [L2  L1] (where L1: mid-low layer, L2: mid-high layer; low-layer is drawn behind, high-layer is drawn over)
     i=2 [L1  L2]

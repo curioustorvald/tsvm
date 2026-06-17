@@ -139,6 +139,9 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
 
     var graphicsMode = 0
     private var layerArrangement = 0
+    /** Interlaced-mode level `i` of MMIO 7 (`0b00ii000t`), 0..3. Only has an effect in
+     * graphics modes 1 and 2; reads back as zero in every other mode (see terranmon.txt §MMIO 7). */
+    private var interlaceMode = 0
 
 
     private val memTextCursorPosOffset = 0L
@@ -344,7 +347,11 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
             ttyRawMode.toInt(1) or
             blinkCursor.toInt()).toByte()
 
-    private fun getGraphicsAttributes(): Byte = graphicsDisableTexts.toInt().toByte()
+    private fun getGraphicsAttributes(): Byte {
+        // interlace only takes effect (and reads back nonzero) in graphics modes 1 and 2
+        val i = if (graphicsMode == 1 || graphicsMode == 2) interlaceMode.and(3) else 0
+        return (i.shl(4) or graphicsDisableTexts.toInt()).toByte()
+    }
 
     private fun setTextmodeAttributes(rawbyte: Byte) {
         currentChrRom = rawbyte.toInt().and(0b11110000).ushr(4)
@@ -353,7 +360,9 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
     }
 
     private fun setGraphicsAttributes(rawbyte: Byte) {
-        graphicsDisableTexts = rawbyte.and(1) == 1.toByte()
+        val bi = rawbyte.toUint()
+        graphicsDisableTexts = bi.and(1) == 1
+        interlaceMode = bi.ushr(4).and(3) // 0b00ii000t
     }
 
     override fun mmio_read(addr: Long): Byte? {
@@ -1128,7 +1137,32 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
 
                 if (xoff in -(280 - 1) until 280) {
                     for (x in xs) {
-                        val colour = layerOrder.map { layer ->
+                        // Interlace: interweave the layers in a 2x2 checkerboard so they spatially
+                        // blend (terranmon.txt §MMIO 7). The tile selects which layer(s) appear at
+                        // each logical pixel; layerOrder is low->high draw order.
+                        //   mode 2 (2 layers): [L1 L2 / L2 L1] for any nonzero i
+                        //   mode 1 (4 layers): low(L?) drawn behind, high drawn over, the checkerboard
+                        //                      selecting the middle layer(s) per level i.
+                        val cellOrder: List<Int> = if (interlaceMode <= 0) layerOrder
+                            else {
+                                val diag = (x and 1) == (y and 1)              // top-left & bottom-right
+                                val topRight = (x and 1) == 1 && (y and 1) == 0
+                                if (graphicsMode == 2) // only two layers exist
+                                    listOf(if (diag) layerOrder[0] else layerOrder[1])
+                                else when (interlaceMode) { // mode 1, four layers (low,midLow,midHigh,high)
+                                    // [L1 L2 / L2 L1]  L1=mid-low, L2=mid-high; low behind, high over
+                                    1 -> if (diag) listOf(layerOrder[0], layerOrder[1], layerOrder[3])
+                                         else listOf(layerOrder[0], layerOrder[2], layerOrder[3])
+                                    // [L1 L2 / L3 L1]  L1=low, L2=mid-low, L3=mid-high; high over
+                                    2 -> if (diag) listOf(layerOrder[0], layerOrder[3])
+                                         else if (topRight) listOf(layerOrder[1], layerOrder[3])
+                                         else listOf(layerOrder[2], layerOrder[3])
+                                    // [L1 L2 / L3 L4]  one full layer per cell
+                                    else -> if (diag) listOf(if ((x and 1) == 0) layerOrder[0] else layerOrder[3])
+                                            else listOf(if (topRight) layerOrder[1] else layerOrder[2])
+                                }
+                            }
+                        val colour = cellOrder.map { layer ->
                             if (graphicsMode == 1) {
                                 val colourIndex = framebuffer[(280L * 224 * layer) + (y * 280 + x)].toUint()
                                 Color(
