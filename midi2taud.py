@@ -1533,9 +1533,17 @@ class Patch:
 
 
 class TaudInstrument:
-    __slots__ = ('slot', 'inst_key', 'name', 'patches', 'canonical', 'usable')
+    __slots__ = ('slot', 'inst_key', 'name', 'patches', 'canonical', 'usable',
+                 # True when this instrument is a LAYER of a multi-layer Metainstrument
+                 # (set in allocate_slots). Meta layers emit the canonical INTO the Ixmp
+                 # patch list too (build_ixmp) so the engine's resolvePatch covers the whole
+                 # layer and a note in the layer's gating bbox but outside every patch
+                 # resolves to null → the engine keeps the layer SILENT instead of sounding
+                 # its base/canonical sample (the spurious meta-layer fallback). A standalone
+                 # single-layer instrument keeps the canonical in its base record only.
+                 'is_meta_layer')
     # patches: kept Patch list in zone order, canonical Patch INCLUDED
-    # (the Ixmp emitter skips it; the base record carries its fields).
+    # (the Ixmp emitter skips it unless is_meta_layer; the base record carries its fields).
 
 
 def _rect_overlap(a, b) -> bool:
@@ -1611,6 +1619,7 @@ def _build_layer_instrument(name: str, items: list, trig: dict):
     ti.usable = True
     ti.slot = 0
     ti.inst_key = None
+    ti.is_meta_layer = False        # set True in allocate_slots for multi-layer presets
     return ti
 
 
@@ -1628,40 +1637,42 @@ def _v6_to_midi_velocity(v6: int) -> int:
 MAX_VEL_BANDS = 12
 
 
-def _split_velocity_filter(zones: list, trig: dict) -> list:
-    """Expand zones carrying velocity→filter modulators into per-velocity-band
-    copies so each band gets the cutoff / mod-env-to-filter FluidSynth computes at
-    that velocity. Bands tile the distinct trigger volumes (v6) actually played for
-    this instrument — so only velocities the song uses become patches (the rest are
-    pruned anyway) — grouped into at most [MAX_VEL_BANDS] contiguous buckets. Zones
-    without velocity→filter modulators pass through untouched."""
+def _split_layer_velocity_filter(items: list, trig: dict) -> list:
+    """Split each disjoint layer item ((pitch,vol)-rect, zone, ms) carrying velocity→
+    filter modulators into per-velocity-band copies, each with the cutoff / mod-env-to-
+    filter FluidSynth computes at that velocity.
+
+    MUST run AFTER _partition_layers, not before. SF2 layering (e.g. the GeneralUser-GS
+    closed hi-hat's bright 'Soft' sample over its filtered 'Hard' sample) is realised by
+    the partition spilling a zone that is FULLY covered by a layer-mate into its own
+    layer (so both sound). Fragmenting a zone into trigger-aligned filter bands BEFORE
+    the partition makes a once-fully-covered mate only PARTIALLY covered, so disjointify
+    subtracts (and loses) the overlap instead of spilling it — the bright 'Soft' layer
+    vanished at the played velocities and the kit went muffled. Splitting per-layer here
+    leaves the partition's coverage/spill decisions on whole zones intact.
+
+    Bands TILE the item's OWN v6 rect (no gaps → no canonical fall-through), grouped at the
+    distinct trigger v6 into at most [MAX_VEL_BANDS] contiguous buckets."""
     v6s = sorted({v6 for (_nv, v6) in trig})
     out = []
-    for z in zones:
+    for (rect, z, ms) in items:
         fc_mods, me2_mods = z.vel_filter_mods
-        if not fc_mods and not me2_mods:
-            out.append(z)
-            continue
-        zlo6 = round(z.vello * 63 / 127)
-        zhi6 = round(z.velhi * 63 / 127)
-        played = [v6 for v6 in v6s if zlo6 <= v6 <= zhi6]
-        if not played:                             # nothing played in this zone's vel range
-            out.append(z)
+        plo, phi, vlo, vhi = rect
+        played = [v6 for v6 in v6s if vlo <= v6 <= vhi] if (fc_mods or me2_mods) else []
+        if not played:
+            out.append((rect, z, ms))
             continue
         gsize = max(1, (len(played) + MAX_VEL_BANDS - 1) // MAX_VEL_BANDS)
-        for i in range(0, len(played), gsize):
-            grp = played[i:i + gsize]
-            lo6, hi6 = grp[0], grp[-1]
-            sub = copy.copy(z)                     # __slots__ shallow copy
-            # MIDI velocity sub-range whose round(·63/127) maps back into this v6 bucket,
-            # clipped to the zone's own velrange so adjacent bands stay disjoint.
-            mlo = max(z.vello, math.ceil((lo6 - 0.5) * 127.0 / 63.0))
-            mhi = min(z.velhi, math.floor((hi6 + 0.5) * 127.0 / 63.0 - 1e-9))
-            if mlo > mhi:
-                mlo = mhi = max(z.vello, min(z.velhi, _v6_to_midi_velocity((lo6 + hi6) // 2)))
-            sub.vello, sub.velhi = mlo, mhi
-            sub.filter_fc, sub.me2filt = _eval_zone_filter_at(z, _v6_to_midi_velocity((lo6 + hi6) // 2))
-            out.append(sub)
+        groups = [played[i:i + gsize] for i in range(0, len(played), gsize)]
+        for gi, grp in enumerate(groups):
+            b_lo = vlo if gi == 0 else grp[0]
+            b_hi = vhi if gi == len(groups) - 1 else groups[gi + 1][0] - 1
+            if b_lo > b_hi:
+                continue
+            zc = copy.copy(z)                       # __slots__ shallow copy, band-local filter
+            zc.filter_fc, zc.me2filt = _eval_zone_filter_at(
+                z, _v6_to_midi_velocity((grp[0] + grp[-1]) // 2))
+            out.append(((plo, phi, b_lo, b_hi), zc, ms))
     return out
 
 
@@ -1682,11 +1693,14 @@ def build_presets(sf: SF2, slot_keys: list, triggers: dict, perc_force,
         name, zones = res
         zones = merge_stereo_zones(zones, sf.shdrs)
         trig = triggers.get(ik, {})
-        zones = _split_velocity_filter(zones, trig)
         layer_items, dropped = _partition_layers(zones, registry, max_layers)
         if dropped:
             vprint(f"  warning: '{name}': {dropped} zone(s) exceed the "
                    f"{max_layers}-layer cap and were dropped (raise --max-layers)")
+        # Per-velocity filter banding runs per-layer, AFTER the partition, so SF2 layering
+        # (the spill of fully-covered layer-mates) is decided on whole zones — see
+        # _split_layer_velocity_filter.
+        layer_items = [_split_layer_velocity_filter(items, trig) for items in layer_items]
         layers = [ti for items in layer_items
                   if (ti := _build_layer_instrument(name, items, trig)) is not None]
         if not layers and layer_items:
@@ -1698,7 +1712,7 @@ def build_presets(sf: SF2, slot_keys: list, triggers: dict, perc_force,
             best = min(flat, key=lambda p: abs((p.rect[0] + p.rect[1]) / 2 - mean_nv))
             ti = TaudInstrument()
             ti.name = name; ti.patches = [best]; ti.canonical = best
-            ti.usable = True; ti.slot = 0; ti.inst_key = ik
+            ti.usable = True; ti.slot = 0; ti.inst_key = ik; ti.is_meta_layer = False
             layers = [ti]
         for ti in layers:
             ti.inst_key = ik
@@ -1715,6 +1729,9 @@ def build_presets(sf: SF2, slot_keys: list, triggers: dict, perc_force,
 # converter folds per-zone level/tune into each layer instrument's patches, so the
 # meta layers stay neutral. (terranmon.txt "Perceptually Significant Octet …".)
 META_UNITY_OCTET = 159
+# Metainstrument record byte-0 flag: STRICT layering (see build_sample_inst_bin). The
+# layered-meta sentinel lives in bytes 2-3 (0xFFFF), so byte 0 is free for this flag.
+META_STRICT_FLAG = 0x01
 
 
 def _layer_bbox(ti: 'TaudInstrument'):
@@ -1998,6 +2015,11 @@ def _zone_pf_envs(z: SFZone):
 #           vol-envelope (see _synth_decay_vol_env) that retires the voice
 #           ~SF2_SYNTH_DECAY_SEC after the note fires.
 SF2_RESAMPLE_FLOOR_HZ = 32000        # TSVM native audio rate (= full-bandwidth floor)
+# Min fraction of a far loop that must survive the 65535-frame cap for the keep-32 kHz
+# (clamp the loop end) path to be taken instead of downsampling the whole sample below
+# 32 kHz. Keeps brightness when the loop barely overflows (open hi-hat), still downsamples
+# a genuinely far loop so its sustain timbre is not gutted.
+LOOP_KEEP_MIN         = 0.5
 SF2_SYNTH_DECAY_SEC   = 10.0         # looped-note fade-to-silence span (from note-on)
 SF2_LOOP_HINT         = 8192         # spec's "last 8192 samples" → MAX loop period searched
 SF2_LOOP_MIN_PERIOD   = 512          # min loop period (avoid buzzy ultra-short loops)
@@ -2119,8 +2141,9 @@ def build_sample_inst_bin(sf: SF2, pool: list, layer_insts: list, meta_records: 
         r_fit    = SAMPLE_LEN_LIMIT / native_len
         rate_fit = ms.rate * r_fit
         r32      = SF2_RESAMPLE_FLOOR_HZ / ms.rate
-        # loop_end in 32 kHz frames (0 when unlooped) decides whether a 32 kHz render
+        # loop start/end in 32 kHz frames (0 when unlooped) decide whether a 32 kHz render
         # still contains the loop within the 65535-frame cap.
+        ls32 = round(ms.loop_native[0] * r32) if ms.loop_native else 0
         le32 = round(ms.loop_native[1] * r32) if ms.loop_native else 0
 
         def _fit_whole():
@@ -2130,20 +2153,22 @@ def build_sample_inst_bin(sf: SF2, pool: list, layer_insts: list, meta_records: 
             ms.data   = resample_linear(ms.data, r_fit)
             ms.ratio *= len(ms.data) / native_len
 
-        def _synth_path():
+        def _synth_path(decay=True):
             """(3) resample to the 32 kHz floor (full bandwidth), keep the first 65535
-            frames and synthesize a near-seamless sustain loop near the end, plus a
-            peak->0 decay vol-envelope that fades the looped note to silence from
-            note-on. Used for unlooped long samples, and (with --force-synth-loop) for
-            looped samples whose real loop won't fit at the floor. synth_loop takes
-            precedence over any real loop_native in the record/patch writers."""
+            frames and synthesize a near-seamless sustain loop near the end. With
+            `decay` (the default) also install a peak->0 vol-envelope that fades the
+            looped note to silence from note-on — needed for UNLOOPED samples, which have
+            no natural ending. A sample that ALREADY had a loop keeps its own vol-env
+            (`decay=False`): its sustain is genuine, so a held note must NOT droop — the
+            SF2 ADSR + key-off fadeout end it. synth_loop takes precedence over any real
+            loop_native in the record/patch writers."""
             resampled = resample_linear(ms.data, r32)
             ms.ratio *= len(resampled) / native_len    # effective rate -> 32 kHz
             ms.data   = resampled
             body, ls, le = _synth_sustain_loop(ms.data, SAMPLE_LEN_LIMIT, SF2_LOOP_HINT)
             ms.data        = body
             ms.synth_loop  = (ls, le)
-            ms.synth_decay = SF2_SYNTH_DECAY_SEC
+            ms.synth_decay = SF2_SYNTH_DECAY_SEC if decay else None
             return ls, le, len(body)
 
         if rate_fit >= SF2_RESAMPLE_FLOOR_HZ:
@@ -2174,6 +2199,27 @@ def build_sample_inst_bin(sf: SF2, pool: list, layer_insts: list, meta_records: 
             vprint(f"  info: '{ms.name}' {native_len} frames > 64K cap, long, looped, far "
                    f"loop; FORCED synth: 32 kHz, kept {n} frames, synth loop [{ls}..{le}] "
                    f"+ {SF2_SYNTH_DECAY_SEC:.0f}s decay")
+        elif le32 - ls32 > 0 and (SAMPLE_LEN_LIMIT - ls32) >= LOOP_KEEP_MIN * (le32 - ls32):
+            # (3b′) Loop END sits past the cap at 32 kHz but the loop START fits and MOST of
+            # the loop is retained — i.e. the sustained region lives in the first 65535 frames.
+            # Keep the 32 kHz floor (full hardware rate) and SYNTHESIZE a seamless sustain loop
+            # in the kept data, rather than downsampling the WHOLE sample below 32 kHz. A
+            # sub-32 kHz sample plays back at a rate the engine must re-stretch to 32 kHz — a
+            # SECOND linear-resample pass on top of this fit one, compounding the rolloff and
+            # audibly dulling bright percussion (the GeneralUser-GS open hi-hat: 2.15 s sample,
+            # loop at 1.65 s never reached before its exclusiveClass choke; the double resample
+            # cost it ~11% spectral centroid vs a single 32 kHz pass). The synth loop is
+            # SSD-seam-matched so it does not click on tonal samples (Grand Piano / Brass that
+            # also land here) the way a hard loop-end clamp to the data boundary would, and its
+            # peak→0 decay roughly tracks their natural decay. A genuinely FAR loop (retained
+            # fraction < LOOP_KEEP_MIN — the sustain timbre lives past the cap) still falls
+            # through to fit-to-cap below, preserving that real far loop at a muffled rate.
+            # decay=False: the sample had a genuine loop, so keep its own vol-env (a held
+            # note sustains via the synth loop and ends on key-off — no 10 s droop).
+            ls, le, n = _synth_path(decay=False)
+            vprint(f"  info: '{ms.name}' {native_len} frames > 64K cap, long & looped, loop "
+                   f"end just past cap ({100*(SAMPLE_LEN_LIMIT-ls32)//(le32-ls32)}% in cap); "
+                   f"kept 32 kHz, synth loop [{ls}..{le}] (natural vol-env kept)")
         else:
             # (3) Looped but the loop sits past the 65535-frame cap at 32 kHz (a far-end
             # sustain loop on a multi-second sample): the floor rate can't hold it, so
@@ -2320,7 +2366,12 @@ def build_sample_inst_bin(sf: SF2, pool: list, layer_insts: list, meta_records: 
     # instrument's patches. The note references the meta slot; the engine fans out.
     for meta_slot, _name, layer_descs in meta_records:
         base = meta_slot * 256
-        inst_bin[base + 0] = 0                                  # type 0 = layered
+        # byte 0 bit 0 = STRICT layering: each layer's canonical is also in its Ixmp patch
+        # list (build_ixmp), so the engine silences a layer whose gating bbox contains the
+        # note but whose patches do not, instead of sounding that layer's base/canonical
+        # (the spurious meta-layer fallback). Old files left byte 0 = 0 (legacy: base
+        # fallback) and have no canonical patch, so the engine gates this on the flag.
+        inst_bin[base + 0] = META_STRICT_FLAG                  # type 0 = layered, +strict bit
         inst_bin[base + 1] = len(layer_descs) & 0xFF            # layer count
         inst_bin[base + 2] = 0xFF; inst_bin[base + 3] = 0xFF    # identifier (hi 16 bits)
         o = base + 4
@@ -3005,8 +3056,17 @@ def build_ixmp(layer_insts: list, bpm0: int, args) -> dict:
     for ti in layer_insts:
         if not ti.usable:
             continue
-        pl = [p.to_ixmp_dict(ti.canonical, bpm0, args.fadeout)
-              for p in ti.patches if p is not ti.canonical]
+        # A standalone instrument keeps the canonical in its base record only (skipped here,
+        # the engine falls back to base for an unmatched note). A META LAYER also emits its
+        # canonical as a (thin, no-override) Ixmp patch so the engine's resolvePatch covers
+        # the layer's FULL coverage — an unmatched note then resolves to null and the engine
+        # keeps that layer silent instead of sounding its canonical (the spurious meta-layer
+        # fallback, e.g. a closed hi-hat firing under the open hi-hat). The thin canonical
+        # patch carries the same sample + rect and defers envelopes to the base, so a note
+        # that DOES match the canonical plays identically.
+        emitted = ti.patches if ti.is_meta_layer else \
+                  [p for p in ti.patches if p is not ti.canonical]
+        pl = [p.to_ixmp_dict(ti.canonical, bpm0, args.fadeout) for p in emitted]
         if pl:
             ixmp[ti.slot] = pl
     if ixmp:
@@ -3285,6 +3345,8 @@ def allocate_slots(presets: dict, slot_keys: list):
         if len(layers) == 1:
             note_slot[ik] = layers[0].slot
         else:
+            for ti in layers:           # mark as meta layers: emit canonical into Ixmp too
+                ti.is_meta_layer = True
             meta_slot = next_slot; next_slot += 1
             meta_records.append((meta_slot, name,
                                  [(ti.slot, _layer_bbox(ti)) for ti in layers]))

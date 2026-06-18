@@ -2387,8 +2387,15 @@ sub-range. Bytes 0..3 alias the base instrument's Uint32 Sample Pointer; the
 0xFFFF_ll_tt — a value no real sample pointer can take (see byte 0 of the
 instrument record). Layer records begin at byte 4.
 
-0   Uint8  Metainstrument type
-    - 0: layered (every layer whose rectangle contains the trigger sounds together)
+0   Uint8  Metainstrument type / flags
+    0b tttt_ttt s
+    - t: type. Only type 0 (layered: every layer whose rectangle contains
+      the trigger sounds together) is currently defined.
+    - s: STRICT layering (see note g). 0 = legacy (a layer whose rectangle
+      contains the trigger but whose own patches do NOT match falls back to that
+      layer instrument's base/canonical sample); 1 = strict (such a layer stays
+      silent). Strict requires each layer instrument to carry its canonical zone in
+      its own Ixmp patch list. Legacy files leave this byte 0x00.
 1   Uint8  Metainstrument length (layer count, 1..25 — the record holds at most 25)
 2   Bit16  Metainstrument identifier
     - 0xFFFF
@@ -2430,6 +2437,21 @@ instrument record). Layer records begin at byte 4.
        Metainstrument or at instrument 0.
     f. Voice budget: a single Metainstrument trigger costs up to `length` voices
        against the mixer pool.
+    g. STRICT layering (byte 0 bit 0). A layer's rectangle (note a) is a single
+       bounding box, but the layer instrument's own zones (its Ixmp patches) may
+       cover only PART of that box — e.g. a drum layer holding scattered keys has a
+       bbox spanning the gaps between them. Under legacy semantics a trigger landing
+       in the box but in such a gap still fires the layer, and because no patch
+       matches it falls through to the layer instrument's base/canonical sample,
+       sounding a spurious wrong instrument (a closed hi-hat under an open hi-hat,
+       say). When bit 0 is set, the engine instead drops that layer for the note
+       (it stays silent). For this to be sound the producer MUST also place each
+       layer instrument's canonical zone in that instrument's Ixmp patch list (so a
+       trigger that legitimately matches the canonical still resolves a patch rather
+       than the base); a non-match then unambiguously means "no zone of this layer
+       covers the trigger". The base record's own sample/envelopes are unchanged and
+       remain the canonical's, so a strict layer plays identically to a legacy one
+       for every IN-RANGE trigger — only the out-of-range fall-through differs.
 
 #### Perceptually Significant Octet to Decibel Table
 

@@ -2372,8 +2372,21 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             return
         }
         val seedVol = if (rowVolOverride in 0..0x3F) rowVolOverride else 0x3F
-        val layers = inst.resolveMetaLayers(noteVal, seedVol)
-        if (layers.isEmpty()) {                       // no layer covers this note: silence
+        var layers = inst.resolveMetaLayers(noteVal, seedVol)
+        // STRICT layering: a layer's gating bbox is a loose bounding box over its patches
+        // (scattered drum keys leave gaps), so a note can land in the bbox yet match none of
+        // the layer's patches — resolvePatch then returns null and triggerNote would fall back
+        // to that layer's base/canonical sample, a spurious wrong instrument (the GeneralUser-GS
+        // open hi-hat fired a closed-hi-hat layer). The strict converter emits each layer's
+        // canonical into its Ixmp patches, so null genuinely means "no zone here" → drop the
+        // layer. Legacy files (no canonical patch, flag clear) keep the base-fallback behaviour.
+        if (inst.metaStrict) {
+            layers = layers.filter {
+                instruments[it.instIdx].resolvePatch(
+                    (noteVal + it.detune).coerceIn(0x20, 0xFFFF), seedVol) != null
+            }
+        }
+        if (layers.isEmpty()) {                       // no layer sounds this note: silence
             voice.active = false
             voice.layerMixGain = 1.0
             voice.layerRelDetune = 0
@@ -5291,6 +5304,12 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         var metaLayers: Array<MetaLayer>? = null
         var metaRaw: IntArray? = null
         val isMeta: Boolean get() = metaLayers != null
+        // STRICT layering (meta record byte 0 bit 0). When set, each layer's canonical is
+        // also present in its Ixmp patch list, so [triggerMetaOrNote] can silence a layer
+        // whose gating bbox contains the note but whose patches do NOT (resolvePatch == null)
+        // — instead of sounding that layer's base/canonical sample. Legacy files leave it
+        // clear and keep the historical base-fallback behaviour.
+        var metaStrict: Boolean = false
 
         // initialAttenuation — a static per-instrument gain as a "Perceptually Significant
         // Octet to Decibel Table" octet (byte 251; 159 = unity, 111 = −6 dB; same table as the
@@ -5339,10 +5358,12 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 }
                 metaLayers = if (layers.isEmpty()) null else layers.toTypedArray()
                 metaRaw = if (metaLayers != null) b.copyOf(256) else null
+                metaStrict = metaLayers != null && (b[0] and 0x01) != 0   // byte 0 bit 0
                 extraPatches = null
             } else {
                 metaLayers = null
                 metaRaw = null
+                metaStrict = false
                 for (i in 0 until minOf(256, b.size)) setByte(i, b[i] and 0xFF)
             }
         }
