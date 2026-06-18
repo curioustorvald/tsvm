@@ -276,6 +276,20 @@ class AudioJSR223Delegate(private val vm: VM) {
         return v.envPitchTimeSec
     }
 
+    /** Filter-envelope segment index — see [getVoiceEnvVolIndex]. The pitch and filter
+     *  envelopes are independent now (two pf-slots), so each role has its own playhead. */
+    fun getVoiceEnvFilterIndex(playhead: Int, voice: Int): Int {
+        val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19)) ?: return -1
+        if (!v.active) return -1
+        return v.envFilterIndex
+    }
+    /** Seconds elapsed into the current filter-envelope segment. */
+    fun getVoiceEnvFilterTime(playhead: Int, voice: Int): Double {
+        val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19)) ?: return 0.0
+        if (!v.active) return 0.0
+        return v.envFilterTimeSec
+    }
+
     /** Set the starting row for the next play call, resetting per-row timing and silencing active voices. */
     fun setTrackerRow(playhead: Int, row: Int) {
         getPlayhead(playhead)?.trackerState?.let { ts ->

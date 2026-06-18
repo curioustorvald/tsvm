@@ -3873,8 +3873,9 @@ function samplesInput(wo, event) {
 // INSTRUMENTS VIEWER
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Mirrors the Samples tab skeleton: list on the left, multi-tabbed property pane
-// on the right. Tabs are General / Volume / Panning / Pitch — the latter three
-// each carry an envelope graph rendered through the graphics layer.
+// on the right. Tabs are General / Volume / Panning / Pitch / Filter — the latter
+// four each carry an envelope graph rendered through the graphics layer. Pitch and
+// Filter edit the two pf-envelope slots, routed by each slot's m-bit.
 //
 // All field offsets/encodings follow terranmon.txt §"Instrument bin" (offsets
 // 0..196). Envelope nodes (offsets 21 / 71 / 121) are 25 × {value u8, time u8}
@@ -3896,9 +3897,10 @@ function envTimeFromByte(b) {
 //          (the terminator — see terranmon.txt §envelope nodes "0 = hold").
 //   terminatorIdx: index of the terminator, or -1 if all 25 slots are walked.
 function decodeEnvelope(rec, kind) {
-    const nodeBase = (kind === 'vol') ? 21  : (kind === 'pan') ? 71  : 121
-    const loopOff  = (kind === 'vol') ? 15  : (kind === 'pan') ? 17  : 19
-    const sustOff  = (kind === 'vol') ? 189 : (kind === 'pan') ? 191 : 193
+    const isPf     = (kind === 'pf' || kind === 'pf2')
+    const nodeBase = (kind === 'vol') ? 21  : (kind === 'pan') ? 71  : (kind === 'pf2') ? 201 : 121
+    const loopOff  = (kind === 'vol') ? 15  : (kind === 'pan') ? 17  : (kind === 'pf2') ? 197 : 19
+    const sustOff  = (kind === 'vol') ? 189 : (kind === 'pan') ? 191 : (kind === 'pf2') ? 199 : 193
     const valMask  = (kind === 'vol') ? 0x3F : 0xFF
     const loopWord = rec[loopOff] | (rec[loopOff + 1] << 8)
     const sustWord = rec[sustOff] | (rec[sustOff + 1] << 8)
@@ -3908,7 +3910,7 @@ function decodeEnvelope(rec, kind) {
     const loopEnd    =  (loopWord)        & 0x1F
     const carry      = ((loopWord >>> 6)  & 1) === 1
     const panUseDef  = (kind === 'pan') && (((loopWord >>> 7) & 1) === 1)
-    const pfFilter   = (kind === 'pf')  && (((loopWord >>> 7) & 1) === 1)
+    const pfFilter   = isPf              && (((loopWord >>> 7) & 1) === 1)
     const sustEnable = ((sustWord >>> 5)  & 1) === 1
     const sustStart  =  (sustWord >>> 8)  & 0x1F
     const sustEnd    =  (sustWord)        & 0x1F
@@ -3924,7 +3926,8 @@ function decodeEnvelope(rec, kind) {
     return {
         kind, present, loopEnable, loopStart, loopEnd, carry,
         panUseDef, pfFilter, sustEnable, sustStart, sustEnd,
-        nodes, terminatorIdx, valueMax: valMask
+        nodes, terminatorIdx, valueMax: valMask,
+        loopOff, sustOff, nodeBase     // byte offsets — the editor pokes these directly
     }
 }
 
@@ -3997,6 +4000,20 @@ function decodeInstFull(rec) {
     const dct            = dcByte & 3
     const dca            = (dcByte >>> 2) & 3
     const defNoteVol     = rec[196]
+    // Two pf-envelope slots (slot 1 bytes 19/121/193, slot 2 bytes 197/201/199).
+    // Route each into the pitch or filter role by its m-bit (LOOP-word bit 7):
+    // 0 = pitch, 1 = filter — mirrors AudioAdapter.resolveActiveEnvelopes (a present
+    // slot wins its role; slot 2 is processed last). Empty roles bind to the free
+    // complementary slot so the Pitch/Filter tabs can create one in-place; on a
+    // fully-blank instrument the defaults match midi2taud's fixed convention
+    // (slot 1 = filter, slot 2 = pitch — see project_midi2taud), resolved filter-first.
+    const pfEnv  = decodeEnvelope(rec, 'pf')
+    const pf2Env = decodeEnvelope(rec, 'pf2')
+    let pitchEnv = null, filterEnv = null
+    if (pfEnv.present)  { if (pfEnv.pfFilter)  filterEnv = pfEnv;  else pitchEnv = pfEnv }
+    if (pf2Env.present) { if (pf2Env.pfFilter) filterEnv = pf2Env; else pitchEnv = pf2Env }
+    if (!filterEnv) filterEnv = (pitchEnv === pfEnv) ? pf2Env : pfEnv
+    if (!pitchEnv)  pitchEnv  = (filterEnv === pf2Env) ? pfEnv : pf2Env
     return {
         samplePtr, sampleLen, c4Rate, playStart, sLoopStart, sLoopEnd, sampleFlags,
         igv, fadeout, volSwing, vibSpeed, vibSweep, defPan,
@@ -4005,7 +4022,7 @@ function decodeInstFull(rec) {
         detune, nna, vibWaveform, vibDepth, vibRate, dct, dca, defNoteVol,
         volEnv: decodeEnvelope(rec, 'vol'),
         panEnv: decodeEnvelope(rec, 'pan'),
-        pfEnv:  decodeEnvelope(rec, 'pf')
+        pfEnv, pf2Env, pitchEnv, filterEnv
     }
 }
 
@@ -4052,8 +4069,8 @@ const INST_BODY_H        = INST_BTN_Y - INST_BODY_Y           // content rows (e
 // General tab content does not fit in the 24-row body area of an 80x32 terminal,
 // so it splits into two pages (sample/volume/panning on page 1;
 // filter/vibrato/note-actions/tuning on page 2).
-const INST_TAB_NAMES = ['Gen.1', 'Gen.2', 'Volume', 'Pan', 'Pitch']
-const INST_TAB_GEN1 = 0, INST_TAB_GEN2 = 1, INST_TAB_VOL = 2, INST_TAB_PAN = 3, INST_TAB_PIT = 4
+const INST_TAB_NAMES = ['Gen.1', 'Gen.2', 'Volume', 'Pan', 'Pitch', 'Filter']
+const INST_TAB_GEN1 = 0, INST_TAB_GEN2 = 1, INST_TAB_VOL = 2, INST_TAB_PAN = 3, INST_TAB_PIT = 4, INST_TAB_FILT = 5
 
 const colInstListBg     = colBackPtn
 const colInstListSel    = colHighlight
@@ -4551,14 +4568,16 @@ function buttonGroupRow(y, label, options, current, commit) {
 
 // Draw "label<glyph>" (glyph at column x+labelW) and register the label+glyph
 // span as a clickable toggle of byte `off` bit `bit`. Returns the column just
-// past the glyph, so callers can append trailing text there.
-function drawCheckbox(y, x, label, labelW, checked, off, bit) {
+// past the glyph, so callers can append trailing text there. `onToggle`, when
+// given, replaces the default single-bit flip (used by the Pitch/Filter Present
+// box, which must also stamp the slot's pitch/filter m-bit).
+function drawCheckbox(y, x, label, labelW, checked, off, bit, onToggle) {
     con.move(y, x); con.color_pair(colInstLabel, colBackPtn)
     print((label + ' '.repeat(labelW)).substring(0, labelW))
     const gx = x + labelW
     con.move(y, gx); con.color_pair(colInstValue, colBackPtn)
     print(checked ? sym.ticked : sym.unticked)
-    instCheckboxes.push({ y, xs: x, xe: gx, off, bit })
+    instCheckboxes.push({ y, xs: x, xe: gx, off, bit, onToggle })
     return gx + 1
 }
 
@@ -4854,19 +4873,32 @@ function drawEnvelopeGraph(env) {
 // the envelope graph. `extraCb`, when given, is a per-kind extra checkbox
 // descriptor { label, checked, onText, offText } (e.g. pan's "Use default pan").
 // Present / Carry / Loop / Sustain (+ that extra flag) are clickable checkboxes
-// wired to their backing bits. Bit map (see
-// decodeEnvelope): loopWord = rec[loopOff] | rec[loopOff+1]<<8, so Present is
-// high-byte bit 5 (loopWord bit 13); Carry/Loop/extra are loopOff bits 6/5/7;
-// Sustain is sustOff bit 5.
-function drawInstTabEnvelope(e, env, kindLabel, extraCb) {
+// wired to their backing bits. Bit map (see decodeEnvelope): loopWord =
+// rec[loopOff] | rec[loopOff+1]<<8, so Present is high-byte bit 5 (loopWord bit
+// 13); Carry/Loop/extra are loopOff bits 6/5/7; Sustain is sustOff bit 5. The
+// byte offsets come from the decoded env (slot-aware: the pitch and filter roles
+// live in either of the two pf-slots — bytes 19.. or 197..). `role`
+// ('pitch'/'filter') makes the Present toggle also stamp the slot's m-bit so a
+// freshly-enabled role routes to the right target.
+function drawInstTabEnvelope(e, env, kindLabel, extraCb, role) {
     let y = INST_BODY_Y
-    const loopOff = (env.kind === 'vol') ? 15  : (env.kind === 'pan') ? 17  : 19
-    const sustOff = (env.kind === 'vol') ? 189 : (env.kind === 'pan') ? 191 : 193
+    const loopOff = env.loopOff
+    const sustOff = env.sustOff
 
     drawGroupHeader(y++, kindLabel + ' envelope')
 
     // Present (P bit) — loopWord bit 13 lives in the high byte (loopOff+1) bit 5.
-    let px = drawCheckbox(y, INST_RIGHT_X, '  Present:', 12, env.present, loopOff + 1, 5)
+    // For a pitch/filter role, enabling Present must also set the slot's m-bit
+    // (loopOff bit 7: 0 = pitch, 1 = filter) so the engine routes it correctly.
+    const presentToggle = role ? (() => {
+        const rec = readInstRecord(e.slot)
+        let lo = rec[loopOff], hi = rec[loopOff + 1]
+        hi ^= (1 << 5)                                           // flip Present
+        if (role === 'filter') lo |= (1 << 7); else lo &= ~(1 << 7)   // stamp m-bit
+        instWriteBytes(e.slot, [[loopOff, lo], [loopOff + 1, hi]])
+        e.decoded = decodeInstFull(readInstRecord(e.slot))
+    }) : null
+    let px = drawCheckbox(y, INST_RIGHT_X, '  Present:', 12, env.present, loopOff + 1, 5, presentToggle)
     con.move(y, px); con.color_pair(colInstValue, colBackPtn)
     print(env.present ? ' yes (P=1)' : ' no  (P=0)')
     y++
@@ -4893,8 +4925,9 @@ function drawInstTabEnvelope(e, env, kindLabel, extraCb) {
     print(env.sustEnable ? (' [' + env.sustStart + '..' + env.sustEnd + ']') : ' off')
     y++
 
-    // Per-kind extra flag (Pan: use-default-pan; Pitch: filter-vs-pitch mode) —
-    // both ride loopWord bit 7 (loopOff bit 7).
+    // Per-kind extra flag (Pan: use-default-pan) — rides loopWord bit 7 (loopOff
+    // bit 7). The pf-slots use that same bit as the pitch/filter m-bit, which the
+    // tab itself now owns (see presentToggle), so they pass no extraCb.
     if (extraCb) {
         let ex = drawCheckbox(y, INST_RIGHT_X, extraCb.label, 12, extraCb.checked, loopOff, 7)
         con.move(y, ex); con.color_pair(colInstValue, colBackPtn)
@@ -4921,14 +4954,11 @@ function drawInstTabPanning(e) {
         offText: 'off  (chan-pan source: byte $B1)'
     })
 }
-function drawInstTabPitch(e) {
-    const env = e.decoded.pfEnv
-    drawInstTabEnvelope(e, env, env.pfFilter ? 'Filter' : 'Pitch', {
-        label: '  Filter:', checked: env.pfFilter,
-        onText: 'on   (envelope targets filter cutoff)',
-        offText: 'off  (envelope targets pitch)'
-    })
-}
+// Pitch and Filter each get their own tab now (the record carries two pf-slots,
+// one per role — see decodeInstFull). Each tab edits whichever slot its role
+// resolved to; the Present toggle stamps the slot's m-bit for that role.
+function drawInstTabPitch(e)  { drawInstTabEnvelope(e, e.decoded.pitchEnv,  'Pitch',  null, 'pitch')  }
+function drawInstTabFilter(e) { drawInstTabEnvelope(e, e.decoded.filterEnv, 'Filter', null, 'filter') }
 
 // Metainstrument view (terranmon.txt §"Metainstrument definition"): the record
 // carries no sample of its own — only a layer table fanned out at trigger time.
@@ -5019,7 +5049,8 @@ function drawInstrumentsContents(wo) {
     else if (instSubTab === INST_TAB_GEN2) drawInstTabGeneral2(e)
     else if (instSubTab === INST_TAB_VOL)  drawInstTabVolume(e)
     else if (instSubTab === INST_TAB_PAN)  drawInstTabPanning(e)
-    else                                   drawInstTabPitch(e)
+    else if (instSubTab === INST_TAB_PIT)  drawInstTabPitch(e)
+    else                                   drawInstTabFilter(e)
     drawInstrumentsEditButton()
     // List redraw wiped col 1 across every row — invalidate, then re-stamp
     // immediately while playing so the live indicator isn't blank for a frame.
@@ -5054,12 +5085,13 @@ function instrumentsInput(wo, event) {
     // Tab cycling. <LEFT>/<RIGHT> walk subtab, mirroring the IT mouse-tab feel.
     if (keysym === '<LEFT>')      { instSubTab = (instSubTab + INST_TAB_NAMES.length - 1) % INST_TAB_NAMES.length; drawInstrumentsContents(); return }
     if (keysym === '<RIGHT>')     { instSubTab = (instSubTab + 1) % INST_TAB_NAMES.length; drawInstrumentsContents(); return }
-    // Number keys 1..5 jump directly to a tab. Convenient when arrow keys are taken.
+    // Number keys 1..6 jump directly to a tab. Convenient when arrow keys are taken.
     if (keysym === '1') { instSubTab = INST_TAB_GEN1; drawInstrumentsContents(); return }
     if (keysym === '2') { instSubTab = INST_TAB_GEN2; drawInstrumentsContents(); return }
     if (keysym === '3') { instSubTab = INST_TAB_VOL;  drawInstrumentsContents(); return }
     if (keysym === '4') { instSubTab = INST_TAB_PAN;  drawInstrumentsContents(); return }
     if (keysym === '5') { instSubTab = INST_TAB_PIT;  drawInstrumentsContents(); return }
+    if (keysym === '6') { instSubTab = INST_TAB_FILT; drawInstrumentsContents(); return }
     if (keysym === 'e' || keysym === 'E') {
         const e = instrumentsCache[instListCursor]
         if (e) requestEditorLaunch('taut_instredit', [fullPathObj.full, VIEW_INSTRMNT, e.slot])
@@ -5114,7 +5146,7 @@ function registerInstrumentsMouse() {
             if (btn !== 1) return
             const e = instrumentsCache ? instrumentsCache[instListCursor] : null
             const cb = instCheckboxAt(cy, cx)
-            if (cb) { if (e) { toggleInstBit(e, cb.off, cb.bit); drawInstrumentsContents() } return }
+            if (cb) { if (e) { if (cb.onToggle) cb.onToggle(e); else toggleInstBit(e, cb.off, cb.bit); drawInstrumentsContents() } return }
             const b = instButtonAt(cy, cx)
             if (b) { b.commit(b.value); drawInstrumentsContents(); return }
             const c = sliderCapsuleAt(cy, cx)
@@ -5179,6 +5211,13 @@ const hasNoteCountAPI = (typeof audio !== 'undefined' && typeof audio.getActiveN
 const hasVoiceSampleAPI = (typeof audio !== 'undefined' &&
     typeof audio.getVoiceSamplePtr === 'function' &&
     typeof audio.getVoiceSampleLength === 'function')
+
+// getVoiceEnvFilter{Index,Time} expose the filter-envelope playhead for the new
+// Filter tab's live cursor. Absent on an un-rebuilt host → the Filter graph still
+// draws, only the moving cursor is skipped (see envBundleForCurrentTab).
+const hasFilterEnvAPI = (typeof audio !== 'undefined' &&
+    typeof audio.getVoiceEnvFilterIndex === 'function' &&
+    typeof audio.getVoiceEnvFilterTime === 'function')
 
 function invalidateSamplesBlob()     { for (let i = 0; i < smpBlobPrev.length;  i++) smpBlobPrev[i]  = -1 }
 function invalidateInstrumentsBlob() { for (let i = 0; i < instBlobPrev.length; i++) instBlobPrev[i] = -1 }
@@ -5395,8 +5434,13 @@ function envBundleForCurrentTab(e) {
         idxFn: 'getVoiceEnvVolIndex',   timeFn: 'getVoiceEnvVolTime' }
     if (instSubTab === INST_TAB_PAN) return { env: e.decoded.panEnv,
         idxFn: 'getVoiceEnvPanIndex',   timeFn: 'getVoiceEnvPanTime' }
-    if (instSubTab === INST_TAB_PIT) return { env: e.decoded.pfEnv,
+    if (instSubTab === INST_TAB_PIT) return { env: e.decoded.pitchEnv,
         idxFn: 'getVoiceEnvPitchIndex', timeFn: 'getVoiceEnvPitchTime' }
+    if (instSubTab === INST_TAB_FILT) return { env: e.decoded.filterEnv,
+        // Filter-env playhead getters ship with this feature; on an un-rebuilt host VM
+        // they're absent — the graph still draws, only the live play-cursor is skipped.
+        idxFn: hasFilterEnvAPI ? 'getVoiceEnvFilterIndex' : null,
+        timeFn: hasFilterEnvAPI ? 'getVoiceEnvFilterTime' : null }
     return null
 }
 
@@ -5477,7 +5521,7 @@ function drawEnvelopeCursor() {
     if (lastIdx < 0) { eraseEnvCursorIfAny(); return }
 
     const hits = []
-    if (playbackMode !== PLAYMODE_NONE) {
+    if (playbackMode !== PLAYMODE_NONE && bundle.idxFn) {
         // Cumulative time at each node (mirrors xs[] in drawEnvelopeGraph) — shared by all voices.
         let acc = 0
         const xs = new Array(lastIdx + 1)
