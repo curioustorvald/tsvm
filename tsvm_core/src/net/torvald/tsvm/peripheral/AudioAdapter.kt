@@ -2336,15 +2336,22 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
      * non-meta playback is byte-identical.
      *
      * [rowVolOverride] is the V-column-derived trigger volume (or -1). For metas it is the
-     * velocity used to resolve velocity-conditional layers and the layers' note volume;
-     * the normal path ignores it to preserve legacy patch-seed semantics.
+     * velocity used to resolve velocity-conditional layers and the layers' note volume. The
+     * normal path also forwards it so a non-meta instrument's velocity-split Ixmp patches
+     * resolve on the ACTUAL trigger velocity, not the default-note-volume seed: without this
+     * every trigger probes [resolvePatch] at the byte-196 default (≈63), so any velocity tile
+     * the song never hits at full velocity falls through to the instrument's base/canonical
+     * sample. For an SF2 drum kit (one non-meta instrument, base = most-hit patch = usually a
+     * hi-hat) that means a kick/snare never struck at max velocity audibly plays the hi-hat.
+     * When there is no V column (rowVolOverride == -1) the seed is unchanged, so classic
+     * tracker content — which has no velocity-split Ixmp patches — is byte-identical.
      */
     private fun triggerMetaOrNote(ts: TrackerState, voice: Voice, vi: Int,
                                   noteVal: Int, instId: Int, rowVolOverride: Int) {
         releaseLayerChildren(ts, vi)
         val inst = if (instId != 0) instruments[instId] else instruments[voice.instrumentId]
         if (!inst.isMeta) {
-            triggerNote(voice, noteVal, instId, -1)   // legacy path, unchanged
+            triggerNote(voice, noteVal, instId, rowVolOverride)   // honour V-column velocity for patch lookup
             voice.layerMixGain = 1.0
             voice.layerRelDetune = 0
             voice.isLayerChild = false
@@ -3034,9 +3041,10 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                     } else {
                         applyDuplicateCheck(ts, vi, row.instrment, row.note)
                         maybeSpawnBackgroundForNNA(ts, voice, vi)
-                        // V-column SET value (selector 0) is the trigger velocity; passed so a
-                        // Metainstrument resolves velocity-conditional layers correctly. The
-                        // non-meta path inside triggerMetaOrNote ignores it (legacy semantics).
+                        // V-column SET value (selector 0) is the trigger velocity; passed so both
+                        // Metainstrument layers AND a non-meta instrument's velocity-split Ixmp
+                        // patches resolve on the real velocity (see triggerMetaOrNote). -1 when the
+                        // row carries no SET volume, leaving the default-note-volume seed in place.
                         val trigVol = if (row.volumeEff == 0) row.volume else -1
                         triggerMetaOrNote(ts, voice, vi, row.note, row.instrment, trigVol)
                     }

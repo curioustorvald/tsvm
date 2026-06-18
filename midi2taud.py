@@ -110,6 +110,7 @@ Behaviour (per midi2taud.md):
 import argparse
 import array
 import bisect
+import copy
 import math
 import os
 import struct
@@ -754,6 +755,12 @@ GEN_KEYRANGE         = 43
 GEN_VELRANGE         = 44
 GEN_STARTLOOP_COARSE = 45
 GEN_INITATTEN        = 48     # initialAttenuation (cB; per-zone static gain)
+# EMU8k/10k hardware (and therefore FluidSynth) scales the initialAttenuation GENERATOR
+# value set at preset and instrument level by 0.4 before using it — fluid_defsfont.c
+# EMU_ATTENUATION_FACTOR / case GEN_ATTENUATION. Applying the full SF2 cB makes every
+# attenuated instrument ~2.5× too quiet in cB vs FluidSynth (e.g. a 200 cB zone is
+# −8 dB in FluidSynth but −20 dB raw), so instrument-to-instrument balance is wrong.
+EMU_ATTENUATION_FACTOR = 0.4
 GEN_ENDLOOP_COARSE   = 50
 GEN_COARSETUNE       = 51
 GEN_FINETUNE         = 52
@@ -806,7 +813,10 @@ class SFZone:
                  'm_delay', 'm_attack', 'm_hold', 'm_decay', 'm_sustain_pc',
                  'm_release', 'me2pitch', 'me2filt',
                  # exclusiveClass (gen 57): drum mutual-exclusion group (0 = none).
-                 'excl_class')
+                 'excl_class',
+                 # SF2 velocity→filter modulators (fc_mods, me2_mods); see
+                 # _zone_velocity_filter_mods / _split_velocity_filter.
+                 'vel_filter_mods')
 
 
 class SF2:
@@ -831,26 +841,164 @@ def _gen_amount(oper: int, raw: int) -> int:
     return raw
 
 
-def _parse_bags(bag_data, gen_data, start_bag, end_bag, terminal_gen):
-    """Resolve bags [start_bag, end_bag) into (global_gens, [zone_gens...]).
-    Each zone_gens is {oper: amount}; zones lacking the terminal generator
-    other than a leading global zone are discarded per the SF2 spec."""
-    glob = {}
+def _parse_bags(bag_data, gen_data, mod_data, start_bag, end_bag, terminal_gen):
+    """Resolve bags [start_bag, end_bag) into (global_gens, global_mods,
+    [(zone_gens, zone_mods)...]). Each zone_gens is {oper: amount}; each
+    zone_mods is a list of (src, dest, amount, amtsrc, trans) modulator tuples
+    (the 10-byte SFModList record). Zones lacking the terminal generator other
+    than a leading global zone are discarded per the SF2 spec; a leading bag with
+    no terminal gen is the global zone (its gens AND mods apply to every zone)."""
+    glob_g, glob_m = {}, []
     zones = []
     n_bags = len(bag_data) // 4
+    n_gen  = len(gen_data) // 4
+    n_mod  = len(mod_data) // 10
     for bi in range(start_bag, end_bag):
         g0 = struct.unpack_from('<H', bag_data, bi*4)[0]
+        m0 = struct.unpack_from('<H', bag_data, bi*4 + 2)[0]
         g1 = (struct.unpack_from('<H', bag_data, (bi+1)*4)[0]
-              if bi + 1 < n_bags else len(gen_data) // 4)
+              if bi + 1 < n_bags else n_gen)
+        m1 = (struct.unpack_from('<H', bag_data, (bi+1)*4 + 2)[0]
+              if bi + 1 < n_bags else n_mod)
         gens = {}
-        for gi in range(g0, min(g1, len(gen_data) // 4)):
+        for gi in range(g0, min(g1, n_gen)):
             oper, raw = struct.unpack_from('<HH', gen_data, gi*4)
             gens[oper] = _gen_amount(oper, raw)
+        mods = []
+        for mi in range(m0, min(m1, n_mod)):
+            mods.append(struct.unpack_from('<HHhHH', mod_data, mi*10))
         if terminal_gen in gens:
-            zones.append(gens)
+            zones.append((gens, mods))
         elif bi == start_bag and not zones:
-            glob = gens
-    return glob, zones
+            glob_g, glob_m = gens, mods
+    return glob_g, glob_m, zones
+
+
+# ── SF2 modulators (velocity → filter) ────────────────────────────────────────
+# Only the filter-cutoff destinations are modelled: GEN_FILTERFC (8) and
+# GEN_MODENV2FILT (11). Other modulator destinations are either bare-generator
+# defaults the converter already folds (attenuation, pan), or inaudible for the
+# spectral problem these solve. Sources other than note-on velocity (key tracking,
+# CC) are skipped — they would need a per-note / per-controller patch axis.
+
+# FluidSynth's default vel→filterFc modulator is hard-disabled (fluid_mod.c:471 "S.
+# Christian Collins' mod … return 0"); any soundfont modulator IDENTICAL to it must
+# therefore contribute nothing. Identity = (src1, amtsrc, dest, trans).
+_DEFAULT_VEL2FILTER_ID = (0x0102, 0x0C02, 8, 0)
+
+
+def _fluid_convex(x: float) -> float:
+    """FluidSynth fluid_convex over a 0..128 index (gentables/fluid_convex.cpp):
+    convex(i) = 1 + (400/960)·log10(i/127), clamped to [0, 1]."""
+    if x <= 0.0:
+        return 0.0
+    if x >= 127.0:
+        return 1.0
+    return 1.0 + (400.0 / 960.0) * math.log10(x / 127.0)
+
+
+def _fluid_concave(x: float) -> float:
+    """FluidSynth fluid_concave: the convex mirror, concave(i) = −(400/960)·log10((127−i)/127)."""
+    if x <= 0.0:
+        return 0.0
+    if x >= 127.0:
+        return 1.0
+    return -(400.0 / 960.0) * math.log10((127.0 - x) / 127.0)
+
+
+def _mod_src_transform(oper: int, vel: int) -> float:
+    """Map a velocity-source modulator operator to its normalised value at MIDI
+    note-on velocity `vel`, matching fluid_mod_transform_source_value (range 128,
+    val_norm = vel/128, inv_norm = (127−vel)/128). Only velocity sources reach
+    here. A NONE source (oper 0) returns 1.0 (the amount-source identity)."""
+    if oper == 0:
+        return 1.0
+    direction = (oper >> 8) & 1          # D: 0 = positive, 1 = negative
+    polarity  = (oper >> 9) & 1          # P: 0 = unipolar, 1 = bipolar
+    typ       = (oper >> 10) & 0x3F      # 0 linear, 1 concave, 2 convex, 3 switch
+    rng = 128.0
+    val_norm = vel / rng
+    inv_norm = 1.0 - 1.0 / rng - val_norm
+    base = inv_norm if direction else val_norm
+    if polarity == 0:                    # unipolar
+        if typ == 3:                     # switch
+            return 1.0 if base >= 0.5 else 0.0
+        if typ == 1:
+            return min(_fluid_concave(rng * base), (rng - 1) / rng)
+        if typ == 2:
+            return min(_fluid_convex(rng * base), (rng - 1) / rng)
+        return base                      # linear
+    # bipolar
+    b = base if base == (rng - 1) / rng else -1.0 + 2.0 * base
+    if typ == 3:
+        return 1.0 if b >= 0.0 else -1.0
+    if typ == 1:
+        return min(_fluid_concave(rng * b), (rng - 1) / rng) if b >= 0 else -_fluid_concave(-rng * b)
+    if typ == 2:
+        return min(_fluid_convex(rng * b), (rng - 1) / rng) if b >= 0 else -_fluid_convex(-rng * b)
+    return b
+
+
+def _combine_mods(inst_glob, inst_local, pre_glob, pre_local):
+    """Combine modulator lists into the effective per-voice set, following
+    FluidSynth's load order (fluid_voice add-mod modes): instrument global then
+    local OVERWRITE identical modulators (replace the amount); preset global then
+    local ADD (sum the amount for identical, else append). Identity is
+    (src1, dest, amtsrc, trans) — every field except the amount."""
+    order = []
+    final = {}
+    def ident(m):  # m = (src, dest, amt, amtsrc, trans)
+        return (m[0], m[1], m[3], m[4])
+    def overwrite(m):
+        k = ident(m)
+        if k in final:
+            final[k] = (m[0], m[1], m[2], m[3], m[4])
+        else:
+            final[k] = m; order.append(k)
+    def add(m):
+        k = ident(m)
+        if k in final:
+            p = final[k]
+            final[k] = (p[0], p[1], p[2] + m[2], p[3], p[4])
+        else:
+            final[k] = m; order.append(k)
+    for m in inst_glob:  overwrite(m)
+    for m in inst_local: overwrite(m)
+    for m in pre_glob:   add(m)
+    for m in pre_local:  add(m)
+    return [final[k] for k in order]
+
+
+def _zone_velocity_filter_mods(inst_glob, inst_local, pre_glob, pre_local):
+    """Resolve a zone's velocity→filter modulators into (fc_mods, me2_mods),
+    each a list of (amount, src1, amtsrc) evaluated later per velocity. Keeps only
+    note-on-velocity-sourced modulators targeting initialFilterFc (8) and
+    modEnvToFilterFc (11), drops zero-amount and default-vel2filter-identity ones."""
+    fc_mods, me2_mods = [], []
+    for (src, dest, amt, amtsrc, trans) in _combine_mods(inst_glob, inst_local,
+                                                         pre_glob, pre_local):
+        if dest not in (8, 11) or amt == 0:
+            continue
+        if (src, amtsrc, dest, trans) == _DEFAULT_VEL2FILTER_ID:
+            continue                      # FluidSynth disables this identity
+        if (src & 0x80) or (src & 0x7F) != 2:
+            continue                      # only note-on velocity (GC index 2)
+        # amount source must be NONE or velocity to evaluate statically; skip CC/other.
+        if amtsrc != 0 and ((amtsrc & 0x80) or (amtsrc & 0x7F) != 2):
+            continue
+        (fc_mods if dest == 8 else me2_mods).append((amt, src, amtsrc))
+    return (fc_mods, me2_mods)
+
+
+def _eval_zone_filter_at(z: 'SFZone', vel: int):
+    """(filter_fc, me2filt) for zone `z` at MIDI velocity `vel`, with its
+    velocity→filter modulators folded onto the base generators."""
+    fc_mods, me2_mods = z.vel_filter_mods
+    fc  = z.filter_fc + sum(amt * _mod_src_transform(src, vel)
+                            * _mod_src_transform(asrc, vel) for amt, src, asrc in fc_mods)
+    me2 = z.me2filt   + sum(amt * _mod_src_transform(src, vel)
+                            * _mod_src_transform(asrc, vel) for amt, src, asrc in me2_mods)
+    return fc, me2
 
 
 def parse_sf2(path: str) -> SF2:
@@ -912,14 +1060,20 @@ def parse_sf2(path: str) -> SF2:
             s.rate = 8363
         sf.shdrs.append(s)
 
-    # Instruments: index → (global_gens, [zone_gens])
+    # Modulators (imod/pmod) are optional per chunk presence; default to empty so
+    # banks without them parse unchanged. Used for SF2 velocity→filter modulators
+    # (see _zone_velocity_filter_mods) that FluidSynth applies but bare generators miss.
+    imod = pdta.get('imod', b'')
+    pmod = pdta.get('pmod', b'')
+
+    # Instruments: index → (global_gens, global_mods, [(zone_gens, zone_mods)])
     inst_data, ibag, igen = pdta['inst'], pdta['ibag'], pdta['igen']
     n_inst = len(inst_data) // 22 - 1
     inst_zones = []
     for i in range(n_inst):
         b0 = struct.unpack_from('<H', inst_data, i*22 + 20)[0]
         b1 = struct.unpack_from('<H', inst_data, (i+1)*22 + 20)[0]
-        inst_zones.append(_parse_bags(ibag, igen, b0, b1, GEN_SAMPLEID))
+        inst_zones.append(_parse_bags(ibag, igen, imod, b0, b1, GEN_SAMPLEID))
 
     # Presets
     phdr, pbag, pgen = pdta['phdr'], pdta['pbag'], pdta['pgen']
@@ -932,20 +1086,20 @@ def parse_sf2(path: str) -> SF2:
                                                           errors='replace')
         preset, bank, bag0 = struct.unpack_from('<HHH', phdr, off+20)
         bag1 = struct.unpack_from('<H', phdr, (i+1)*38 + 24)[0]
-        pglob, pzones = _parse_bags(pbag, pgen, bag0, bag1, GEN_INSTRUMENT)
+        pglob, pglob_m, pzones = _parse_bags(pbag, pgen, pmod, bag0, bag1, GEN_INSTRUMENT)
 
         zones = []
-        for pz_raw in pzones:
+        for pz_raw, pz_mods in pzones:
             pz = dict(pglob); pz.update(pz_raw)
             ii = pz[GEN_INSTRUMENT]
             if not (0 <= ii < n_inst):
                 continue
-            iglob, izones = inst_zones[ii]
+            iglob, iglob_m, izones = inst_zones[ii]
             pk = pz.get(GEN_KEYRANGE, 0x7F00)
             pv = pz.get(GEN_VELRANGE, 0x7F00)
             pklo, pkhi = pk & 0xFF, (pk >> 8) & 0xFF
             pvlo, pvhi = pv & 0xFF, (pv >> 8) & 0xFF
-            for iz_raw in izones:
+            for iz_raw, iz_mods in izones:
                 iz = dict(iglob); iz.update(iz_raw)
                 si = iz[GEN_SAMPLEID]
                 if not (0 <= si < len(sf.shdrs)):
@@ -996,8 +1150,12 @@ def parse_sf2(path: str) -> SF2:
                 # initialAttenuation: per-zone static gain in cB (preset adds to inst).
                 # Clamped to the SF2 spec range [0, 1440] so any out-of-range value can
                 # never collapse the folded vol-env to silence (see _SIGNED_GENS note).
-                z.atten_cb = max(0, min(1440, iz.get(GEN_INITATTEN, 0)
-                                        + pz.get(GEN_INITATTEN, 0)))
+                # FluidSynth scales the preset+instrument initialAttenuation by 0.4
+                # (EMU_ATTENUATION_FACTOR) before clamping to the SF2 [0, 1440] cB range;
+                # match it so instrument volumes line up with FluidSynth's rendering.
+                z.atten_cb = max(0, min(1440, EMU_ATTENUATION_FACTOR
+                                        * (iz.get(GEN_INITATTEN, 0)
+                                           + pz.get(GEN_INITATTEN, 0))))
                 # Static low-pass filter. initialFilterFc is absolute cents (default
                 # 13500 ≈ open); initialFilterQ is cB of resonance (default 0).
                 z.filter_fc = iz.get(GEN_FILTERFC, 13500) + pz.get(GEN_FILTERFC, 0)
@@ -1018,6 +1176,12 @@ def parse_sf2(path: str) -> SF2:
                                                 + pz.get(GEN_RELEASE_MODENV, 0))
                 z.me2pitch  = iz.get(GEN_MODENV2PITCH, 0) + pz.get(GEN_MODENV2PITCH, 0)
                 z.me2filt   = iz.get(GEN_MODENV2FILT,  0) + pz.get(GEN_MODENV2FILT,  0)
+                # SF2 velocity→filter modulators (FluidSynth applies them; bare generators
+                # do not). Folded per-velocity in _split_velocity_filter so each velocity band
+                # gets the cutoff / mod-env-to-filter FluidSynth would compute (the GeneralUser-GS
+                # "muffled" fix). Combined inst(overwrite)+preset(add) per SF2.04 §9.5.
+                z.vel_filter_mods = _zone_velocity_filter_mods(iglob_m, iz_mods,
+                                                               pglob_m, pz_mods)
                 # exclusiveClass is instrument-level and NON-additive (SF2.04 §8.1.2 #57):
                 # a new note in class C kills sounding notes of the same class on the same
                 # channel (FluidSynth fluid_synth_kill_by_exclusive_class). Drum kits use it
@@ -1450,6 +1614,57 @@ def _build_layer_instrument(name: str, items: list, trig: dict):
     return ti
 
 
+def _v6_to_midi_velocity(v6: int) -> int:
+    """Representative MIDI note-on velocity (1..127) for a Taud volume level v6
+    (0..63). Inverse of the converter's round(vel·63/127) trigger mapping."""
+    return max(1, min(127, round(v6 * 127.0 / 63.0)))
+
+
+# Cap on velocity bands a single filtered zone is split into. Bounds patch growth
+# so a velocity-rich song cannot blow a sustained instrument past the engine's
+# ~192-patch/instrument cap (which would silently drop bands → wrong-sample fallback,
+# the same failure mode as the meta velocity-patch bug). 12 bands ≈ 5-v6 (~550-cent)
+# brightness steps — finer than perceptible on a sustained note.
+MAX_VEL_BANDS = 12
+
+
+def _split_velocity_filter(zones: list, trig: dict) -> list:
+    """Expand zones carrying velocity→filter modulators into per-velocity-band
+    copies so each band gets the cutoff / mod-env-to-filter FluidSynth computes at
+    that velocity. Bands tile the distinct trigger volumes (v6) actually played for
+    this instrument — so only velocities the song uses become patches (the rest are
+    pruned anyway) — grouped into at most [MAX_VEL_BANDS] contiguous buckets. Zones
+    without velocity→filter modulators pass through untouched."""
+    v6s = sorted({v6 for (_nv, v6) in trig})
+    out = []
+    for z in zones:
+        fc_mods, me2_mods = z.vel_filter_mods
+        if not fc_mods and not me2_mods:
+            out.append(z)
+            continue
+        zlo6 = round(z.vello * 63 / 127)
+        zhi6 = round(z.velhi * 63 / 127)
+        played = [v6 for v6 in v6s if zlo6 <= v6 <= zhi6]
+        if not played:                             # nothing played in this zone's vel range
+            out.append(z)
+            continue
+        gsize = max(1, (len(played) + MAX_VEL_BANDS - 1) // MAX_VEL_BANDS)
+        for i in range(0, len(played), gsize):
+            grp = played[i:i + gsize]
+            lo6, hi6 = grp[0], grp[-1]
+            sub = copy.copy(z)                     # __slots__ shallow copy
+            # MIDI velocity sub-range whose round(·63/127) maps back into this v6 bucket,
+            # clipped to the zone's own velrange so adjacent bands stay disjoint.
+            mlo = max(z.vello, math.ceil((lo6 - 0.5) * 127.0 / 63.0))
+            mhi = min(z.velhi, math.floor((hi6 + 0.5) * 127.0 / 63.0 - 1e-9))
+            if mlo > mhi:
+                mlo = mhi = max(z.vello, min(z.velhi, _v6_to_midi_velocity((lo6 + hi6) // 2)))
+            sub.vello, sub.velhi = mlo, mhi
+            sub.filter_fc, sub.me2filt = _eval_zone_filter_at(z, _v6_to_midi_velocity((lo6 + hi6) // 2))
+            out.append(sub)
+    return out
+
+
 def build_presets(sf: SF2, slot_keys: list, triggers: dict, perc_force,
                   registry: dict, max_layers: int) -> dict:
     """For each preset (inst_key), partition its SF2 zones into disjoint layers
@@ -1466,11 +1681,12 @@ def build_presets(sf: SF2, slot_keys: list, triggers: dict, perc_force,
             continue
         name, zones = res
         zones = merge_stereo_zones(zones, sf.shdrs)
+        trig = triggers.get(ik, {})
+        zones = _split_velocity_filter(zones, trig)
         layer_items, dropped = _partition_layers(zones, registry, max_layers)
         if dropped:
             vprint(f"  warning: '{name}': {dropped} zone(s) exceed the "
                    f"{max_layers}-layer cap and were dropped (raise --max-layers)")
-        trig = triggers.get(ik, {})
         layers = [ti for items in layer_items
                   if (ti := _build_layer_instrument(name, items, trig)) is not None]
         if not layers and layer_items:

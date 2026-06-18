@@ -258,7 +258,7 @@ MMIO
     Graphics-mode attributes
     0b 00ii 000t (t: disable text, i: interlaced mode)
 
-    When interlace is enabled (i > 0), the layers are overlaind in the checkerboard pattern, allowing blending.
+    When interlace is enabled (i > 0), the layers are overlaid in the checkerboard pattern, allowing blending.
 
     On graphics mode 2, the pattern is:
          [L1  L2]
@@ -365,13 +365,13 @@ MMIO
 1024..2047 RW
     horizontal scroll offset for scanlines
 2048..4095 RW
-    !!NEW!! Font ROM Mapping Area
+    Font ROM Mapping Area
     Format is always 8x16 pixels, 1bpp ROM format (so that it would be YY_CHR-Compatible)
     (designer's note: it's still useful to divide the char rom to two halves, lower half being characters ROM and upper half being symbols ROM)
 65536..131071 RW
     Draw Instructions
 
-Text-mode-font-ROM is immutable and does not belong to VRAM
+Font ROMs are immutable (must be uploaded as a whole) and does not belong to VRAM
 Even in the text mode framebuffer is still being drawn onto the screen, and the texts are drawn on top of it
 
 --------------------------------------------------------------------------------
@@ -2913,6 +2913,8 @@ TODO - list of demo songs that MUST ship with Microtone:
         (C) Jakim 2010
     * SWINGIN1 (rename to Swinging Waste) — for demonstrating Monotone compatibility.
         (C) Phoenix/Hornet 2015
+    * Keep On Rolling — for MIDI and SoundFont capability.
+        (C) Trolley Trev
 
 Play Data: play data are series of tracker-like instructions, visualised as:
 

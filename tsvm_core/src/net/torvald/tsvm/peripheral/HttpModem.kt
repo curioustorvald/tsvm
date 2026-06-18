@@ -15,6 +15,9 @@ import java.net.URL
  *
  * Note that there is no double-slash after the protocol (or scheme)
  *
+ * Supported HTTP request methods:
+ * - GET
+ *
  * @param artificialDelayBlockSize How many bytes should be retrieved in a single block-read
  * @param artificialDelayWaitTime Delay in milliseconds between the block-reads. Put positive value in milliseconds to add a delay, zero or negative value to NOT add one.
  *
