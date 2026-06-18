@@ -113,9 +113,29 @@ MMIO
 90 RO: BMS calculated battery percentage where 255 is 100%
 91 RO: BMS battery voltage multiplied by 10 (127 = "12.7 V")
 
-92 RW: Memory Mapping
+92 RO: System Memory Configuration
     0: 8 MB Core, 8 MB Hardware-reserved, 7 card slots
     1: 12 MB Core, 4 MB Hardware-reserved, 3 card slots (HW addr 131072..1048575 cannot be reclaimed though)
+
+93 RO: Set beeper status (aka upload beeper command)
+    READING causes the side effect (and returns beeper status — 1 if a tone is currently sounding, 0 otherwise). WRITING DOES NOTHING
+94..97 RW: Beeper command
+    0bPPPPPPPP 0bpppppp_QQ 0bAAAAAAAA 0bBBBBBBBB
+
+    PPPPPPPPpppppp: frequency divider (master clock: 3579545 / 16 Hz), determines pitch.
+        0: no sound
+    QQ: note effect
+        00: none
+        01: fixed arpeggio (rate = 60 Hz, second note is always divisor (P >>> 1))
+        10: two-note argeggio (rate = 60 Hz)
+            tick 1: base note at divisor P is played
+            tick 2: second note at divisor (P - (B << 8 | A)) is played
+        11: three-note arpeggio (rate = 60 Hz)
+            tick 1: base note at divisor P is played
+            tick 2: second note at divisor (P - A) is played
+            tick 3: third note at divisor (P - A - B) is played
+    A/B: note effect arguments
+
 
 1024..2047 RW: Reserved for integrated peripherals (e.g. built-in status display)
 
@@ -3202,7 +3222,7 @@ Endianness: Little
     C4 @ 262 Hz. Modern Chinese a-ak tuning convention
     C4 @ 311 Hz. Korean hyang-ak tuning standard (ROK National Gugak Center)
 
-    For your reference, tracker default tuning at A4 is 439.526 Hz (8363*2^(3/4) / 32)
+    For your reference, tracker default tuning at A4 is 439.548 Hz ((3579545/428)*2^(3/4) / 32)
 
 ## Pattern Bin and Cue Sheet
     RAM image of Pattern Bin/Cue Sheet

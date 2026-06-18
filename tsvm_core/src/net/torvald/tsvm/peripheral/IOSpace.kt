@@ -3,6 +3,7 @@ package net.torvald.tsvm.peripheral
 import com.badlogic.gdx.Gdx
 import com.badlogic.gdx.Input
 import com.badlogic.gdx.InputProcessor
+import com.badlogic.gdx.backends.lwjgl3.audio.OpenALLwjgl3Audio
 import com.badlogic.gdx.math.Vector2
 import com.badlogic.gdx.utils.viewport.Viewport
 import net.torvald.AddressOverflowException
@@ -14,6 +15,7 @@ import net.torvald.tsvm.isNonZero
 import net.torvald.tsvm.toInt
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.experimental.and
+import kotlin.math.floor
 
 class IOSpace(val vm: VM) : PeriBase("io"), InputProcessor {
 
@@ -66,6 +68,9 @@ class IOSpace(val vm: VM) : PeriBase("io"), InputProcessor {
     private var bmsIsCharging = false
     private var bmsHasBattery = false
     private var bmsIsBatteryOperated = false
+
+    /** Built-in beeper / PSG speaker (MMIO 93..97). See terranmon.txt §93..97. */
+    private val beeper = Beeper()
 
     init {
         //blockTransferPorts[1].attachDevice(TestFunctionGenerator())
@@ -144,6 +149,11 @@ class IOSpace(val vm: VM) : PeriBase("io"), InputProcessor {
             89L -> ((acpiShutoff.toInt(7)) or (bmsIsBatteryOperated.toInt(3)) or (bmsHasBattery.toInt(1))
                     or bmsIsCharging.toInt()).toByte()
 
+            // 93 RO: reading uploads the staged command (94..97) into the live tone and
+            //        returns the beeper status (bit 0 = a tone is currently sounding).
+            93L -> beeper.upload()
+            in 94..97 -> beeper.readCommand(adi - 94)
+
             in 2048L..4075L -> hyveArea[addr.toInt() - 2048]
 
             in 1024..2047 -> peripheralFast[addr - 1024]
@@ -221,6 +231,9 @@ class IOSpace(val vm: VM) : PeriBase("io"), InputProcessor {
                     acpiShutoff = byte.and(-128).isNonZero()
                 }
 
+                // 94..97 RW: beeper command staging. Takes effect on the next read of MMIO 93.
+                in 94..97 -> beeper.writeCommand(adi - 94, byte)
+
                 in 2048L..4075L -> hyveArea[addr.toInt() - 2048] = byte
 
                 in 1024..2047 -> peripheralFast[addr - 1024] = byte
@@ -296,6 +309,7 @@ class IOSpace(val vm: VM) : PeriBase("io"), InputProcessor {
     }
 
     override fun dispose() {
+        beeper.dispose()
         blockTransferRx.forEach { it.destroy() }
         blockTransferTx.forEach { it.destroy() }
         peripheralFast.destroy()
@@ -481,5 +495,151 @@ class IOSpace(val vm: VM) : PeriBase("io"), InputProcessor {
 
     override fun touchCancelled(screenX: Int, screenY: Int, pointer: Int, button: Int): Boolean {
         return false
+    }
+}
+
+/**
+ * Built-in beeper / PSG speaker (terranmon.txt §93..97).
+ *
+ * A single square-wave tone generator modelled on the SN76489: a 14-bit frequency
+ * divider over a 3579545/16 Hz master clock, with optional 50 Hz arpeggio
+ * note-effects. The four command bytes (MMIO 94..97) are write staging; reading
+ * MMIO 93 latches them into the live tone ("upload beeper command").
+ *
+ * The OpenAL device and its render thread are created lazily on the first non-silent
+ * upload, so a headless VM (no LibGDX OpenAL backend) simply stays silent.
+ */
+private class Beeper {
+
+    companion object {
+        private const val SAMPLE_RATE = 48000
+        // SN76489 NTSC colourburst clock (3579545 Hz) after the chip's internal /16
+        // prescaler. The square wave toggles every `divider` master ticks, so one full
+        // period spans 2*divider ticks  ->  f = MASTER_CLOCK / (2 * divider).
+        // (divider 254 -> 440.4 Hz, matching real SN76489 hardware.)
+        private const val MASTER_CLOCK = 3579545.0 / 16.0
+        // Arpeggio note-effects step at 60 Hz: 48000 / 60 = 800 samples per step.
+        private const val SAMPLES_PER_ARP_TICK = SAMPLE_RATE / 60
+        private const val CHUNK = 512
+        private const val AMPLITUDE = 6000  // ~ -15 dBFS; square waves are loud
+    }
+
+    // MMIO 94..97 write-staging registers: PPPPPPPP / pppppp_QQ / AAAAAAAA / BBBBBBBB
+    private val cmd = ByteArray(4)
+
+    // Latched ("uploaded") live command, read by the render thread.
+    @Volatile private var divider = 0   // 14-bit frequency divider; 0 = no sound
+    @Volatile private var effect = 0    // QQ note-effect: 0 none, 1 fixed, 2 two-note, 3 three-note
+    @Volatile private var argA = 0      // A
+    @Volatile private var argB = 0      // B
+
+    @Volatile private var running = false
+    private var renderThread: Thread? = null
+    private var audioDevice: OpenALBufferedAudioDevice? = null
+
+    fun writeCommand(index: Int, byte: Byte) { cmd[index] = byte }
+    fun readCommand(index: Int): Byte = cmd[index]
+
+    /**
+     * Latch MMIO 94..97 into the live tone and (lazily) start playback. Returns the
+     * beeper status byte (bit 0 set while a tone is sounding). Invoked by a read of MMIO 93.
+     */
+    fun upload(): Byte {
+        val hi = cmd[0].toInt() and 255          // PPPPPPPP
+        val lo = cmd[1].toInt() and 255          // pppppp_QQ
+        divider = (hi shl 6) or (lo ushr 2)      // 14-bit frequency divider
+        effect  = lo and 0b11                    // QQ
+        argA    = cmd[2].toInt() and 255         // A
+        argB    = cmd[3].toInt() and 255         // B
+        if (divider != 0) ensureStarted()
+        return (if (divider != 0) 1 else 0).toByte()
+    }
+
+    @Synchronized private fun ensureStarted() {
+        if (running) return
+        val audio = try { Gdx.audio } catch (e: Throwable) { null }
+        if (audio !is OpenALLwjgl3Audio) return  // headless / no audio backend: stay silent
+        val bufSize = reflectIntField(audio, "deviceBufferSize", 1024)
+        val bufCount = reflectIntField(audio, "deviceBufferCount", 9)
+        try {
+            audioDevice = OpenALBufferedAudioDevice(audio, SAMPLE_RATE, true, bufSize, bufCount) {}
+        }
+        catch (e: Throwable) {
+            System.err.println("[Beeper] could not open audio device: $e")
+            return
+        }
+        running = true
+        renderThread = Thread({ renderLoop() }, "BeeperRender").also {
+            it.isDaemon = true
+            it.uncaughtExceptionHandler = Thread.UncaughtExceptionHandler { _, t -> t.printStackTrace() }
+            it.start()
+        }
+    }
+
+    private fun reflectIntField(target: Any, name: String, fallback: Int): Int = try {
+        target.javaClass.getDeclaredField(name).let { it.isAccessible = true; it.getInt(target) }
+    }
+    catch (e: Throwable) { fallback }
+
+    /**
+     * Resolve the divisor for the current arpeggio step. A non-positive divisor (the
+     * subtraction effects can overshoot when A/B exceed P) is treated as silence.
+     */
+    private fun divisorForTick(arpTick: Long): Int = when (effect) {
+        // 01: fixed arpeggio — alternate base / one octave up (P >>> 1).
+        1 -> if (arpTick and 1L == 0L) divider else divider ushr 1
+        // 10: two-note arpeggio — base / (P - (B<<8 | A)).
+        2 -> if (arpTick and 1L == 0L) divider else divider - ((argB shl 8) or argA)
+        // 11: three-note arpeggio — base / (P - A) / (P - A - B).
+        3 -> when ((arpTick % 3L).toInt()) { 0 -> divider; 1 -> divider - argA; else -> divider - argA - argB }
+        // 00: no effect.
+        else -> divider
+    }
+
+    private fun renderLoop() {
+        val buf = ShortArray(CHUNK)
+        val hiSample = AMPLITUDE.toShort()
+        val loSample = (-AMPLITUDE).toShort()
+        var phase = 0.0
+        var arpSample = 0
+        var arpTick = 0L
+        while (running) {
+            try {
+                if (divider == 0) {
+                    // Silent: stop feeding so the OpenAL source drains to quiet, then idle.
+                    phase = 0.0; arpSample = 0; arpTick = 0L
+                    Thread.sleep(4)
+                    continue
+                }
+                for (i in 0 until CHUNK) {
+                    val div = divisorForTick(arpTick)
+                    if (div <= 0) {
+                        buf[i] = 0
+                    }
+                    else {
+                        phase += (MASTER_CLOCK / (2.0 * div)) / SAMPLE_RATE
+                        if (phase >= 1.0) phase -= floor(phase)
+                        buf[i] = if (phase < 0.5) hiSample else loSample
+                    }
+                    if (++arpSample >= SAMPLES_PER_ARP_TICK) { arpSample = 0; arpTick++ }
+                }
+                // writeSamples blocks until a device buffer frees, pacing the loop in real time.
+                audioDevice?.writeSamples(buf, 0, CHUNK)
+            }
+            catch (e: InterruptedException) { break }
+            catch (e: Throwable) {
+                System.err.println("[Beeper] render error: $e")
+                try { Thread.sleep(4) } catch (_: InterruptedException) { break }
+            }
+        }
+    }
+
+    fun dispose() {
+        running = false
+        renderThread?.let { it.interrupt(); try { it.join(200) } catch (_: InterruptedException) {} }
+        renderThread = null
+        try { audioDevice?.stop() } catch (_: Throwable) {}
+        try { audioDevice?.dispose() } catch (_: Throwable) {}
+        audioDevice = null
     }
 }

@@ -86,6 +86,7 @@ algorithms with file:line citations, and add an entry here.
 ### Key Technologies
 
 - **Kotlin/Java**: Primary implementation language
+  - `kotlinc` exists at `/home/torvald/idea-IU-261.23567.138/plugins/Kotlin/kotlinc/bin/kotlinc`
 - **LibGDX**: Graphics and windowing framework
 - **GraalVM**: JavaScript execution engine for running programs in the VM
 - **LWJGL**: Native library bindings
