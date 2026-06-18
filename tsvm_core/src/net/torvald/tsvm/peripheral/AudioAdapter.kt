@@ -132,7 +132,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         const val SCOPE_BUFFER_SIZE = 2048
         // Mixer-private background-voice pool size per playhead. NNA "Continue/Note Off/Note Fade"
         // ghosts displaced foreground voices into this pool; oldest is evicted on overflow.
-        const val MAX_BG_VOICES = 256
+        const val MAX_BG_VOICES = 64
         const val MIDDLE_C = 0x5000   // reference C for instrument samplingRate (terranmon.txt:2000)
         // Amiga period at MIDDLE_C for a standard 8363 Hz instrument (NTSC clock 3579545 Hz).
         // PT "C-2" period 428 ↔ TSVM MIDDLE_C ↔ 8363 Hz; mod2taud uses the same convention.
@@ -1827,6 +1827,20 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         }
     }
 
+    /** Seed a pitch/filter (advancePfRole) envelope playhead at note-on, settling past
+     *  any leading zero-duration nodes so an instant SF2 attack lands on its post-attack
+     *  value immediately. The old seed captured node 0 and only skipped the zero node on
+     *  the NEXT tick — a one-tick hold at the base node. Inaudible mid-sustain, but on a
+     *  percussive instrument that one tick IS the attack transient: a slap-bass filter
+     *  mod-env (1 ms attack stored as offset 0, opening base→peak) played its muddy base
+     *  cutoff for the slap, then "suddenly opened" to full brightness. Runs the walker with
+     *  tickSec = 0 / keyOff = false; the settled index + carry are left in pfIdxBox[0] /
+     *  pfTimeBox[0] for the caller to copy into the voice. Returns the seed value. */
+    private fun seedPfRole(env: Array<TaudInstEnvPoint>, loopWord: Int, susWord: Int): Double {
+        pfIdxBox[0] = 0; pfTimeBox[0] = 0.0
+        return advancePfRole(env, loopWord, susWord, false, 0.0, pfWrap, pfIdxBox, pfTimeBox)
+    }
+
     /** Advance the pitch envelope (drives playback rate; 0.5 = unity). */
     private fun advancePitchEnvelope(voice: Voice, tickSec: Double) {
         if (!voice.hasPitchEnv || !voice.pitchEnvOn) return
@@ -2424,12 +2438,22 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         voice.hasPanEnv = envPresent(voice.activePanEnvLoop)
         // Pitch / filter envelope playhead seeds (the role split + presence were resolved
         // by resolveActiveEnvelopes from the base inst's two pf-slots and any patch override).
-        voice.envPitchIndex   = 0
-        voice.envPitchTimeSec = 0.0
-        voice.envPitchValue   = if (voice.hasPitchEnv) voice.activePitchEnv[0].value / 255.0 else 0.5
-        voice.envFilterIndex   = 0
-        voice.envFilterTimeSec = 0.0
-        voice.envFilterValue   = if (voice.hasFilterEnv) voice.activeFilterEnv[0].value / 255.0 else 0.5
+        // seedPfRole settles past leading zero-duration nodes so an instant SF2 attack opens
+        // the env at note-on rather than one tick later (the slap-bass "muddy attack").
+        if (voice.hasPitchEnv) {
+            voice.envPitchValue = seedPfRole(voice.activePitchEnv, voice.activePitchEnvLoop,
+                                             voice.activePitchEnvSustain)
+            voice.envPitchIndex = pfIdxBox[0]; voice.envPitchTimeSec = pfTimeBox[0]
+        } else {
+            voice.envPitchValue = 0.5; voice.envPitchIndex = 0; voice.envPitchTimeSec = 0.0
+        }
+        if (voice.hasFilterEnv) {
+            voice.envFilterValue = seedPfRole(voice.activeFilterEnv, voice.activeFilterEnvLoop,
+                                              voice.activeFilterEnvSustain)
+            voice.envFilterIndex = pfIdxBox[0]; voice.envFilterTimeSec = pfTimeBox[0]
+        } else {
+            voice.envFilterValue = 0.5; voice.envFilterIndex = 0; voice.envFilterTimeSec = 0.0
+        }
         // Fadeout starts at unity; advances only after key-off.
         voice.fadeoutVolume = 1.0
         // Cancel any sample-end ramp left over from the previous note — a fresh trigger's
@@ -3720,10 +3744,22 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                     voice.envIndex = 0; voice.envTimeSec = 0.0
                     voice.envPanIndex = 0; voice.envPanTimeSec = 0.0
                     voice.envPan = voice.activePanEnv[0].value / 255.0
-                    voice.envPitchIndex = 0; voice.envPitchTimeSec = 0.0
-                    voice.envPitchValue = if (voice.hasPitchEnv) voice.activePitchEnv[0].value / 255.0 else 0.5
-                    voice.envFilterIndex = 0; voice.envFilterTimeSec = 0.0
-                    voice.envFilterValue = if (voice.hasFilterEnv) voice.activeFilterEnv[0].value / 255.0 else 0.5
+                    // Re-seed pf-envs past leading zero-duration nodes (as at fresh trigger),
+                    // so a Q-retriggered percussive note opens immediately too (see seedPfRole).
+                    if (voice.hasPitchEnv) {
+                        voice.envPitchValue = seedPfRole(voice.activePitchEnv, voice.activePitchEnvLoop,
+                                                         voice.activePitchEnvSustain)
+                        voice.envPitchIndex = pfIdxBox[0]; voice.envPitchTimeSec = pfTimeBox[0]
+                    } else {
+                        voice.envPitchValue = 0.5; voice.envPitchIndex = 0; voice.envPitchTimeSec = 0.0
+                    }
+                    if (voice.hasFilterEnv) {
+                        voice.envFilterValue = seedPfRole(voice.activeFilterEnv, voice.activeFilterEnvLoop,
+                                                          voice.activeFilterEnvSustain)
+                        voice.envFilterIndex = pfIdxBox[0]; voice.envFilterTimeSec = pfTimeBox[0]
+                    } else {
+                        voice.envFilterValue = 0.5; voice.envFilterIndex = 0; voice.envFilterTimeSec = 0.0
+                    }
                     voice.fadeoutVolume = 1.0
                     voice.autoVibPhase = 0
                     voice.autoVibTicksSinceTrigger = 0

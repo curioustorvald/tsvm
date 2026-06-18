@@ -2913,7 +2913,7 @@ TODO - list of demo songs that MUST ship with Microtone:
         (C) Jakim 2010
     * SWINGIN1 (rename to Swinging Waste) — for demonstrating Monotone compatibility.
         (C) Phoenix/Hornet 2015
-    * Keep On Rolling — for MIDI and SoundFont capability.
+    * Keep On Rolling — for MIDI and SoundFont capability. (using GeneralUser-GS created by mrbumpy409)
         (C) Trolley Trev
 
 Play Data: play data are series of tracker-like instructions, visualised as:
