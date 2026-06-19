@@ -158,8 +158,9 @@ function parseTaud(path, songIndex) {
     const numVoices    = sys.peek(ptr + entryOff + 4) & 0xFF
     const numPats      = (sys.peek(ptr + entryOff + 5) & 0xFF) |
                          ((sys.peek(ptr + entryOff + 6) & 0xFF) << 8)
-    const bpm          = (sys.peek(ptr + entryOff + 7) & 0xFF) + 25
-    const tickRate     = sys.peek(ptr + entryOff + 8) & 0xFF
+    const tickPacked   = sys.peek(ptr + entryOff + 8) & 0xFF
+    const bpm          = (sys.peek(ptr + entryOff + 7) & 0xFF) + 25 + ((tickPacked & 0x80) << 1)  // bit 7 = BPM high bit
+    const tickRate     = tickPacked & 0x7F
     const patCompSize  = _peekU32LE(ptr, entryOff + 18)
     const cueCompSize  = _peekU32LE(ptr, entryOff + 22)
 

@@ -780,8 +780,8 @@ def main():
             soff = u32(data, eoff)
             nvoices = data[eoff + 4]
             npats = u16(data, eoff + 5)
-            bpm = data[eoff + 7] + 25
-            tickrate = data[eoff + 8]
+            bpm = data[eoff + 7] + 25 + ((data[eoff + 8] & 0x80) << 1)   # bit 7 of byte 8 = BPM high bit
+            tickrate = data[eoff + 8] & 0x7F
             tuning_base = u16(data, eoff + 9)
             base_freq = struct.unpack_from('<f', data, eoff + 11)[0]
             gbflags = data[eoff + 15]

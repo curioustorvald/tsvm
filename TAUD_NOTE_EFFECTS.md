@@ -709,6 +709,12 @@ ProTracker `Fxx` with `xx ≥ $20` maps to Taud `T $(xx − $19)00`; `Fxx` with 
 
 **Implementation.** If the high byte is non-zero, set `tempo_byte = arg >> 8`; derive `BPM = tempo_byte + $19`; compute tick duration as `samples_per_tick = 32000 × 5 / (BPM × 2) = 80000 / BPM` (integer truncated) at the fixed 32000 Hz output rate. Example: BPM 125 → 640 samples per tick; BPM 24 → 3200 samples per tick; BPM 280 → 286 samples per tick. There is no memory for set-tempo.
 
+### T $FFxx (high byte 0xFF) — Set tempo (extended)
+
+**Plain.** Sets the Taud tempo byte to `$FF + $xx`. The resulting BPM is `$xx + $118`: xx = $00 → 280 BPM, $64 → 380 BPM, $FF → 535 BPM.
+
+**Compatibility.** Unique to Taud.
+
 ### T $00xy (high byte zero) — Tempo slide
 
 **Plain.** Adjusts the tempo continuously during the row. `$00_0y` (low nibble under a zero high nibble within the low byte) slides BPM down by `$y` per non-first tick; `$00_1y` slides up. Out-of-range encodings ($00_20 through $00_FF) are reserved and behave as no-ops.

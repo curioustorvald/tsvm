@@ -119,14 +119,13 @@ MMIO
 
 93 RO: Set beeper status (aka upload beeper command)
     READING causes the side effect (and returns beeper status — 1 if a tone is currently sounding, 0 otherwise). WRITING DOES NOTHING
-94..97 RW: Beeper command
-    0bPPPPPPPP 0bpppppp_QQ 0bAAAAAAAA 0bBBBBBBBB
+94..99 RW: Beeper command
+    0bPPPPPPPP 0bpppppp_QQ 0bqqAABBCC 0baaaaaaaa 0bbbbbbbbb 0bcccccccc
 
-    PPPPPPPPpppppp: frequency divider (master clock: 3579545 / 16 Hz), determines pitch.
+    PPPPPPPPpppppp: 14-bit frequency divider (master clock: 3579545 / 16 Hz), determines pitch.
         0: no sound
     QQ: note effect
         00: none
-        01: fixed arpeggio (rate = 60 Hz, second note is always divisor (P >>> 1))
         10: two-note argeggio (rate = 60 Hz)
             tick 1: base note at divisor P is played
             tick 2: second note at divisor (P - (B << 8 | A)) is played
@@ -134,7 +133,12 @@ MMIO
             tick 1: base note at divisor P is played
             tick 2: second note at divisor (P - A) is played
             tick 3: third note at divisor (P - A - B) is played
-    A/B: note effect arguments
+        01: four-note arpeggio (rate = 60 Hz)
+            tick 1: base note at divisor P is played
+            tick 2: second note at divisor (P - A) is played
+            tick 3: third note at divisor (P - A - B) is played
+            tick 4: fourth note at divisor (P - A - B - C) is played
+    Aa/Bb/Cc: note effect arguments (10-bit divisor delta for arpeggiator; byte 96 has high two bits)
 
 
 1024..2047 RW: Reserved for integrated peripherals (e.g. built-in status display)
@@ -2942,7 +2946,10 @@ TODO:
           reset on retrigger, so a true value means this note was released. A parent that ended naturally
           (no release) still leaves the child to finish on its own.
     [x] Some ways to decouple Sample+Inst and patterns into separate files (tsvm-doom needs separate file access; samplepack can be uploaded once on init)
-    [ ] The same VT-aware patch thing for all fullscreen apps, possibly made simple by only requiring one row of simple code
+    [x] The same VT-aware patch thing for all fullscreen apps, possibly made simple by only requiring one row of simple code
+        * DONE 2026-06-20. See `con.setFullscreen()`
+    [x] Taud double the BPM ceiling
+        * DONE 2026-06-20. BPM range 25..535 via `T $FFxx` + the song-table byte-8 high bit (tickrate now 7-bit).
 
 TODO - list of demo songs that MUST ship with Microtone:
     * 4THSYM (rename to Fourth Symmetriad) — excellent piece for demonstrating NNAs and filter envelopes
@@ -3199,7 +3206,7 @@ Endianness: Little
     Uint8   Number of voices
     Uint16  Number of patterns (0 is invalid. pattern bin length = numPats * 8 bytes)
     Uint8   Initial BPM (bias of -25. 0x00=25, 0xFF=280)
-    Uint8   Initial Tickrate (0 is invalid)
+    Uint8   BPM high bit (bit 7; 0x100=281, 0x1FE = 535; `T FFxx` cannot put 0x1FF into BPM) + initial Tickrate (0 is invalid; bit 0..6)
     Uint16  Current Tuning base note (1..65533). A4 (western default) is 0x5C00. C9 (tracker default) is 0xA000. If zero, assume the tracker default value
     Float32 Frequency at the base note. Tracker default is 8363.0. If zero, assume the tracker default
     Uint8   Flags for Global Behaviour (effect symbol '1')

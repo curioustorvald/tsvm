@@ -23,7 +23,7 @@ const BEEP_P_LO   = -96   // MMIO 95: pppppp_QQ
 const BEEP_A      = -97   // MMIO 96: A
 const BEEP_B      = -98   // MMIO 97: B
 
-const BEEP_HALFCLOCK = 3579545 / 16 / 2   // f = BEEP_HALFCLOCK / divider
+const BEEP_HALFCLOCK = (3579545.4545454545 / 16.0) / 2   // f = BEEP_HALFCLOCK / divider
 const DIVIDER_MAX = 0x3FFF                 // 14-bit
 
 const QQ_NONE = 0, QQ_TWO = 2, QQ_THREE = 3   // beeper note-effect (QQ field)
@@ -308,6 +308,10 @@ function applyTickEffects(v, t) {
 
 const sleepUntil = (nano) => { const ms = (nano - sys.nanoTime()) / 1e6; if (ms >= 1) sys.sleep(Math.floor(ms)) }
 
+function cmdToInt(cmd) {
+    return cmd[0] | (cmd[1] << 8) | (cmd[2] << 16) | (cmd[3] << 24);
+}
+
 // ---------------------------------------------------------------------------
 // Render loop
 // ---------------------------------------------------------------------------
@@ -321,6 +325,8 @@ const checkStop = () => {
     else if (con.poll_keys()[0] === 67) stopReq = true     // Stop key
     return stopReq
 }
+
+let oldDiv = 0xFFFFFFFF
 
 try {
     let o = 0
@@ -352,12 +358,19 @@ try {
                 }
                 uploadBeeper(cmd[0], cmd[1], cmd[2], cmd[3])
 
-                println(`${String(globalTick).padStart(6, '0')}  ` +
+                let cmdInt = cmdToInt(cmd)
+
+                if (oldDiv != cmdInt) {
+                    println(`${String(globalTick).padStart(6, '0')}  ` +
                         `c${String(o).padStart(2)} r${String(row).padStart(2)} t${String(t).padStart(2)}  ` +
                         describeCommand(cmd, swInfo))
+                }
+
                 globalTick++
 
                 nextTick += TICK_NANO
+
+                oldDiv = cmdInt
                 sleepUntil(nextTick)
             }
 

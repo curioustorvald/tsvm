@@ -826,8 +826,9 @@ function loadTaud(filePath, songIndex) {
     const numVoices = sys.peek(ptr + entryOff + 4) & 0xFF
     const numPats   = (sys.peek(ptr + entryOff + 5) & 0xFF) |
                       ((sys.peek(ptr + entryOff + 6) & 0xFF) << 8)
-    const bpmStored = sys.peek(ptr + entryOff + 7) & 0xFF
-    const tickRate  = sys.peek(ptr + entryOff + 8) & 0xFF
+    const tickPacked = sys.peek(ptr + entryOff + 8) & 0xFF
+    const bpmStored = (sys.peek(ptr + entryOff + 7) & 0xFF) | ((tickPacked & 0x80) << 1)  // bit 7 of byte 8 = BPM high bit
+    const tickRate  = tickPacked & 0x7F
     const patBinCompSize   = _peekU32LE(ptr, entryOff + 18)
     const cueSheetCompSize = _peekU32LE(ptr, entryOff + 22)
 
@@ -914,8 +915,8 @@ function loadTaudSongList(filePath) {
             numVoices:        sys.peek(ptr + entryOff + 4) & 0xFF,
             numPats:          (sys.peek(ptr + entryOff + 5) & 0xFF) |
                               ((sys.peek(ptr + entryOff + 6) & 0xFF) << 8),
-            bpm:              ((sys.peek(ptr + entryOff + 7) & 0xFF) + 25),
-            tickRate:         sys.peek(ptr + entryOff + 8) & 0xFF,
+            bpm:              ((sys.peek(ptr + entryOff + 7) & 0xFF) + 25 + ((sys.peek(ptr + entryOff + 8) & 0x80) << 1)),  // bit 7 of byte 8 = BPM high bit
+            tickRate:         sys.peek(ptr + entryOff + 8) & 0x7F,
             mixerflags:       sys.peek(ptr + entryOff + 15) & 0xFF,
             songGlobalVolume: sys.peek(ptr + entryOff + 16) & 0xFF,
             songMixingVolume: sys.peek(ptr + entryOff + 17) & 0xFF,
@@ -2726,8 +2727,10 @@ function simulateRowState(ptnDat, uptoRow) {
             }
             else if (effop === OP_T) {
                 const hi = (effarg >>> 8) & 0xFF
-                if (hi !== 0) {
-                    bpm = Math.max(25, Math.min(280, hi + 0x19))
+                if (hi === 0xFF) {
+                    bpm = Math.max(25, Math.min(535, (effarg & 0xFF) + 0x118))  // T $FFxx — extended tempo
+                } else if (hi !== 0) {
+                    bpm = Math.max(25, Math.min(535, hi + 0x19))
                 } else {
                     const low = effarg & 0xFF
                     if ((low & 0xF0) === 0x00 || (low & 0xF0) === 0x10) memTSlide = low

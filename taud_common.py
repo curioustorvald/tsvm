@@ -452,18 +452,23 @@ def encode_song_entry(song_offset: int, num_voices: int, num_patterns: int,
 
     Layout:
         u32 song_offset, u8 num_voices, u16 num_patterns,
-        u8 bpm_stored, u8 tick_rate,
+        u8 bpm_stored, u8 bpm_hi_bit<<7 | tick_rate,
         u16 base_note, f32 base_freq,
         u8 flags, u8 global_vol, u8 mixing_vol,
         u32 pat_bin_comp_size, u32 cue_sheet_comp_size,
         byte[6] reserved.
+
+    `bpm_stored` is `bpm - 25` and may be a 9-bit value (0..510 ⇒ BPM 25..535);
+    its low 8 bits go to the bpm byte and bit 8 is packed into bit 7 of the
+    tick-rate byte (which therefore caps tick_rate at 0..127). See terranmon.txt.
     """
+    bpm_stored = max(0, min(0x1FE, bpm_stored))
     entry = struct.pack('<IBHBBHfBBBII',
         song_offset,
         num_voices & 0xFF,
         num_patterns & 0xFFFF,
         bpm_stored & 0xFF,
-        tick_rate & 0xFF,
+        (((bpm_stored >> 8) & 1) << 7) | (tick_rate & 0x7F),
         base_note & 0xFFFF,
         float(base_freq),
         flags_byte & 0xFF,

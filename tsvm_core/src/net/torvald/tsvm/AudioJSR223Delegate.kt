@@ -89,7 +89,7 @@ class AudioJSR223Delegate(private val vm: VM) {
 
     fun startSampleUpload(playhead: Int) { getPlayhead(playhead)?.pcmUpload = true }
 
-    fun setBPM(playhead: Int, bpm: Int) { getPlayhead(playhead)?.bpm = (bpm - 25).and(255) + 25 }
+    fun setBPM(playhead: Int, bpm: Int) { getPlayhead(playhead)?.bpm = bpm.coerceIn(25, 535) }
     fun getBPM(playhead: Int) = getPlayhead(playhead)?.bpm
 
     fun setTickRate(playhead: Int, rate: Int) { getPlayhead(playhead)?.tickRate = rate and 255 }

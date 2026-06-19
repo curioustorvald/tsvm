@@ -72,7 +72,7 @@ Behaviour (per midi2taud.md):
     default from the tempo map, the MIDI time signatures and onset-subdivision
     analysis: rpb·speed fine-ticks per beat is chosen to represent the finest
     subdivision actually used, keep every tempo inside the Taud BPM register
-    (25..280), and stay near the proven 24-fts/beat grid — so plain 4/4 @ 120
+    (25..535), and stay near the proven 24-fts/beat grid — so plain 4/4 @ 120
     BPM still reproduces the old speed 6 / rpb 4. Passing --rpb or --speed pins
     that axis and auto-fits the other; pass both to fully override. As a final
     step, a bend- or polyphony-heavy song with rpb < 8 has its rpb doubled (and
@@ -80,7 +80,8 @@ Behaviour (per midi2taud.md):
     key-offs, exclusiveClass chokes, bend portamento (G) and channel-volume (M)
     effects more distinct rows to land on, so fewer are eaten by same-row / per-
     cell-slot collisions. Disabled by pinning --rpb or --speed.
-    MIDI tempo changes map to T $xx00 set-tempo effects; channel volume /
+    MIDI tempo changes map to T $xx00 set-tempo effects (or T $FFxx extended
+    set-tempo above 280 BPM); channel volume /
     expression (CC7 × CC11) map to M $xx00 channel-volume effects so they
     never disturb the velocity-driven patch selection axis.
   * Cues are broken at every time-signature change, and each section is packed
@@ -569,8 +570,8 @@ _SUBDIV_THRESHOLD = 0.95
 # NOTE: row/pattern count depends only on rpb (rows = beats×rpb); speed is "free"
 # sub-row + tempo precision, so the picker spends it rather than minimising F.
 _F_TARGET = 24
-# Taud BPM register is bias-25 in [25, 280]; tick rate Hz = bpm·2/5.
-_TAUD_BPM_LO, _TAUD_BPM_HI = 25, 280
+# Taud BPM register is bias-25 in [25, 535] (T $FFxx extends past 280); tick rate Hz = bpm·2/5.
+_TAUD_BPM_LO, _TAUD_BPM_HI = 25, 535
 
 # RPB bump: bend- or polyphony-heavy songs cram more triggers / key-offs / chokes
 # / bend-G / channel-M into each beat than emit_cells can place on distinct rows,
@@ -2477,10 +2478,16 @@ def emit_cells(song: Song, insts: dict, speed: int, rpb: int,
 
     def taud_bpm(b):
         t = round(b * scale)
-        if not (25 <= t <= 280):
+        if not (_TAUD_BPM_LO <= t <= _TAUD_BPM_HI):
             vprint(f"  warning: tempo {b:.1f} BPM maps to Taud {t}, "
-                   f"clamped to 25..280 (try a different --rpb/--speed)")
-        return max(25, min(280, t))
+                   f"clamped to {_TAUD_BPM_LO}..{_TAUD_BPM_HI} (try a different --rpb/--speed)")
+        return max(_TAUD_BPM_LO, min(_TAUD_BPM_HI, t))
+
+    def tempo_effarg(tb):
+        # T $xx00 set-tempo (BPM = xx+$19) up to 280; T $FFxx extended (BPM = xx+$118) above.
+        if tb <= 280:
+            return ((tb - 25) & 0xFF) << 8
+        return 0xFF00 | ((tb - 280) & 0xFF)
 
     n_voices = allocate_voices(notes, speed, max_voices)
     if n_voices == 0:
@@ -2663,7 +2670,7 @@ def emit_cells(song: Song, insts: dict, speed: int, rpb: int,
             c = cells.get((v, row))
             if c is None or c['eff'] is None:
                 c = _cell(cells, v, row)
-                c['eff']  = (TOP_T, ((tb - 25) & 0xFF) << 8)
+                c['eff']  = (TOP_T, tempo_effarg(tb))
                 c['prio'] = PRIO_TEMPO
                 placed = True
                 break
@@ -2673,7 +2680,7 @@ def emit_cells(song: Song, insts: dict, speed: int, rpb: int,
         if not placed and victim is not None:
             if victim['prio'] == PRIO_PORTA:
                 victim['note'] = NOTE_NOP         # orphan G note would retrigger
-            victim['eff']  = (TOP_T, ((tb - 25) & 0xFF) << 8)
+            victim['eff']  = (TOP_T, tempo_effarg(tb))
             victim['prio'] = PRIO_TEMPO
             placed = True
             t_evict += 1
@@ -3008,7 +3015,7 @@ def make_song_entry(section: dict, song_off: int, args) -> bytes:
         song_offset=song_off,
         num_voices=section['n_voices'],
         num_patterns=section['n_unique'],
-        bpm_stored=(section['bpm0'] - 25) & 0xFF,
+        bpm_stored=section['bpm0'] - 25,   # 9-bit; encode_song_entry packs bit 8 into byte-8 bit 7
         tick_rate=section['speed'],
         base_note=0xA000,
         base_freq=8363.0,

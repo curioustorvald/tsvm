@@ -139,7 +139,9 @@ function uploadTaudFile(inFile, songIndex, playhead) {
     let numPatsLo  = sys.peek(filePtr + entryOff + 5) & 0xFF
     let numPatsHi  = sys.peek(filePtr + entryOff + 6) & 0xFF
     let bpmStored  = sys.peek(filePtr + entryOff + 7) & 0xFF
-    let tickRate   = sys.peek(filePtr + entryOff + 8) & 0xFF
+    let tickPacked = sys.peek(filePtr + entryOff + 8) & 0xFF
+    let tickRate   = tickPacked & 0x7F            // bits 0..6
+    bpmStored     |= (tickPacked & 0x80) << 1     // bit 7 of byte 8 = BPM high bit (0x100..0x1FE)
     let mixerflags = sys.peek(filePtr + entryOff + 15) & 0xFF
     let songGlobalVolume = sys.peek(filePtr + entryOff + 16) & 0xFF
     let songMixingVolume = sys.peek(filePtr + entryOff + 17) & 0xFF
@@ -299,7 +301,7 @@ function captureTrackerDataToFile(outFile) {
     // -- 3. BPM / tick-rate / volumes from playhead 0 -------------------------
     let bpm      = audio.getBPM(0)      || 125
     let tickRate = audio.getTickRate(0) || 6
-    let bpmStored = (bpm - 25) & 0xFF
+    let bpmStored = Math.max(0, Math.min(0x1FE, bpm - 25))  // 9-bit (0..510 ⇒ BPM 25..535)
     let songGlobalVolume = audio.getSongGlobalVolume(0)
     let songMixingVolume = audio.getSongMixingVolume(0)
     if (songGlobalVolume === undefined || songGlobalVolume === null) songGlobalVolume = 0x80
@@ -393,8 +395,8 @@ function captureTrackerDataToFile(outFile) {
         (songOffset >>> 24) & 0xFF,
         20,                                    // numVoices
         numPats & 0xFF, (numPats >>> 8) & 0xFF, // numPatterns Uint16 LE
-        bpmStored,                             // BPM with −25 bias
-        tickRate,                              // initial tick-rate
+        bpmStored & 0xFF,                      // BPM with −25 bias (low 8 bits)
+        (((bpmStored >> 8) & 1) << 7) | (tickRate & 0x7F),  // bit 7 = BPM high bit; bits 0..6 = tick-rate
         0x00,0xA0,                             // basenote (0xA000 -- C9)
         0x00,0xAC,0x02,0x46,                   // basefreq (8363 Hz)
         sys.peek(baseAddr - 7),                // mixer flags

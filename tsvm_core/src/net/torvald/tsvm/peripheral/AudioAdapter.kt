@@ -3370,14 +3370,21 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             EffectOp.OP_S -> applySEffect(ts, voice, vi, rawArg)
             EffectOp.OP_T -> {
                 val hi = (rawArg ushr 8) and 0xFF
-                if (hi != 0) {
-                    val tempoByte = hi
-                    playhead.bpm = (tempoByte + 0x19).coerceIn(25, 280)
-                } else {
-                    val low = rawArg and 0xFF
-                    when (low and 0xF0) {
-                        0x00 -> { voice.tempoSlideDir = -1; voice.tempoSlideAmount = low and 0x0F; voice.mem.tslide = low }
-                        0x10 -> { voice.tempoSlideDir = +1; voice.tempoSlideAmount = low and 0x0F; voice.mem.tslide = low }
+                when {
+                    hi == 0xFF -> {
+                        // T $FFxx — extended set-tempo: BPM = $xx + $118 (280..535). See TAUD_NOTE_EFFECTS.md §T $FFxx.
+                        playhead.bpm = ((rawArg and 0xFF) + 0x118).coerceIn(25, 535)
+                    }
+                    hi != 0 -> {
+                        // T $xx00 — set-tempo: BPM = $xx + $19 (25..280).
+                        playhead.bpm = (hi + 0x19).coerceIn(25, 535)
+                    }
+                    else -> {
+                        val low = rawArg and 0xFF
+                        when (low and 0xF0) {
+                            0x00 -> { voice.tempoSlideDir = -1; voice.tempoSlideAmount = low and 0x0F; voice.mem.tslide = low }
+                            0x10 -> { voice.tempoSlideDir = +1; voice.tempoSlideAmount = low and 0x0F; voice.mem.tslide = low }
+                        }
                     }
                 }
             }
@@ -4778,7 +4785,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         var masterVolume: Int = 0,
         var masterPan: Int = 128,
 //        var samplingRateMult: ThreeFiveMiniUfloat = ThreeFiveMiniUfloat(32),
-        var bpm: Int = 125,                // BPM, derived from tempoByte + 25. Spec default $64 ⇒ 125 BPM.
+        var bpm: Int = 125,                // BPM, derived from tempoByte + 25. Spec default $64 ⇒ 125 BPM. Range 25..535 (T $FFxx extends past 280).
         var tickRate: Int = 6,
         var pcmUpload: Boolean = false,
         var patBank1: Int = 0,
@@ -4833,8 +4840,9 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             5 -> masterPan.toByte()
             6 -> (isPcmMode.toInt(7) or isPlaying.toInt(4) or pcmQueueSizeIndex.and(15)).toByte()
             7 -> initialGlobalFlags.toByte()
-            8 -> (bpm - 25).toByte()
-            9 -> tickRate.toByte()
+            8 -> ((bpm - 25) and 0xFF).toByte()
+            // bit 7 = BPM high bit (bit 8 of bpm-25, for the 281..535 range); bits 0..6 = tickRate. See terranmon.txt §Taud song table.
+            9 -> (((((bpm - 25) ushr 8) and 1) shl 7) or (tickRate and 0x7F)).toByte()
             else -> throw InternalError("Bad offset $index")
         }
 
@@ -4861,8 +4869,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                     initialGlobalFlags = byte
                     updateTrackerGlobalBehaviour(initialGlobalFlags)
                 }
-                8 -> { bpm = byte + 25 }
-                9 -> { tickRate = byte }
+                8 -> { bpm = (((bpm - 25) and 0x100) or byte) + 25 }            // low 8 bits of bpm-25, preserve high bit
+                9 -> { tickRate = byte and 0x7F; bpm = (((byte and 0x80) shl 1) or ((bpm - 25) and 0xFF)) + 25 }  // bit 7 -> bpm high bit
                 else -> throw InternalError("Bad offset $index")
             }
         }
