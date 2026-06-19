@@ -98,7 +98,7 @@ function generateRandomHashStr(len) {
 
 // define TVDOS
 const _TVDOS = {};
-_TVDOS.VERSION = "1.0";
+_TVDOS.VERSION = "1.4";
 _TVDOS.DRIVES = {}; // Object where key-value pair is <drive-letter> : [serial-port, drive-number]
 _TVDOS.DRIVEFS = {}; // filesystem driver for the drive letter
 _TVDOS.DRIVEINFO = {};
@@ -1150,6 +1150,23 @@ input.withEvent = function(callback) {
     let my = (sys.peek(-35) & 0xFF) | ((sys.peek(-36) & 0xFF) << 8);
     let mb = sys.peek(-37) & 0xFF; // bits 0..2 = L/R/M held, bit 6 = wheel up, bit 7 = wheel down
     let mouse = [mx, my, mb];
+
+    // Under vtmgr, a backgrounded console must not see the physical keyboard or
+    // mouse (another VT is in the foreground). con.isActiveConsole() is true on
+    // bare metal and on the foreground pane, false on a background pane. When
+    // inactive, zero the key snapshot and pin the mouse to its previous state so
+    // the dispatch below emits no key/mouse events (still pacing via sleep). This
+    // makes every input.withEvent app auto-ignore background input — no per-app
+    // active check needed; a fullscreen app only has to call con.setFullscreen().
+    if (con.isActiveConsole && !con.isActiveConsole()) {
+        keys = [0,0,0,0,0,0,0,0];
+        if (inputwork.oldMouse && inputwork.oldMouse.length === 3) {
+            mx = inputwork.oldMouse[0]; my = inputwork.oldMouse[1]; mb = inputwork.oldMouse[2] & 0x07;
+        } else {
+            mb = 0;
+        }
+        mouse = [mx, my, mb];
+    }
 
     // --- mouse dispatch ---
     let oldMouse = inputwork.oldMouse;

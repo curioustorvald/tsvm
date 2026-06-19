@@ -556,27 +556,61 @@ arithmetic (no regression outside vtmgr). Applied so far in
 `assets/disk0/tvdos/bin/taut.js` and `assets/disk0/hopper/include/aa.mjs`
 (used by `bb.js`). Any future direct-VRAM app needs the same one-line `vaddr`.
 
-### Raw-keyboard apps must grab (the `con.grabRawKeyboard` pattern)
+### Fullscreen apps declare themselves (the `con.setFullscreen` pattern)
 
-Fullscreen apps that poll the **raw key snapshot** (`sys.poke(-40,1)` then
-`sys.peek(-41..-48)`) directly — e.g. the DOOM port's `i_input.mjs` — bypass the
-pane input ring entirely. But the dispatcher keeps the cooked collector (`-39`)
-on and drains typed chars into the *active* pane's ring every frame. While such
-an app is the active pane, every keystroke piles into a ring it never reads, and
-floods its parent shell the instant the app exits (no bug outside vtmgr, where
-`-39` is off while a raw app runs). Fix: the pane bootstrap exposes
-`con.grabRawKeyboard()` / `con.releaseRawKeyboard()` (write the active VT number
-into `CTRL+CTRL_RAW_GRAB_VT`); while the active pane holds the grab the
-dispatcher discards cooked chars and keeps that pane's ring flushed. `con.getch`
-self-heals a grab leaked by a crashed app (a cooked reader isn't a grabber).
-A raw-input app feature-detects (`typeof con.grabRawKeyboard === "function"`) and
-grabs/releases around its fullscreen session — DOOM does it in
-`i_video.mjs` `I_InitGraphics`/`I_ShutdownGraphics` (covers every fullscreen
-mode; shutdown runs in `wadplayer.js`'s `finally`). Complementary: such an app's
-poll should also no-op when it's *not* the active VT (compare `VT_CTRL_ADDR`
-byte 0 to `VT_NUM`) so a backgrounded app doesn't eat the foreground console's
-input — DOOM's `I_PollKeys` does this. Any future raw-key app under vtmgr needs
-both.
+A **fullscreen app** paints the whole screen and polls the **raw key snapshot**
+(`sys.poke(-40,1)` then `sys.peek(-41..-48)`) directly — e.g. the DOOM port's
+`i_input.mjs`, or `playmov` — bypassing the pane input ring. Two problems arise
+only under vtmgr: (1) the dispatcher keeps the cooked collector (`-39`) on and
+drains typed chars into the *active* pane's ring every frame, so while a raw app
+is the active pane every keystroke piles into a ring it never reads and floods
+its parent shell the instant it exits (no bug outside vtmgr, where `-39` is off
+while a raw app runs — `readKey` clears it); (2) a *backgrounded* raw app would
+still read the physical snapshot, eating the foreground console's input.
+
+This is now **first-class**: an app declares itself fullscreen in **one line** and
+the right thing happens whether or not vtmgr is present. The API lives on the base
+`con` (JS_INIT.js) so it is always defined — **no feature detection**:
+
+- `con.setFullscreen(true)` on entry / `con.setFullscreen(false)` on exit.
+  Bare metal: state-only no-op. Under vtmgr (pane override): grabs/releases the
+  dispatcher's cooked-input feed via `CTRL+CTRL_RAW_GRAB_VT` (flush type-ahead on
+  grab; the dispatcher keeps the ring empty while held). `con.getch` self-heals a
+  grab leaked by a crashed app (a cooked reader isn't a grabber).
+- `con.isActiveConsole()` — true on bare metal; under vtmgr, true only while this
+  pane is the foreground VT. Raw apps that read MMIO directly (keys AND mouse)
+  gate their reads on this so a backgrounded app reads nothing.
+- `con.poll_keys()` is **auto-guarded**: it returns all-zeros unless
+  `con.isActiveConsole()`, so an app that reads keys through `con.poll_keys()`
+  (e.g. `playmov`, `playtaud`) needs no explicit active check — just the
+  `setFullscreen` declaration.
+- `input.withEvent()` (TVDOS.SYS, the shared key/mouse event API that reads the
+  raw snapshot for `taut`/`zfm`/`edit`/…) is **also auto-guarded**: when
+  `!con.isActiveConsole()` it zeros the key snapshot and pins the mouse, so a
+  backgrounded `withEvent` app emits no events. Such apps therefore only need the
+  `setFullscreen` declaration too.
+
+The pane's `con.setFullscreen(true)` claims the grab **only while it is the
+foreground VT**, so an app may re-assert it every frame (the simplest way to
+re-establish the grab after launching a sub-program — `taut`/`zfm` do this at the
+top of their event loop) without a backgrounded app clobbering the active
+grabber's claim on the single `CTRL_RAW_GRAB_VT` byte. A single up-front claim
+also survives backgrounding (nobody else clears it; the app re-claims on return).
+
+`con.grabRawKeyboard()`/`con.releaseRawKeyboard()` remain as deprecated thin
+aliases for `con.setFullscreen(true/false)`. Consumers:
+- **DOOM** declares fullscreen in `i_video.mjs` `I_InitGraphics`/`I_ShutdownGraphics`
+  (shutdown runs in `wadplayer.js`'s `finally`) and gates `i_input.mjs` `I_PollKeys`
+  (keys + mouse, read via raw MMIO) on `con.isActiveConsole()`.
+- **`playmov`**, **`playtaud`** declare fullscreen around their session and read
+  keys through the auto-guarded `con.poll_keys()` (no explicit active check).
+- **`taut`**, **`zfm`** re-assert `con.setFullscreen(true)` at the top of their
+  `input.withEvent` loop (and release on teardown); the active check is automatic
+  via `input.withEvent`.
+
+Any future fullscreen app just calls `con.setFullscreen(true/false)`; if it reads
+keys via `con.poll_keys()` or `input.withEvent()` the active guard is automatic,
+and only an app that reads MMIO with bespoke code needs `con.isActiveConsole()`.
 
 ### Files
 
@@ -590,10 +624,17 @@ both.
 - `assets/disk0/AUTOEXEC.BAT`: per-console launch (Korean IME + `command -fancy`)
 - `assets/disk0/tvdos/bin/taut.js`, `assets/disk0/hopper/include/aa.mjs`:
   `vaddr` VT-aware direct-VRAM addressing
-- `assets/disk0/tvdos/VTMGR.SYS`: `CTRL_RAW_GRAB_VT` flag +
-  `con.grabRawKeyboard`/`releaseRawKeyboard` (raw-keyboard apps); dispatcher
-  drain honours it. DOOM consumer: `assets/disk0/home/doom/i_video.mjs`
-  (grab/release) + `i_input.mjs` (active-VT poll guard)
+- `tsvm_core/src/net/torvald/tsvm/JS_INIT.js`: base (bare-metal) `con.setFullscreen`/
+  `isFullscreen`/`isActiveConsole` + auto-guarded `con.poll_keys`; grab/release aliases
+- `assets/disk0/tvdos/VTMGR.SYS`: `CTRL_RAW_GRAB_VT` flag + VT-aware overrides of
+  `con.setFullscreen` (claim gated on being the foreground VT) / `isActiveConsole`
+- `assets/disk0/tvdos/TVDOS.SYS`: `input.withEvent` auto-guard (zeros keys / pins
+  mouse when `!con.isActiveConsole()`) — covers every `withEvent` app
+- Consumers: `assets/disk0/home/doom/i_video.mjs` (`setFullscreen` in/out) +
+  `i_input.mjs` (`isActiveConsole` guard for keys+mouse);
+  `assets/disk0/tvdos/bin/playmov.js` + `bin/playtaud.js` (`setFullscreen` +
+  auto-guarded `con.poll_keys`); `bin/taut.js` + `bin/zfm.js` (`setFullscreen`
+  re-asserted at the top of their `input.withEvent` loop)
 
 ### Gotcha: injectIntChk vs. embedded source
 

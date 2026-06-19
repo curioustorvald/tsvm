@@ -396,10 +396,11 @@ function queuePop() {
     return b
 }
 con.getch = function() {
-    // Reading cooked input means we are NOT a raw-keyboard grabber; drop any
-    // stale grab this VT left set (e.g. a fullscreen app that crashed without
-    // releasing) so the dispatcher resumes feeding our ring.
-    if (sys.peek(RAW_GRAB_ADDR) === VT_NUM) sys.poke(RAW_GRAB_ADDR, 0)
+    // Reading cooked input means we are NOT a fullscreen raw-keyboard owner;
+    // drop any stale grab this VT left set (e.g. a fullscreen app that crashed
+    // without calling setFullscreen(false)) so the dispatcher resumes feeding
+    // our ring.
+    if (sys.peek(RAW_GRAB_ADDR) === VT_NUM) { sys.poke(RAW_GRAB_ADDR, 0); con._fullscreen = false }
     while (true) {
         if (sys.peek(ACTIVE_VT_ADDR) === VT_NUM) {
             let k = queuePop()
@@ -408,22 +409,46 @@ con.getch = function() {
         sys.sleep(20)
     }
 }
-// A fullscreen app that reads the raw keyboard snapshot (-41..-48) directly,
-// bypassing this ring, must grab so the dispatcher stops piling cooked chars
-// into a ring it never drains. Flush any prior type-ahead on grab; the
-// dispatcher keeps the ring empty while held. Release on exit (or the next
-// con.getch self-heals a grab leaked by a crashed app).
-con.grabRawKeyboard = function() {
-    sys.poke(RAW_GRAB_ADDR, VT_NUM)
-    sys.poke(QUEUE_HEAD_ADDR, sys.peek(QUEUE_TAIL_ADDR))
+// ── Fullscreen / raw-keyboard session (VT-aware overrides) ─────────────────
+// con.setFullscreen(true) declares this pane a fullscreen raw-keyboard owner:
+// a fullscreen app reads the raw key snapshot (-41..-48) directly, bypassing
+// this ring, so it grabs to stop the dispatcher piling cooked chars into a ring
+// it never drains (they'd flood the shell the instant the app exits). Flush any
+// prior type-ahead on grab; the dispatcher keeps the ring empty while held.
+// setFullscreen(false) releases (a leaked grab also self-heals on the next
+// con.getch). These override JS_INIT's bare-metal no-ops so an app's single
+// con.setFullscreen(true) call does the right thing under vtmgr too.
+con.setFullscreen = function(on) {
+    con._fullscreen = !!on
+    if (on) {
+        // Claim the grab only while we are the foreground VT. Apps may re-assert
+        // this every frame (e.g. taut/zfm, to re-establish it after launching a
+        // sub-program); a BACKGROUNDED fullscreen app must not clobber the active
+        // grabber's claim on the shared CTRL_RAW_GRAB_VT byte. The claim persists
+        // across a switch-away (nobody else clears it) and the app re-claims on
+        // return, so a single up-front claim also survives backgrounding.
+        if (sys.peek(ACTIVE_VT_ADDR) === VT_NUM) {
+            sys.poke(RAW_GRAB_ADDR, VT_NUM)
+            sys.poke(QUEUE_HEAD_ADDR, sys.peek(QUEUE_TAIL_ADDR))
+        }
+    } else if (sys.peek(RAW_GRAB_ADDR) === VT_NUM) {
+        sys.poke(RAW_GRAB_ADDR, 0)
+    }
 }
-con.releaseRawKeyboard = function() {
-    if (sys.peek(RAW_GRAB_ADDR) === VT_NUM) sys.poke(RAW_GRAB_ADDR, 0)
-}
+con.isFullscreen = function() { return con._fullscreen }
+// This pane owns the physical keyboard only while it is the foreground VT.
+// con.poll_keys() (inherited from JS_INIT) and direct-MMIO raw-input apps gate
+// their key/mouse reads on this, so a backgrounded app reads nothing.
+con.isActiveConsole = function() { return sys.peek(ACTIVE_VT_ADDR) === VT_NUM }
+// Deprecated aliases kept for older raw-keyboard apps; prefer setFullscreen().
+con.grabRawKeyboard = function() { con.setFullscreen(true) }
+con.releaseRawKeyboard = function() { con.setFullscreen(false) }
 con.hitterminate = function() { return false }
 con.hiteof = function() { return false }
 con.resetkeybuf = function() { sys.poke(QUEUE_HEAD_ADDR, sys.peek(QUEUE_TAIL_ADDR)) }
-con.poll_keys = function() { return [0,0,0,0,0,0,0,0] }
+// poll_keys is inherited from JS_INIT: it returns zeros unless isActiveConsole()
+// (overridden above), so a backgrounded pane reads no keys while a foreground
+// pane reads the physical snapshot — no pane-specific override needed.
 
 // ── TVDOS.SYS init flags + BIOS stub ───────────────────────────────────────
 globalThis._TVDOS_IS_VT_PANE = true

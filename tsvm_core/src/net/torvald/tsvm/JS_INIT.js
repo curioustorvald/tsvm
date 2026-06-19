@@ -544,9 +544,43 @@ con.reset_graphics = function() {
 };
 // returns current key-down status
 con.poll_keys = function() {
+    if (!con.isActiveConsole()) return [0,0,0,0,0,0,0,0];
     sys.poke(-40, 1);
     return [-41,-42,-43,-44,-45,-46,-47,-48].map(it => sys.peek(it));
 };
+
+// ── Fullscreen / raw-keyboard session ────────────────────────────────────────
+// A "fullscreen app" paints the whole screen and reads the raw keyboard snapshot
+// (-41..-48) directly, bypassing cooked line input (con.getch). Under the virtual
+// console manager (vtmgr) such an app must (a) tell the dispatcher to stop feeding
+// cooked characters into its input ring, and (b) ignore the keyboard while its
+// console is backgrounded. Both used to require the app to feature-detect and
+// poke vtmgr's shared memory by hand; they are now first-class con methods so an
+// app declares itself fullscreen in ONE line and the right thing happens whether
+// or not vtmgr is present.
+//
+// On bare metal (no vtmgr) nothing competes for the keyboard and the active
+// console is always "this" one, so setFullscreen() is state-only and
+// isActiveConsole() is always true. The vtmgr pane bootstrap overrides
+// setFullscreen()/isActiveConsole() (and the guard above in poll_keys()) with
+// the VT-aware implementations.
+con._fullscreen = false;
+// Declare (true) or revoke (false) this app's ownership of the raw keyboard and
+// full screen. Call con.setFullscreen(true) once when entering a fullscreen mode
+// and con.setFullscreen(false) on exit. Always safe to call.
+con.setFullscreen = function(on) {
+    con._fullscreen = !!on;
+};
+con.isFullscreen = function() { return con._fullscreen; };
+// True while this console currently owns the physical keyboard. Always true on
+// bare metal; under vtmgr it is true only while this pane is the foreground VT.
+// Raw-input apps gate their direct MMIO key/mouse reads on this so a backgrounded
+// app does not eat the foreground console's input. (con.poll_keys() already does.)
+con.isActiveConsole = function() { return true; };
+// Deprecated aliases kept for older raw-keyboard apps; prefer setFullscreen().
+con.grabRawKeyboard = function() { con.setFullscreen(true); };
+con.releaseRawKeyboard = function() { con.setFullscreen(false); };
+
 // some utilities functions
 
 // TypedArray re-implementation

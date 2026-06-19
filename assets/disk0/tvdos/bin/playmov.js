@@ -195,6 +195,13 @@ let dec = null
 let stage = "open"          // breadcrumb for the error log
 
 try {
+    // Fullscreen raw-keyboard app: one declaration. Under vtmgr it grabs the
+    // cooked-input feed (so keystrokes typed at this player don't flood the
+    // shell on exit), and con.poll_keys() in readInput() auto-ignores the
+    // keyboard while this console is backgrounded; on bare metal it is a no-op.
+    // Released in the finally below.
+    con.setFullscreen(true)
+
     dec = mediadec.open(fullPath, decOpts)
     const info = dec.info
 
@@ -265,8 +272,10 @@ try {
     // triggered so a held key fires once.  Quit + ASCII/colour toggles work even
     // without -i; the rest of the transport is interactive-only.
     function readInput() {
-        sys.poke(-40, 1)
-        const key = sys.peek(-41)
+        // con.poll_keys() returns the raw key snapshot, but yields all-zeros
+        // while this console is backgrounded under vtmgr, so a backgrounded
+        // player never reacts to the foreground console's typing.
+        const key = con.poll_keys()[0]
         if (key == K.BACKSPACE) { quit = true; return }
         if (key && key !== lastKey) {
             if (key == K.A) { if (aa) toggleAscii() }        // inert when aa.mjs is absent
@@ -350,6 +359,7 @@ catch (e) {
     errorlevel = 1
 }
 finally {
+    con.setFullscreen(false)
     if (dec) dec.close()
     if (aa && aaCtx) aa.close(aaCtx)
     if (errorlevel === 0) con.clear()

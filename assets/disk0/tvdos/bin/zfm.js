@@ -1115,6 +1115,12 @@ let firstRunLatch = true
 let pendingPostExecDrain = false
 
 while (!exit) {
+    // Fullscreen app: (re)assert the raw-keyboard grab each frame so cooked chars
+    // never pile into this pane's ring (they'd flood the shell on exit), and so
+    // it is re-established after a launched program returns. input.withEvent
+    // below is auto-guarded by con.isActiveConsole(); both are no-ops on bare
+    // metal. Released after the loop.
+    con.setFullscreen(true)
     input.withEvent(event => {
 
         if (dispatchMouseEvent(event)) {
@@ -1160,6 +1166,7 @@ while (!exit) {
     }
 }
 
+con.setFullscreen(false)
 con.curs_set(1)
 con.clear()
 return 0

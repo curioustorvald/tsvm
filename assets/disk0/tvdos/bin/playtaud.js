@@ -486,6 +486,11 @@ audio.setSampleBank(0)   // restore the bank window to bank 0 after probing
 // ── Console setup ───────────────────────────────────────────────────────────
 con.curs_set(0)
 con.clear()
+// Fullscreen raw-keyboard app: one declaration. Under vtmgr it grabs the
+// dispatcher's cooked-input feed (so the visualiser's keystrokes don't flood the
+// shell on exit), and con.poll_keys() below auto-ignores input while this console
+// is backgrounded; a no-op on bare metal. Released in the finally.
+con.setFullscreen(true)
 
 function mvprn(row, col, ch) { con.mvaddch(row, col, ch) }
 function mvtext(row, col, s) { con.move(row, col); print(s) }
@@ -1255,8 +1260,10 @@ try {
         // Keyboard polling (mirrors playtad).  Backspace exits; Up/Down switch
         // to the previous/next song (wrapping) when the file holds more than
         // one song.  lastNavKey debounces so each press switches exactly once.
-        sys.poke(-40, 1)
-        const rawKey = sys.peek(-41)
+        // con.poll_keys() returns the raw key snapshot, but all-zeros while this
+        // console is backgrounded under vtmgr, so we never act on another
+        // console's keys.
+        const rawKey = con.poll_keys()[0]
         if (rawKey === 67) stopReq = true
         else if (rawKey !== lastNavKey && song.numSongs > 1) {
             if (rawKey === 19)        // up = previous song
@@ -1307,6 +1314,7 @@ catch (e) {
     errorlevel = 1
 }
 finally {
+    con.setFullscreen(false)
     audio.stop(PLAYHEAD)
     con.move(ROW_BOT_BORDER + 1, 1)
     con.curs_set(1)

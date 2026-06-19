@@ -6837,6 +6837,12 @@ let exitFlag = false
 let pendingExternalDraw = false
 
 while (!exitFlag) {
+    // Fullscreen app: (re)assert the raw-keyboard grab each frame so cooked chars
+    // never pile into this pane's ring (they'd flood the shell on exit), and so
+    // it is re-established after a sub-editor returns. input.withEvent below is
+    // auto-guarded by con.isActiveConsole(), so a backgrounded editor sees no
+    // input. Both are no-ops on bare metal. Released in the teardown.
+    con.setFullscreen(true)
     input.withEvent(event => {
         if (dispatchMouseEvent(event)) return
         if (event[0] !== "key_down") return
@@ -6955,6 +6961,7 @@ while (!exitFlag) {
 }
 
 audio.stop(PLAYHEAD)
+con.setFullscreen(false)
 resetAudioDevice()
 sys.free(SCRATCH_PTR)
 font.resetLowRom()
