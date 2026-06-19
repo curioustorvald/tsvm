@@ -2106,6 +2106,8 @@ SUSTAIN. Pre-2026-05-06 .taud files predate the P bit and will not have
 their pan / pf envelopes evaluated by the current engine — re-convert
 from source.
 
+Notes on importing SoundFont2 instruments: if the filter need to be turned off entirely, emit 'cut' in IT mode.
+
 0   Uint32 Sample Pointer
     - If the high 16 bits are 0xFFFF — i.e. (samplePointer >> 16) == 0xFFFF, a
       value no real sample pointer can take (the 8 MB sample bin caps pointers
@@ -2392,8 +2394,8 @@ from source.
         (these bytes were reserved/zero) are unaffected. Applied by the mixer as a
         velocity-INDEPENDENT amplitude multiplier; NOT folded into the volume envelope, so the
         envelope keeps full 0..63 resolution. A per-patch Ixmp 'x' block carries its own override.
-252 Uint8  Default Cutoff low bits (SoundFont mode; see offset 73)
-253 Uint8  Default Resonance low bits (SoundFont mode; see offset 73)
+252 Uint8  Default Cutoff low bits (SoundFont mode; see offset 182 and 'm' flag in offset 173)
+253 Uint8  Default Resonance low bits (SoundFont mode; see offset 183 and 'm' flag in offset 173)
 254..255 Reserved (2 bytes free for future per-instrument fields)
 
 ### Metainstrument definition
