@@ -86,17 +86,28 @@ def parse_mon(data: bytes):
     if data[:9] != MON_MAGIC_PREFIX:
         sys.exit(f"error: bad magic; expected '\\x08MONOTONE', got {data[:9]!r}")
 
-    song_len   = data[0x5C]
+    # NOTE: data[0x5C] is totalPatterns (the count of stored pattern blocks),
+    # NOT the order-list length — see TMTSongFileHeader in MT_SONG.PAS. It must
+    # not be used to bound the order list.
+    total_patterns = data[0x5C]
     num_voices = data[0x5D]
     if num_voices < 1 or num_voices > 12:
         sys.exit(f"error: invalid voice count {num_voices} (expected 1..12)")
 
     order_raw = data[0x5F:0x15F]
-    # Effective order list: take first song_len entries and drop 0xFF skip-slots
-    # (matches mtreader.lua and MT_PLAY.PAS' "ignore 0xFF" semantics).
-    order_list = [b for b in order_raw[:song_len] if b != 0xFF]
+    # The order list is contiguous from index 0 and terminated by the first
+    # 0xFF ("FF = end of song", MT_SONG.PAS line 156 / MT_PLAY.PAS lines 677-683:
+    # the player advances the order pointer and stops the moment the next order
+    # byte is 0xFF). The old code sliced order_raw[:totalPatterns], which dropped
+    # the tail whenever the song was longer than its pattern count — e.g. a
+    # repeated outro pattern — the "last order ignored" bug.
+    order_list = []
+    for b in order_raw:
+        if b == 0xFF:
+            break
+        order_list.append(b)
     if not order_list:
-        sys.exit("error: order list is empty after filtering 0xFF skip slots")
+        sys.exit("error: order list is empty (first order is the 0xFF EOS marker)")
 
     n_patterns = max(order_list) + 1
     pattern_size = MON_PATTERN_ROWS * num_voices * MON_CELL_BYTES
@@ -123,7 +134,7 @@ def parse_mon(data: bytes):
         patterns.append(grid)
 
     return {
-        'song_len':   song_len,
+        'total_patterns': total_patterns,
         'num_voices': num_voices,
         'order_list': order_list,
         'n_patterns': n_patterns,
@@ -541,7 +552,7 @@ def main():
 
     vprint(f"parsing '{args.input}' ({len(data)} bytes)…")
     mon = parse_mon(data)
-    vprint(f"  songLen={mon['song_len']}, voices={mon['num_voices']}, "
+    vprint(f"  totalPatterns={mon['total_patterns']}, voices={mon['num_voices']}, "
            f"patterns={mon['n_patterns']}, orders={len(mon['order_list'])}")
 
     taud = assemble_taud(mon, with_project_data=not args.no_project_data)
