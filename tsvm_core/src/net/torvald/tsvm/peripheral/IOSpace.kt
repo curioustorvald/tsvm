@@ -605,12 +605,6 @@ private class Beeper {
         var arpTick = 0L
         while (running) {
             try {
-                if (divider == 0) {
-                    // Silent: stop feeding so the OpenAL source drains to quiet, then idle.
-                    phase = 0.0; arpSample = 0; arpTick = 0L
-                    Thread.sleep(4)
-                    continue
-                }
                 for (i in 0 until CHUNK) {
                     val div = divisorForTick(arpTick)
                     if (div <= 0) {
@@ -625,6 +619,13 @@ private class Beeper {
                 }
                 // writeSamples blocks until a device buffer frees, pacing the loop in real time.
                 audioDevice?.writeSamples(buf, 0, CHUNK)
+
+                if (divider == 0) {
+                    // Silent: stop feeding so the OpenAL source drains to quiet, then idle.
+                    phase = 0.0; arpSample = 0; arpTick = 0L
+                    Thread.sleep(4)
+                    continue
+                }
             }
             catch (e: InterruptedException) { break }
             catch (e: Throwable) {
