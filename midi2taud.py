@@ -659,7 +659,7 @@ def auto_timing(division, merged, rpb_fixed, speed_fixed, max_voices) -> tuple:
     # it represents the rhythm exactly (F % subdiv == 0) without going below 24.
     f_want = -(-_F_TARGET // subdiv) * subdiv
 
-    rpb_opts   = [rpb_fixed] if rpb_fixed else [4, 8, 2, 16]
+    rpb_opts   = [rpb_fixed] if rpb_fixed else [4, 8, 2, 16, 32, 64]
     speed_lo   = 2 if bends_present else 1
     speed_opts = [speed_fixed] if speed_fixed else list(range(1, 16))
 
@@ -678,7 +678,7 @@ def auto_timing(division, merged, rpb_fixed, speed_fixed, max_voices) -> tuple:
                             if not _TAUD_BPM_LO <= taud_bpm(b, F) <= _TAUD_BPM_HI)
             key = (0 if init_ok else 1,        # initial tempo must fit the register
                    clamped,                    # fewest tempo changes forced to clamp
-                   [4, 8, 2, 16].index(rpb),   # prefer the conventional rpb=4 (rows
+                   [4, 8, 2, 16, 32, 64].index(rpb),   # prefer the conventional rpb=4 (rows
                                                #   = beats×rpb, so this caps pattern
                                                #   count and keeps the highlight grid)
                    abs(F - f_want),            # spend speed to reach the subdiv grid
@@ -3194,7 +3194,7 @@ def main():
                     metavar=('BANK', 'INST'),
                     help='Force the percussion channel to this SF2 preset '
                          '(default: bank 128, channel program)')
-    ap.add_argument('--rpb', type=int, default=None, choices=(2, 4, 8, 16),
+    ap.add_argument('--rpb', type=int, default=None, choices=(2, 4, 8, 16, 32, 64),
                     help='Rows per beat (default: auto from time signatures + '
                          'onset analysis). Passing a value pins this axis and '
                          'auto-fits --speed')

@@ -105,6 +105,7 @@ const COL_ARCH = {
 if (!exec_args[1] || exec_args[1] === '-h' || exec_args[1] === '--help') {
     println("Usage: playtaud <file.taud> [songIndex]")
     println("  Plays a Taud tracker module with a text-mode visualiser.")
+    println("  Up/Down arrows switch between songs (wrapping).")
     println("  Hold Backspace to exit.")
     return 0
 }
@@ -302,7 +303,7 @@ function parseTaud(path, songIndex) {
     }
 }
 
-const song = parseTaud(filePath, songArg)
+let song = parseTaud(filePath, songArg)
 
 // ── Hand the file to the audio adapter ─────────────────────────────────────
 // Occupy the first idle playhead rather than always grabbing #0, so launching
@@ -524,7 +525,11 @@ function drawFrame() {
     for (let x = 2; x < COLS; x++) mvprn(ROW_BOT_BORDER, x, BX_H)
     mvprn(ROW_BOT_BORDER, COLS, BX_BR)
     colour(COL_DIM, COL_BG)
-    mvtext(ROW_BOT_BORDER, 4, ' Hold BkSp to exit ')
+    // ↑↓ (CP437 0x18/0x19) hint only when the file carries more than one song.
+    const hint = song.numSongs > 1
+        ? ' \u008418u Song \u00F9 Hold BkSp to exit '
+        : ' Hold BkSp to exit '
+    mvtext(ROW_BOT_BORDER, 4, hint)
 
     // Side bars.
     colour(COL_BORDER, COL_BG)
@@ -569,26 +574,38 @@ function pad(n, w) {
 }
 
 let lastStatus = ''
-function drawStatus(curCue) {
+let lastBarFill = -1
+function drawStatus(curCue, curRow) {
     const bpm  = audio.getBPM(PLAYHEAD) || song.bpm
     const tick = audio.getTickRate(PLAYHEAD) || song.tickRate
     const cueStr = pad(curCue, 3) + '/' + pad(song.lastCue, 3)
-    const s = 'BPM ' + pad(bpm,3) + '  Tick ' + pad(tick,2) +
-              '  Voices ' + pad(song.numVoices,2) + '  Cue ' + cueStr
-    if (s === lastStatus) return
-    lastStatus = s
-    clearInside(ROW_STATUS)
-    colour(COL_VALUE, COL_BG)
-    mvtext(ROW_STATUS, COL_INSIDE_L + 1, s)
+    let s = 'BPM ' + pad(bpm,3) + '  Tick ' + pad(tick,2) +
+            '  Voices ' + pad(song.numVoices,2) + '  Cue ' + cueStr
+    // Subsong indicator — only meaningful when the file holds more than one song.
+    if (song.numSongs > 1)
+        s += '  Song ' + (song.songIndex + 1) + '/' + song.numSongs
+    // The text part is cached on `s`; the progress bar is gated separately on the
+    // fill count (below) so it keeps advancing within a cue, where `s` is static.
+    if (s !== lastStatus) {
+        lastStatus = s
+        clearInside(ROW_STATUS)
+        colour(COL_VALUE, COL_BG)
+        mvtext(ROW_STATUS, COL_INSIDE_L + 1, s)
+        lastBarFill = -1   // lane was wiped — force the progress bar to repaint
+    }
 
-    // Progress dashes on the right side of the status row.
+    // Progress bar on the right of the status row.  The fraction folds in the
+    // row INSIDE the current cue (not just the cue index), so playback shows
+    // motion even when the whole song is a single order long.
     const total = song.lastCue + 1
-    const frac = total > 1 ? curCue / (total - 1) : 0
+    const frac = Math.max(0, Math.min(1, (curCue + curRow / ROWS_PER_PAT) / total))
     const barW = 22
+    const fill = Math.round(frac * barW)
+    if (fill === lastBarFill) return
+    lastBarFill = fill
     const bx0 = COL_INSIDE_R - barW
-    colour(COL_DIM, COL_BG)
     for (let i = 0; i < barW; i++) {
-        const filled = i < Math.round(frac * barW)
+        const filled = i < fill
         colour(filled ? COL_ORDER_CUR : COL_DIM, COL_BG)
         mvprn(ROW_STATUS, bx0 + i, filled ? 0x7C /*│*/ : 0x2E /*.*/)
     }
@@ -1134,18 +1151,24 @@ function drawStereo() {
 // Tick indicator: row of lights, one per tick within the current row.
 let tickLightsLast = -1
 function drawTickLights(tickInRow, tickRate) {
-    if (tickInRow === tickLightsLast) return
-    tickLightsLast = tickInRow
-    clearInside(ROW_TICK)
-    const N = Math.min(tickRate, 24)
-    colour(COL_DIM, COL_BG)
-    mvtext(ROW_TICK, COL_INSIDE_L + 1, 'TICK ')
-    for (let i = 0; i < N; i++) {
-        const lit = i < tickInRow
-        colour(lit ? COL_TICK_LIVE : COL_TICK_DEAD, COL_BG)
-        mvprn(ROW_TICK, COL_INSIDE_L + 6 + i * 2, lit ? 0xFE /*■*/ : 0xF9 /*·*/)
+    // The tick-light row only needs repainting when the tick-within-row changes.
+    if (tickInRow !== tickLightsLast) {
+        tickLightsLast = tickInRow
+        clearInside(ROW_TICK)
+        const N = Math.min(tickRate, 24)
+        colour(COL_DIM, COL_BG)
+        mvtext(ROW_TICK, COL_INSIDE_L + 1, 'TICK ')
+        for (let i = 0; i < N; i++) {
+            const lit = i < tickInRow
+            colour(lit ? COL_TICK_LIVE : COL_TICK_DEAD, COL_BG)
+            mvprn(ROW_TICK, COL_INSIDE_L + 6 + i * 2, lit ? 0xFE /*■*/ : 0xF9 /*·*/)
+        }
     }
-    // Voice activity counter on the right.
+    // Voice activity counter on the right — recomputed EVERY frame, not gated on
+    // the tick-light guard above: voices go active/inactive independently of the
+    // tick-within-row, and at tickRate 1 the synthetic tick is pinned to 0 (one
+    // tick per row), so gating this on tickInRow froze the count after frame 0.
+    // The text is fixed-width and same-position, so overwriting needs no clear.
     let nActive = 0
     for (let v = 0; v < song.numVoices; v++) {
         if (audio.getVoiceActive(PLAYHEAD, v)) nActive++
@@ -1155,11 +1178,58 @@ function drawTickLights(tickInRow, tickRate) {
     mvtext(ROW_TICK, COL_INSIDE_R - s.length, s)
 }
 
+// ── Subsong switching ─────────────────────────────────────────────────────────
+//
+// Wipe every piece of per-song visualiser state so a freshly loaded song
+// starts from a clean canvas.  The matrix background, event lanes, order strip
+// and status line all cache state across frames; resetting their sentinels here
+// forces a full repaint on the next frame.  ticksPerRow / synthTick are NOT
+// touched — the loop's row-boundary detection re-derives them once lastSeenCue
+// is back to -1.
+function resetVisualiser() {
+    for (let v = 0; v < NUM_VOICES; v++) {
+        events[v]        = null
+        voiceLastNote[v] = -1
+        voiceLastInst[v] = 0
+    }
+    lastSeenCue    = -1
+    lastSeenRow    = -1
+    orderState     = { lastCue: -2, lastLeft: -1 }
+    lastStatus     = ''
+    lastBarFill    = -1
+    tickLightsLast = -1
+    bgChar.fill(0); bgLvl.fill(0); bgDith.fill(0)
+    bgHeadR = 0; bgHeadC = 0
+}
+
+// Stop the current song, re-parse + re-upload the requested one onto the same
+// playhead, then reset and repaint the visualiser.  The sample+instrument bank
+// is shared by every song (uploaded ahead of the song table), so the
+// archetype classification computed at startup stays valid — no need to redo it.
+function loadSong(index) {
+    audio.stop(PLAYHEAD)
+    audio.purgeQueue(PLAYHEAD)
+    audio.resetParams(PLAYHEAD)
+
+    song = parseTaud(filePath, index)
+    taud.uploadTaudFile(filePath, index, PLAYHEAD)
+
+    resetVisualiser()
+    drawTitle()
+    drawStatus(0, 0)
+    drawOrderStrip(0)
+
+    audio.setCuePosition(PLAYHEAD, 0)
+    audio.setTrackerRow(PLAYHEAD, 0)
+    audio.setMasterVolume(PLAYHEAD, 255)
+    audio.play(PLAYHEAD)
+}
+
 // ── Initial paint ───────────────────────────────────────────────────────────
 graphics.setBackground(0,0,0)
 drawFrame()
 drawTitle()
-drawStatus(0)
+drawStatus(0, 0)
 drawOrderStrip(0)
 
 // ── Playback ────────────────────────────────────────────────────────────────
@@ -1170,6 +1240,7 @@ audio.play(PLAYHEAD)
 
 let stopReq = false
 let errorlevel = 0
+let lastNavKey = 0   // debounce for the Up/Down song selector (one switch per press)
 // Track tick boundaries by polling at ~30 Hz.  The Taud engine doesn't expose
 // a per-tick counter, so we synthesise one by counting render frames between
 // row-changes and scaling against the song's tickRate — this is good enough
@@ -1181,9 +1252,19 @@ let ticksPerRow = Math.max(1, song.tickRate)
 let synthTick = 0 // tick within current row, 0..ticksPerRow-1
 try {
     while (audio.isPlaying(PLAYHEAD) && !stopReq) {
-        // Backspace polling (mirrors playtad).
+        // Keyboard polling (mirrors playtad).  Backspace exits; Up/Down switch
+        // to the previous/next song (wrapping) when the file holds more than
+        // one song.  lastNavKey debounces so each press switches exactly once.
         sys.poke(-40, 1)
-        if (sys.peek(-41) === 67) stopReq = true
+        const rawKey = sys.peek(-41)
+        if (rawKey === 67) stopReq = true
+        else if (rawKey !== lastNavKey && song.numSongs > 1) {
+            if (rawKey === 19)        // up = previous song
+                loadSong((song.songIndex + song.numSongs - 1) % song.numSongs)
+            else if (rawKey === 20)   // down = next song
+                loadSong((song.songIndex + 1) % song.numSongs)
+        }
+        lastNavKey = rawKey
 
         const curCue = audio.getCuePosition(PLAYHEAD)
         const curRow = audio.getTrackerRow(PLAYHEAD)
@@ -1212,7 +1293,7 @@ try {
         // updates peakVol from the live mixer reading, and retires voices the
         // engine has marked inactive.
 
-        drawStatus(curCue)
+        drawStatus(curCue, curRow)
         drawOrderStrip(curCue)
         renderEvents()
         drawStereo()
