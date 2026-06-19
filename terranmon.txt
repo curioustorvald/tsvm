@@ -126,9 +126,9 @@ MMIO
         0: no sound
     QQ: note effect
         00: none
-        10: two-note argeggio (rate = 60 Hz)
+        10: two-note arpeggio (rate = 60 Hz)
             tick 1: base note at divisor P is played
-            tick 2: second note at divisor (P - (B << 8 | A)) is played
+            tick 2: second note at divisor (P - A) is played
         11: three-note arpeggio (rate = 60 Hz)
             tick 1: base note at divisor P is played
             tick 2: second note at divisor (P - A) is played

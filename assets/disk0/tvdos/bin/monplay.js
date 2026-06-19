@@ -1,7 +1,7 @@
 // monplay.js -- Monotone (.mon) music player for the built-in beeper.
 //
 // Reads a MONOTONE module and renders it, on the fly, to the beeper
-// (IOSpace MMIO 93..97). All eight Monotone note effects are supported.
+// (IOSpace MMIO 93..99). All eight Monotone note effects are supported.
 // The module's simultaneous voices are multiplexed onto the beeper's
 // hardware arpeggio; when the notes fall outside what the hardware
 // arpeggiator can express, the multiplex is done in software instead.
@@ -14,30 +14,37 @@
 // ---------------------------------------------------------------------------
 // Beeper hardware (IOSpace). MMIO byte m is reached at JS address -(m+1):
 //   93 RO  -> reading uploads the staged command (the strobe)
-//   94..97 -> PPPPPPPP / pppppp_QQ / AAAAAAAA / BBBBBBBB
+//   94..99 -> PPPPPPPP / pppppp_QQ / qqAABBCC / aaaaaaaa / bbbbbbbb / cccccccc
+// AA/BB/CC are the high two bits of the 10-bit arpeggio deltas A/B/C.
 // The square wave is f = (3579545/16) / (2 * divider); divider 0 = silence.
 // ---------------------------------------------------------------------------
 const BEEP_UPLOAD = -94   // read MMIO 93 to upload
 const BEEP_P_HI   = -95   // MMIO 94: PPPPPPPP
 const BEEP_P_LO   = -96   // MMIO 95: pppppp_QQ
-const BEEP_A      = -97   // MMIO 96: A
-const BEEP_B      = -98   // MMIO 97: B
+const BEEP_EXT    = -97   // MMIO 96: qqAABBCC (high 2 bits of A/B/C)
+const BEEP_A      = -98   // MMIO 97: aaaaaaaa (A low 8 bits)
+const BEEP_B      = -99   // MMIO 98: bbbbbbbb (B low 8 bits)
+const BEEP_C      = -100  // MMIO 99: cccccccc (C low 8 bits)
 
 const BEEP_HALFCLOCK = (3579545.4545454545 / 16.0) / 2   // f = BEEP_HALFCLOCK / divider
 const DIVIDER_MAX = 0x3FFF                 // 14-bit
+const ARG_MAX = 0x3FF                      // 10-bit arpeggio delta
 
-const QQ_NONE = 0, QQ_TWO = 2, QQ_THREE = 3   // beeper note-effect (QQ field)
+const QQ_NONE = 0, QQ_FOUR = 1, QQ_TWO = 2, QQ_THREE = 3   // beeper note-effect (QQ field)
 
-function uploadBeeper(divider, effect, a, b) {
+function uploadBeeper(divider, effect, a, b, c) {
     if (divider < 0) divider = 0
     if (divider > DIVIDER_MAX) divider = DIVIDER_MAX
+    a &= ARG_MAX; b &= ARG_MAX; c &= ARG_MAX
     sys.poke(BEEP_P_HI, (divider >> 6) & 0xFF)
     sys.poke(BEEP_P_LO, ((divider & 0x3F) << 2) | (effect & 3))
+    sys.poke(BEEP_EXT, (((a >> 8) & 3) << 4) | (((b >> 8) & 3) << 2) | ((c >> 8) & 3))
     sys.poke(BEEP_A, a & 0xFF)
     sys.poke(BEEP_B, b & 0xFF)
+    sys.poke(BEEP_C, c & 0xFF)
     sys.peek(BEEP_UPLOAD)   // strobe: commit the staged command
 }
-function silenceBeeper() { uploadBeeper(0, QQ_NONE, 0, 0) }
+function silenceBeeper() { uploadBeeper(0, QQ_NONE, 0, 0, 0) }
 
 // Hz -> beeper frequency divider.
 function freqToDivider(hz) {
@@ -92,23 +99,28 @@ const intervalHz = (interval) => NOTESHZ[clampInterval(interval)]
 // base divider must be the LARGEST (lowest pitch) and the others are reached by
 // subtraction. Returns either a single hardware command {sw:false, cmd:[...]}
 // or, when the notes don't fit, a software-arpeggio plan {sw:true, dividers:[...]}.
-//   1 note  -> effect 0
-//   2 notes -> effect 2 (16-bit delta: always expressible)
-//   3 notes -> effect 3 (two 8-bit deltas: only when both <= 255)
-//   otherwise (3 wide / 4+ voices) -> software arpeggio over ALL the notes
+//   1 note  -> effect 0 (none)
+//   2 notes -> effect 2 (single 10-bit delta A: only when <= 1023)
+//   3 notes -> effect 3 (two 10-bit deltas: only when both <= 1023)
+//   4 notes -> effect 1 (three 10-bit deltas: only when all <= 1023)
+//   otherwise (wide chords / 5+ voices) -> software arpeggio over ALL the notes
 // ---------------------------------------------------------------------------
 function planMultiplex(dividers) {
     const ds = Array.from(new Set(dividers)).sort((x, y) => y - x)   // descending
 
-    if (ds.length === 0) return { sw: false, cmd: [0, QQ_NONE, 0, 0] }
-    if (ds.length === 1) return { sw: false, cmd: [ds[0], QQ_NONE, 0, 0] }
+    if (ds.length === 0) return { sw: false, cmd: [0, QQ_NONE, 0, 0, 0] }
+    if (ds.length === 1) return { sw: false, cmd: [ds[0], QQ_NONE, 0, 0, 0] }
     if (ds.length === 2) {
-        const diff = ds[0] - ds[1]
-        return { sw: false, cmd: [ds[0], QQ_TWO, diff & 0xFF, (diff >> 8) & 0xFF] }
+        const a = ds[0] - ds[1]
+        if (a <= ARG_MAX) return { sw: false, cmd: [ds[0], QQ_TWO, a, 0, 0] }
     }
     if (ds.length === 3) {
         const a = ds[0] - ds[1], b = ds[1] - ds[2]
-        if (a <= 0xFF && b <= 0xFF) return { sw: false, cmd: [ds[0], QQ_THREE, a, b] }
+        if (a <= ARG_MAX && b <= ARG_MAX) return { sw: false, cmd: [ds[0], QQ_THREE, a, b, 0] }
+    }
+    if (ds.length === 4) {
+        const a = ds[0] - ds[1], b = ds[1] - ds[2], c = ds[2] - ds[3]
+        if (a <= ARG_MAX && b <= ARG_MAX && c <= ARG_MAX) return { sw: false, cmd: [ds[0], QQ_FOUR, a, b, c] }
     }
     return { sw: true, dividers: ds }   // out of hardware range -> software
 }
@@ -129,24 +141,25 @@ const fmtNote = (div) => {
 }
 
 // The notes a (hardware) beeper command actually cycles through.
-function playedDividers(div, effect, a, b) {
+function playedDividers(div, effect, a, b, c) {
     if (div === 0) return []
-    if (effect === QQ_TWO) return [div, div - ((b << 8) | a)]
+    if (effect === QQ_TWO) return [div, div - a]
     if (effect === QQ_THREE) return [div, div - a, div - a - b]
+    if (effect === QQ_FOUR) return [div, div - a, div - a - b, div - a - b - c]
     return [div]
 }
 
 // One human-readable line for the command uploaded this tick. swInfo, when set,
 // describes the software-arpeggio rotation: {idx, n, all:[dividers]}.
 function describeCommand(cmd, swInfo) {
-    const div = cmd[0], eff = cmd[1], a = cmd[2], b = cmd[3]
+    const div = cmd[0], eff = cmd[1], a = cmd[2], b = cmd[3], c = cmd[4]
     if (swInfo) {
         const notes = swInfo.all.map((d, i) => (i === swInfo.idx) ? `[${fmtNote(d).substring(1,6)}]` : fmtNote(d)).join(" ")
         return `sw${swInfo.idx + 1}/${swInfo.n}`.padEnd(6) + " " + notes
     }
     if (div === 0) return "silent"
-    const label = (eff === QQ_THREE) ? "arp3" : (eff === QQ_TWO) ? "arp2" : "tone"
-    return label.padEnd(6) + " " + playedDividers(div, eff, a, b).map(fmtNote).join(" ")
+    const label = (eff === QQ_FOUR) ? "arp4" : (eff === QQ_THREE) ? "arp3" : (eff === QQ_TWO) ? "arp2" : "tone"
+    return label.padEnd(6) + " " + playedDividers(div, eff, a, b, c).map(fmtNote).join(" ")
 }
 
 // ---------------------------------------------------------------------------
@@ -308,9 +321,8 @@ function applyTickEffects(v, t) {
 
 const sleepUntil = (nano) => { const ms = (nano - sys.nanoTime()) / 1e6; if (ms >= 1) sys.sleep(Math.floor(ms)) }
 
-function cmdToInt(cmd) {
-    return cmd[0] | (cmd[1] << 8) | (cmd[2] << 16) | (cmd[3] << 24);
-}
+// Change-detection key for the trace: a command is [divider, eff, a, b, c].
+function cmdKey(cmd) { return cmd.join(",") }
 
 // ---------------------------------------------------------------------------
 // Render loop
@@ -326,7 +338,7 @@ const checkStop = () => {
     return stopReq
 }
 
-let oldDiv = 0xFFFFFFFF
+let oldKey = ""
 
 try {
     let o = 0
@@ -350,17 +362,17 @@ try {
                 let cmd, swInfo = null
                 if (plan.sw) {
                     const idx = swPhase % plan.dividers.length
-                    cmd = [plan.dividers[idx], QQ_NONE, 0, 0]
+                    cmd = [plan.dividers[idx], QQ_NONE, 0, 0, 0]
                     swInfo = { idx: idx, n: plan.dividers.length, all: plan.dividers }
                     swPhase++
                 } else {
                     cmd = plan.cmd
                 }
-                uploadBeeper(cmd[0], cmd[1], cmd[2], cmd[3])
+                uploadBeeper(cmd[0], cmd[1], cmd[2], cmd[3], cmd[4])
 
-                let cmdInt = cmdToInt(cmd)
+                let key = cmdKey(cmd)
 
-                if (oldDiv != cmdInt) {
+                if (oldKey !== key) {
                     println(`${String(globalTick).padStart(6, '0')}  ` +
                         `c${String(o).padStart(2)} r${String(row).padStart(2)} t${String(t).padStart(2)}  ` +
                         describeCommand(cmd, swInfo))
@@ -370,7 +382,7 @@ try {
 
                 nextTick += TICK_NANO
 
-                oldDiv = cmdInt
+                oldKey = key
                 sleepUntil(nextTick)
             }
 

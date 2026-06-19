@@ -69,7 +69,7 @@ class IOSpace(val vm: VM) : PeriBase("io"), InputProcessor {
     private var bmsHasBattery = false
     private var bmsIsBatteryOperated = false
 
-    /** Built-in beeper / PSG speaker (MMIO 93..97). See terranmon.txt §93..97. */
+    /** Built-in beeper / PSG speaker (MMIO 93..99). See terranmon.txt §93..99. */
     private val beeper = Beeper()
 
     init {
@@ -149,10 +149,10 @@ class IOSpace(val vm: VM) : PeriBase("io"), InputProcessor {
             89L -> ((acpiShutoff.toInt(7)) or (bmsIsBatteryOperated.toInt(3)) or (bmsHasBattery.toInt(1))
                     or bmsIsCharging.toInt()).toByte()
 
-            // 93 RO: reading uploads the staged command (94..97) into the live tone and
+            // 93 RO: reading uploads the staged command (94..99) into the live tone and
             //        returns the beeper status (bit 0 = a tone is currently sounding).
             93L -> beeper.upload()
-            in 94..97 -> beeper.readCommand(adi - 94)
+            in 94..99 -> beeper.readCommand(adi - 94)
 
             in 2048L..4075L -> hyveArea[addr.toInt() - 2048]
 
@@ -231,8 +231,8 @@ class IOSpace(val vm: VM) : PeriBase("io"), InputProcessor {
                     acpiShutoff = byte.and(-128).isNonZero()
                 }
 
-                // 94..97 RW: beeper command staging. Takes effect on the next read of MMIO 93.
-                in 94..97 -> beeper.writeCommand(adi - 94, byte)
+                // 94..99 RW: beeper command staging. Takes effect on the next read of MMIO 93.
+                in 94..99 -> beeper.writeCommand(adi - 94, byte)
 
                 in 2048L..4075L -> hyveArea[addr.toInt() - 2048] = byte
 
@@ -499,12 +499,13 @@ class IOSpace(val vm: VM) : PeriBase("io"), InputProcessor {
 }
 
 /**
- * Built-in beeper / PSG speaker (terranmon.txt §93..97).
+ * Built-in beeper / PSG speaker (terranmon.txt §93..99).
  *
  * A single square-wave tone generator modelled on the SN76489: a 14-bit frequency
- * divider over a 3579545/16 Hz master clock, with optional 50 Hz arpeggio
- * note-effects. The four command bytes (MMIO 94..97) are write staging; reading
- * MMIO 93 latches them into the live tone ("upload beeper command").
+ * divider over a 3579545/16 Hz master clock, with optional 60 Hz arpeggio
+ * note-effects (two-, three- or four-note). The six command bytes (MMIO 94..99)
+ * are write staging; reading MMIO 93 latches them into the live tone ("upload
+ * beeper command").
  *
  * The OpenAL device and its render thread are created lazily on the first non-silent
  * upload, so a headless VM (no LibGDX OpenAL backend) simply stays silent.
@@ -517,21 +518,24 @@ private class Beeper {
         // prescaler. The square wave toggles every `divider` master ticks, so one full
         // period spans 2*divider ticks  ->  f = MASTER_CLOCK / (2 * divider).
         // (divider 254 -> 440.4 Hz, matching real SN76489 hardware.)
-        private const val MASTER_CLOCK = 3579545.0 / 16.0
+        private const val MASTER_CLOCK = 3579545.4545454545 / 16.0
         // Arpeggio note-effects step at 60 Hz: 48000 / 60 = 800 samples per step.
         private const val SAMPLES_PER_ARP_TICK = SAMPLE_RATE / 60
         private const val CHUNK = 512
-        private const val AMPLITUDE = 6000  // ~ -15 dBFS; square waves are loud
+        private const val AMPLITUDE = 8192  // ~ -12 dBFS; square waves are loud
     }
 
-    // MMIO 94..97 write-staging registers: PPPPPPPP / pppppp_QQ / AAAAAAAA / BBBBBBBB
-    private val cmd = ByteArray(4)
+    // MMIO 94..99 write-staging registers:
+    //   PPPPPPPP / pppppp_QQ / qqAABBCC / aaaaaaaa / bbbbbbbb / cccccccc
+    // where AA/BB/CC are the high two bits of the 10-bit arpeggio deltas A/B/C.
+    private val cmd = ByteArray(6)
 
     // Latched ("uploaded") live command, read by the render thread.
     @Volatile private var divider = 0   // 14-bit frequency divider; 0 = no sound
-    @Volatile private var effect = 0    // QQ note-effect: 0 none, 1 fixed, 2 two-note, 3 three-note
-    @Volatile private var argA = 0      // A
-    @Volatile private var argB = 0      // B
+    @Volatile private var effect = 0    // QQ note-effect: 0 none, 1 four-note, 2 two-note, 3 three-note
+    @Volatile private var argA = 0      // A (10-bit divisor delta)
+    @Volatile private var argB = 0      // B (10-bit divisor delta)
+    @Volatile private var argC = 0      // C (10-bit divisor delta)
 
     @Volatile private var running = false
     private var renderThread: Thread? = null
@@ -541,16 +545,18 @@ private class Beeper {
     fun readCommand(index: Int): Byte = cmd[index]
 
     /**
-     * Latch MMIO 94..97 into the live tone and (lazily) start playback. Returns the
+     * Latch MMIO 94..99 into the live tone and (lazily) start playback. Returns the
      * beeper status byte (bit 0 set while a tone is sounding). Invoked by a read of MMIO 93.
      */
     fun upload(): Byte {
-        val hi = cmd[0].toInt() and 255          // PPPPPPPP
-        val lo = cmd[1].toInt() and 255          // pppppp_QQ
+        val hi  = cmd[0].toInt() and 255         // PPPPPPPP
+        val lo  = cmd[1].toInt() and 255         // pppppp_QQ
+        val ext = cmd[2].toInt() and 255         // qqAABBCC: high two bits of A/B/C
         divider = (hi shl 6) or (lo ushr 2)      // 14-bit frequency divider
         effect  = lo and 0b11                    // QQ
-        argA    = cmd[2].toInt() and 255         // A
-        argB    = cmd[3].toInt() and 255         // B
+        argA    = (((ext ushr 4) and 0b11) shl 8) or (cmd[3].toInt() and 255)   // 10-bit A
+        argB    = (((ext ushr 2) and 0b11) shl 8) or (cmd[4].toInt() and 255)   // 10-bit B
+        argC    = (((ext       ) and 0b11) shl 8) or (cmd[5].toInt() and 255)   // 10-bit C
         if (divider != 0) ensureStarted()
         return (if (divider != 0) 1 else 0).toByte()
     }
@@ -586,19 +592,21 @@ private class Beeper {
      * subtraction effects can overshoot when A/B exceed P) is treated as silence.
      */
     private fun divisorForTick(arpTick: Long): Int = when (effect) {
-        // 01: fixed arpeggio — alternate base / one octave up (P >>> 1).
-        1 -> if (arpTick and 1L == 0L) divider else divider ushr 1
-        // 10: two-note arpeggio — base / (P - (B<<8 | A)).
-        2 -> if (arpTick and 1L == 0L) divider else divider - ((argB shl 8) or argA)
+        // 10: two-note arpeggio — base / (P - A).
+        2 -> if (arpTick and 1L == 0L) divider else divider - argA
         // 11: three-note arpeggio — base / (P - A) / (P - A - B).
         3 -> when ((arpTick % 3L).toInt()) { 0 -> divider; 1 -> divider - argA; else -> divider - argA - argB }
+        // 01: four-note arpeggio — base / (P - A) / (P - A - B) / (P - A - B - C).
+        1 -> when ((arpTick % 4L).toInt()) {
+            0 -> divider; 1 -> divider - argA; 2 -> divider - argA - argB; else -> divider - argA - argB - argC
+        }
         // 00: no effect.
         else -> divider
     }
 
     private fun renderLoop() {
         val buf = ShortArray(CHUNK)
-        val hiSample = AMPLITUDE.toShort()
+        val hiSample = (AMPLITUDE-1).toShort()
         val loSample = (-AMPLITUDE).toShort()
         var phase = 0.0
         var arpSample = 0
