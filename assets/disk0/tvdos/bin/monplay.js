@@ -1,14 +1,15 @@
-// monplay.js -- Monotone (.mon) test music player.
+// monplay.js -- Monotone (.mon) music player for the built-in beeper.
 //
-// Reads a MONOTONE module and renders it, on the fly, to the built-in beeper
-// (IOSpace MMIO 93..97). Per the brief: all .mon note effects are IGNORED
-// except the arpeggio (0xy), and the module's (up to 3) simultaneous voices
-// are MULTIPLEXED onto the beeper's hardware arpeggio effect.
+// Reads a MONOTONE module and renders it, on the fly, to the beeper
+// (IOSpace MMIO 93..97). All eight Monotone note effects are supported.
+// The module's simultaneous voices are multiplexed onto the beeper's
+// hardware arpeggio; when the notes fall outside what the hardware
+// arpeggiator can express, the multiplex is done in software instead.
 //
-//   usage: monplay <file.mon>
+//   usage: monplay <file.mon>     (Ctrl+Shift+T+R or the Stop key to stop)
 //
-// Format reference: reference_materials/monotone-tracker-parser-lua/ and
-// reference_materials/MONOTONE/MTSRC/MT_PLAY.PAS .
+// Engine ported from reference_materials/MONOTONE/MTSRC/MT_PLAY.PAS;
+// format from reference_materials/monotone-tracker-parser-lua/ .
 
 // ---------------------------------------------------------------------------
 // Beeper hardware (IOSpace). MMIO byte m is reached at JS address -(m+1):
@@ -24,10 +25,8 @@ const BEEP_B      = -98   // MMIO 97: B
 
 const BEEP_HALFCLOCK = 3579545 / 16 / 2   // f = BEEP_HALFCLOCK / divider
 const DIVIDER_MAX = 0x3FFF                 // 14-bit
-const A0_HZ = 27.5                         // MONOTONE note index 1 == A0 == 27.5 Hz
 
-// Beeper note effects (QQ field)
-const QQ_NONE = 0, QQ_TWO = 2, QQ_THREE = 3
+const QQ_NONE = 0, QQ_TWO = 2, QQ_THREE = 3   // beeper note-effect (QQ field)
 
 function uploadBeeper(divider, effect, a, b) {
     if (divider < 0) divider = 0
@@ -40,44 +39,114 @@ function uploadBeeper(divider, effect, a, b) {
 }
 function silenceBeeper() { uploadBeeper(0, QQ_NONE, 0, 0) }
 
-// MONOTONE note index (1 = A0) -> beeper frequency divider.
-function noteToDivider(note) {
-    const hz = A0_HZ * Math.pow(2, (note - 1) / 12)
+// Hz -> beeper frequency divider.
+function freqToDivider(hz) {
+    if (hz <= 0) return 0
     let d = Math.round(BEEP_HALFCLOCK / hz)
     if (d < 1) d = 1
     if (d > DIVIDER_MAX) d = DIVIDER_MAX
     return d
 }
 
-// Build a beeper command that multiplexes the currently-sounding voices.
+// ---------------------------------------------------------------------------
+// MONOTONE pitch tables (MT_PLAY.PAS constants)
+// ---------------------------------------------------------------------------
+const IBO = 12                 // intervals between octaves (semitones)
+const IBN = 8                  // sub-intervals between notes (for vibrato/porta)
+const MAX_NOTE = 100           // 3 + numOctaves(8)*12 + 1
+const MAX_INTERVAL = MAX_NOTE * IBN
+const NOTE_OFF = 127           // noteEnd
+const MIN_HZ = 20              // slide-down floor (20 + MTV1MinParmxx)
+const MAX_HZ = 65472           // slide-up ceiling (65535 - MTV1MaxParmxx)
+const VIB_SIZE = 32            // MTV1VibTableSize
+const VIB_DEPTH = 64           // MTV1VibTableDepth = IBN*(MTV1MaxParmxy+1)
+
+// notesHz[interval] -- the exact integer-Hz table MT_PLAY.PAS builds (A0 == 27.5 Hz
+// at interval IBN), so slides/porta operate on the same rounded Hz values.
+const NOTESHZ = (() => {
+    const t = new Array(MAX_INTERVAL + 1)
+    const mult = Math.pow(2, 1 / (IBO * IBN))   // 2^(1/96)
+    t[0] = 440
+    let hz = 27.5; t[IBN] = Math.round(hz)
+    for (let i = IBN - 1; i >= 1; i--) { hz /= mult; if (hz < 19) hz = 19; t[i] = Math.round(hz) }
+    hz = 27.5; t[IBN] = Math.round(hz)
+    for (let i = IBN + 1; i <= MAX_INTERVAL; i++) { hz *= mult; t[i] = Math.round(hz) }
+    return t
+})()
+
+// 32-entry signed sine, amplitude VIB_DEPTH, one full cycle (sinPeriod == 1).
+const VIBTABLE = (() => {
+    const v = new Array(VIB_SIZE)
+    for (let b = 0; b < VIB_SIZE; b++) v[b] = Math.round(VIB_DEPTH * Math.sin(b * Math.PI / VIB_SIZE * 2))
+    return v
+})()
+
+const clampInterval = (i) => (i < 0) ? 0 : (i > MAX_INTERVAL) ? MAX_INTERVAL : i
+const noteHz = (note) => NOTESHZ[clampInterval(note * IBN)]
+const intervalHz = (interval) => NOTESHZ[clampInterval(interval)]
+
+// ---------------------------------------------------------------------------
+// Voice multiplexing
 //
-// The hardware arpeggio plays note0 then note0 minus a (positive) offset, so the
+// The hardware arpeggio plays note0 then note0 minus a positive offset, so the
 // base divider must be the LARGEST (lowest pitch) and the others are reached by
-// subtraction:
-//   2 notes -> effect 2, 16-bit delta (always exact)
-//   3 notes -> effect 3, two 8-bit deltas (exact only when both deltas <= 255)
-// When three widely-spaced notes don't fit effect 3's 8-bit deltas we keep the
-// two extremes (bass + melody, correct pitch) via effect 2 rather than play three
-// wrong pitches.
-function buildCommand(dividers) {
-    // de-duplicate, then sort descending (largest divider == lowest pitch first)
-    const ds = Array.from(new Set(dividers)).sort((x, y) => y - x)
+// subtraction. Returns either a single hardware command {sw:false, cmd:[...]}
+// or, when the notes don't fit, a software-arpeggio plan {sw:true, dividers:[...]}.
+//   1 note  -> effect 0
+//   2 notes -> effect 2 (16-bit delta: always expressible)
+//   3 notes -> effect 3 (two 8-bit deltas: only when both <= 255)
+//   otherwise (3 wide / 4+ voices) -> software arpeggio over ALL the notes
+// ---------------------------------------------------------------------------
+function planMultiplex(dividers) {
+    const ds = Array.from(new Set(dividers)).sort((x, y) => y - x)   // descending
 
-    if (ds.length === 0) return [0, QQ_NONE, 0, 0]
-    if (ds.length === 1) return [ds[0], QQ_NONE, 0, 0]
+    if (ds.length === 0) return { sw: false, cmd: [0, QQ_NONE, 0, 0] }
+    if (ds.length === 1) return { sw: false, cmd: [ds[0], QQ_NONE, 0, 0] }
     if (ds.length === 2) {
-        const diff = ds[0] - ds[1]   // >= 0
-        return [ds[0], QQ_TWO, diff & 0xFF, (diff >> 8) & 0xFF]
+        const diff = ds[0] - ds[1]
+        return { sw: false, cmd: [ds[0], QQ_TWO, diff & 0xFF, (diff >> 8) & 0xFF] }
     }
+    if (ds.length === 3) {
+        const a = ds[0] - ds[1], b = ds[1] - ds[2]
+        if (a <= 0xFF && b <= 0xFF) return { sw: false, cmd: [ds[0], QQ_THREE, a, b] }
+    }
+    return { sw: true, dividers: ds }   // out of hardware range -> software
+}
 
-    // >= 3 voices: keep the lowest, a middle, and the highest.
-    const lo = ds[0], hi = ds[ds.length - 1], mid = ds[ds.length >> 1]
-    const a = lo - mid, b = mid - hi
-    if (a <= 0xFF && b <= 0xFF) return [lo, QQ_THREE, a, b]
+// ---------------------------------------------------------------------------
+// Human-readable trace (one beeper command per tick)
+// ---------------------------------------------------------------------------
+const NOTE_NAMES = ["A", "A#", "B", "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#"]
+function freqToNote(hz) {
+    if (hz <= 0) return "---"
+    const n = Math.round(12 * Math.log2(hz / 27.5))   // semitones above A0 (27.5 Hz)
+    return NOTE_NAMES[((n % 12) + 12) % 12] + Math.floor((n + 9) / 12)
+}
+const fmtNote = (div) => {
+    // const hz = (div > 0) ? Math.round(BEEP_HALFCLOCK / div) : 0
+    // return `${freqToNote(hz)}(${hz}Hz)`
+    return ' ' + (''+div).padStart(5) + ' '
+}
 
-    // Too wide for effect 3's 8-bit deltas: fall back to bass + melody.
-    const diff = lo - hi
-    return [lo, QQ_TWO, diff & 0xFF, (diff >> 8) & 0xFF]
+// The notes a (hardware) beeper command actually cycles through.
+function playedDividers(div, effect, a, b) {
+    if (div === 0) return []
+    if (effect === QQ_TWO) return [div, div - ((b << 8) | a)]
+    if (effect === QQ_THREE) return [div, div - a, div - a - b]
+    return [div]
+}
+
+// One human-readable line for the command uploaded this tick. swInfo, when set,
+// describes the software-arpeggio rotation: {idx, n, all:[dividers]}.
+function describeCommand(cmd, swInfo) {
+    const div = cmd[0], eff = cmd[1], a = cmd[2], b = cmd[3]
+    if (swInfo) {
+        const notes = swInfo.all.map((d, i) => (i === swInfo.idx) ? `[${fmtNote(d).substring(1,6)}]` : fmtNote(d)).join(" ")
+        return `sw${swInfo.idx + 1}/${swInfo.n}`.padEnd(6) + " " + notes
+    }
+    if (div === 0) return "silent"
+    const label = (eff === QQ_THREE) ? "arp3" : (eff === QQ_TWO) ? "arp2" : "tone"
+    return label.padEnd(6) + " " + playedDividers(div, eff, a, b).map(fmtNote).join(" ")
 }
 
 // ---------------------------------------------------------------------------
@@ -107,7 +176,7 @@ if (!MAGIC.every((m, i) => B(i) === m)) {
 
 const SONG_LEN = B(0x5C)   // number of orders (informational)
 const VOICES   = B(0x5D)
-if (VOICES < 1 || VOICES > 8) {
+if (VOICES < 1 || VOICES > 12) {
     println("Bad voice count: " + VOICES)
     sys.free(buf)
     return 1
@@ -131,81 +200,175 @@ const cellWord = (pattern, row, voice) => {
     return B(off) | (B(off + 1) << 8)
 }
 
-// MT_PLAY.PAS: 60 Hz tick, tempo (ticks/row) = max(voices, 4).
+// MT_PLAY.PAS: 60 Hz tick, default tempo (ticks/row) = max(voices, 4).
 const TICK_HZ = 60
 const TICK_NANO = 1e9 / TICK_HZ
-const TICKS_PER_ROW = Math.max(VOICES, 4)
+const DEFAULT_TEMPO = Math.max(VOICES, 4)
 
 println(`MONOTONE: ${full}`)
 println(`  voices ${VOICES}, orders ${orders.length} (songlen ${SONG_LEN}), ` +
-        `${TICKS_PER_ROW} ticks/row @ ${TICK_HZ}Hz`)
-println("  (Ctrl+Shift+T+R to stop)")
+        `${DEFAULT_TEMPO} ticks/row @ ${TICK_HZ}Hz`)
+println("  (Hold backspace to stop)")
+println("  tick    pos          beeper command (one tick per line)")
 
 // ---------------------------------------------------------------------------
-// Playback state (per voice)
+// Per-voice playback state
 // ---------------------------------------------------------------------------
-const NOTE_OFF = 0x7F
-const voiceNote   = new Array(VOICES).fill(0)      // held note (1..0x7E)
-const voiceOn     = new Array(VOICES).fill(false)  // is the voice sounding?
-const voiceArpX   = new Array(VOICES).fill(0)      // arpeggio 2nd-note offset
-const voiceArpY   = new Array(VOICES).fill(0)      // arpeggio 3rd-note offset
+const voiceOn      = new Array(VOICES).fill(false)  // is the voice sounding?
+const voiceNote    = new Array(VOICES).fill(0)      // held note index (1..MAX_NOTE)
+const voiceFreq    = new Array(VOICES).fill(0)      // current frequency (integer Hz)
+const voiceEff     = new Array(VOICES).fill(0)      // effect type 0..7
+const voiceP1      = new Array(VOICES).fill(0)      // first effect arg
+const voiceP2      = new Array(VOICES).fill(0)      // second effect arg (two-arg effects)
+const portaTarget  = new Array(VOICES).fill(0)      // 3xx: frequency to slide toward
+const portaDelta   = new Array(VOICES).fill(0)      // 3xx: Hz per tick
+const vibSpeed     = new Array(VOICES).fill(0)      // 4xy: oscillation speed
+const vibDepth     = new Array(VOICES).fill(0)      // 4xy: depth (intervals)
+const vibIndex     = new Array(VOICES).fill(0)      // 4xy: vibrato table position
 
-// Latch a new row of cells. All effects are ignored except arpeggio (0xy):
-// effect type = eff>>6, arpeggio is type 0 with nonzero args x=(eff>>3)&7, y=eff&7.
+// Effect indices (eff>>6): 0=Arp 1=SlideUp 2=SlideDown 3=Porta 4=Vibrato
+//                          5=PosJump(B) 6=PatBreak(D) 7=SetSpeed(F)
+const EFF_ARP = 0, EFF_UP = 1, EFF_DOWN = 2, EFF_PORTA = 3, EFF_VIB = 4
+const EFF_JUMP = 5, EFF_BREAK = 6, EFF_SPEED = 7
+
+// Latch a new row of cells (the "tick 0" pass). Sets the per-voice note/effect and
+// returns the row's global control: tempo (Fxx), jumpOrder (Bxx), breakRow (Dxx).
 function applyRow(pattern, row) {
+    const ctrl = { tempo: -1, jumpOrder: -1, breakRow: -1 }
+
     for (let v = 0; v < VOICES; v++) {
         const w = cellWord(pattern, row, v)
         const note = w >> 9
-        const eff = w & 0x1FF
+        const effWord = w & 0x1FF
+        const eff = effWord >> 6
 
+        // two-arg effects (Arp, Vibrato) carry x=(bits5..3), y=(bits2..0);
+        // all others carry one 6-bit arg.
+        let p1, p2
+        if (eff === EFF_ARP || eff === EFF_VIB) { p1 = (effWord >> 3) & 7; p2 = effWord & 7 }
+        else { p1 = effWord & 0x3F; p2 = 0 }
+        voiceEff[v] = eff; voiceP1[v] = p1; voiceP2[v] = p2
+
+        // Note handling. Porta (3xx) keeps the old frequency: the note only sets
+        // the slide target, it doesn't jump the pitch.
         if (note === NOTE_OFF) voiceOn[v] = false
-        else if (note >= 1 && note <= 0x7E) { voiceOn[v] = true; voiceNote[v] = note }
-        // note === 0 -> continue holding the previous note
+        else if (note >= 1 && note <= MAX_NOTE && eff !== EFF_PORTA) {
+            voiceOn[v] = true; voiceNote[v] = note; voiceFreq[v] = noteHz(note); vibIndex[v] = 0
+        }
+        // note === 0 (or out-of-range) -> continue holding
 
-        if (eff !== 0 && (eff >> 6) === 0) { voiceArpX[v] = (eff >> 3) & 7; voiceArpY[v] = eff & 7 }
-        else { voiceArpX[v] = 0; voiceArpY[v] = 0 }
+        // Tick-0 effect setup
+        switch (eff) {
+            case EFF_PORTA:
+                if (note >= 1 && note <= MAX_NOTE) portaTarget[v] = noteHz(note)
+                if (p1 !== 0) portaDelta[v] = p1
+                break
+            case EFF_VIB:
+                if (p1 !== 0) vibSpeed[v] = p1
+                if (p2 !== 0) vibDepth[v] = p2
+                vibIndex[v] = (vibIndex[v] + vibSpeed[v]) & (VIB_SIZE - 1)
+                break
+            case EFF_JUMP:  ctrl.jumpOrder = p1; break
+            case EFF_BREAK: ctrl.breakRow = p1;  break
+            case EFF_SPEED: ctrl.tempo = p1;     break
+        }
+    }
+    return ctrl
+}
+
+// Apply a voice's effect for tick t (t >= 1; tick 0 is the note load above).
+function applyTickEffects(v, t) {
+    switch (voiceEff[v]) {
+        case EFF_ARP:
+            if (voiceP1[v] !== 0 || voiceP2[v] !== 0) {
+                const phase = t % 3
+                const off = (phase === 1) ? voiceP1[v] : (phase === 2) ? voiceP2[v] : 0
+                voiceFreq[v] = noteHz(voiceNote[v] + off)
+            }
+            break
+        case EFF_UP:
+            voiceFreq[v] = Math.min(MAX_HZ, voiceFreq[v] + voiceP1[v])
+            break
+        case EFF_DOWN:
+            voiceFreq[v] = Math.max(MIN_HZ, voiceFreq[v] - voiceP1[v])
+            break
+        case EFF_PORTA:
+            if (voiceFreq[v] < portaTarget[v]) voiceFreq[v] = Math.min(portaTarget[v], voiceFreq[v] + portaDelta[v])
+            else if (voiceFreq[v] > portaTarget[v]) voiceFreq[v] = Math.max(portaTarget[v], voiceFreq[v] - portaDelta[v])
+            break
+        case EFF_VIB: {
+            vibIndex[v] = (vibIndex[v] + vibSpeed[v]) & (VIB_SIZE - 1)
+            const off = Math.trunc(VIBTABLE[vibIndex[v]] * vibDepth[v] / VIB_DEPTH)
+            voiceFreq[v] = intervalHz(voiceNote[v] * IBN + off)
+            break
+        }
+        // EFF_JUMP / EFF_BREAK / EFF_SPEED are tick-0 only
     }
 }
 
-// A voice's effective note this tick, honouring its arpeggio (base / +x / +y).
-function effectiveNote(v, tickInRow) {
-    let n = voiceNote[v]
-    if (voiceArpX[v] !== 0 || voiceArpY[v] !== 0) {
-        const phase = tickInRow % 3
-        if (phase === 1) n += voiceArpX[v]
-        else if (phase === 2) n += voiceArpY[v]
-    }
-    return n
-}
-
-const stopRequested = () => (sys.peek(-49) & 1) !== 0   // MMIO 48 bit0 = SIGTERM
+const sleepUntil = (nano) => { const ms = (nano - sys.nanoTime()) / 1e6; if (ms >= 1) sys.sleep(Math.floor(ms)) }
 
 // ---------------------------------------------------------------------------
 // Render loop
 // ---------------------------------------------------------------------------
 let nextTick = sys.nanoTime()
+let swPhase = 0               // software-arpeggio rotation (persists across ticks)
+let globalTick = 0           // running tick counter (for the trace)
+let ticksPerRow = DEFAULT_TEMPO
+let stopReq = false
+const checkStop = () => {
+    if ((sys.peek(-49) & 1) !== 0) stopReq = true          // MMIO 48 bit0 = SIGTERM
+    else if (con.poll_keys()[0] === 67) stopReq = true     // Stop key
+    return stopReq
+}
+
 try {
     let o = 0
-    while (o < orders.length) {
+    let startRow = 0
+    while (o < orders.length && !stopReq) {
         const pattern = orders[o]
-        for (let row = 0; row < PATTERN_ROWS; row++) {
-            applyRow(pattern, row)
-            for (let t = 0; t < TICKS_PER_ROW; t++) {
-                if (stopRequested()) return 0
+        let nextOrder = o + 1, nextStartRow = 0, branched = false
+
+        for (let row = startRow; row < PATTERN_ROWS && !stopReq; row++) {
+            const ctrl = applyRow(pattern, row)
+            if (ctrl.tempo >= 0) ticksPerRow = Math.max(ctrl.tempo, 1)   // Fxx
+
+            for (let t = 0; t < ticksPerRow; t++) {
+                if (checkStop()) break
+                if (t > 0) for (let v = 0; v < VOICES; v++) applyTickEffects(v, t)
 
                 const dividers = []
-                for (let v = 0; v < VOICES; v++) {
-                    if (voiceOn[v] && voiceNote[v] >= 1) dividers.push(noteToDivider(effectiveNote(v, t)))
+                for (let v = 0; v < VOICES; v++) if (voiceOn[v]) dividers.push(freqToDivider(voiceFreq[v]))
+
+                const plan = planMultiplex(dividers)
+                let cmd, swInfo = null
+                if (plan.sw) {
+                    const idx = swPhase % plan.dividers.length
+                    cmd = [plan.dividers[idx], QQ_NONE, 0, 0]
+                    swInfo = { idx: idx, n: plan.dividers.length, all: plan.dividers }
+                    swPhase++
+                } else {
+                    cmd = plan.cmd
                 }
-                const cmd = buildCommand(dividers)
                 uploadBeeper(cmd[0], cmd[1], cmd[2], cmd[3])
 
+                println(`${String(globalTick).padStart(6, '0')}  ` +
+                        `c${String(o).padStart(2)} r${String(row).padStart(2)} t${String(t).padStart(2)}  ` +
+                        describeCommand(cmd, swInfo))
+                globalTick++
+
                 nextTick += TICK_NANO
-                const waitMs = (nextTick - sys.nanoTime()) / 1e6
-                if (waitMs >= 1) sys.sleep(Math.floor(waitMs))
+                sleepUntil(nextTick)
             }
+
+            if (ctrl.jumpOrder >= 0) { nextOrder = ctrl.jumpOrder; nextStartRow = 0; branched = true; break }      // Bxx
+            if (ctrl.breakRow >= 0) { nextOrder = o + 1; nextStartRow = ctrl.breakRow; branched = true; break }    // Dxx
         }
-        o++
+
+        // Bxx/Dxx wrap past the end of the order list (looping); a natural fall-off ends the song.
+        if (nextOrder >= orders.length) { if (!branched) break; nextOrder = 0 }
+        o = nextOrder
+        startRow = (nextStartRow >= PATTERN_ROWS) ? 0 : nextStartRow
     }
 }
 finally {
