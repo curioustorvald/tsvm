@@ -11,6 +11,6 @@ for f in *.XM; python3 xm2taud.py $f assets/disk0/home/music/(basename $f .XM).t
 for f in *.mon; python3 mon2taud.py $f assets/disk0/home/music/(basename $f .mon).taud; end
 for f in *.MON; python3 mon2taud.py $f assets/disk0/home/music/(basename $f .MON).taud; end
 
-for f in *.mid; python3 midi2taud.py $f GeneralUser-GS.sf2 assets/disk0/home/music/(basename $f .mid).taud --force-synth-loop; end
-for f in *.MID; python3 midi2taud.py $f GeneralUser-GS.sf2 assets/disk0/home/music/(basename $f .MID).taud --force-synth-loop; end
-for f in *.midi; python3 midi2taud.py $f GeneralUser-GS.sf2 assets/disk0/home/music/(basename $f .midi).taud --force-synth-loop; end
+for f in *.mid; python3 midi2taud.py $f GeneralUser-GS.sf2 assets/disk0/home/music/(basename $f .mid).taud --force-synth-loop --mixingvol 255; end
+for f in *.MID; python3 midi2taud.py $f GeneralUser-GS.sf2 assets/disk0/home/music/(basename $f .MID).taud --force-synth-loop --mixingvol 255; end
+for f in *.midi; python3 midi2taud.py $f GeneralUser-GS.sf2 assets/disk0/home/music/(basename $f .midi).taud --force-synth-loop --mixingvol 255; end

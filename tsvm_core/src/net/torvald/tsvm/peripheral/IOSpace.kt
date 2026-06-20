@@ -513,6 +513,7 @@ class IOSpace(val vm: VM) : PeriBase("io"), InputProcessor {
 private class Beeper {
 
     companion object {
+        private const val ARPRATE = 60
         private const val SAMPLE_RATE = 48000
         // SN76489 NTSC colourburst clock (3579545 Hz) after the chip's internal /32
         // prescaler. The square wave toggles every `divider` master ticks, so one full
@@ -520,8 +521,8 @@ private class Beeper {
         // (divider 127 -> 440.4 Hz.)
         private const val MASTER_CLOCK = 3579545.4545454545 / 32.0
         // Arpeggio note-effects step at 60 Hz: 48000 / 60 = 800 samples per step.
-        private const val SAMPLES_PER_ARP_TICK = SAMPLE_RATE / 60
-        private const val CHUNK = 512
+        private const val SAMPLES_PER_ARP_TICK = SAMPLE_RATE / ARPRATE
+        private const val CHUNK = SAMPLES_PER_ARP_TICK
         private const val AMPLITUDE = 8192  // ~ -12 dBFS; square waves are loud
     }
 

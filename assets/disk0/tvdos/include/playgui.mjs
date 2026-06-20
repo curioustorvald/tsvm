@@ -654,9 +654,13 @@ function aa_alowed(i) {
     const c = i & 0xff
     const attr = (i >>> 8)
     if (attr >= AA_NATTRS) return false
-    // printable ASCII, space, or extended (>160) — keep AA_EIGHT chars so the
-    // glyph palette includes the TSVM ROM's box-drawing / shade / dot range.
-    if (!(c >= 33 && c <= 126) && c !== 0x20 && !(c > 160)) return false
+    // Printable ASCII + space ONLY.  Excluding the CP437 shade / solid-block /
+    // half-block range (▒ ▓ █ ▄ ▌ ▀, codes 0xB0-0xDF) is what keeps the
+    // wavescope trace thin: a fully-lit cell now resolves to a dense *ASCII*
+    // glyph (# a 6 J) whose inter-stroke gaps read as a fine scope line rather
+    // than a filled bar.  The mini-AAlib has no other consumer, so this only
+    // affects the wavescope.
+    if (!(c >= 33 && c <= 126) && c !== 0x20) return false
     return true
 }
 
@@ -914,10 +918,11 @@ function aa_render(img, scrW, scrH, tbOut, attrOut) {
 // then converted to ASCII glyphs by the mini-AAlib above.  Mid-signal only —
 // stereo info lives on the bottom bar.
 //
-// Three monochrome intensities pick out the wave's body / peaks: DIM cells
-// are the dim trace, NORMAL cells are the bulk of the waveform, BOLD cells
-// land on the brightest patches (full-blocked peaks).  Amber → white ramp
-// mimics phosphor bloom.
+// The mini-AAlib palette is ASCII-only (no CP437 block glyphs), so the trace
+// stays a fine line instead of a filled bar.  Colour is by DENSITY, not AA
+// weight: each cell's lit-pixel count drives a blue→orange ramp — sparse
+// fringes read blue, the solid body reads orange — matching the VISUALS
+// section's cool-ground / warm-beam language.
 
 const AA_WAVE_W = AG_LANE_W                  // 78 cells
 const AA_WAVE_H = AG_ROW_WAVE_BOT - AG_ROW_WAVE_TOP + 1   // 3 cells
@@ -928,8 +933,11 @@ const ag_waveImg  = new Uint8Array(AA_WAVE_IW * AA_WAVE_IH)
 const ag_waveTb   = new Uint8Array(AA_WAVE_W * AA_WAVE_H)
 const ag_waveAttr = new Uint8Array(AA_WAVE_W * AA_WAVE_H)
 
-// AA_NORMAL=0, AA_DIM=1, AA_BOLD=2  → amber phosphor palette.
-const AG_WAVE_FG = [166, 130, AG_COL_LABEL]
+// Per-cell colour by trace DENSITY (lit source-pixels in the cell, 0..4),
+// blue→orange exactly like the VISUALS section: sparse fringes read blue (the
+// cool "ground" from AG_STEREO_COL), the solid body reads orange/gold (the
+// warm peak from AG_BEAM_PAL).  Index 0 is background (empty cell).
+const AG_WAVE_DENS_FG = [AG_COL_BG, 94, 130, 166, 220]
 
 function ag_drawWavescope() {
     const N  = AG_SNAPSHOT_N
@@ -960,16 +968,21 @@ function ag_drawWavescope() {
 
     aa_render(img, AA_WAVE_W, AA_WAVE_H, ag_waveTb, ag_waveAttr)
 
-    // Blit, skipping cells whose packed (attr<<8 | glyph) key is unchanged.
+    // Blit, skipping cells whose packed (density<<8 | glyph) key is unchanged.
     for (let r = 0; r < AA_WAVE_H; r++) {
         for (let c = 0; c < AA_WAVE_W; c++) {
             const idx = r * AA_WAVE_W + c
-            const att = ag_waveAttr[idx]
             const ch  = ag_waveTb[idx]
-            const key = (att << 8) | ch
+            // Density = lit source-pixels in this cell's 2×2 block (0..4) →
+            // blue (sparse) … orange (dense).
+            const px  = (2 * r) * IW + (2 * c)
+            const lit = (img[px] ? 1 : 0) + (img[px + 1] ? 1 : 0)
+                      + (img[px + IW] ? 1 : 0) + (img[px + IW + 1] ? 1 : 0)
+            const fg  = AG_WAVE_DENS_FG[lit]
+            const key = (lit << 8) | ch
             if (ag_waveGlyph[idx] === key) continue
             ag_waveGlyph[idx] = key
-            ag_color(AG_WAVE_FG[att] || AG_COL_LABEL, AG_COL_BG)
+            ag_color(fg, AG_COL_BG)
             ag_mvprn(AG_ROW_WAVE_TOP + r, AG_COL_INSIDE_L + c, ch)
         }
     }
