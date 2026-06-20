@@ -5,12 +5,17 @@
 let readCount = 0
 let port = undefined
 let fileHeader = new Uint8Array(4096)
+// Valid byte count of the block currently sitting in the read buffer. The disk's last block is
+// usually shorter than 4096; without tracking this the reuse path read 4096-padding bytes of stale
+// buffer past EOF (white-noise burst / the old OOB crash).
+let curBlockLen = 0
 
 function prepare(fullPath) {
     if (fullPath[2] != '/' && fullPath[2] != '\\') throw Error("Expected full path with drive letter, got " + fullPath)
 
 
     readCount = 0
+    curBlockLen = 0
 
     let driveLetter = fullPath[0].toUpperCase()
     let diskPath = fullPath.substring(2).replaceAll("\\",'/')
@@ -68,11 +73,17 @@ function readBytes(length, ptrToDecode) {
 
             let blockTransferStatus = ((sys.peek(-4085 - port*2) & 255) | ((sys.peek(-4086 - port*2) & 255) << 8))
             let thisBlockLen = blockTransferStatus & 4095
-            if (thisBlockLen == 0) thisBlockLen = 4096 // [1, 4096]
-            let hasMore = (blockTransferStatus & 0x8000 != 0)
+            // bit 12 (0x1000) of the status = "the disk's block size is exactly 0" — the EOF marker.
+            // Without it a 0-length terminating block is indistinguishable from a full 4096-byte
+            // block (4096 & 4095 == 0 too), so the old code read 4096 bytes of stale buffer past EOF.
+            let blockIsEmpty = (blockTransferStatus & 0x1000) != 0
+            if (thisBlockLen == 0 && !blockIsEmpty) thisBlockLen = 4096 // [1, 4096]
 
+            curBlockLen = thisBlockLen
 
 //            serial.println(`block: (${thisBlockLen})[${[...Array(thisBlockLen).keys()].map(k => (sys.peek(-4097 - k) & 255).toString(16).padStart(2,'0')).join()}]`)
+
+            if (thisBlockLen == 0) break // EOF: nothing more to read (zero-filled below)
 
             let remaining = Math.min(thisBlockLen, length - completedReads)
 
@@ -87,11 +98,13 @@ function readBytes(length, ptrToDecode) {
         }
         else {
             let padding = readCount % 4096
-            let remaining = length - completedReads
-            let thisBlockLen = Math.min(4096 - padding, length - completedReads)
+            // Only `curBlockLen - padding` bytes of the buffered block are real; the rest is stale.
+            // A short final block leaves padding >= curBlockLen, i.e. we are past EOF.
+            let avail = curBlockLen - padding
+            if (avail <= 0) break // past the short last block: EOF (zero-filled below)
+            let thisBlockLen = Math.min(avail, length - completedReads)
 
-//            serial.println(`padding = ${padding}; remaining = ${remaining}`)
-//            serial.println(`block: (${thisBlockLen})[${[...Array(thisBlockLen).keys()].map(k => (sys.peek(-4097 - padding - k) & 255).toString(16).padStart(2,'0')).join()}]`)
+//            serial.println(`padding = ${padding}; avail = ${avail}`)
 //            serial.println(`Reusing a block (${thisBlockLen}); readCount = ${readCount}, completedReads = ${completedReads}`)
 
             // copy from read buffer to designated position
@@ -101,6 +114,15 @@ function readBytes(length, ptrToDecode) {
             readCount += thisBlockLen
             completedReads += thisBlockLen
         }
+    }
+
+    // Reached EOF before satisfying the request: zero-fill the remainder so callers get defined
+    // bytes (silence, for audio) instead of stale garbage, and advance readCount so the caller's
+    // read loop still terminates (it was relying on readCount reaching the requested position).
+    while (completedReads < length) {
+        sys.poke(ptr + completedReads * destVector, 0)
+        completedReads += 1
+        readCount += 1
     }
 
     //serial.println(`END readBytes(${length}); readCount = ${readCount}\n`)

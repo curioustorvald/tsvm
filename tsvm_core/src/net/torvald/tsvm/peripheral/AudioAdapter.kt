@@ -25,6 +25,11 @@ private class RenderRunnable(val playhead: AudioAdapter.Playhead) : Runnable {
     private fun printdbg(msg: Any) {
         if (AudioAdapter.DBGPRN) println("[AudioAdapter] $msg")
     }
+    // Diagnostic: effective PCM playback rate. Since writeStereoSamplesUI8 is paced by the device
+    // (fillBuffer blocks until OpenAL frees a buffer), frames-fed / wall-time == the device's real
+    // consumption rate. Should read ~32000; ~64000 would mean the device is playing 2x.
+    private var probeFrames = 0L
+    private var probeT0 = 0L
     override fun run() {
         while (!Thread.currentThread().isInterrupted) {
             try {
@@ -43,7 +48,19 @@ private class RenderRunnable(val playhead: AudioAdapter.Playhead) : Runnable {
 
                             playhead.position = writeQueue.size
 
-                            playhead.audioDevice.writeSamplesUI8(samples, 0, samples.size)
+                            // PCM queue data is stereo-interleaved PCMu8 (L,R,L,R) — WAV decode,
+                            // MP2 mediaDecodedBin, TAD. Each frame is 2 bytes, so numPairs = size/2.
+                            playhead.audioDevice.writeStereoSamplesUI8(samples, 0, samples.size / 2)
+
+                            if (AudioAdapter.PCM_RATE_PROBE) {
+                                if (probeT0 == 0L) probeT0 = System.nanoTime()
+                                probeFrames += samples.size / 2
+                                val dt = (System.nanoTime() - probeT0) / 1.0e9
+                                if (dt >= 2.0) {
+                                    System.err.println("[AudioAdapter] P${playhead.index} PCM effective rate = ${(probeFrames / dt).toInt()} frames/s (expect 32000)")
+                                    probeFrames = 0L; probeT0 = System.nanoTime()
+                                }
+                            }
 
                             Thread.sleep(6)
                         }
@@ -129,6 +146,10 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
     companion object {
         internal val DBGPRN = false
+        // Set true to log the effective PCM playback rate to stderr (~every 2s) — should read
+        // ~32000 frames/s. Diagnosed the "WAV plays 2x faster" report: rate was correct (32000),
+        // so the cause was dropped queue chunks (handshake), now fixed via queuePcmDataByPtr.
+        internal val PCM_RATE_PROBE = false
         const val SAMPLING_RATE = 32000
         const val TRACKER_CHUNK = 512
         // Per-voice soundscope ring-buffer length. Power of two so wrap-around is a single AND.
@@ -457,7 +478,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 //                printdbg("P${playhead.index+1} Vol ${playhead.masterVolume}; LpP ${playhead.pcmUploadLength}; start playback...")
 //                    printdbg(""+(0..42).joinToString { String.format("%.2f", samples[it]) })
 
-                playhead.audioDevice.writeSamplesUI8(samples, 0, samples.size)
+                playhead.audioDevice.writeStereoSamplesUI8(samples, 0, samples.size / 2)
 
 //                printdbg("P${playhead.index+1} go back to spinning")
 

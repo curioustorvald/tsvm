@@ -485,6 +485,28 @@ class AudioJSR223Delegate(private val vm: VM) {
             }
         }
     }
+
+    /** Synchronously copy `length` bytes of PCMu8-stereo from `ptr` and enqueue them for playback,
+     *  directly — like [mp2UploadDecoded]. The putPcmDataByPtr + setSampleUploadLength +
+     *  startSampleUpload path hands off through the single-slot pcmBin/pcmUpload handshake serviced
+     *  by WriteQueueingRunnable, which DROPS chunks when a caller queues several in a row (the
+     *  next putPcmData overwrites pcmBin / clobbers pcmUploadLength before the thread copies it).
+     *  Lost chunks make WAV/PCM playback skip and effectively fast-forward. Enqueue with no race. */
+    fun queuePcmDataByPtr(playhead: Int, ptr: Int, length: Int) {
+        if (length <= 0) return
+        val snd = getFirstSnd() ?: return
+        val ph = snd.playheads.getOrNull(playhead) ?: return
+        val ba = ByteArray(length)
+        if (ptr >= 0) {
+            // user RAM — fast bulk copy
+            UnsafeHelper.memcpyRaw(null, vm.usermem.ptr + ptr, ba, UnsafeHelper.getArrayOffset(ba), length.toLong())
+        } else {
+            // peripheral memory grows toward 0 — read backwards, like putPcmDataByPtr
+            for (k in 0 until length) ba[k] = vm.peek(ptr.toLong() - k.toLong())!!
+        }
+        ph.pcmQueue.add(ba)
+        ph.position = ph.pcmQueue.size
+    }
     fun getPcmData(playhead: Int, index: Int) = getFirstSnd()?.pcmBin?.get(playhead)?.get(index.toLong())
 
     fun setPcmQueueCapacityIndex(playhead: Int, index: Int) { getPlayhead(playhead)?.pcmQueueSizeIndex = index }

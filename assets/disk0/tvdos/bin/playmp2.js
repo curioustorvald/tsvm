@@ -28,6 +28,10 @@ class SequentialFileBuffer {
     get fileHeader() { return this.seq.fileHeader }
 }
 
+// Load the visualiser's font ROM now, while no audio file is streaming. The drive is
+// single-file-open, so loading it lazily during playback would corrupt the audio stream.
+if (gui) gui.preloadAssets()
+
 const filebuf       = new SequentialFileBuffer(_G.shell.resolvePathInput(exec_args[1]).full)
 const FILE_SIZE     = filebuf.length
 const FRAME_SIZE    = audio.mp2GetInitialFrameSize(filebuf.fileHeader)
@@ -82,7 +86,12 @@ let stopPlay = false
 let errorlevel = 0
 try {
     while (bytes_left > 0 && !stopPlay) {
-        if (interactive && gui.audioIsExitRequested()) { stopPlay = true; break }
+        if (interactive && gui.audioIsExitRequested()) {
+            // Stop immediately and drop everything still queued, so audio doesn't keep playing
+            // the buffered chunks after the user quits.
+            audio.stop(PLAYHEAD); audio.purgeQueue(PLAYHEAD)
+            stopPlay = true; break
+        }
 
         filebuf.readBytes(FRAME_SIZE, SND_BASE_ADDR - 2368)
         audio.mp2Decode()
@@ -101,7 +110,7 @@ try {
                 sys.sleep(bufRealTimeLen)
             }
         }
-        audio.mp2UploadDecoded(0)
+        audio.mp2UploadDecoded(PLAYHEAD)
 
         if (interactive) {
             gui.audioSetProgress(decodedLength / FILE_SIZE,
@@ -115,8 +124,19 @@ try {
     }
 } catch (e) {
     printerrln(e)
+    // Recover + show the host (Java) stack trace, which `e` alone does not carry.
+    try { printerrln(sys.printStackTrace(e)) } catch (_) {}
     errorlevel = 1
 } finally {
+    // Never leave the playhead in 'play' mode for the next program. On a clean finish, let the
+    // queued tail play out first; on Backspace/error, stop immediately.
+    if (!stopPlay && errorlevel === 0) {
+        let guard = 0
+        while (audio.getPosition(PLAYHEAD) > 0 && guard++ < 1500) sys.sleep(20) // drain, capped ~30s
+    }
+    audio.stop(PLAYHEAD)
+    audio.purgeQueue(PLAYHEAD)
+
     if (interactive) {
         if (mp2VisScratch) sys.free(mp2VisScratch)
         gui.audioClose()

@@ -60,6 +60,9 @@ class SequentialFileBuffer {
     getReadCount() { return this.seq.getReadCount() }
 }
 
+// Load the visualiser's font ROM now, while no audio file is streaming (single-file-open drive).
+if (gui) gui.preloadAssets()
+
 const filebuf   = new SequentialFileBuffer(_G.shell.resolvePathInput(exec_args[1]).full)
 const FILE_SIZE = filebuf.length
 
@@ -132,7 +135,12 @@ let stopPlay = false
 let errorlevel = 0
 try {
     while (bytes_left > 0 && !stopPlay) {
-        if (interactive && gui.audioIsExitRequested()) { stopPlay = true; break }
+        if (interactive && gui.audioIsExitRequested()) {
+            // Stop immediately and drop everything still queued, so audio doesn't keep playing
+            // the buffered chunks after the user quits.
+            audio.stop(PLAYHEAD); audio.purgeQueue(PLAYHEAD)
+            stopPlay = true; break
+        }
 
         const sampleCount = filebuf.readShort()
         const maxIndex    = filebuf.readByte()
@@ -184,7 +192,10 @@ try {
                                      bytesToSec(decodedLength), bytesToSec(FILE_SIZE))
                 let sliceOff = 0
                 while (sliceOff < sampleCount && !stopPlay) {
-                    if (gui.audioIsExitRequested()) { stopPlay = true; break }
+                    if (gui.audioIsExitRequested()) {
+                        audio.stop(PLAYHEAD); audio.purgeQueue(PLAYHEAD)
+                        stopPlay = true; break
+                    }
                     const sliceN = Math.min(TAD_VIS_SLICE, sampleCount - sliceOff)
                     // tadDecodedBin is negative-addressed: sample i sits at
                     // TAD_DECODED_ADDR - i*2.  audioFeedPcm flips the read
@@ -212,6 +223,15 @@ try {
     printerrln(e)
     errorlevel = 1
 } finally {
+    // Never leave the playhead in 'play' mode for the next program. On a clean finish, let the
+    // queued tail play out first; on Backspace/error, stop immediately.
+    if (!stopPlay && errorlevel === 0) {
+        let guard = 0
+        while (audio.getPosition(PLAYHEAD) > 0 && guard++ < 1500) sys.sleep(20) // drain, capped ~30s
+    }
+    audio.stop(PLAYHEAD)
+    audio.purgeQueue(PLAYHEAD)
+
     if (interactive) gui.audioClose()
 }
 

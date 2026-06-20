@@ -122,7 +122,9 @@ MMIO
 94..99 RW: Beeper command
     0bPPPPPPPP 0bpppppp_QQ 0bqqAABBCC 0baaaaaaaa 0bbbbbbbbb 0bcccccccc
 
-    PPPPPPPPpppppp: 14-bit frequency divider (master clock: 3579545 / 16 Hz), determines pitch.
+    Master clock: 3579545.4545... Hz with prescaler of 16
+
+    PPPPPPPPpppppp: 14-bit frequency divider, determines pitch.
         0: no sound
     QQ: note effect
         00: none

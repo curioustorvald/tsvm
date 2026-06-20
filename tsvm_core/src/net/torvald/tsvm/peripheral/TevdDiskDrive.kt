@@ -115,11 +115,13 @@ class TevdDiskDrive(private val vm: VM, private val driveNum: Int, theTevdPath: 
             blockSendBuffer = messageComposeBuffer.toByteArray()
         }
 
-        val sendSize = if (blockSendBuffer.size - (blockSendCount * BLOCK_SIZE) < BLOCK_SIZE)
-            blockSendBuffer.size % BLOCK_SIZE
-        else if (blockSendBuffer.size <= BLOCK_SIZE)
-            blockSendBuffer.size
-        else BLOCK_SIZE
+        // Bytes still unsent in this block. The old `size % BLOCK_SIZE` was wrong once the buffer
+        // was already consumed (blockSendCount past the end): for a non-BLOCK_SIZE-multiple message
+        // it returned the leftover count and then indexed blockSendBuffer[blockSendCount*BLOCK_SIZE+it]
+        // — e.g. a 6-byte message read one block too far → "Index 4096 out of bounds for length 6".
+        // Clamp to [0, BLOCK_SIZE]; 0 sends an empty terminating block (same EOF signal as streaming).
+        val remaining = blockSendBuffer.size - blockSendCount * BLOCK_SIZE
+        val sendSize = remaining.coerceIn(0, BLOCK_SIZE)
 
 //        println("blockSendCount = ${blockSendCount}; sendSize = $sendSize; blockSendBuffer.size = ${blockSendBuffer.size}")
 

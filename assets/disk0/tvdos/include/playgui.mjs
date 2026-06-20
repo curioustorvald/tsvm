@@ -1238,6 +1238,15 @@ function audioSetProgress(progress, elapsedSec, totalSec) {
     ag_drawProgress(progress, elapsedSec | 0, totalSec | 0)
 }
 
+// Pre-build the mini-AAlib glyph tables (which loads the 7x14 font ROM from disk).  MUST be
+// called BEFORE the media file is opened: the wavescope's first render would otherwise
+// files.open() the font ROM mid-playback, and a disk drive is single-file-open per drive —
+// opening the font while the audio file is being streamed off the same drive corrupts the
+// stream (short noise burst, then silence).  After this, audioRender does no disk I/O.
+function preloadAssets() {
+    aa_mktable()
+}
+
 function audioRender() {
     const now = sys.nanoTime()
     if (now - ag_lastRenderNs < AG_RENDER_INTERVAL_NS) return
@@ -1274,5 +1283,6 @@ exports = {
     audioSetProgress,
     audioRender,
     audioClose,
-    audioIsExitRequested
+    audioIsExitRequested,
+    preloadAssets
 }

@@ -139,7 +139,15 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
 
             try {
                 val buffer = ByteArray(BLOCK_SIZE)
-                val bytesRead = stream.read(buffer)
+                // Fill the whole block. InputStream.read may return a short count mid-file, but the
+                // block protocol treats any block shorter than BLOCK_SIZE as the final one (EOF), so
+                // a short mid-file read would truncate the file to silence. Loop until full or EOF.
+                var bytesRead = 0
+                while (bytesRead < BLOCK_SIZE) {
+                    val n = stream.read(buffer, bytesRead, BLOCK_SIZE - bytesRead)
+                    if (n <= 0) break
+                    bytesRead += n
+                }
 
                 if (bytesRead <= 0) {
                     // End of file
@@ -171,11 +179,13 @@ class TestDiskDrive(private val vm: VM, private val driveNum: Int, theRootPath: 
             blockSendBuffer = messageComposeBuffer.toByteArray()
         }
 
-        val sendSize = if (blockSendBuffer.size - (blockSendCount * BLOCK_SIZE) < BLOCK_SIZE)
-            blockSendBuffer.size % BLOCK_SIZE
-        else if (blockSendBuffer.size <= BLOCK_SIZE)
-            blockSendBuffer.size
-        else BLOCK_SIZE
+        // Bytes still unsent in this block. The old `size % BLOCK_SIZE` was wrong once the buffer
+        // was already consumed (blockSendCount past the end): for a non-BLOCK_SIZE-multiple message
+        // it returned the leftover count and then indexed blockSendBuffer[blockSendCount*BLOCK_SIZE+it]
+        // — e.g. a 6-byte message read one block too far → "Index 4096 out of bounds for length 6".
+        // Clamp to [0, BLOCK_SIZE]; 0 sends an empty terminating block (same EOF signal as streaming).
+        val remaining = blockSendBuffer.size - blockSendCount * BLOCK_SIZE
+        val sendSize = remaining.coerceIn(0, BLOCK_SIZE)
 
 //        println("blockSendCount = ${blockSendCount}; sendSize = $sendSize; blockSendBuffer.size = ${blockSendBuffer.size}")
 

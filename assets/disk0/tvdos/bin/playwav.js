@@ -26,6 +26,10 @@ function GCD(a, b) {
 }
 function LCM(a, b) { return (!a || !b) ? 0 : Math.abs((a * b) / GCD(a, b)) }
 
+// Load the visualiser's font ROM now, while no audio file is streaming. The drive is
+// single-file-open, so loading it lazily during playback would corrupt the audio stream.
+if (gui) gui.preloadAssets()
+
 seqread.prepare(filePath)
 if (seqread.readFourCC() !== "RIFF") throw Error("File not RIFF")
 const FILE_SIZE = seqread.readInt()
@@ -142,29 +146,33 @@ try {
 
             let readLength = 1
             while (!stopPlay && seqread.getReadCount() < startOffset + chunkSize && readLength > 0) {
-                if (interactive && gui.audioIsExitRequested()) { stopPlay = true; break }
-
-                if (audio.getPosition(PLAYHEAD) <= 1) {
-                    for (let repeat = 0; repeat < QUEUE_MAX; repeat++) {
-                        const remainingBytes = FILE_SIZE - 8 - seqread.getReadCount()
-                        readLength = (remainingBytes < INFILE_BLOCK_SIZE) ? remainingBytes : INFILE_BLOCK_SIZE
-                        if (readLength <= 0) break
-
-                        seqread.readBytes(readLength, readPtr)
-                        const decodedSampleLength = decodeInfilePcm(readPtr, decodePtr, readLength)
-
-                        // Hand the decoded PCMu8 stereo block to the visualiser
-                        // before queueing — the buffer is reused next iteration.
-                        if (interactive) gui.audioFeedPcm(decodePtr, decodedSampleLength >> 1)
-
-                        audio.putPcmDataByPtr(PLAYHEAD, decodePtr, decodedSampleLength, 0)
-                        audio.setSampleUploadLength(PLAYHEAD, decodedSampleLength)
-                        audio.startSampleUpload(PLAYHEAD)
-
-                        sys.spin()
-                    }
-                    audio.play(PLAYHEAD)
+                if (interactive && gui.audioIsExitRequested()) {
+                    // Stop immediately and drop everything still queued, so audio doesn't keep
+                    // playing the ~half-second of buffered chunks after the user quits.
+                    audio.stop(PLAYHEAD); audio.purgeQueue(PLAYHEAD)
+                    stopPlay = true; break
                 }
+
+                // Top the queue up to QUEUE_MAX chunks with a DIRECT enqueue (no putPcmData/
+                // setSampleUploadLength/startSampleUpload handshake, no sys.spin). The handshake
+                // routes through a single-slot pcmBin and dropped chunks when fed in a burst, which
+                // skipped/fast-forwarded the song. queuePcmDataByPtr enqueues synchronously.
+                while (audio.getPosition(PLAYHEAD) < QUEUE_MAX &&
+                       seqread.getReadCount() < startOffset + chunkSize) {
+                    const remainingBytes = FILE_SIZE - 8 - seqread.getReadCount()
+                    readLength = (remainingBytes < INFILE_BLOCK_SIZE) ? remainingBytes : INFILE_BLOCK_SIZE
+                    if (readLength <= 0) break
+
+                    seqread.readBytes(readLength, readPtr)
+                    const decodedSampleLength = decodeInfilePcm(readPtr, decodePtr, readLength)
+
+                    // Hand the decoded PCMu8 stereo block to the visualiser before queueing —
+                    // the buffer is reused next iteration.
+                    if (interactive) gui.audioFeedPcm(decodePtr, decodedSampleLength >> 1)
+
+                    audio.queuePcmDataByPtr(PLAYHEAD, decodePtr, decodedSampleLength)
+                }
+                audio.play(PLAYHEAD)
 
                 if (interactive) {
                     const cur = seqread.getReadCount() - startOffset
@@ -174,6 +182,15 @@ try {
                 }
                 sys.sleep(10)
             }
+
+            // Release the playhead so it isn't left in 'play' mode for the next program. On a clean
+            // finish, let the queued tail play out first; on Backspace/error, stop immediately.
+            if (!stopPlay && errorlevel === 0) {
+                let guard = 0
+                while (audio.getPosition(PLAYHEAD) > 0 && guard++ < 1500) sys.sleep(20) // drain, ~30s cap
+            }
+            audio.stop(PLAYHEAD)
+            audio.purgeQueue(PLAYHEAD)
         }
         else {
             seqread.skip(chunkSize)
@@ -183,6 +200,8 @@ try {
     }
 } catch (e) {
     printerrln(e)
+    // Recover + show the host (Java) stack trace, which `e` alone does not carry.
+    try { printerrln(sys.printStackTrace(e)) } catch (_) {}
     errorlevel = 1
 } finally {
     if (readPtr   !== undefined) sys.free(readPtr)

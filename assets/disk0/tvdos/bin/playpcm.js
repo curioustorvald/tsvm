@@ -20,6 +20,9 @@ const byterate     = 2 * samplingRate
 
 function bytesToSec(i) { return i / byterate }
 
+// Load the visualiser's font ROM now, while no audio file is streaming (single-file-open drive).
+if (gui) gui.preloadAssets()
+
 seqread.prepare(filePath)
 
 const readPtr = sys.malloc(BLOCK_SIZE)
@@ -44,28 +47,28 @@ let errorlevel = 0
 let readLength = 1
 try {
     while (!stopPlay && seqread.getReadCount() < FILE_SIZE && readLength > 0) {
-        if (interactive && gui.audioIsExitRequested()) { stopPlay = true; break }
-
-        const queueSize = audio.getPosition(PLAYHEAD)
-        if (queueSize <= 1) {
-            for (let repeat = QUEUE_MAX - queueSize; repeat > 0; repeat--) {
-                const remainingBytes = FILE_SIZE - seqread.getReadCount()
-                readLength = (remainingBytes < INFILE_BLOCK_SIZE) ? remainingBytes : INFILE_BLOCK_SIZE
-                if (readLength <= 0) break
-
-                seqread.readBytes(readLength, readPtr)
-
-                // Raw PCMu8 stereo — sampleCount = bytes / 2.
-                if (interactive) gui.audioFeedPcm(readPtr, readLength >> 1)
-
-                audio.putPcmDataByPtr(PLAYHEAD, readPtr, readLength, 0)
-                audio.setSampleUploadLength(PLAYHEAD, readLength)
-                audio.startSampleUpload(PLAYHEAD)
-
-                if (repeat > 1) sys.sleep(10)
-            }
-            audio.play(PLAYHEAD)
+        if (interactive && gui.audioIsExitRequested()) {
+            // Stop immediately and drop everything still queued, so audio doesn't keep playing
+            // the buffered chunks after the user quits.
+            audio.stop(PLAYHEAD); audio.purgeQueue(PLAYHEAD)
+            stopPlay = true; break
         }
+
+        // Top the queue up to QUEUE_MAX chunks with a DIRECT enqueue (no putPcmData/startUpload
+        // handshake, no sys.sleep). The handshake dropped chunks under load → skips/fast-forward.
+        while (audio.getPosition(PLAYHEAD) < QUEUE_MAX && seqread.getReadCount() < FILE_SIZE) {
+            const remainingBytes = FILE_SIZE - seqread.getReadCount()
+            readLength = (remainingBytes < INFILE_BLOCK_SIZE) ? remainingBytes : INFILE_BLOCK_SIZE
+            if (readLength <= 0) break
+
+            seqread.readBytes(readLength, readPtr)
+
+            // Raw PCMu8 stereo — sampleCount = bytes / 2.
+            if (interactive) gui.audioFeedPcm(readPtr, readLength >> 1)
+
+            audio.queuePcmDataByPtr(PLAYHEAD, readPtr, readLength)
+        }
+        audio.play(PLAYHEAD)
 
         if (interactive) {
             const cur = seqread.getReadCount()
@@ -78,6 +81,15 @@ try {
     printerrln(e)
     errorlevel = 1
 } finally {
+    // Never leave the playhead in 'play' mode for the next program. On a clean finish, let the
+    // queued tail play out first; on Backspace/error, stop immediately.
+    if (!stopPlay && errorlevel === 0) {
+        let guard = 0
+        while (audio.getPosition(PLAYHEAD) > 0 && guard++ < 1500) sys.sleep(20) // drain, capped ~30s
+    }
+    audio.stop(PLAYHEAD)
+    audio.purgeQueue(PLAYHEAD)
+
     if (readPtr !== undefined) sys.free(readPtr)
     if (interactive) gui.audioClose()
 }
