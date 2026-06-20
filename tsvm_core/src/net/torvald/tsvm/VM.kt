@@ -778,7 +778,7 @@ class VM(
         // MMIO area
         else if (from in -1048576..-1 && (from - len) in -1048577..-1) {
             val fromIndex = (-from-1) / 131072
-            val dev = peripheralTable[fromIndex.toInt()].peripheral ?: return null
+            val dev = peripheralTable.getOrNull(fromIndex.toInt())?.peripheral ?: return null
             val fromRel = (-from-1) % 131072
             if (fromRel + len > 131072) return null
 
@@ -807,7 +807,7 @@ class VM(
         // memory area
         else {
             val fromIndex = (-from-1) / 1048576
-            val dev = peripheralTable[fromIndex.toInt()].peripheral ?: return null
+            val dev = peripheralTable.getOrNull(fromIndex.toInt())?.peripheral ?: return null
             val fromRel = (-from-1) % 1048576
             if (fromRel + len > 1048576) return null
 

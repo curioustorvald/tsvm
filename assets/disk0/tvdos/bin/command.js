@@ -895,8 +895,12 @@ shell.execute = function(line, nameOverride) {
                     catch (e) {
                         gotError = true
 
-                        serial.printerr(`[command.js] program quit with ${e}:\n${e.stack || '(stack trace unavailable)'}`)
-                        printerrln(`Program quit with ${e}:\n${e.stack || '(stack trace unavailable)'}`)
+                        // A host (Java) exception has no JS `.stack`, so `e.stack` alone is
+                        // "(stack trace unavailable)". Recover the real host trace (to stderr + string).
+                        let hostTrace = ""
+                        try { hostTrace = sys.printStackTrace(e) } catch (_) {}
+                        serial.printerr(`[command.js] program quit with ${e}:\n${e.stack || hostTrace || '(stack trace unavailable)'}`)
+                        printerrln(`Program quit with ${e}:\n${e.stack || hostTrace || '(stack trace unavailable)'}`)
 
                         if (`${e}`.startsWith("InterruptedException"))
                             errorlevel = SIGTERM.name

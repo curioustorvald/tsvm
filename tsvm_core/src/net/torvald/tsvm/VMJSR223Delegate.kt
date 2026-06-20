@@ -25,7 +25,7 @@ class VMJSR223Delegate(private val vm: VM) {
         // MMIO area
         else if (from in -1048576..-1 && (from - len) in -1048577..-1) {
             val fromIndex = ((-from-1) / 131072).absoluteValue
-            val dev = vm.peripheralTable[fromIndex.toInt()].peripheral ?: return null
+            val dev = vm.peripheralTable.getOrNull(fromIndex.toInt())?.peripheral ?: return null
             val fromRel = (-from-1) % 131072
             if (fromRel + len > 131072) return null
 
@@ -55,7 +55,7 @@ class VMJSR223Delegate(private val vm: VM) {
         // memory area
         else {
             val fromIndex = (-from-1) / 1048576
-            val dev = vm.peripheralTable[fromIndex.toInt()].peripheral ?: return null
+            val dev = vm.peripheralTable.getOrNull(fromIndex.toInt())?.peripheral ?: return null
             val fromRel = (-from-1) % 1048576
             if (fromRel + len > 1048576) return null
 
@@ -87,6 +87,56 @@ class VMJSR223Delegate(private val vm: VM) {
     }
 
     fun getVmId() = vm.id.toString()
+
+    /**
+     * Recover the FULL host (Java) stack trace of an exception caught in JS, write it to the host
+     * stderr, and also RETURN it as a string so the caller can show it on the VM screen too.
+     *
+     * When a host (Kotlin) function throws, GraalVM surfaces it to JS as an exception object whose
+     * `toString()` is only the message — so `catch (e) { printerrln(e) }` shows the message on the
+     * VM screen while the Java stack trace (the part that says *where* it blew up) is lost and the
+     * host stdout/stderr gets nothing. Re-throwing the caught value back across the polyglot
+     * boundary recovers the original Throwable so its stack trace can be printed. Call from a JS
+     * catch block: `let tr = sys.printStackTrace(e)` (then optionally `printerrln(tr)`).
+     */
+    fun printStackTrace(e: org.graalvm.polyglot.Value?): String {
+        val sb = StringBuilder("===== host stack trace =====\n")
+        if (e == null) {
+            sb.append("(the caught value was null/undefined)\n")
+        } else {
+            try {
+                if (e.isException) {
+                    e.throwException() // throws a PolyglotException wrapping the original Throwable
+                } else if (e.isHostObject && e.asHostObject<Any?>() is Throwable) {
+                    // Some configs surface a caught host exception as a host object, not an
+                    // exception object — unwrap the Throwable directly.
+                    val sw = java.io.StringWriter()
+                    (e.asHostObject<Any?>() as Throwable).printStackTrace(java.io.PrintWriter(sw))
+                    sb.append("host object Throwable:\n").append(sw)
+                } else {
+                    sb.append("caught value is not an exception object: ").append(e).append('\n')
+                }
+            } catch (pe: org.graalvm.polyglot.PolyglotException) {
+                if (pe.isHostException) {
+                    val sw = java.io.StringWriter()
+                    pe.asHostException().printStackTrace(java.io.PrintWriter(sw))
+                    sb.append("host (Java) exception:\n").append(sw)
+                } else {
+                    sb.append("guest exception: ").append(pe.message).append('\n')
+                }
+                sb.append("guest stack frames:\n")
+                for (frame in pe.polyglotStackTrace) sb.append("    at ").append(frame).append('\n')
+            } catch (t: Throwable) {
+                val sw = java.io.StringWriter()
+                t.printStackTrace(java.io.PrintWriter(sw))
+                sb.append("could not recover the trace; got:\n").append(sw)
+            }
+        }
+        val s = sb.toString()
+        System.err.println(s)
+        System.err.flush()
+        return s
+    }
 
     fun poke(addr: Int, value: Int) = vm.poke(addr.toLong(), value.toByte())
     fun peek(addr: Int) = vm.peek(addr.toLong())!!.toInt().and(255)

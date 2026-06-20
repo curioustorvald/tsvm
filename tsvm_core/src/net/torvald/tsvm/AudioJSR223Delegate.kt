@@ -585,7 +585,7 @@ class AudioJSR223Delegate(private val vm: VM) {
         getFirstSnd()?.let {  snd ->
             val ba = ByteArray(2304)
             UnsafeHelper.memcpyRaw(null, snd.mediaDecodedBin.ptr, ba, UnsafeHelper.getArrayOffset(ba), 2304)
-            snd.playheads[playhead].pcmQueue.addLast(ba)
+            snd.playheads[playhead].pcmQueue.add(ba)
         }
     }
 
@@ -600,7 +600,7 @@ class AudioJSR223Delegate(private val vm: VM) {
         getFirstSnd()?.let { snd ->
             val ba = ByteArray(sampleLength * 2)  // 32768 samples * 2 channels
             UnsafeHelper.memcpyRaw(null, snd.tadDecodedBin.ptr, ba, UnsafeHelper.getArrayOffset(ba), sampleLength * 2L)
-            snd.playheads[playhead].pcmQueue.addLast(ba)
+            snd.playheads[playhead].pcmQueue.add(ba)
         }
     }
 

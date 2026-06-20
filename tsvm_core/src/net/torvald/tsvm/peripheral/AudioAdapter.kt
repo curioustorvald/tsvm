@@ -3,7 +3,7 @@ package net.torvald.tsvm.peripheral
 import com.badlogic.gdx.Gdx
 import com.badlogic.gdx.backends.lwjgl3.audio.OpenALLwjgl3Audio
 import com.badlogic.gdx.utils.GdxRuntimeException
-import com.badlogic.gdx.utils.Queue
+import java.util.concurrent.ConcurrentLinkedQueue
 import io.airlift.compress.zstd.ZstdInputStream
 import net.torvald.UnsafeHelper
 import net.torvald.UnsafePtr
@@ -32,21 +32,26 @@ private class RenderRunnable(val playhead: AudioAdapter.Playhead) : Runnable {
 
                     val writeQueue = playhead.pcmQueue
 
-                    if (playhead.isPlaying && writeQueue.notEmpty()) {
+                    if (playhead.isPlaying) {
 
-                        printdbg("Taking samples from queue (queue size: ${writeQueue.size}/${playhead.getPcmQueueCapacity()})")
+                        // Single atomic poll — `pcmQueue` has concurrent producers (queueing thread /
+                        // JS thread), so a separate notEmpty()/removeFirst() would race and corrupt it.
+                        val samples = writeQueue.poll()
 
-                        val samples = writeQueue.removeFirst()
-                        playhead.position = writeQueue.size
+                        if (samples != null) {
+                            printdbg("Taking samples from queue (queue size: ${writeQueue.size}/${playhead.getPcmQueueCapacity()})")
 
-                        playhead.audioDevice.writeSamplesUI8(samples, 0, samples.size)
+                            playhead.position = writeQueue.size
 
-                        Thread.sleep(6)
-                    }
-                    else if (playhead.isPlaying && writeQueue.isEmpty) {
-                        printdbg("!! QUEUE EXHAUSTED !! QUEUE EXHAUSTED !! QUEUE EXHAUSTED !! QUEUE EXHAUSTED !! QUEUE EXHAUSTED !! QUEUE EXHAUSTED ")
+                            playhead.audioDevice.writeSamplesUI8(samples, 0, samples.size)
 
-                        Thread.sleep(6)
+                            Thread.sleep(6)
+                        }
+                        else {
+                            printdbg("!! QUEUE EXHAUSTED !! QUEUE EXHAUSTED !! QUEUE EXHAUSTED !! QUEUE EXHAUSTED !! QUEUE EXHAUSTED !! QUEUE EXHAUSTED ")
+
+                            Thread.sleep(6)
+                        }
                     }
                 } else {
                     // Tracker mode
@@ -92,7 +97,7 @@ private class WriteQueueingRunnable(val playhead: AudioAdapter.Playhead, val pcm
                             UnsafeHelper.getArrayOffset(samples),
                             it.pcmUploadLength.toLong()
                         )
-                        it.pcmQueue.addLast(samples)
+                        it.pcmQueue.add(samples)
 
                         it.pcmUploadLength = 0
                         it.position = it.pcmQueue.size
@@ -442,11 +447,11 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
             val writeQueue = playhead.pcmQueue
 
-            if (playhead.isPlaying && writeQueue.notEmpty()) {
+            val samples = if (playhead.isPlaying) writeQueue.poll() else null
+            if (samples != null) {
 
                 printdbg("Taking samples from queue (queue size: ${writeQueue.size})")
 
-                val samples = writeQueue.removeFirst()
                 playhead.position = writeQueue.size
 
 //                printdbg("P${playhead.index+1} Vol ${playhead.masterVolume}; LpP ${playhead.pcmUploadLength}; start playback...")
@@ -4793,7 +4798,12 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         var globalVolume: Int = 0x80,      // 8-bit, default $80 (spec §5). Mutated by V $xx00.
         var mixingVolume: Int = 0x80,      // 8-bit, default $80 (spec §5). Final-mix scaler, set once per song.
 
-        var pcmQueue: Queue<ByteArray> = Queue<ByteArray>(),
+        // PCM playback queue. ConcurrentLinkedQueue (not the libGDX Queue) because it is written
+        // by the queueing thread (WAV/raw PCM via WriteQueueingRunnable) and the JS thread
+        // (mp2UploadDecoded / tadUploadDecoded), drained by the render thread, and purged by the JS
+        // thread — concurrent addLast/removeFirst on a non-thread-safe queue corrupted head/tail and
+        // threw a sporadic ArrayIndexOutOfBoundsException during PCM playback.
+        var pcmQueue: ConcurrentLinkedQueue<ByteArray> = ConcurrentLinkedQueue<ByteArray>(),
         var pcmQueueSizeIndex: Int = 0,
         val audioDevice: OpenALBufferedAudioDevice,
     ) {
@@ -4825,7 +4835,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 if (field && !value) {
 //                    println("!! inserting dummy bytes")
                     if (isPcmMode) {
-                        pcmQueue.addLast(ByteArray(audioDevice.bufferSize * audioDevice.bufferCount))
+                        pcmQueue.add(ByteArray(audioDevice.bufferSize * audioDevice.bufferCount))
                     }
                 }
                 field = value
