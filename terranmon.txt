@@ -120,13 +120,13 @@ MMIO
 93 RO: Set beeper status (aka upload beeper command)
     READING causes the side effect (and returns beeper status — 1 if a tone is currently sounding, 0 otherwise). WRITING DOES NOTHING
 94..99 RW: Beeper command
-    0bPPPPPPPP 0bpppppp_QQ 0bqqAABBCC 0baaaaaaaa 0bbbbbbbbb 0bcccccccc
+    0bPPPPPPPP 0bC_ppppp_QQ 0bAAABBBCC 0baaaaaaaa 0bbbbbbbbb 0bcccccccc
 
-    Master clock: 3579545.4545... Hz with prescaler of 16
+    Master clock: 3579545.4545... Hz with prescaler of 32
 
-    PPPPPPPPpppppp: 14-bit frequency divider, determines pitch.
+    PPPPPPPPppppp: 13-bit frequency divider, determines pitch.
         0: no sound
-    QQ: note effect
+    QQ: arpeggiator
         00: none
         10: two-note arpeggio (rate = 60 Hz)
             tick 1: base note at divisor P is played
@@ -140,7 +140,7 @@ MMIO
             tick 2: second note at divisor (P - A) is played
             tick 3: third note at divisor (P - A - B) is played
             tick 4: fourth note at divisor (P - A - B - C) is played
-    Aa/Bb/Cc: note effect arguments (10-bit divisor delta for arpeggiator; byte 96 has high two bits)
+    Aa/Bb/Cc: arpeggiator arguments (11-bit divisor delta for arpeggiator; byte 96 has high three bits; byte 95 has MSB for C)
 
 
 1024..2047 RW: Reserved for integrated peripherals (e.g. built-in status display)

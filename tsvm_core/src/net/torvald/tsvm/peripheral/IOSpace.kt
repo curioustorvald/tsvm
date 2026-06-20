@@ -501,11 +501,11 @@ class IOSpace(val vm: VM) : PeriBase("io"), InputProcessor {
 /**
  * Built-in beeper / PSG speaker (terranmon.txt §93..99).
  *
- * A single square-wave tone generator modelled on the SN76489: a 14-bit frequency
- * divider over a 3579545/16 Hz master clock, with optional 60 Hz arpeggio
- * note-effects (two-, three- or four-note). The six command bytes (MMIO 94..99)
- * are write staging; reading MMIO 93 latches them into the live tone ("upload
- * beeper command").
+ * A single square-wave tone generator modelled on the SN76489: a 13-bit frequency
+ * divider over a 3579545/32 Hz master clock, with optional 60 Hz arpeggio
+ * note-effects (two-, three- or four-note) whose deltas are 11-bit. The six command
+ * bytes (MMIO 94..99) are write staging; reading MMIO 93 latches them into the live
+ * tone ("upload beeper command").
  *
  * The OpenAL device and its render thread are created lazily on the first non-silent
  * upload, so a headless VM (no LibGDX OpenAL backend) simply stays silent.
@@ -514,11 +514,11 @@ private class Beeper {
 
     companion object {
         private const val SAMPLE_RATE = 48000
-        // SN76489 NTSC colourburst clock (3579545 Hz) after the chip's internal /16
+        // SN76489 NTSC colourburst clock (3579545 Hz) after the chip's internal /32
         // prescaler. The square wave toggles every `divider` master ticks, so one full
         // period spans 2*divider ticks  ->  f = MASTER_CLOCK / (2 * divider).
-        // (divider 254 -> 440.4 Hz, matching real SN76489 hardware.)
-        private const val MASTER_CLOCK = 3579545.4545454545 / 16.0
+        // (divider 127 -> 440.4 Hz.)
+        private const val MASTER_CLOCK = 3579545.4545454545 / 32.0
         // Arpeggio note-effects step at 60 Hz: 48000 / 60 = 800 samples per step.
         private const val SAMPLES_PER_ARP_TICK = SAMPLE_RATE / 60
         private const val CHUNK = 512
@@ -526,16 +526,17 @@ private class Beeper {
     }
 
     // MMIO 94..99 write-staging registers:
-    //   PPPPPPPP / pppppp_QQ / qqAABBCC / aaaaaaaa / bbbbbbbb / cccccccc
-    // where AA/BB/CC are the high two bits of the 10-bit arpeggio deltas A/B/C.
+    //   PPPPPPPP / C_ppppp_QQ / AAABBBCC / aaaaaaaa / bbbbbbbb / cccccccc
+    // The 13-bit divider is PPPPPPPP:ppppp. AAA/BBB are the high three bits of the
+    // 11-bit deltas A/B; C's three high bits are split as C (byte 95 bit 7) : CC.
     private val cmd = ByteArray(6)
 
     // Latched ("uploaded") live command, read by the render thread.
-    @Volatile private var divider = 0   // 14-bit frequency divider; 0 = no sound
+    @Volatile private var divider = 0   // 13-bit frequency divider; 0 = no sound
     @Volatile private var effect = 0    // QQ note-effect: 0 none, 1 four-note, 2 two-note, 3 three-note
-    @Volatile private var argA = 0      // A (10-bit divisor delta)
-    @Volatile private var argB = 0      // B (10-bit divisor delta)
-    @Volatile private var argC = 0      // C (10-bit divisor delta)
+    @Volatile private var argA = 0      // A (11-bit divisor delta)
+    @Volatile private var argB = 0      // B (11-bit divisor delta)
+    @Volatile private var argC = 0      // C (11-bit divisor delta)
 
     @Volatile private var running = false
     private var renderThread: Thread? = null
@@ -550,13 +551,13 @@ private class Beeper {
      */
     fun upload(): Byte {
         val hi  = cmd[0].toInt() and 255         // PPPPPPPP
-        val lo  = cmd[1].toInt() and 255         // pppppp_QQ
-        val ext = cmd[2].toInt() and 255         // qqAABBCC: high two bits of A/B/C
-        divider = (hi shl 6) or (lo ushr 2)      // 14-bit frequency divider
-        effect  = lo and 0b11                    // QQ
-        argA    = (((ext ushr 4) and 0b11) shl 8) or (cmd[3].toInt() and 255)   // 10-bit A
-        argB    = (((ext ushr 2) and 0b11) shl 8) or (cmd[4].toInt() and 255)   // 10-bit B
-        argC    = (((ext       ) and 0b11) shl 8) or (cmd[5].toInt() and 255)   // 10-bit C
+        val lo  = cmd[1].toInt() and 255         // C_ppppp_QQ
+        val ext = cmd[2].toInt() and 255         // AAABBBCC: high three bits of A/B and the CC of C
+        divider = (hi shl 5) or ((lo ushr 2) and 0b11111)   // 13-bit frequency divider
+        effect  = lo and 0b11                                // QQ
+        argA    = (((ext ushr 5) and 0b111) shl 8) or (cmd[3].toInt() and 255)   // 11-bit A
+        argB    = (((ext ushr 2) and 0b111) shl 8) or (cmd[4].toInt() and 255)   // 11-bit B
+        argC    = (((lo ushr 7) and 0b1) shl 10) or ((ext and 0b11) shl 8) or (cmd[5].toInt() and 255)   // 11-bit C
         if (divider != 0) ensureStarted()
         return (if (divider != 0) 1 else 0).toByte()
     }

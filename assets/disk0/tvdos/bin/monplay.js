@@ -14,21 +14,22 @@
 // ---------------------------------------------------------------------------
 // Beeper hardware (IOSpace). MMIO byte m is reached at JS address -(m+1):
 //   93 RO  -> reading uploads the staged command (the strobe)
-//   94..99 -> PPPPPPPP / pppppp_QQ / qqAABBCC / aaaaaaaa / bbbbbbbb / cccccccc
-// AA/BB/CC are the high two bits of the 10-bit arpeggio deltas A/B/C.
-// The square wave is f = (3579545/16) / (2 * divider); divider 0 = silence.
+//   94..99 -> PPPPPPPP / C_ppppp_QQ / AAABBBCC / aaaaaaaa / bbbbbbbb / cccccccc
+// The 13-bit divider is PPPPPPPP:ppppp. The arpeggio deltas A/B/C are 11-bit:
+// AAA/BBB are the high 3 bits of A/B; C's high 3 bits split as C(byte95 bit7):CC.
+// The square wave is f = (3579545/32) / (2 * divider); divider 0 = silence.
 // ---------------------------------------------------------------------------
 const BEEP_UPLOAD = -94   // read MMIO 93 to upload
 const BEEP_P_HI   = -95   // MMIO 94: PPPPPPPP
-const BEEP_P_LO   = -96   // MMIO 95: pppppp_QQ
-const BEEP_EXT    = -97   // MMIO 96: qqAABBCC (high 2 bits of A/B/C)
+const BEEP_P_LO   = -96   // MMIO 95: C_ppppp_QQ
+const BEEP_EXT    = -97   // MMIO 96: AAABBBCC (high 3 bits of A/B, low 2 of C's high bits)
 const BEEP_A      = -98   // MMIO 97: aaaaaaaa (A low 8 bits)
 const BEEP_B      = -99   // MMIO 98: bbbbbbbb (B low 8 bits)
 const BEEP_C      = -100  // MMIO 99: cccccccc (C low 8 bits)
 
-const BEEP_HALFCLOCK = (3579545.4545454545 / 16.0) / 2   // f = BEEP_HALFCLOCK / divider
-const DIVIDER_MAX = 0x3FFF                 // 14-bit
-const ARG_MAX = 0x3FF                      // 10-bit arpeggio delta
+const BEEP_HALFCLOCK = (3579545.4545454545 / 32.0) / 2   // f = BEEP_HALFCLOCK / divider
+const DIVIDER_MAX = 0x1FFF                 // 13-bit
+const ARG_MAX = 0x7FF                      // 11-bit arpeggio delta
 
 const QQ_NONE = 0, QQ_FOUR = 1, QQ_TWO = 2, QQ_THREE = 3   // beeper note-effect (QQ field)
 
@@ -36,9 +37,9 @@ function uploadBeeper(divider, effect, a, b, c) {
     if (divider < 0) divider = 0
     if (divider > DIVIDER_MAX) divider = DIVIDER_MAX
     a &= ARG_MAX; b &= ARG_MAX; c &= ARG_MAX
-    sys.poke(BEEP_P_HI, (divider >> 6) & 0xFF)
-    sys.poke(BEEP_P_LO, ((divider & 0x3F) << 2) | (effect & 3))
-    sys.poke(BEEP_EXT, (((a >> 8) & 3) << 4) | (((b >> 8) & 3) << 2) | ((c >> 8) & 3))
+    sys.poke(BEEP_P_HI, (divider >> 5) & 0xFF)
+    sys.poke(BEEP_P_LO, (((c >> 10) & 1) << 7) | ((divider & 0x1F) << 2) | (effect & 3))
+    sys.poke(BEEP_EXT, (((a >> 8) & 7) << 5) | (((b >> 8) & 7) << 2) | ((c >> 8) & 3))
     sys.poke(BEEP_A, a & 0xFF)
     sys.poke(BEEP_B, b & 0xFF)
     sys.poke(BEEP_C, c & 0xFF)
@@ -100,9 +101,9 @@ const intervalHz = (interval) => NOTESHZ[clampInterval(interval)]
 // subtraction. Returns either a single hardware command {sw:false, cmd:[...]}
 // or, when the notes don't fit, a software-arpeggio plan {sw:true, dividers:[...]}.
 //   1 note  -> effect 0 (none)
-//   2 notes -> effect 2 (single 10-bit delta A: only when <= 1023)
-//   3 notes -> effect 3 (two 10-bit deltas: only when both <= 1023)
-//   4 notes -> effect 1 (three 10-bit deltas: only when all <= 1023)
+//   2 notes -> effect 2 (single 11-bit delta A: only when <= 2047)
+//   3 notes -> effect 3 (two 11-bit deltas: only when both <= 2047)
+//   4 notes -> effect 1 (three 11-bit deltas: only when all <= 2047)
 //   otherwise (wide chords / 5+ voices) -> software arpeggio over ALL the notes
 // ---------------------------------------------------------------------------
 function planMultiplex(dividers) {
