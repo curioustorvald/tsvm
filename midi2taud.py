@@ -1526,10 +1526,29 @@ class Patch:
                           'default_cutoff':     cut_s,
                           'default_resonance':  res_s,
                           'initial_attenuation': att_s}
-        if filt_s is not None and filt_differs:
-            d['filter_env'] = filt_s
-        if pit_s is not None and pit_s != pit_c:
-            d['pitch_env'] = pit_s
+        if filt_differs:
+            if filt_s is not None:
+                d['filter_env'] = filt_s
+            elif filt_c is not None:
+                # This patch has NO filter env but the base/canonical zone DOES. Without an
+                # explicit override the voice INHERITS the base record's filter env (the
+                # engine's resolveActiveEnvelopes falls a patch through to the base pf-slots),
+                # and since the canonical of a shared layer is the most-HIT drum (e.g. the
+                # kick, ~6kHz me2filt sweep), an unfiltered patch like the open hi-hat gets
+                # that sweep applied → "incredibly lowpassed". Emit an absent filter-env block
+                # (PRESENT bit clear) so the engine sets hasFilterEnv=false and, with this
+                # patch's 'x' cutoff already = off, bypasses the filter entirely.
+                d['filter_env'] = {'loop': ENV_PF_FILTER, 'sustain': 0,
+                                   'nodes': [(0, 0)] * 25}
+        if pit_s != pit_c:
+            if pit_s is not None:
+                d['pitch_env'] = pit_s
+            elif pit_c is not None:
+                # Same inherited-env hazard as the filter leg above: a patch with no pitch
+                # env must explicitly override the base's, or it inherits the canonical's
+                # modEnvToPitch sweep (e.g. an 808 tom's pitch drop bleeding onto a co-layered
+                # drum). Absent pitch-env block: m-bit clear (pitch role) + PRESENT bit clear.
+                d['pitch_env'] = {'loop': 0, 'sustain': 0, 'nodes': [(0, 0)] * 25}
         return d
 
 
