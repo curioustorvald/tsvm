@@ -3615,6 +3615,7 @@ HUB.openInlineNumEdit     = openInlineNumEdit
 HUB.addPanelMouseRegion   = addPanelMouseRegion
 HUB.clearPanelMouseRegions   = clearPanelMouseRegions
 HUB.rebuildPanelMouseRegions = rebuildPanelMouseRegions
+HUB.dispatchMouseEvent       = dispatchMouseEvent
 HUB.switchToPanel         = switchToPanel
 HUB.getSong               = () => song
 HUB.getPlaybackMode       = () => playbackMode

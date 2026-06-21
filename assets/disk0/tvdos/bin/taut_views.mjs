@@ -225,13 +225,21 @@ const hasFunkAPI = (typeof audio !== 'undefined' &&
 let smpListScroll = 0
 let smpListCursor = 0
 
-function clampSamplesCursor() {
+// followCursor=true (keyboard nav) scrolls the view to keep the cursor visible;
+// false (full redraw / free wheel scroll) leaves the scroll where it is, only
+// clamping it to the valid range — so a wheel scroll can move the view without
+// moving the selection (mirrors the Advanced Edit list).
+function clampSamplesCursor(followCursor = true) {
     const n = samplesCache ? samplesCache.length : 0
     if (smpListCursor < 0) smpListCursor = 0
     if (smpListCursor >= n) smpListCursor = Math.max(0, n - 1)
-    if (smpListCursor < smpListScroll) smpListScroll = smpListCursor
-    if (smpListCursor >= smpListScroll + SMP_LIST_H)
-        smpListScroll = smpListCursor - SMP_LIST_H + 1
+    if (followCursor) {
+        if (smpListCursor < smpListScroll) smpListScroll = smpListCursor
+        if (smpListCursor >= smpListScroll + SMP_LIST_H)
+            smpListScroll = smpListCursor - SMP_LIST_H + 1
+    }
+    const maxS = Math.max(0, n - SMP_LIST_H)
+    if (smpListScroll > maxS) smpListScroll = maxS
     if (smpListScroll < 0) smpListScroll = 0
 }
 
@@ -592,7 +600,7 @@ function clearSamplesPanel() {
 
 function drawSamplesContents(wo) {
     if (samplesCache === null) refreshSamplesCache()
-    clampSamplesCursor()
+    clampSamplesCursor(false)                 // respect the current scroll (free wheel scroll)
     clearSamplesPanel()
     drawSamplesListColumn()
     drawSamplesSeparator()
@@ -890,13 +898,19 @@ let instListScroll = 0
 let instListCursor = 0
 let instSubTab     = INST_TAB_GEN1
 
-function clampInstrumentsCursor() {
+// followCursor: see clampSamplesCursor — false = free wheel scroll without moving
+// the selection.
+function clampInstrumentsCursor(followCursor = true) {
     const n = instrumentsCache ? instrumentsCache.length : 0
     if (instListCursor < 0) instListCursor = 0
     if (instListCursor >= n) instListCursor = Math.max(0, n - 1)
-    if (instListCursor < instListScroll) instListScroll = instListCursor
-    if (instListCursor >= instListScroll + INST_LIST_H)
-        instListScroll = instListCursor - INST_LIST_H + 1
+    if (followCursor) {
+        if (instListCursor < instListScroll) instListScroll = instListCursor
+        if (instListCursor >= instListScroll + INST_LIST_H)
+            instListScroll = instListCursor - INST_LIST_H + 1
+    }
+    const maxS = Math.max(0, n - INST_LIST_H)
+    if (instListScroll > maxS) instListScroll = maxS
     if (instListScroll < 0) instListScroll = 0
 }
 
@@ -1573,9 +1587,9 @@ function envPlotLine(x0, y0, x1, y1, col) {
 //   • Polyline through all active nodes; each node a 3×3 marker.
 // Time axis: cumulative durSec across nodes, scaled to fit graph width.
 // Value axis: 0 at bottom, env.valueMax at top.
-function drawEnvelopeGraph(env) {
-    const r = instEnvelopeRect()
-    clearInstrumentsEnvelopeArea()  // clear
+function drawEnvelopeGraph(env, rectOverride) {
+    const r = rectOverride || instEnvelopeRect()
+    if (!rectOverride) clearInstrumentsEnvelopeArea()  // clear (caller clears its own area when overriding)
 
     // Dashed reference hairlines at quarter points of the value range. Drawn
     // first so the solid axis line / loop bands / polyline can stack on top.
@@ -1815,7 +1829,7 @@ function clearInstrumentsPanel() {
 
 function drawInstrumentsContents(wo) {
     if (instrumentsCache === null) refreshInstrumentsCache()
-    clampInstrumentsCursor()
+    clampInstrumentsCursor(false)             // respect the current scroll (free wheel scroll)
     instSliders.length = 0   // rebuilt by the Gen.1/Gen.2 body drawers below
     instButtons.length = 0   // rebuilt by Gen.2 button groups
     instCheckboxes.length = 0 // rebuilt by Gen.1 / envelope-tab checkboxes
@@ -1909,8 +1923,10 @@ function registerInstrumentsMouse() {
             drawInstrumentsContents()
         },
         onWheel: (cy, cx, dy) => {
-            instListCursor += dy * 3
-            clampInstrumentsCursor()
+            // free scroll: move the view, not the selection (cursor may scroll off)
+            const n = instrumentsCache ? instrumentsCache.length : 0
+            const maxS = Math.max(0, n - INST_LIST_H)
+            instListScroll = Math.max(0, Math.min(maxS, instListScroll + dy * 3))
             drawInstrumentsContents()
         }
     })
@@ -2407,9 +2423,10 @@ function registerSamplesMouse() {
             drawSamplesContents()
         },
         onWheel: (cy, cx, dy) => {
-            smpListCursor += dy * 3
-            clampSamplesCursor()
-            smpUsedScroll = 0
+            // free scroll: move the view, not the selection (cursor may scroll off)
+            const n = samplesCache ? samplesCache.length : 0
+            const maxS = Math.max(0, n - SMP_LIST_H)
+            smpListScroll = Math.max(0, Math.min(maxS, smpListScroll + dy * 3))
             drawSamplesContents()
         }
     })
@@ -2458,20 +2475,31 @@ function sampleRamSummary() {
 // visualisation each spin via the optional onTick callback (reading the voice-state
 // API directly, repainting only the blob cells — NOT updatePlayback). On exit the
 // editors refresh the cache and repaint the parent viewer via HUB.drawAll().
+//
+// Mouse: callers clear the panel mouse regions on entry and register their own (so a
+// click in the editor area never hits the stale viewer regions); HUB.dispatchMouseEvent
+// then routes to the editor's own regions PLUS the always-on transport regions
+// (MOUSE_PANEL.concat(MOUSE_GLOBAL)), so transport play/stop works while editing.
+// Keys are NOT gated on keyJustHit, so held keys auto-repeat (e.g. Up/Dn to scroll).
 function editorModalLoop(onKey, onTick) {
     // The raw-keyboard grab set by the main loop persists while we are nested here
     // (same as openInlineHexEdit / the popups), so no need to re-assert it per spin.
+    // A mouse click on a tab (transport stays on the same panel) switches currentPanel
+    // via the global tab regions; detect that and close the editor so the new panel
+    // isn't drawn underneath a still-running modal (the teardown then paints it).
+    const startPanel = HUB.getPanel()
     let done = false, swallow = true
     const finish = () => { done = true }
     while (!done) {
         input.withEvent(ev => {
             if (swallow && (ev[0] === 'key_down' || ev[0] === 'mouse_down')) { swallow = false; return }
-            if (ev[0] !== 'key_down' || 1 !== ev[2]) return
+            if (HUB.dispatchMouseEvent(ev)) { if (HUB.getPanel() !== startPanel) finish(); return }
+            if (ev[0] !== 'key_down') return
             const ks = ev[1]
-            if (ks === '<ESC>' || ks === '<ESCAPE>' || ks === '<TAB>') { finish(); return }
-            onKey(ks, finish)
+            if (ks === '<ESC>' || ks === '<ESCAPE>' || ks === '<TAB>') { if (1 === ev[2]) finish(); return }
+            onKey(ks, finish, (1 === ev[2]))
         })
-        if (onTick) onTick()
+        if (!done && onTick) onTick()      // don't overpaint the new panel after a switch
     }
 }
 
@@ -2526,9 +2554,14 @@ function openSampleEdit(slot) {
     con.color_pair(cHdr, cBack); print('Enter ');   con.color_pair(cStatus, cBack); print('Apply ')
     con.color_pair(cHdr, cBack); print('Esc/Tab '); con.color_pair(cStatus, cBack); print('Back')
 
-    editorModalLoop((ks, finish) => {
+    // No clickable regions of our own yet — clear the (now-covered) Samples-viewer
+    // regions so a click in the editor doesn't hit them; transport still works.
+    HUB.clearPanelMouseRegions()
+
+    editorModalLoop((ks, finish, first) => {
         if (ks === '<UP>')   { if (toolCursor > 0) toolCursor--; drawTools(); return }
         if (ks === '<DOWN>') { if (toolCursor < SMP_EDIT_TOOLS.length - 1) toolCursor++; drawTools(); return }
+        if (!first) return                       // the rest are discrete; ignore key-repeat
         if (ks === '\n') { flashAction(toolCursor); return }
         for (let i = 0; i < SMP_EDIT_TOOLS.length; i++) {
             if (ks === SMP_EDIT_TOOLS[i].key.toLowerCase() || ks === SMP_EDIT_TOOLS[i].key) {
@@ -2572,6 +2605,16 @@ function decodeIxmpPatches(slot) {
             extraAtten     = u8(xp + 14)
             hasExtra = true
         }
+        // Optional v/p/f/P envelope blocks follow the (optional) x block, in order.
+        // Parse each present block into the same shape decodeEnvelope produces so the
+        // graph renderer can draw it (filter→'pf', pitch→'pf2' roles).
+        let bp = o + 31 + (hasExtra ? 15 : 0)
+        const hasVol = (ver&0x02)!==0, hasPan = (ver&0x04)!==0, hasFil = (ver&0x08)!==0, hasPit = (ver&0x10)!==0
+        let volEnv = null, panEnv = null, filterEnv = null, pitchEnv = null
+        if (hasVol) { volEnv    = patchEnvFromBlock(b, bp, 'vol'); bp += 54 }
+        if (hasPan) { panEnv    = patchEnvFromBlock(b, bp, 'pan'); bp += 54 }
+        if (hasFil) { filterEnv = patchEnvFromBlock(b, bp, 'pf');  bp += 54 }
+        if (hasPit) { pitchEnv  = patchEnvFromBlock(b, bp, 'pf2'); bp += 54 }
         out.push({
             kind: 'patch', ver,
             pitchStart: u16(o+1), pitchEnd: u16(o+3), volStart: u8(o+5), volEnd: u8(o+6),
@@ -2579,11 +2622,26 @@ function decodeIxmpPatches(slot) {
             rate: u16(o+19), detune: s16(o+21), loopMode: u8(o+23), pan: u8(o+24), noteVol: u8(o+25),
             vibSpeed: u8(o+26), vibSweep: u8(o+27), vibDepth: u8(o+28), vibRate: u8(o+29), vibWave: u8(o+30),
             hasExtra, fadeoutStep, filterSfMode, extraCutoff, extraResonance, extraAtten,
-            hasVol: (ver&0x02)!==0, hasPan: (ver&0x04)!==0, hasFil: (ver&0x08)!==0, hasPit: (ver&0x10)!==0,
+            hasVol, hasPan, hasFil, hasPit, volEnv, panEnv, filterEnv, pitchEnv,
         })
         o += len
     }
     return out
+}
+
+// Reconstruct a decodeEnvelope-shaped object from one 54-byte patch envelope block
+// (loop word, sustain word, 25 value/dur node pairs) by staging it into a synthetic
+// 256-byte record at the offsets decodeEnvelope reads for that kind, then reusing
+// decodeEnvelope (so the bit-parsing / valueMax / pf-role logic isn't duplicated).
+function patchEnvFromBlock(b, off, kind) {
+    const loopOff  = (kind==='vol')?15  : (kind==='pan')?17  : (kind==='pf')?19  : 197
+    const sustOff  = (kind==='vol')?189 : (kind==='pan')?191 : (kind==='pf')?193 : 199
+    const nodeBase = (kind==='vol')?21  : (kind==='pan')?71  : (kind==='pf')?121 : 201
+    const rec = new Array(256).fill(0)
+    rec[loopOff]   = b[off]   & 0xFF; rec[loopOff+1] = b[off+1] & 0xFF
+    rec[sustOff]   = b[off+2] & 0xFF; rec[sustOff+1] = b[off+3] & 0xFF
+    for (let i = 0; i < 50; i++) rec[nodeBase + i] = b[off + 4 + i] & 0xFF
+    return decodeEnvelope(rec, kind)
 }
 
 function advSampleName(ptr, len) {
@@ -2605,29 +2663,47 @@ function ovr(val, isDefault) { return isDefault ? '--' : ('$' + (val & 0xFF).toS
 
 // Advanced Edit — read-only comprehensive visualiser of an instrument's Ixmp
 // patch layout (keyzones / velocity layers over Pitch x Volume), with a live
-// overlay of the currently-sounding voices. Layout: patch list (left) +
-// zone map (top-right) + selected-patch detail (bottom-right). See plan Step 2.
+// overlay of the currently-sounding voices. Layout: patch list (left, scrollable,
+// with live blobs) + zone map (top-right) + selected-patch detail + envelope graph
+// (bottom-right). Mouse-aware (patches + transport). See plan Step 2.
 function openAdvancedInstEdit(slot) {
     const SLOT = (slot !== undefined && slot >= 0) ? (slot | 0) : -1
-    const Y = PTNVIEW_OFFSET_Y
+    const Y = PTNVIEW_OFFSET_Y - 1            // start one row above the normal panel top (row 4), 1 row taller
     const cHdr = colVoiceHdr, cStatus = colStatus, cDim = colSep, cBack = 255
 
     // ── geometry ────────────────────────────────────────────────────────────
     const LIST_X = 1, LIST_W = 22
+    const LIST_BLOB_X = LIST_X                       // col 1: live-play blob
+    const LIST_TEXT_X = LIST_X + 1                    // col 1 = blob, last col = scroll gutter
+    const LIST_TEXT_W = LIST_W - 2
+    const LIST_SCROLL_X = LIST_X + LIST_W - 1
     const SEP_X  = LIST_X + LIST_W
     const R_X    = SEP_X + 2
     const LIST_Y = Y + 2
-    const LIST_H = SCRH - 1 - LIST_Y
-    const MAP_X  = R_X + 3                         // 3 cols of vol-axis labels
+    const LIST_H = SCRH - LIST_Y                      // list fills down to the row above the hint
+    const MAP_X  = R_X + 3                            // 3 cols of vol-axis labels
     const MAP_W  = SCRW - MAP_X + 1
     const MAP_Y  = Y + 3
     const MAP_H  = 8
     const MAP_BOT = MAP_Y + MAP_H - 1
     const DET_Y  = MAP_BOT + 3
+    const ENV_HDR_Y    = DET_Y + 5                   // env tab-strip row
+    const ENV_INFO_Y   = DET_Y + 6                   // env length / grid info row (like the base inst panel)
+    const ENV_TOP_Y    = DET_Y + 7                   // first env-graph / wavescope text row
+    const ENV_RECT = { x: (R_X - 1) * CELL_PW, y: (ENV_TOP_Y - 1) * CELL_PH,
+                       w: (SCRW - R_X + 1) * CELL_PW, h: (SCRH - ENV_TOP_Y) * CELL_PH }
 
     // base palette for non-selected patch rects (background colours; black labels)
     const PAL = [150, 180, 110, 215, 141, 80, 209, 116]
     const baseBg = colBackPtn, baseFg = cDim
+    // env-section tabs: 4 envelopes + the sample wavescope. Reserve ~8 cols at the
+    // right of the tab row for the "(patch)/(base)" source label (item 1).
+    const ENV_TABS = ['Vol', 'Pan', 'Filter', 'Pitch', 'Wave']
+    const ENV_WAVE = 4
+    const ENV_TABW = Math.max(8, ((SCRW - R_X + 1 - 8) / ENV_TABS.length) | 0)
+    const ENV_SRC_X = R_X + ENV_TABS.length * ENV_TABW + 1
+    const ENV_IDXFN = ['getVoiceEnvVolIndex', 'getVoiceEnvPanIndex', 'getVoiceEnvFilterIndex', 'getVoiceEnvPitchIndex']
+    const ENV_TIMEFN = ['getVoiceEnvVolTime', 'getVoiceEnvPanTime', 'getVoiceEnvFilterTime', 'getVoiceEnvPitchTime']
 
     // ── model ─────────────────────────────────────────────────────────────────
     const rec    = (SLOT >= 0) ? readInstRecord(SLOT) : null
@@ -2636,18 +2712,19 @@ function openAdvancedInstEdit(slot) {
     const base   = (rec && !isMeta) ? decodeInstFull(rec) : null
     const patches = (rec && !isMeta) ? decodeIxmpPatches(SLOT) : null
     const noApi  = (!isMeta && patches === null)
+    const baseEnvs = base ? [base.volEnv, base.panEnv, base.filterEnv, base.pitchEnv] : [null, null, null, null]
 
     // Unified zone list (each: pitchStart/End, volStart/End, kind, label, detail src).
     const zones = []
     if (isMeta) {
-        meta.layers.forEach((L, i) => zones.push({ kind: 'layer', layer: L,
+        meta.layers.forEach((L) => zones.push({ kind: 'layer', layer: L,
             pitchStart: L.pitchStart, pitchEnd: L.pitchEnd, volStart: L.volStart, volEnd: L.volEnd }))
     } else if (rec) {
         (patches || []).forEach((p) => zones.push(p))
         // base fallback entry — drawn as the backdrop, listed last
         zones.push({ kind: 'base', pitchStart: 0, pitchEnd: 0xFFFF, volStart: 0, volEnd: 63 })
     }
-    let selIdx = 0
+    let selIdx = 0, listScroll = 0, envKind = 0
 
     // ── pitch range (union of real zones; base alone -> whole-map backdrop) ────
     let minP = Infinity, maxP = -Infinity
@@ -2676,8 +2753,28 @@ function openAdvancedInstEdit(slot) {
         }
         return -1
     }
+    const baseIdx = () => { for (let i = 0; i < zones.length; i++) if (zones[i].kind === 'base') return i; return -1 }
     const zoneBg = (i) => (i < 0) ? baseBg : (i === selIdx) ? colHighlight : PAL[i % PAL.length]
     const zoneFg = (i) => (i < 0) ? baseFg : (i === selIdx) ? colWHITE : colBLACK
+    function clampList() {
+        if (selIdx < listScroll) listScroll = selIdx
+        if (selIdx >= listScroll + LIST_H) listScroll = selIdx - LIST_H + 1
+        const maxS = Math.max(0, zones.length - LIST_H)
+        if (listScroll > maxS) listScroll = maxS
+        if (listScroll < 0) listScroll = 0
+    }
+
+    // selected zone's envelope for the current envKind (patch's own, else base's).
+    function envForSel() {
+        const z = zones[selIdx]
+        if (!z) return null
+        if (z.kind === 'layer') return null
+        if (z.kind === 'patch') {
+            const e = [z.volEnv, z.panEnv, z.filterEnv, z.pitchEnv][envKind]
+            if (e) return { env: e, src: 'patch' }
+        }
+        return baseEnvs[envKind] ? { env: baseEnvs[envKind], src: 'base' } : null
+    }
 
     // ── drawing ────────────────────────────────────────────────────────────────
     function clearPanel() {
@@ -2696,20 +2793,44 @@ function openAdvancedInstEdit(slot) {
         for (let y = LIST_Y; y < SCRH; y++) { con.move(y, SEP_X); con.prnch(VERT) }
     }
     function drawList() {
+        // NOTE: does not clampList() — wheel scroll is free (selection may scroll off).
+        // Keyboard / click selection calls clampList via redrawSel to keep it visible.
         con.move(Y + 1, LIST_X); con.color_pair(cHdr, cBack); print((isMeta ? 'Layers' : 'Patches').padEnd(LIST_W))
+        const n = zones.length, maxS = Math.max(0, n - LIST_H)
+        const thumb = (n > LIST_H && maxS > 0) ? ((listScroll * (LIST_H - 1) / maxS) | 0) : -1
         for (let r = 0; r < LIST_H; r++) {
-            const i = r   // no scroll for now; lists are short
+            const i = listScroll + r
             const y = LIST_Y + r
-            con.move(y, LIST_X)
-            if (i >= zones.length) { con.color_pair(cStatus, cBack); print(' '.repeat(LIST_W)); continue }
-            const z = zones[i], sel = (i === selIdx)
-            const back = sel ? colHighlight : cBack
-            let lbl
-            if (z.kind === 'base')       lbl = 'base ' + (base ? advSampleLabel(base.samplePtr, base.sampleLen) : '')
-            else if (z.kind === 'layer') lbl = i.toString(16).toUpperCase() + ' >$' + z.layer.instIdx.toString(16).toUpperCase().padStart(2,'0') + ' ' + advInstName(z.layer.instIdx)
-            else                         lbl = i.toString(16).toUpperCase() + ' ' + advSampleLabel(z.ptr, z.len)
-            con.color_pair(sel ? colWHITE : cStatus, back)
-            print((' ' + lbl).padEnd(LIST_W).substring(0, LIST_W))
+            const sel = (i === selIdx && i < n), back = sel ? colHighlight : cBack
+            // blob column (col 1) — refreshLiveVoices paints the glyph during playback;
+            // here we just lay down the row background so the selection bar is continuous.
+            con.move(y, LIST_BLOB_X); con.color_pair(sel ? colWHITE : cStatus, back); print(' ')
+            con.move(y, LIST_TEXT_X)
+            if (i >= n) { con.color_pair(cStatus, cBack); print(' '.repeat(LIST_TEXT_W)) }
+            else {
+                const z = zones[i]
+                if (z.kind === 'base') {
+                    con.color_pair(sel ? colWHITE : cStatus, back)
+                    print(('base ' + (base ? advSampleLabel(base.samplePtr, base.sampleLen) : '')).padEnd(LIST_TEXT_W).substring(0, LIST_TEXT_W))
+                } else {
+                    // blue, zero-padded index (matching the Samples / Instruments lists), then name
+                    const numStr = i.toString(16).toUpperCase().padStart(2, '0')
+                    const name = (z.kind === 'layer')
+                        ? ('>$' + z.layer.instIdx.toString(16).toUpperCase().padStart(2, '0') + ' ' + advInstName(z.layer.instIdx))
+                        : advSampleLabel(z.ptr, z.len)
+                    con.color_pair(colInst, back); print(numStr + ' ')
+                    con.color_pair(sel ? colWHITE : cStatus, back)
+                    print(name.padEnd(LIST_TEXT_W - 3).substring(0, LIST_TEXT_W - 3))
+                }
+            }
+            // scroll gutter
+            con.move(y, LIST_SCROLL_X)
+            if (n > LIST_H) {
+                con.color_pair(colScrollBar, cBack)
+                let g = (r === 0) ? sym.taut_scrollgutter_top : (r === LIST_H - 1) ? sym.taut_scrollgutter_bot : sym.taut_scrollgutter_mid
+                if (r === thumb) g += 3
+                con.addch(g)
+            } else { con.color_pair(cStatus, cBack); print(' ') }
         }
     }
     function drawMap() {
@@ -2734,7 +2855,7 @@ function openAdvancedInstEdit(slot) {
         print(lo.padEnd(MAP_W - hi.length) + hi)
     }
     function drawDetail() {
-        for (let y = DET_Y; y < SCRH; y++) { con.move(y, R_X); con.color_pair(cStatus, cBack); print(' '.repeat(SCRW - R_X + 1)) }
+        for (let y = DET_Y; y < ENV_HDR_Y; y++) { con.move(y, R_X); con.color_pair(cStatus, cBack); print(' '.repeat(SCRW - R_X + 1)) }
         const z = zones[selIdx]; if (!z) return
         const W = SCRW - R_X
         const put = (dy, fg, s) => { con.move(DET_Y + dy, R_X); con.color_pair(fg, cBack); print(String(s).substring(0, W)) }
@@ -2765,56 +2886,292 @@ function openAdvancedInstEdit(slot) {
         put(3, cStatus, xline)
         put(4, cDim,    'Vibr ' + (z.vibWave === 0xFF ? 'base' : ('w' + z.vibWave + ' spd' + z.vibSpeed + ' dep' + z.vibDepth)))
     }
+    // The selected zone's sample (for the wavescope), or null for a meta layer.
+    function selSample() {
+        const z = zones[selIdx]; if (!z) return null
+        if (z.kind === 'patch') return { ptr: z.ptr, len: z.len, loopStart: z.loopStart, loopEnd: z.loopEnd }
+        if (z.kind === 'base' && base) return { ptr: base.samplePtr, len: base.sampleLen, loopStart: base.sLoopStart, loopEnd: base.sLoopEnd }
+        return null
+    }
+
+    // Compact sample-waveform (wavescope) — a standalone min/max filled draw into the
+    // env-section rect (does NOT reuse the funk-aware viewer drawSampleWaveform). The
+    // live play position is overlaid by drawEnvCursor (wave branch).
+    function drawAdvWave(smp, r) {
+        const wx0 = r.x, wy0 = r.y, wW = r.w, wH = r.h
+        const baseY = wy0 + (wH >>> 1)
+        const yOf = (v) => wy0 + (((wH * (255 - v)) / 255) | 0)
+        const memBase = audio.getMemAddr()
+        const prevBank = audio.getSampleBank() || 0
+        let curBank = -1
+        const readByte = (p) => {
+            const abs = smp.ptr + p
+            const bank = (abs / TAUT_SBANK_SIZE) | 0
+            if (bank !== curBank) { audio.setSampleBank(bank); curBank = bank }
+            return sys.peek(memBase - (abs - bank * TAUT_SBANK_SIZE)) & 0xFF
+        }
+        graphics.plotRect(wx0, baseY, wW, 1, colSmpWaveMid)        // zero line
+        if (smp.len <= wW) {
+            const rectW = Math.max(1, Math.ceil(wW / smp.len))
+            for (let i = 0; i < smp.len; i++) {
+                const yv = yOf(readByte(i)), top = Math.min(baseY, yv)
+                graphics.plotRect(wx0 + ((i * wW / smp.len) | 0), top, rectW, Math.max(1, Math.abs(baseY - yv)), colSmpWaveLine)
+            }
+        } else {
+            for (let col = 0; col < wW; col++) {
+                const start = (col * smp.len / wW) | 0, end = Math.min(smp.len, (((col + 1) * smp.len / wW) | 0))
+                if (end <= start) continue
+                const step = Math.max(1, ((end - start) / 8) | 0)
+                let mn = 255, mx = 0
+                for (let p = start; p < end; p += step) { const v = readByte(p); if (v < mn) mn = v; if (v > mx) mx = v }
+                const yT = yOf(mx), yB = yOf(mn)
+                graphics.plotRect(wx0 + col, Math.min(yT, yB), 1, Math.max(1, Math.abs(yB - yT)), colSmpWaveLine)
+            }
+        }
+        audio.setSampleBank(prevBank)                              // restore active bank
+    }
+
+    // Env-section tab strip (clickable). 4 envelopes + Wave. Matches the instruments
+    // viewer's drawInstrumentsTabStrip style (shade-cap edges, colTabActive/Inactive).
+    function drawEnvTabs() {
+        con.move(ENV_HDR_Y, R_X); con.color_pair(colTabBarOrn, colTabBarBack); print(' '.repeat(SCRW - R_X + 1))
+        for (let i = 0; i < ENV_TABS.length; i++) {
+            const x = R_X + i * ENV_TABW, active = (i === envKind)
+            const lbl = ENV_TABS[i]
+            const pad = Math.max(0, ENV_TABW - lbl.length), padL = pad >>> 1, padR = pad - padL
+            const colFore  = active ? colTabActive   : colTabInactive
+            const colBack  = active ? colTabBarBack2  : colTabBarBack
+            const colFore2 = active ? colTabBarBack2  : colTabBarBack
+            const spcL = active ? sym.leftshade  : ' '
+            const spcR = active ? sym.rightshade : ' '
+            con.move(ENV_HDR_Y, x)
+            con.color_pair(colFore2, colTabBarBack); print(spcL)
+            con.color_pair(colFore, colBack); print(' '.repeat(Math.max(0, padL - 1)) + lbl + ' '.repeat(Math.max(0, padR - 1)))
+            con.color_pair(colFore2, colTabBarBack); print(spcR)
+        }
+    }
+
+    // Envelope graph / wavescope (graphics overlay) under the tab strip. The play
+    // cursor is painted on top each tick (drawEnvCursor); bg 255 = transparent, so
+    // the text tabs / cursor sit over the graphics.
+    let envCurCols = [], envCurSig = '~'
+    function clearEnvGraphics() { graphics.plotRect(ENV_RECT.x - 2, ENV_RECT.y - 2, ENV_RECT.w + 4, ENV_RECT.h + 4, 255) }
+    function drawEnvGraph() {
+        envCurCols = []; envCurSig = '~'
+        clearEnvGraphics()
+        for (let y = ENV_INFO_Y; y < SCRH; y++) { con.move(y, R_X); con.color_pair(cStatus, cBack); print(' '.repeat(SCRW - R_X + 1)) }
+        drawEnvTabs()
+        if (envKind === ENV_WAVE) {
+            const smp = selSample()
+            if (!smp || smp.len === 0) { con.move(ENV_TOP_Y, R_X); con.color_pair(cDim, cBack); print('(no sample)') }
+            else {
+                con.move(ENV_INFO_Y, R_X); con.color_pair(cDim, cBack); print('Length ' + smp.len + ' B')
+                drawAdvWave(smp, ENV_RECT)
+            }
+            return
+        }
+        const sel = envForSel()
+        // source indicator on the tab row (item 1) — the graph rows host the play
+        // cursor, which would otherwise erase it.
+        con.move(ENV_HDR_Y, ENV_SRC_X); con.color_pair(colTabInactive, colTabBarBack)
+        print((sel ? '(' + sel.src + ')' : '').padEnd(SCRW - ENV_SRC_X + 1).substring(0, SCRW - ENV_SRC_X + 1))
+        if (!sel || !sel.env || !sel.env.present) {
+            con.move(ENV_TOP_Y - 1, R_X); con.color_pair(cDim, cBack)
+            print(zones[selIdx] && zones[selIdx].kind === 'layer' ? '(see the layer instrument)' : 'no ' + ENV_TABS[envKind].toLowerCase() + ' envelope')
+            return
+        }
+        // length + time-grid step, like the base instrument panel's envelope tab
+        const env = sel.env
+        const lastIdx = (env.terminatorIdx >= 0) ? env.terminatorIdx : (env.nodes.length - 1)
+        let totalSec = 0
+        for (let i = 0; i < lastIdx; i++) totalSec += env.nodes[i].durSec
+        con.move(ENV_INFO_Y, R_X); con.color_pair(cDim, cBack)
+        print('Length ' + totalSec.toFixed(3) + ' s   grid ' + pickEnvTimeGrid(Math.max(totalSec, 1e-6)) + ' s')
+        drawEnvelopeGraph(sel.env, ENV_RECT)
+    }
+    function drawEnvCursor() {
+        // Compute the displayed env's playhead hairline column(s), then repaint only
+        // when they change (sig guard, like the viewer's drawEnvelopeCursor) so the
+        // busy-loop doesn't flicker the hairline every spin.
+        let cols = [], colMap = {}
+        const playing = HUB.getPlaybackMode() !== PLAYMODE_NONE
+        if (SLOT >= 0 && playing && envKind === ENV_WAVE) {
+            // Wavescope: hairline at each voice's sample play position (getVoiceSamplePos).
+            const smp = selSample()
+            if (smp && smp.len > 0) {
+                const hits = []
+                const voices = activeVoicesForInstSlot(SLOT)
+                for (let k = 0; k < voices.length; k++) {
+                    const v = voices[k].voice
+                    if (audio.getVoiceSamplePtr(PLAYHEAD, v) !== smp.ptr || audio.getVoiceSampleLength(PLAYHEAD, v) !== smp.len) continue
+                    const pos = audio.getVoiceSamplePos(PLAYHEAD, v); if (pos < 0) continue
+                    const xPix = ENV_RECT.x + Math.min(ENV_RECT.w - 1, Math.max(0, ((pos / smp.len) * (ENV_RECT.w - 1)) | 0))
+                    const h = pixelToHairline(xPix)
+                    hits.push({ col: h.col, hair: h.hair, vol: voices[k].vol })
+                }
+                const res = resolveHairlineHits(hits); cols = res.cols; colMap = res.colMap
+            }
+        } else if (SLOT >= 0 && playing && envKind !== ENV_WAVE) {
+            const sel = envForSel()
+            const okFilter = !(envKind === 2 && !hasFilterEnvAPI)
+            if (sel && sel.env && sel.env.present && okFilter) {
+                const env = sel.env
+                const lastIdx = (env.terminatorIdx >= 0) ? env.terminatorIdx : (env.nodes.length - 1)
+                if (lastIdx >= 0) {
+                    let acc = 0; const xs = new Array(lastIdx + 1); xs[0] = 0
+                    for (let i = 1; i <= lastIdx; i++) { acc += env.nodes[i - 1].durSec; xs[i] = acc }
+                    const totalTime = Math.max(acc, 1e-6)
+                    const idxFn = ENV_IDXFN[envKind], timeFn = ENV_TIMEFN[envKind]
+                    const hits = []
+                    const voices = activeVoicesForInstSlot(SLOT)
+                    for (let k = 0; k < voices.length; k++) {
+                        const v = voices[k].voice
+                        const ei0 = audio[idxFn](PLAYHEAD, v); if (ei0 < 0) continue
+                        const ei = Math.max(0, Math.min(lastIdx, ei0))
+                        const segLen = (ei < lastIdx) ? env.nodes[ei].durSec : 0
+                        const tInto = Math.max(0, Math.min(segLen, audio[timeFn](PLAYHEAD, v)))
+                        const xPix = ENV_RECT.x + Math.min(ENV_RECT.w - 1, Math.max(0, (((xs[ei] + tInto) / totalTime) * (ENV_RECT.w - 1)) | 0))
+                        const h = pixelToHairline(xPix)
+                        hits.push({ col: h.col, hair: h.hair, vol: voices[k].vol })
+                    }
+                    const res = resolveHairlineHits(hits); cols = res.cols; colMap = res.colMap
+                }
+            }
+        }
+        const sig = cols.map((c) => c + colMap[c]).join(',')
+        if (sig === envCurSig) return
+        for (let k = 0; k < envCurCols.length; k++) {     // erase old hairlines (transparent)
+            con.color_pair(cStatus, cBack)
+            for (let y = ENV_TOP_Y; y < SCRH; y++) { con.move(y, envCurCols[k]); print(' ') }
+        }
+        for (let c = 0; c < cols.length; c++) {           // paint new
+            con.color_pair(colPlayCursor, cBack)
+            for (let y = ENV_TOP_Y; y < SCRH; y++) { con.move(y, cols[c]); print(colMap[cols[c]]) }
+        }
+        envCurCols = cols.slice(); envCurSig = sig
+    }
     function drawHint() {
         con.move(SCRH, 1); con.color_pair(cStatus, cBack); print(' '.repeat(SCRW - 1))
         con.move(SCRH, 1)
         con.color_pair(cHdr, cBack); print('Up/Dn ');  con.color_pair(cStatus, cBack); print((isMeta ? 'Layer ' : 'Patch '))
-        con.color_pair(cHdr, cBack); print(sym.playhead + ' '); con.color_pair(cStatus, cBack); print('live voice   ')
+        con.color_pair(cHdr, cBack); print(sym.panle + sym.panri + ' '); con.color_pair(cStatus, cBack); print('Tab ')
+        con.color_pair(cHdr, cBack); print(sym.playhead + ' '); con.color_pair(cStatus, cBack); print('voice  ')
         con.color_pair(cHdr, cBack); print('Esc '); con.color_pair(cStatus, cBack); print('Back')
     }
 
-    // ── live voice overlay (onTick): blob at each sounding voice's (note, vol) ──
+    // ── live overlay (onTick): map blobs + patch-list blobs + env/wave cursor ──
+    // voicePeak[v] = { note, peak } tracks the spawn-volume proxy: the PEAK effective
+    // volume since the note started (reset on note change). The map blob's Y uses this
+    // so it pins to the trigger velocity instead of drifting down as the env decays.
     let liveSig = '~'
+    const voicePeak = []
     function refreshLiveVoices() {
-        if (SLOT < 0 || zones.length === 0) return
+        if (SLOT < 0 || zones.length === 0) { drawEnvCursor(); return }
         const song = HUB.getSong()
         const nv = (song && song.numVoices) ? song.numVoices : NUM_VOICES
+        const playing = (HUB.getPlaybackMode() !== PLAYMODE_NONE)
         const blobs = []
-        if (HUB.getPlaybackMode() !== PLAYMODE_NONE) {
-            for (let v = 0; v < nv; v++) {
-                if (!audio.getVoiceActive(PLAYHEAD, v)) continue
-                if (audio.getVoiceInstrument(PLAYHEAD, v) !== SLOT) continue
-                const vol = Math.round((audio.getVoiceEffectiveVolume(PLAYHEAD, v) || 0) * 63)
-                blobs.push({ col: colOf(audio.getVoiceNote(PLAYHEAD, v)), row: MAP_Y + Math.round((63 - Math.min(63, Math.max(0, vol))) / 63 * (MAP_H - 1)), lvl: vol })
+        const litVol = new Array(zones.length).fill(0)   // max CURRENT eff vol per zone (brightness)
+        const litCnt = new Array(zones.length).fill(0)   // sounding-voice count per zone (heat)
+        for (let v = 0; v < nv; v++) {
+            if (!playing || !audio.getVoiceActive(PLAYHEAD, v) || audio.getVoiceInstrument(PLAYHEAD, v) !== SLOT) { voicePeak[v] = null; continue }
+            const note = audio.getVoiceNote(PLAYHEAD, v)
+            const eff  = audio.getVoiceEffectiveVolume(PLAYHEAD, v) || 0
+            let pk = voicePeak[v]
+            if (!pk || pk.note !== note) pk = voicePeak[v] = { note, peak: eff }
+            else if (eff > pk.peak) pk.peak = eff
+            const sv = Math.round(pk.peak * 63)          // spawn-volume proxy
+            blobs.push({ col: colOf(note), row: MAP_Y + Math.round((63 - Math.min(63, Math.max(0, sv))) / 63 * (MAP_H - 1)) })
+            // which patch-list row is this voice sounding? (match the playing sample)
+            const sp = audio.getVoiceSamplePtr(PLAYHEAD, v), sl = audio.getVoiceSampleLength(PLAYHEAD, v)
+            let zi = -1
+            for (let i = 0; i < zones.length; i++) { const z = zones[i]; if (z.kind === 'patch' && z.ptr === sp && z.len === sl) { zi = i; break } }
+            if (zi < 0) zi = baseIdx()
+            if (zi >= 0) { if (eff > litVol[zi]) litVol[zi] = eff; litCnt[zi]++ }
+        }
+        const sig = blobs.map((b) => b.col + ':' + b.row).sort().join(',') + '|' +
+                    litVol.map((x, i) => blobLevelForVolume(x) + 'x' + litCnt[i]).join(',')
+        if (sig !== liveSig) {
+            liveSig = sig
+            drawMap()                                  // clears prior map blobs
+            for (let k = 0; k < blobs.length; k++) {
+                const b = blobs[k]
+                con.move(b.row, b.col); con.color_pair(colWHITE, zoneBg(zoneAtCell(b.col, b.row))); print(sym.playhead)
+            }
+            // patch-list blobs in col 1: glyph shape = volume level, fg = polyphony heat.
+            for (let r = 0; r < LIST_H; r++) {
+                const i = listScroll + r; if (i >= zones.length) break
+                const lvl = Math.max(litCnt[i] > 0 ? 1 : 0, blobLevelForVolume(litVol[i]))
+                const bucket = blobPolyBucket(litCnt[i])
+                con.move(LIST_Y + r, LIST_BLOB_X)
+                con.color_pair(bucket > 0 ? blobPolyCols[bucket - 1] : cStatus, (i === selIdx) ? colHighlight : cBack)
+                print(lvl > 0 ? sym['blob' + lvl] : ' ')
             }
         }
-        const sig = blobs.map((b) => b.col + ':' + b.row).sort().join(',')
-        if (sig === liveSig) return
-        liveSig = sig
-        drawMap()                                  // clears prior blobs
-        for (let k = 0; k < blobs.length; k++) {
-            const b = blobs[k]
-            con.move(b.row, b.col)
-            con.color_pair(colWHITE, zoneBg(zoneAtCell(b.col, b.row)))
-            print(sym.playhead)
+        drawEnvCursor()
+    }
+
+    // ── mouse ───────────────────────────────────────────────────────────────────
+    const redrawSel = () => { clampList(); drawList(); drawMap(); drawDetail(); drawEnvGraph(); liveSig = '~' }
+    function registerMouse() {
+        HUB.clearPanelMouseRegions()
+        HUB.addPanelMouseRegion(LIST_X, LIST_Y, LIST_W, LIST_H, {
+            onClick: (cy, cx, btn) => {
+                if (btn !== 1) return
+                const i = listScroll + (cy - LIST_Y)
+                if (i >= 0 && i < zones.length) { selIdx = i; redrawSel() }
+            },
+            onWheel: (cy, cx, dy) => {
+                const maxS = Math.max(0, zones.length - LIST_H)
+                listScroll = Math.max(0, Math.min(maxS, listScroll + dy * 3))
+                drawList()
+            },
+        })
+        HUB.addPanelMouseRegion(MAP_X, MAP_Y, MAP_W, MAP_H, {
+            onClick: (cy, cx, btn) => {
+                if (btn !== 1) return
+                let zi = zoneAtCell(cx, cy); if (zi < 0) zi = baseIdx()
+                if (zi >= 0) { selIdx = zi; redrawSel() }
+            },
+        })
+        // env/wave tab strip (click), + wheel anywhere in the graph body to cycle
+        for (let t = 0; t < ENV_TABS.length; t++) {
+            const tx = R_X + t * ENV_TABW
+            HUB.addPanelMouseRegion(tx, ENV_HDR_Y, ENV_TABW, 1, {
+                onClick: (cy, cx, btn) => { if (btn === 1) { envKind = t; drawEnvGraph(); liveSig = '~' } },
+            })
         }
+        HUB.addPanelMouseRegion(R_X, ENV_TOP_Y, SCRW - R_X + 1, SCRH - ENV_TOP_Y, {
+            onWheel: (cy, cx, dy) => { envKind = (envKind + (dy < 0 ? 1 : ENV_TABS.length - 1)) % ENV_TABS.length; drawEnvGraph(); liveSig = '~' },
+        })
     }
 
     // ── compose ────────────────────────────────────────────────────────────────
-    clearPanel(); drawHeader(); drawList()
+    // Wipe ALL graphics in the panel area first — the instruments viewer leaves an
+    // envelope graph (graphics overlay at instEnvelopeRect, higher than our ENV_RECT)
+    // when entered from a Vol/Pan/... tab; clearPanel only clears text, so those pixels
+    // would linger. 255 = transparent.
+    graphics.plotRect(0, (Y - 1) * CELL_PH, SCRW * CELL_PW, (SCRH - Y + 1) * CELL_PH, 255)
+    clearPanel(); clearEnvGraphics(); drawHeader(); drawList()
     if (rec && !noApi || isMeta) drawMap()
     else if (noApi) { con.move(MAP_Y, MAP_X); con.color_pair(cDim, cBack); print('(patch map unavailable on this host)') }
-    drawDetail(); drawHint()
+    drawDetail(); drawEnvGraph(); drawHint()
+    registerMouse()
 
-    const redrawSel = () => { drawList(); drawMap(); drawDetail(); liveSig = '~' }
-    editorModalLoop((ks, finish) => {
+    editorModalLoop((ks, finish, first) => {
         if (zones.length === 0) return
-        if (ks === '<UP>')   { selIdx = (selIdx - 1 + zones.length) % zones.length; redrawSel(); return }
-        if (ks === '<DOWN>') { selIdx = (selIdx + 1) % zones.length; redrawSel(); return }
-        if (ks === '<HOME>') { selIdx = 0; redrawSel(); return }
-        if (ks === '<END>')  { selIdx = zones.length - 1; redrawSel(); return }
+        if (ks === '<UP>')    { if (selIdx > 0) { selIdx--; redrawSel() } return }
+        if (ks === '<DOWN>')  { if (selIdx < zones.length - 1) { selIdx++; redrawSel() } return }
+        if (ks === '<PAGE_UP>')   { selIdx = Math.max(0, selIdx - LIST_H); redrawSel(); return }
+        if (ks === '<PAGE_DOWN>') { selIdx = Math.min(zones.length - 1, selIdx + LIST_H); redrawSel(); return }
+        if (ks === '<HOME>')  { selIdx = 0; redrawSel(); return }
+        if (ks === '<END>')   { selIdx = zones.length - 1; redrawSel(); return }
+        if (!first) return
+        if (ks === '<LEFT>')  { envKind = (envKind + ENV_TABS.length - 1) % ENV_TABS.length; drawEnvGraph(); liveSig = '~'; return }
+        if (ks === '<RIGHT>') { envKind = (envKind + 1) % ENV_TABS.length; drawEnvGraph(); liveSig = '~'; return }
     }, refreshLiveVoices)
 
+    clearEnvGraphics()                               // don't leave the graph over the restored viewer
     refreshInstrumentsCache()
     clampInstrumentsCursor()
     HUB.drawAll()
