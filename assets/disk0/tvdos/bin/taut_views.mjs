@@ -2454,10 +2454,11 @@ function sampleRamSummary() {
 // autonomously; updatePlayback() is only the on-screen sync. We deliberately do
 // NOT tick updatePlayback here, because currentPanel is still VIEW_SAMPLES /
 // VIEW_INSTRMNT and it would repaint the viewer's blobs / cursor on top of the
-// editor UI. (Step 2's Advanced Edit will draw its own live playing-region
-// visualisation via HUB.tickPlayback / the voice-state API instead.) On exit the
+// editor UI. The Advanced Edit instead draws its OWN live playing-region
+// visualisation each spin via the optional onTick callback (reading the voice-state
+// API directly, repainting only the blob cells — NOT updatePlayback). On exit the
 // editors refresh the cache and repaint the parent viewer via HUB.drawAll().
-function editorModalLoop(onKey) {
+function editorModalLoop(onKey, onTick) {
     // The raw-keyboard grab set by the main loop persists while we are nested here
     // (same as openInlineHexEdit / the popups), so no need to re-assert it per spin.
     let done = false, swallow = true
@@ -2470,6 +2471,7 @@ function editorModalLoop(onKey) {
             if (ks === '<ESC>' || ks === '<ESCAPE>' || ks === '<TAB>') { finish(); return }
             onKey(ks, finish)
         })
+        if (onTick) onTick()
     }
 }
 
@@ -2542,20 +2544,276 @@ function openSampleEdit(slot) {
     HUB.rebuildPanelMouseRegions()
 }
 
+// Full Ixmp patch parse (byte layout per AudioJSR223Delegate.uploadInstrumentPatches:
+// 31 common bytes, then optional blocks x[15] v[54] p[54] f[54] P[54] in that order;
+// the existing forEachIxmpPatchSample only reads a subset). Returns null without the
+// host patch API, [] when the instrument has no patches.
+function decodeIxmpPatches(slot) {
+    if (!hasIxmpAPI) return null
+    if (audio.getInstrumentPatchCount(slot) <= 0) return []
+    const b = audio.getInstrumentPatches(slot)
+    if (!b || b.length < 31) return []
+    const u8  = (o) => b[o] & 0xFF
+    const u16 = (o) => (b[o] & 0xFF) | ((b[o+1] & 0xFF) << 8)
+    const s16 = (o) => { const v = u16(o); return v >= 0x8000 ? v - 0x10000 : v }
+    const u32 = (o) => (b[o] & 0xFF) | ((b[o+1] & 0xFF) << 8) | ((b[o+2] & 0xFF) << 16) | ((b[o+3] & 0xFF) * 0x1000000)
+    const out = []
+    let o = 0
+    while (o + 31 <= b.length) {
+        const ver = u8(o), len = ixmpPatchLen(ver)
+        if (o + len > b.length) break
+        let hasExtra = false, fadeoutStep = 0, extraCutoff = 0xFF, extraResonance = 0xFF, extraAtten = 0, filterSfMode = false
+        if (ver & 0x80) {                       // 'x' block is always first after the common bytes
+            const xp = o + 31
+            filterSfMode   = (u8(xp) & 0x01) !== 0
+            fadeoutStep    = u16(xp + 8)
+            extraCutoff    = u16(xp + 10)
+            extraResonance = u16(xp + 12)
+            extraAtten     = u8(xp + 14)
+            hasExtra = true
+        }
+        out.push({
+            kind: 'patch', ver,
+            pitchStart: u16(o+1), pitchEnd: u16(o+3), volStart: u8(o+5), volEnd: u8(o+6),
+            ptr: u32(o+7), len: u16(o+11), playStart: u16(o+13), loopStart: u16(o+15), loopEnd: u16(o+17),
+            rate: u16(o+19), detune: s16(o+21), loopMode: u8(o+23), pan: u8(o+24), noteVol: u8(o+25),
+            vibSpeed: u8(o+26), vibSweep: u8(o+27), vibDepth: u8(o+28), vibRate: u8(o+29), vibWave: u8(o+30),
+            hasExtra, fadeoutStep, filterSfMode, extraCutoff, extraResonance, extraAtten,
+            hasVol: (ver&0x02)!==0, hasPan: (ver&0x04)!==0, hasFil: (ver&0x08)!==0, hasPit: (ver&0x10)!==0,
+        })
+        o += len
+    }
+    return out
+}
+
+function advSampleName(ptr, len) {
+    const c = samplesCache || []
+    for (let i = 0; i < c.length; i++) if (c[i].ptr === ptr && c[i].len === len) return c[i].name || ''
+    return ''
+}
+function advSampleLabel(ptr, len) {
+    const nm = advSampleName(ptr, len)
+    return (nm ? '"' + nm + '" ' : '') + '($' + (ptr >>> 0).toString(16).toUpperCase().padStart(6, '0') + ', ' + len + 'B)'
+}
+function advInstName(slot) {
+    const names = (songsMeta && songsMeta.instNames) || []
+    return names[slot] || ''
+}
+function hx4(n) { return (n & 0xFFFF).toString(16).toUpperCase().padStart(4, '0') }
+function signedC(detune) { const c = detune * 1200 / 4096; return (c >= 0 ? '+' : '') + c.toFixed(0) + 'c' }
+function ovr(val, isDefault) { return isDefault ? '--' : ('$' + (val & 0xFF).toString(16).toUpperCase().padStart(2, '0')) }
+
+// Advanced Edit — read-only comprehensive visualiser of an instrument's Ixmp
+// patch layout (keyzones / velocity layers over Pitch x Volume), with a live
+// overlay of the currently-sounding voices. Layout: patch list (left) +
+// zone map (top-right) + selected-patch detail (bottom-right). See plan Step 2.
 function openAdvancedInstEdit(slot) {
     const SLOT = (slot !== undefined && slot >= 0) ? (slot | 0) : -1
     const Y = PTNVIEW_OFFSET_Y
-    const cStatus = 253, cContent = 240, cHdr = 230
+    const cHdr = colVoiceHdr, cStatus = colStatus, cDim = colSep, cBack = 255
 
-    for (let y = Y; y < SCRH; y++) { con.move(y, 1); con.color_pair(cContent, 255); print(' '.repeat(SCRW)) }
-    con.move(Y + 1, 3); con.color_pair(cHdr, 255); print('[ Instrument Editor ]')
-    con.move(Y + 3, 3); con.color_pair(cStatus, 255)
-    print(SLOT >= 0 ? ('Slot $' + SLOT.toString(16).toUpperCase().padStart(2, '0') + ' - Advanced Edit (not yet implemented)')
-                    : 'Advanced Edit (not yet implemented)')
-    con.move(SCRH, 1); con.color_pair(cStatus, 255); print(' '.repeat(SCRW - 1))
-    con.move(SCRH, 1); con.color_pair(cHdr, 255); print('Esc/Tab '); con.color_pair(cStatus, 255); print('Back')
+    // ── geometry ────────────────────────────────────────────────────────────
+    const LIST_X = 1, LIST_W = 22
+    const SEP_X  = LIST_X + LIST_W
+    const R_X    = SEP_X + 2
+    const LIST_Y = Y + 2
+    const LIST_H = SCRH - 1 - LIST_Y
+    const MAP_X  = R_X + 3                         // 3 cols of vol-axis labels
+    const MAP_W  = SCRW - MAP_X + 1
+    const MAP_Y  = Y + 3
+    const MAP_H  = 8
+    const MAP_BOT = MAP_Y + MAP_H - 1
+    const DET_Y  = MAP_BOT + 3
 
-    editorModalLoop((ks, finish) => {})
+    // base palette for non-selected patch rects (background colours; black labels)
+    const PAL = [150, 180, 110, 215, 141, 80, 209, 116]
+    const baseBg = colBackPtn, baseFg = cDim
+
+    // ── model ─────────────────────────────────────────────────────────────────
+    const rec    = (SLOT >= 0) ? readInstRecord(SLOT) : null
+    const isMeta = rec ? recordIsMeta(rec) : false
+    const meta   = isMeta ? decodeMetaRecord(rec) : null
+    const base   = (rec && !isMeta) ? decodeInstFull(rec) : null
+    const patches = (rec && !isMeta) ? decodeIxmpPatches(SLOT) : null
+    const noApi  = (!isMeta && patches === null)
+
+    // Unified zone list (each: pitchStart/End, volStart/End, kind, label, detail src).
+    const zones = []
+    if (isMeta) {
+        meta.layers.forEach((L, i) => zones.push({ kind: 'layer', layer: L,
+            pitchStart: L.pitchStart, pitchEnd: L.pitchEnd, volStart: L.volStart, volEnd: L.volEnd }))
+    } else if (rec) {
+        (patches || []).forEach((p) => zones.push(p))
+        // base fallback entry — drawn as the backdrop, listed last
+        zones.push({ kind: 'base', pitchStart: 0, pitchEnd: 0xFFFF, volStart: 0, volEnd: 63 })
+    }
+    let selIdx = 0
+
+    // ── pitch range (union of real zones; base alone -> whole-map backdrop) ────
+    let minP = Infinity, maxP = -Infinity
+    zones.forEach((z) => { if (z.kind !== 'base') { if (z.pitchStart < minP) minP = z.pitchStart; if (z.pitchEnd > maxP) maxP = z.pitchEnd } })
+    if (!isFinite(minP)) { minP = 0x1000; maxP = 0x9000 }
+    if (maxP <= minP) maxP = minP + 1
+
+    const colOf = (note) => {
+        let c = MAP_X + Math.round((note - minP) / (maxP - minP) * (MAP_W - 1))
+        if (c < MAP_X) c = MAP_X; if (c > MAP_X + MAP_W - 1) c = MAP_X + MAP_W - 1
+        return c
+    }
+    // map-rect of each non-base zone (precomputed for fill + hit-test)
+    const rectOf = (z) => ({
+        cx0: colOf(z.pitchStart), cx1: colOf(z.pitchEnd),
+        ry0: MAP_Y + Math.round((63 - Math.min(63, z.volEnd))   / 63 * (MAP_H - 1)),
+        ry1: MAP_Y + Math.round((63 - Math.max(0,  z.volStart)) / 63 * (MAP_H - 1)),
+    })
+    const rects = zones.map((z) => z.kind === 'base' ? null : rectOf(z))
+
+    // zone index covering a map cell (first matching non-base rect), or -1 = base
+    const zoneAtCell = (col, row) => {
+        for (let i = 0; i < zones.length; i++) {
+            const r = rects[i]; if (!r) continue
+            if (col >= r.cx0 && col <= r.cx1 && row >= r.ry0 && row <= r.ry1) return i
+        }
+        return -1
+    }
+    const zoneBg = (i) => (i < 0) ? baseBg : (i === selIdx) ? colHighlight : PAL[i % PAL.length]
+    const zoneFg = (i) => (i < 0) ? baseFg : (i === selIdx) ? colWHITE : colBLACK
+
+    // ── drawing ────────────────────────────────────────────────────────────────
+    function clearPanel() {
+        for (let y = Y; y < SCRH; y++) { con.move(y, 1); con.color_pair(cStatus, cBack); print(' '.repeat(SCRW)) }
+    }
+    function drawHeader() {
+        const nm = (SLOT >= 0) ? (advInstName(SLOT)) : ''
+        con.move(Y, LIST_X); con.color_pair(cHdr, cBack)
+        let h = 'Advanced Edit'
+        if (SLOT >= 0) h += '  Inst $' + SLOT.toString(16).toUpperCase().padStart(2,'0') + (nm ? ' "' + nm + '"' : '')
+        if (isMeta)      h += '  Metainstrument  ' + meta.layers.length + ' layers'
+        else if (rec)    h += '  ' + (patches ? patches.length : 0) + ' patches'
+        print(h.substring(0, SCRW - 1))
+        // separator
+        con.color_pair(cDim, cBack)
+        for (let y = LIST_Y; y < SCRH; y++) { con.move(y, SEP_X); con.prnch(VERT) }
+    }
+    function drawList() {
+        con.move(Y + 1, LIST_X); con.color_pair(cHdr, cBack); print((isMeta ? 'Layers' : 'Patches').padEnd(LIST_W))
+        for (let r = 0; r < LIST_H; r++) {
+            const i = r   // no scroll for now; lists are short
+            const y = LIST_Y + r
+            con.move(y, LIST_X)
+            if (i >= zones.length) { con.color_pair(cStatus, cBack); print(' '.repeat(LIST_W)); continue }
+            const z = zones[i], sel = (i === selIdx)
+            const back = sel ? colHighlight : cBack
+            let lbl
+            if (z.kind === 'base')       lbl = 'base ' + (base ? advSampleLabel(base.samplePtr, base.sampleLen) : '')
+            else if (z.kind === 'layer') lbl = i.toString(16).toUpperCase() + ' >$' + z.layer.instIdx.toString(16).toUpperCase().padStart(2,'0') + ' ' + advInstName(z.layer.instIdx)
+            else                         lbl = i.toString(16).toUpperCase() + ' ' + advSampleLabel(z.ptr, z.len)
+            con.color_pair(sel ? colWHITE : cStatus, back)
+            print((' ' + lbl).padEnd(LIST_W).substring(0, LIST_W))
+        }
+    }
+    function drawMap() {
+        // axis label row
+        con.move(Y + 1, R_X); con.color_pair(cHdr, cBack); print('vel' + sym.middot + 'PITCH ' + sym.middot + sym.middot + '>')
+        // vol axis labels (63 top, 0 bottom)
+        con.color_pair(cDim, cBack)
+        con.move(MAP_Y, R_X);   print('63')
+        con.move(MAP_BOT, R_X); print(' 0')
+        // base backdrop
+        for (let row = MAP_Y; row <= MAP_BOT; row++) { con.move(row, MAP_X); con.color_pair(baseFg, baseBg); print(' '.repeat(MAP_W)) }
+        // patch / layer rects
+        for (let i = 0; i < zones.length; i++) {
+            const r = rects[i]; if (!r) continue
+            const bg = zoneBg(i), fg = zoneFg(i)
+            for (let row = r.ry0; row <= r.ry1; row++) { con.move(row, r.cx0); con.color_pair(fg, bg); print(' '.repeat(r.cx1 - r.cx0 + 1)) }
+            con.move(r.ry0, r.cx0); con.color_pair(fg, bg); print(i.toString(16).toUpperCase().substring(0, Math.max(1, r.cx1 - r.cx0 + 1)))
+        }
+        // pitch labels under the map: leftmost + rightmost note names
+        con.move(MAP_BOT + 1, MAP_X); con.color_pair(cDim, cBack)
+        const lo = (noteToStr(minP) || '').trim(), hi = (noteToStr(maxP) || '').trim()
+        print(lo.padEnd(MAP_W - hi.length) + hi)
+    }
+    function drawDetail() {
+        for (let y = DET_Y; y < SCRH; y++) { con.move(y, R_X); con.color_pair(cStatus, cBack); print(' '.repeat(SCRW - R_X + 1)) }
+        const z = zones[selIdx]; if (!z) return
+        const W = SCRW - R_X
+        const put = (dy, fg, s) => { con.move(DET_Y + dy, R_X); con.color_pair(fg, cBack); print(String(s).substring(0, W)) }
+        const rng = (a, b) => (noteToStr(a) || '').trim() + '-' + (noteToStr(b) || '').trim()
+        if (noApi) { put(0, cStatus, 'Patch read-back unavailable on this host VM.'); put(1, cDim, 'Showing base sample only.'); }
+        if (z.kind === 'layer') {
+            const L = z.layer
+            put(0, cHdr,   'Layer ' + selIdx.toString(16).toUpperCase() + '  -> Inst $' + L.instIdx.toString(16).toUpperCase().padStart(2,'0') + '  ' + advInstName(L.instIdx))
+            put(1, cStatus,'Pitch ' + rng(L.pitchStart, L.pitchEnd) + '   Vol ' + L.volStart + '-' + L.volEnd)
+            const cents = (L.detune * 1200 / 4096)
+            put(2, cStatus,'Mix octet ' + L.mixOctet + (L.mixOctet === 159 ? ' (unity)' : '') + '   Detune ' + (cents >= 0 ? '+' : '') + cents.toFixed(0) + 'c')
+            return
+        }
+        if (z.kind === 'base') {
+            if (!base) return
+            put(0, cHdr,   'Base sample  ' + advSampleLabel(base.samplePtr, base.sampleLen))
+            put(1, cStatus,'Rate@C4 ' + base.c4Rate + 'Hz   Loop ' + loopModeName(base.sampleFlags) + ' [' + hx4(base.sLoopStart) + '..' + hx4(base.sLoopEnd) + ']')
+            put(2, cStatus,'(fallback for notes/vels no patch covers)')
+            return
+        }
+        // patch
+        put(0, cHdr,    'Patch ' + selIdx.toString(16).toUpperCase() + '  ' + advSampleLabel(z.ptr, z.len))
+        put(1, cStatus, 'Pitch ' + rng(z.pitchStart, z.pitchEnd) + '   Vol ' + z.volStart + '-' + z.volEnd + '   Rate ' + z.rate + 'Hz   Det ' + signedC(z.detune))
+        put(2, cStatus, 'Loop ' + loopModeName(z.loopMode) + ' [' + hx4(z.loopStart) + '..' + hx4(z.loopEnd) + ']   Pan ' + ovr(z.pan, z.pan === 0xFF) + '   NoteVol ' + ovr(z.noteVol, z.noteVol === 0))
+        const envs = (z.hasVol?'V':sym.middot) + (z.hasPan?'P':sym.middot) + (z.hasFil?'F':sym.middot) + (z.hasPit?'p':sym.middot)
+        let xline = 'Env ' + envs
+        if (z.hasExtra) xline += '  ' + (z.filterSfMode ? 'SF' : 'IT') + ' Cut ' + hx4(z.extraCutoff) + ' Q ' + hx4(z.extraResonance) + ' Fade $' + z.fadeoutStep.toString(16).toUpperCase() + (z.extraAtten ? ' Att ' + z.extraAtten : '')
+        put(3, cStatus, xline)
+        put(4, cDim,    'Vibr ' + (z.vibWave === 0xFF ? 'base' : ('w' + z.vibWave + ' spd' + z.vibSpeed + ' dep' + z.vibDepth)))
+    }
+    function drawHint() {
+        con.move(SCRH, 1); con.color_pair(cStatus, cBack); print(' '.repeat(SCRW - 1))
+        con.move(SCRH, 1)
+        con.color_pair(cHdr, cBack); print('Up/Dn ');  con.color_pair(cStatus, cBack); print((isMeta ? 'Layer ' : 'Patch '))
+        con.color_pair(cHdr, cBack); print(sym.playhead + ' '); con.color_pair(cStatus, cBack); print('live voice   ')
+        con.color_pair(cHdr, cBack); print('Esc '); con.color_pair(cStatus, cBack); print('Back')
+    }
+
+    // ── live voice overlay (onTick): blob at each sounding voice's (note, vol) ──
+    let liveSig = '~'
+    function refreshLiveVoices() {
+        if (SLOT < 0 || zones.length === 0) return
+        const song = HUB.getSong()
+        const nv = (song && song.numVoices) ? song.numVoices : NUM_VOICES
+        const blobs = []
+        if (HUB.getPlaybackMode() !== PLAYMODE_NONE) {
+            for (let v = 0; v < nv; v++) {
+                if (!audio.getVoiceActive(PLAYHEAD, v)) continue
+                if (audio.getVoiceInstrument(PLAYHEAD, v) !== SLOT) continue
+                const vol = Math.round((audio.getVoiceEffectiveVolume(PLAYHEAD, v) || 0) * 63)
+                blobs.push({ col: colOf(audio.getVoiceNote(PLAYHEAD, v)), row: MAP_Y + Math.round((63 - Math.min(63, Math.max(0, vol))) / 63 * (MAP_H - 1)), lvl: vol })
+            }
+        }
+        const sig = blobs.map((b) => b.col + ':' + b.row).sort().join(',')
+        if (sig === liveSig) return
+        liveSig = sig
+        drawMap()                                  // clears prior blobs
+        for (let k = 0; k < blobs.length; k++) {
+            const b = blobs[k]
+            con.move(b.row, b.col)
+            con.color_pair(colWHITE, zoneBg(zoneAtCell(b.col, b.row)))
+            print(sym.playhead)
+        }
+    }
+
+    // ── compose ────────────────────────────────────────────────────────────────
+    clearPanel(); drawHeader(); drawList()
+    if (rec && !noApi || isMeta) drawMap()
+    else if (noApi) { con.move(MAP_Y, MAP_X); con.color_pair(cDim, cBack); print('(patch map unavailable on this host)') }
+    drawDetail(); drawHint()
+
+    const redrawSel = () => { drawList(); drawMap(); drawDetail(); liveSig = '~' }
+    editorModalLoop((ks, finish) => {
+        if (zones.length === 0) return
+        if (ks === '<UP>')   { selIdx = (selIdx - 1 + zones.length) % zones.length; redrawSel(); return }
+        if (ks === '<DOWN>') { selIdx = (selIdx + 1) % zones.length; redrawSel(); return }
+        if (ks === '<HOME>') { selIdx = 0; redrawSel(); return }
+        if (ks === '<END>')  { selIdx = zones.length - 1; redrawSel(); return }
+    }, refreshLiveVoices)
 
     refreshInstrumentsCache()
     clampInstrumentsCursor()
