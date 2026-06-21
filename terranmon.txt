@@ -2952,6 +2952,9 @@ TODO:
         * DONE 2026-06-20. See `con.setFullscreen()`
     [x] Taud double the BPM ceiling
         * DONE 2026-06-20. BPM range 25..535 via `T $FFxx` + the song-table byte-8 high bit (tickrate now 7-bit).
+    [ ] Taud instrument: add a 'percussion' flag so retuner/transposer won't touch them
+    [ ] Zfm and Command: create rc files whenever they are missing
+        Zfm: connect *rc to edit.js, with its own highlight colour
 
 TODO - list of demo songs that MUST ship with Microtone:
     * 4THSYM (rename to Fourth Symmetriad) — excellent piece for demonstrating NNAs and filter envelopes

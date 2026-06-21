@@ -1,5 +1,18 @@
-if (!_G.TAUT) _G.TAUT = {};
-let help = {}
+/**
+ * TAUT help-text module.
+ *
+ * In-process replacement for the old taut_helpmsg.js sub-program. Exports
+ * init(HUB) which typesets every panel's help text at HUB.C.HELP_CONTENT_W and
+ * returns { MSG_BY_TABS, typeset, COL_TEXT, COL_EMPH }. taut.js stores the result
+ * on HUB.help; openHelpPopup reads it.
+ *
+ * The help-text strings themselves are width-independent, so they live at module
+ * top level; only the rule width and final typesetting depend on HUB.
+ *
+ * Converted from taut_helpmsg.js (separate program) on 2026-06-21. The \uXXXX
+ * escapes are kept verbatim from the original — TSVM's string parser is not
+ * Unicode and treats raw bytes differently from escapes, so do not normalise them.
+ */
 
 let ts = require("typesetter")
 
@@ -145,16 +158,18 @@ Mixer flags define how should the mixer behave.
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 // assemble help text pieces to complete help message
+function init(HUB) {
+    const W = HUB.C.HELP_CONTENT_W
 
-const HRULE = '<s>' + '\u00B3'.repeat(_G.TAUT.HELPMSG_WIDTH) + '</s>\n'
+    const HRULE = '<s>' + '\u00B3'.repeat(W) + '</s>\n'
 
-// taut.js's popup uses (HELP_COL_TEXT on background) as the default colour pair.
-// The shared typesetter module owns the palette and the markup expander.
-function typeset(text) {
-    return ts.typeset(text, _G.TAUT.HELPMSG_WIDTH)
-}
+    // taut.js's popup uses (HELP_COL_TEXT on background) as the default colour pair.
+    // The shared typesetter module owns the palette and the markup expander.
+    function typeset(text) {
+        return ts.typeset(text, W)
+    }
 
-let helpMessages = [ // index: taut.js PANEL_NAMES
+    let helpMessages = [ // index: taut.js PANEL_NAMES
     /* Timeline */[helpJam, helpTimeline, helpCommon, helpNotation].join(HRULE),
     /* Cues */[helpCommon, helpNotation].join(HRULE), // placeholder
     /* Patterns */[helpCommon, helpNotation].join(HRULE), // placeholder
@@ -164,9 +179,12 @@ let helpMessages = [ // index: taut.js PANEL_NAMES
     /* File */[helpCommon, helpNotation].join(HRULE), // placeholder
 ]
 
-help.MSG_BY_TABS = helpMessages.map(it => typeset(it))
-help.typeset     = typeset
-help.COL_TEXT    = ts.COL_TEXT
-help.COL_EMPH    = ts.COL_EMPH
+    return {
+        MSG_BY_TABS: helpMessages.map(it => typeset(it)),
+        typeset:     typeset,
+        COL_TEXT:    ts.COL_TEXT,
+        COL_EMPH:    ts.COL_EMPH,
+    }
+}
 
-if (!_G.TAUT.HELPMSG) _G.TAUT.HELPMSG=help;
+exports = { init }
