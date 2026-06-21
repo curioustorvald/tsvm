@@ -70,6 +70,8 @@ function expandEntities(s) {
         .replaceAll('&udlr;',       '\u008428u\u008429u')
         .replaceAll('&keyoffsym;',  '\u00A0\u00B1\u00B1\u00A1')
         .replaceAll('&notecutsym;', '\u00A4\u00A4\u00A4\u00A4')
+        .replaceAll('&notefadesym;', '~~~~')
+        .replaceAll('&notefastfadesym;', '\u0084127u\u0084127u\u0084127u\u0084127u')
         .replaceAll('&nbsp;',       '\u00840u')
         .replaceAll('&shy;',        '')
         .replaceAll('&lt;',        '<')
