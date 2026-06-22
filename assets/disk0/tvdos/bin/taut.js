@@ -2697,12 +2697,12 @@ function editPatternCell(ptnDat, row, col, ev, popupPos) {
             const raw = openInlineHexEdit(popupPos.y, popupPos.x, 4, cellNote(ptnDat, row))
             if (raw !== null) { const w = raw & 0xFFFF; writeNote(ptnDat, row, w); changed = true; advance = true; if (noteIsPitched(w)) audition = w }
         }
-        // [ / ] unit nudge (no shift); { / } octave nudge (Shift+[ / Shift+])
-        else if (!shiftDown && (sc === keys.LEFT_BRACKET || sc === keys.RIGHT_BRACKET)) {
+        // [ / ] octave nudge; { / } unit nudge (Shift+[ / Shift+])
+        else if (shiftDown && (sc === keys.LEFT_BRACKET || sc === keys.RIGHT_BRACKET)) {
             const cur = cellNote(ptnDat, row)
             if (noteIsPitched(cur)) { const n = nudgeNoteUnit(cur, sc === keys.LEFT_BRACKET ? -1 : 1); writeNote(ptnDat, row, n); changed = true; audition = n }
         }
-        else if (shiftDown && (sc === keys.LEFT_BRACKET || sc === keys.RIGHT_BRACKET)) {
+        else if (!shiftDown && (sc === keys.LEFT_BRACKET || sc === keys.RIGHT_BRACKET)) {
             const dir = (sc === keys.LEFT_BRACKET) ? -1 : 1
             const cur = cellNote(ptnDat, row)
             if (noteIsPitched(cur)) { const n = nudgeNoteOctave(cur, dir); writeNote(ptnDat, row, n); editOctave = decomposeNote(n, pitchTablePresets[PITCH_PRESET_IDX].interval)[0]; changed = true; audition = n }

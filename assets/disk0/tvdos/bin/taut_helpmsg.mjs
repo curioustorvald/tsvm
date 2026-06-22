@@ -111,8 +111,8 @@ Timeline has two distinct modes: view and edit mode. Two modes are toggled using
 <b>&nbsp;EDIT MODE</b>
 <b>\u00B7${'\u00B8'.repeat(9)}\u00B9</b>
 &bul;Note jamming : <O>(note column) inserts the note</O>
-&bul;<b>{</b>&mdot;<b>}</b> : <O>(note column) lowers/raises a note by one octave (or period)</O>
-&bul;<b>[</b>&mdot;<b>]</b> : <O>(note column) lowers/raises a note by one unit</O>
+&bul;<b>[</b>&mdot;<b>]</b> : <O>(note column) lowers/raises a note by one octave (or period)</O>
+&bul;<b>{</b>&mdot;<b>}</b> : <O>(note column) lowers/raises a note by one unit</O>
 &bul;<b>z</b> : <O>(note column) inserts a key-off &keyoffsym;</O>
 &bul;<b>x</b> : <O>(note column) inserts a note-cut &notecutsym;</O>
 &bul;<b>c</b> : <O>(note column) inserts a note fade &notefadesym;</O>
