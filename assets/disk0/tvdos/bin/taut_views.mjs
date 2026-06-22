@@ -1916,7 +1916,7 @@ function instrumentsInput(wo, event) {
 
     const n = instrumentsCache ? instrumentsCache.length : 0
     if (n === 0) {
-        if (keysym === 'e' || keysym === 'E') {
+        if (keysym === '\n' || keysym === 'E') {   // Enter / Shift+E opens a new instrument
             openAdvancedInstEdit(-1)
         }
         return
@@ -1937,9 +1937,12 @@ function instrumentsInput(wo, event) {
     if (keysym === '4') { instSubTab = INST_TAB_PAN;  drawInstrumentsContents(); return }
     if (keysym === '5') { instSubTab = INST_TAB_PIT;  drawInstrumentsContents(); return }
     if (keysym === '6') { instSubTab = INST_TAB_FILT; drawInstrumentsContents(); return }
-    if (keysym === 'e' || keysym === 'E') {
-        const e = instrumentsCache[instListCursor]
-        if (e) openAdvancedInstEdit(e.slot)
+    // Note jamming: audition the selected instrument with the piano keys (a..k / w..u).
+    const sel = instrumentsCache[instListCursor]
+    if (HUB.tryJamFromEvent && HUB.tryJamFromEvent(event, sel ? sel.slot : 0)) return
+    // Open Advanced Edit: Enter or Shift+E (lowercase 'e' is the D# jam key).
+    if (keysym === '\n' || keysym === 'E') {
+        if (sel) openAdvancedInstEdit(sel.slot)
         return
     }
 }
@@ -2531,7 +2534,7 @@ function editorModalLoop(onKey, onTick) {
             if (ev[0] !== 'key_down') return
             const ks = ev[1]
             if (ks === '<ESC>' || ks === '<ESCAPE>' || ks === '<TAB>') { if (1 === ev[2]) finish(); return }
-            onKey(ks, finish, (1 === ev[2]))
+            onKey(ks, finish, (1 === ev[2]), ev)
         })
         if (!done && onTick) onTick()      // don't overpaint the new panel after a switch
     }
@@ -2702,6 +2705,7 @@ function ovr(val, isDefault) { return isDefault ? '--' : ('$' + (val & 0xFF).toS
 // (bottom-right). Mouse-aware (patches + transport). See plan Step 2.
 function openAdvancedInstEdit(slot) {
     const SLOT = (slot !== undefined && slot >= 0) ? (slot | 0) : -1
+    if (typeof audio.jamStop === 'function') audio.jamStop(PLAYHEAD)   // clean slate: drop any list-view jam
     const Y = PTNVIEW_OFFSET_Y - 1            // start one row above the normal panel top (row 4), 1 row taller
     const cHdr = colVoiceHdr, cStatus = colStatus, cDim = colSep, cBack = 255
 
@@ -3108,7 +3112,10 @@ function openAdvancedInstEdit(slot) {
         const litVol = new Array(zones.length).fill(0)   // max CURRENT eff vol per zone (brightness)
         const litCnt = new Array(zones.length).fill(0)   // sounding-voice count per zone (heat)
         for (let v = 0; v < nv; v++) {
-            if (!playing || !audio.getVoiceActive(PLAYHEAD, v) || audio.getVoiceInstrument(PLAYHEAD, v) !== SLOT) { voicePeak[v] = null; continue }
+            // During playback show only THIS instrument's voices; during a (stopped) jam
+            // audition show the active jam voice(s) — a meta plays its foreground layer under
+            // a layer instrument, not SLOT, so don't filter on SLOT while stopped.
+            if (!audio.getVoiceActive(PLAYHEAD, v) || (playing && audio.getVoiceInstrument(PLAYHEAD, v) !== SLOT)) { voicePeak[v] = null; continue }
             const note = audio.getVoiceNote(PLAYHEAD, v)
             const eff  = audio.getVoiceEffectiveVolume(PLAYHEAD, v) || 0
             let pk = voicePeak[v]
@@ -3192,7 +3199,9 @@ function openAdvancedInstEdit(slot) {
     drawDetail(); drawEnvGraph(); drawHint()
     registerMouse()
 
-    editorModalLoop((ks, finish, first) => {
+    editorModalLoop((ks, finish, first, ev) => {
+        // Note jamming: audition the instrument being edited with the piano keys (a..k / w..u).
+        if (SLOT >= 1 && HUB.tryJamFromEvent && HUB.tryJamFromEvent(ev, SLOT)) return
         if (zones.length === 0) return
         if (ks === '<UP>')    { if (selIdx > 0) { selIdx--; redrawSel() } return }
         if (ks === '<DOWN>')  { if (selIdx < zones.length - 1) { selIdx++; redrawSel() } return }
@@ -3205,6 +3214,7 @@ function openAdvancedInstEdit(slot) {
         if (ks === '<RIGHT>') { envKind = (envKind + 1) % ENV_TABS.length; drawEnvGraph(); liveSig = '~'; return }
     }, refreshLiveVoices)
 
+    if (typeof audio.jamStop === 'function') audio.jamStop(PLAYHEAD)   // silence any lingering jam audition
     clearEnvGraphics()                               // don't leave the graph over the restored viewer
     refreshInstrumentsCache()
     clampInstrumentsCursor()

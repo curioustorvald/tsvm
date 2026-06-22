@@ -4010,6 +4010,22 @@ HUB.markUnsaved           = () => { hasUnsavedChanges = true }
 HUB.tickPlayback          = () => { if (playbackMode !== PLAYMODE_NONE) updatePlayback() }
 HUB.stopPlayback          = stopPlayback
 
+// Shared piano-jam audition for the Instruments view + Advanced Edit: if `event` is a jam
+// key (a..k / w..u, no shift) and playback is stopped, audition `instSlot` at editOctave and
+// return true (so the caller swallows the key). Scancode-based like the pattern-view jam.
+HUB.tryJamFromEvent = function(event, instSlot) {
+    if (!event || event[0] !== 'key_down' || event[2] !== 1) return false
+    if (playbackMode !== PLAYMODE_NONE) return false
+    if (event.includes(59) || event.includes(60)) return false           // shifted = other commands
+    let sc = event[3]; if (sc == 59) sc = event[4]; if (sc == 60) sc = event[5]
+    const semi = jamScancodeToSemitone(sc)
+    if (semi === null) return false
+    const n = semitoneToNote(semi, editOctave)
+    if (n !== null && (instSlot | 0) >= 1 && typeof audio.jamNote === 'function')
+        audio.jamNote(PLAYHEAD, 0, n, instSlot | 0)
+    return true
+}
+
 HUB.views = requireTaut("taut_views").init(HUB)
 const {
     drawSamplesContents, samplesInput, drawInstrumentsContents, instrumentsInput,

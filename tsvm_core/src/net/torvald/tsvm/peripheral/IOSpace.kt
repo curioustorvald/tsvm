@@ -523,7 +523,7 @@ private class Beeper {
         // Arpeggio note-effects step at 60 Hz: 48000 / 60 = 800 samples per step.
         private const val SAMPLES_PER_ARP_TICK = SAMPLE_RATE / ARPRATE
         private const val CHUNK = SAMPLES_PER_ARP_TICK
-        private const val AMPLITUDE = 8192  // ~ -12 dBFS; square waves are loud
+        private const val AMPLITUDE = 16384  // ~ -6 dBFS; square waves are loud
     }
 
     // MMIO 94..99 write-staging registers:
