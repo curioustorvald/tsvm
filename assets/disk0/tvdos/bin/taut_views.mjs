@@ -59,6 +59,33 @@ function readInstRecord(slot) {
     return rec
 }
 
+// Build a 256-entry flag array where flag[slot] = 1 when `slot` is a NON-meta instrument
+// that is referenced as a layer child of some Metainstrument — i.e. an individual layer the
+// user punched into a pattern directly when they should have used the meta instrument.
+// Reads only the meta marker (bytes 2/3 == 0xFFFF) + each layer's instIdx (offsets 4,14,24..).
+function buildMetaLayerChildSlots() {
+    const memBase = audio.getMemAddr()
+    const isMeta = new Uint8Array(TAUT_INST_COUNT)
+    const child  = new Uint8Array(TAUT_INST_COUNT)
+    for (let slot = 1; slot < TAUT_INST_COUNT; slot++) {
+        const base = TAUT_INST_WINDOW_OFF + slot * TAUT_INST_RECORD_SIZE
+        if ((sys.peek(memBase - (base + 2)) & 0xFF) === 0xFF &&
+            (sys.peek(memBase - (base + 3)) & 0xFF) === 0xFF) {
+            isMeta[slot] = 1
+            const count = sys.peek(memBase - (base + 1)) & 0xFF
+            let o = 4
+            for (let i = 0; i < count && o + 10 <= TAUT_INST_RECORD_SIZE; i++, o += 10) {
+                const idx = sys.peek(memBase - (base + o)) & 0xFF
+                if (idx >= 1) child[idx] = 1
+            }
+        }
+    }
+    const flagged = new Uint8Array(TAUT_INST_COUNT)
+    for (let slot = 1; slot < TAUT_INST_COUNT; slot++)
+        if (child[slot] && !isMeta[slot]) flagged[slot] = 1
+    return flagged
+}
+
 // Decode the fields the viewer actually cares about. Offsets from terranmon.txt:2071+.
 function decodeInstRecord(rec) {
     const samplePtr  = (rec[0]) | (rec[1] << 8) | (rec[2] << 16) | (rec[3] * 0x1000000)
@@ -897,6 +924,13 @@ const colInstEnvSustSuper= 155           // muted yellow-green — loop range ba
 let instListScroll = 0
 let instListCursor = 0
 let instSubTab     = INST_TAB_GEN1
+
+// The instrument slot currently highlighted in the Instruments panel — used by the pattern
+// editor as the seed "current instrument" for note jamming. Falls back to slot 1.
+function getSelectedInstrumentSlot() {
+    const e = instrumentsCache && instrumentsCache[instListCursor]
+    return (e && e.slot) ? e.slot : 1
+}
 
 // followCursor: see clampSamplesCursor — false = free wheel scroll without moving
 // the selection.
@@ -3186,6 +3220,7 @@ function openAdvancedInstEdit(slot) {
         drawSamplesUsedBy, computeSampleRAMBytes, formatSampleRamK, launchInstrumentViewerFor,
         registerInstrumentsMouse, registerSamplesMouse, sampleRamSummary,
         drawSlider, drawNumCapsule, runSliderDrag,
+        getSelectedInstrumentSlot, buildMetaLayerChildSlots,
     }
 }
 

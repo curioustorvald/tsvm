@@ -1123,6 +1123,8 @@ inputwork.repeatCount = 0;
  * bits (6, 7) latch in hardware and clear on read, so a one-shot detent fires once.
  * Every mouse event carries the currently-held key buffer (same shape as key_down)
  * so handlers can detect modifiers like Shift+wheel via `event.includes(<keysym>)`.
+ *
+ * Keysymbol depends on the current keyboard layout, while keycodes stay the same.
  */
 input.withEvent = function(callback) {
 

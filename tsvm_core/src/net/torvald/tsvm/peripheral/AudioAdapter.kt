@@ -71,8 +71,9 @@ private class RenderRunnable(val playhead: AudioAdapter.Playhead) : Runnable {
                         }
                     }
                 } else {
-                    // Tracker mode
-                    if (playhead.isPlaying) {
+                    // Tracker mode — also render while a jam (audition) note is sounding
+                    // even though the transport is stopped.
+                    if (playhead.isPlaying || playhead.jamActive) {
                         val out = playhead.parent.generateTrackerAudio(playhead)
                         if (out != null) {
                             playhead.audioDevice.writeStereoSamplesUI8(out, 0, AudioAdapter.TRACKER_CHUNK)
@@ -4051,7 +4052,14 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
         val out = ByteArray(TRACKER_CHUNK * 2)
 
-        if (ts.firstRow) {
+        // Jam (audition) mode: voices triggered by jamNote are mixed while the song is
+        // stopped, but WITHOUT advancing rows/cues — only the per-tick voice machinery
+        // (applyTrackerTick) runs so the jammed note's envelope / filter / fadeout evolve.
+        // When the song is actually playing, isPlaying takes precedence and the full
+        // tick/row path runs exactly as before (byte-identical to the pre-jam engine).
+        val advancing = playhead.isPlaying
+
+        if (advancing && ts.firstRow) {
             ts.firstRow = false
             applyTrackerRow(ts, playhead)
         }
@@ -4059,14 +4067,22 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         for (n in 0 until TRACKER_CHUNK) {
             // Recompute samples-per-tick every iteration since T/T-slide can mutate BPM mid-row.
             val spt = SAMPLING_RATE * 2.5 / playhead.bpm
-            ts.samplesIntoTick += 1.0
-            if (ts.samplesIntoTick >= spt) {
-                ts.samplesIntoTick -= spt
-                applyTrackerTick(ts, playhead)
-                ts.tickInRow++
-                if (ts.tickInRow >= playhead.tickRate + ts.finePatternDelayExtra) {
-                    ts.tickInRow = 0
-                    advanceRow(ts, playhead)
+            if (advancing) {
+                ts.samplesIntoTick += 1.0
+                if (ts.samplesIntoTick >= spt) {
+                    ts.samplesIntoTick -= spt
+                    applyTrackerTick(ts, playhead)
+                    ts.tickInRow++
+                    if (ts.tickInRow >= playhead.tickRate + ts.finePatternDelayExtra) {
+                        ts.tickInRow = 0
+                        advanceRow(ts, playhead)
+                    }
+                }
+            } else { // jamActive: evolve envelopes only, never advance the song
+                ts.samplesIntoTick += 1.0
+                if (ts.samplesIntoTick >= spt) {
+                    ts.samplesIntoTick -= spt
+                    applyTrackerTick(ts, playhead)
                 }
             }
 
@@ -4210,7 +4226,36 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             out[n * 2 + 1] = tadDecodedBin[n * 2L + 1]
         }
 
+        // Stop the jam-render spin once the audition has gone fully silent (no foreground
+        // or background voice left to mix). A real Play press re-arms via isPlaying.
+        if (playhead.jamActive && !playhead.isPlaying &&
+            ts.voices.none { it.active } && ts.backgroundVoices.none { it.active }) {
+            playhead.jamActive = false
+        }
+
         return out
+    }
+
+    /**
+     * Audition one note immediately on [vi] of [ph]'s tracker state, without starting
+     * song playback (jam mode keeps mixing the voice but never advances rows/cues).
+     * Reuses the normal trigger path so Ixmp patches / Metainstrument layers resolve.
+     */
+    internal fun jamNote(ph: Playhead, vi: Int, note: Int, inst: Int) {
+        if (ph.isPcmMode) return
+        val ts = ph.trackerState ?: return
+        val v = vi.coerceIn(0, 19)
+        triggerMetaOrNote(ts, ts.voices[v], v, note, inst, -1)
+        ph.jamActive = true
+    }
+
+    /** Silence any running audition and stop the jam-render spin. */
+    internal fun jamStop(ph: Playhead) {
+        ph.trackerState?.let { ts ->
+            ts.voices.forEach { it.active = false }
+            ts.backgroundVoices.forEach { it.active = false }
+        }
+        ph.jamActive = false
     }
 
     /**
@@ -4837,6 +4882,11 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
         var trackerState: TrackerState? = TrackerState()  // default mode is tracker (isPcmMode=false)
 
+        // True while a jamNote() audition is sounding with the transport stopped. The render
+        // thread keeps mixing (envelopes evolve via applyTrackerTick) but rows/cues do NOT
+        // advance; auto-cleared once every voice goes silent. Ignored while isPlaying.
+        var jamActive: Boolean = false
+
         // Initial global behaviour flags (song-table byte, written via MMIO register 7 in tracker mode).
         // Applied to TrackerState on every resetParams(); in-pattern effect '1' can override later.
         var initialGlobalFlags: Int = 0
@@ -4858,6 +4908,15 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                     if (isPcmMode) {
                         pcmQueue.add(ByteArray(audioDevice.bufferSize * audioDevice.bufferCount))
                     }
+                }
+                // Starting real playback ends any jam audition: drop the leftover jammed voices
+                // so a held audition can't bleed into the first rows of the song.
+                if (!field && value && jamActive) {
+                    trackerState?.let { ts ->
+                        ts.voices.forEach { it.active = false }
+                        ts.backgroundVoices.forEach { it.active = false }
+                    }
+                    jamActive = false
                 }
                 field = value
             }
@@ -4917,6 +4976,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             position = 0
             pcmUploadLength = 0
             isPlaying = false
+            jamActive = false
             pcmQueueSizeIndex = 2
             // Spec §5 defaults — applied on every reset so song-start state is well-defined.
             bpm = 125

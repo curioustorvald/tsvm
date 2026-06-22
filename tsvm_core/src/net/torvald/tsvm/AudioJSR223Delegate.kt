@@ -68,6 +68,26 @@ class AudioJSR223Delegate(private val vm: VM) {
     fun stop(playhead: Int) { getPlayhead(playhead)?.isPlaying = false }
     fun isPlaying(playhead: Int) = getPlayhead(playhead)?.isPlaying
 
+    /**
+     * Audition a single note on [voice] of a tracker-mode [playhead] WITHOUT starting song
+     * playback — the note sounds immediately and its envelope/filter evolve, but rows/cues do
+     * not advance. Intended for note-jamming in an editor (taut). [note] is the 16-bit pattern
+     * note word (0x0020..0xFFFF playable; 0x0001 key-off / 0x0002 cut also work), [inst] the
+     * instrument slot to trigger with. No-op in PCM mode. Stop it with [jamStop].
+     */
+    fun jamNote(playhead: Int, voice: Int, note: Int, inst: Int) {
+        val ad = getFirstSnd() ?: return
+        val ph = getPlayhead(playhead) ?: return
+        ad.jamNote(ph, voice, note and 0xFFFF, inst and 0xFF)
+    }
+
+    /** Silence any audition started by [jamNote] on this [playhead]. */
+    fun jamStop(playhead: Int) {
+        val ad = getFirstSnd() ?: return
+        val ph = getPlayhead(playhead) ?: return
+        ad.jamStop(ph)
+    }
+
     /** Lowest-numbered playhead that is not currently playing, so a player app can
      *  "occupy" an idle playhead instead of always clobbering playhead 0. Returns
      *  [fallback] when every playhead is busy (or no audio device is present). */

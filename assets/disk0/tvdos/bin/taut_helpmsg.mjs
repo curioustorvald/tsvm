@@ -117,6 +117,7 @@ Timeline has two distinct modes: view and edit mode. Two modes are toggled using
 &bul;<b>x</b> : <O>(note column) inserts a note-cut &notecutsym;</O>
 &bul;<b>c</b> : <O>(note column) inserts a note fade &notefadesym;</O>
 &bul;<b>v</b> : <O>(note column) inserts a fast fade &notefastfadesym;</O>
+&bul;<b>b</b> : <O>(note column) inserts a note by raw hexadecimal (popup)</O>
 &bul;<b>.</b> : <O>clears fields</O>
 &bul;<b>bksp</b> : <O>deletes one character on the selected column</O>
 &bul;<b>0</b>&ddot;<b>9</b> <b>a</b>&ddot;<b>f</b> : <O>inserts a (hexa)decimal number</O>

@@ -312,11 +312,23 @@ const panEffSym = [sym.panset, sym.panri, sym.panle, sym.panfineri, sym.panfinel
 
 const colNote = 239
 const colInst = 114
+const colInstMetaStray = 205   // inst drawn red when it's a stray meta-layer child (use the meta instead)
 const colVol = 155
 const colPan = 219
 const colEffOp = 220
 const colEffArg = 231
 const colBackPtn = 255
+
+// Cached 256-flag array (from taut_views.buildMetaLayerChildSlots): inst slots that are a
+// non-meta layer child of a Metainstrument. Rebuilt lazily; invalidated on song switch and
+// whenever a pattern panel is (re)entered (instruments may have changed in the Instrmnt tab).
+let metaLayerFlags = null
+function invalidateMetaLayerFlags() { metaLayerFlags = null }
+function instColour(inst) {
+    if (metaLayerFlags === null && HUB.views && HUB.views.buildMetaLayerChildSlots)
+        metaLayerFlags = HUB.views.buildMetaLayerChildSlots()
+    return (inst && metaLayerFlags && metaLayerFlags[inst]) ? colInstMetaStray : colInst
+}
 
 const PITCH_PRESET_IDX_DEFAULT = 120
 // Seed value used during global init (integrity check + first rebuildPitchLut);
@@ -718,7 +730,7 @@ function buildRowCell(ptnDat, row) {
     }
 
     return { sNote, sInst, sVolEff, sVolArg, sPanEff, sPanArg, sEffOp, sEffArg,
-             _note: note, _effop: effop, _effarg: effarg, _voleff: voleff, _paneff: paneff }
+             _note: note, _inst: inst, _effop: effop, _effarg: effarg, _voleff: voleff, _paneff: paneff }
 }
 
 const EMPTY_CELL = {
@@ -730,13 +742,13 @@ const EMPTY_CELL = {
     sPanArg: sym.middot.repeat(2),
     sEffOp:  sym.middot,
     sEffArg: sym.middot.repeat(4),
-    _note: 0x0000, _effop: 0, _effarg: 0, _voleff: 0, _paneff: 0
+    _note: 0x0000, _inst: 0, _effop: 0, _effarg: 0, _voleff: 0, _paneff: 0
 }
 
 function drawCellAt(y, x, cell, back) {
     con.move(y, x)
     con.color_pair(colNote,   back); print(cell.sNote)
-    con.color_pair(colInst,   back); print(cell.sInst)
+    con.color_pair(instColour(cell._inst), back); print(cell.sInst)
     con.color_pair(colVol,    back); print(cell.sVolEff)
     con.color_pair(colVol,    back); print(cell.sVolArg)
     con.color_pair(colPan,    back); print(cell.sPanEff)
@@ -755,7 +767,7 @@ function drawCellAtStyled(y, x, cell, back, style) {
         con.move(y, x)
         con.color_pair(colNote,    back); print(cell.sNote)
         con.color_pair(colBackPtn, back); print(' ')
-        con.color_pair(colInst,    back); print(cell.sInst)
+        con.color_pair(instColour(cell._inst), back); print(cell.sInst)
         con.color_pair(colBackPtn, back); print(' ')
         con.color_pair(colVol,     back); print(cell.sVolEff); print(cell.sVolArg)
         con.color_pair(colBackPtn, back); print(' ')
@@ -1085,6 +1097,7 @@ const VIEW_FILE     = 6
 
 const colPlayback  = 86
 const colHighlight = 41
+const colEditHL    = 86   // sub-field cursor background while in pattern edit mode (red = editing)
 const colColumnSep = 6
 const colRowNum    = 250
 const colRowNumEmph1 = 225
@@ -1225,12 +1238,38 @@ function drawStatusBar() {
     con.color_pair(colWHITE, 255); print(`  Row `)
     con.color_pair(130, 255); print(`${sRow}${beatInd}`)
 
+    // View/Edit mode badge (Timeline + Patterns panels only)
+    if (currentPanel === VIEW_TIMELINE || currentPanel === VIEW_PATTERN_DETAILS) {
+        con.move(1, 22)
+        if (patternEditMode) { con.color_pair(colWHITE, colEditHL); print(' EDIT ') }
+        else                 { con.color_pair(235, 255);           print(' VIEW ') }
+    }
+
+    if (!patternEditMode) {
+    }
+
+    // Edit-mode info strip (right of the centred logo): the current jam instrument and
+    // octave. Only shown while editing on a pattern panel; blank in view mode. Drawn only
+    // if it fits between the logo and the transport buttons (rightmost is ~col SCRW-18).
+    if ((currentPanel === VIEW_TIMELINE || currentPanel === VIEW_PATTERN_DETAILS) && patternEditMode) {
+        // editOctave is the period index; the pattern shows octave digits as (period - 1)
+        // in hex, so display the same so a jammed root key matches its cell's octave.
+        const octShown = (editOctave - 1).toString(16)
+        const stripX  = 4
+        con.move(2, stripX)
+        con.color_pair(colWHITE, 255); print('Inst ')
+        con.color_pair(colInst, 255);  print(currentInstrument.hex02())
+        con.color_pair(colWHITE, 255); print('  Oct ')
+        con.color_pair(235, 255);  print(octShown)
+    }
     // bpm spd
-    con.move(2,4)
-    con.color_pair(colWHITE, 255); print(`BPM `)
-    con.color_pair(161, 255); print(`${sBPM}`)
-    con.color_pair(colWHITE, 255); print(`  Tick `)
-    con.color_pair(235, 255); print(`${sSpd}`)
+    else {
+        con.move(2, 4)
+        con.color_pair(colWHITE, 255); print(`BPM `)
+        con.color_pair(161, 255); print(`${sBPM}`)
+        con.color_pair(colWHITE, 255); print(`  Tick `)
+        con.color_pair(235, 255); print(`${sSpd}`)
+    }
 
     // app title
     gl.drawTexImageOver(logoTexture, (SCRPW-logoTexture.width) >>> 1, 7)
@@ -1462,8 +1501,9 @@ function drawPatternRowAt(viewRow, style = timelineRowStyle) {
         if (style === 0 && highlight && playbackMode === PLAYMODE_NONE && voice === cursorVox) {
             const fieldStr = [cell.sNote, cell.sInst, cell.sVolEff+cell.sVolArg,
                               cell.sPanEff+cell.sPanArg, cell.sEffOp, cell.sEffArg][timelineColCursor]
+            const ovFg = (timelineColCursor === 1) ? instColour(cell._inst) : TL_FIELD_FGS[timelineColCursor]
             con.move(y, x + TL_FIELD_OFFSETS[timelineColCursor])
-            con.color_pair(TL_FIELD_FGS[timelineColCursor], colPlayback)
+            con.color_pair(ovFg, patternEditMode ? colEditHL : colPlayback)
             print(fieldStr)
         }
     }
@@ -1946,8 +1986,9 @@ function drawVoiceColumnAt(slot) {
         if (timelineRowStyle === 0 && highlight && playbackMode === PLAYMODE_NONE && voice === cursorVox) {
             const fieldStr = [cell.sNote, cell.sInst, cell.sVolEff+cell.sVolArg,
                               cell.sPanEff+cell.sPanArg, cell.sEffOp, cell.sEffArg][timelineColCursor]
+            const ovFg = (timelineColCursor === 1) ? instColour(cell._inst) : TL_FIELD_FGS[timelineColCursor]
             con.move(y, x + TL_FIELD_OFFSETS[timelineColCursor])
-            con.color_pair(TL_FIELD_FGS[timelineColCursor], colPlayback)
+            con.color_pair(ovFg, patternEditMode ? colEditHL : colPlayback)
             print(fieldStr)
         }
     }
@@ -1992,6 +2033,15 @@ let patternGridScroll = 0
 let patternGridCol    = 0
 let simState          = null
 let simStateKey       = ''
+
+// ── Pattern-cell editing (Timeline + Patterns share one cell editor) ──
+// patternEditMode is the View/Edit toggle (space bar); shared by both panels.
+// currentInstrument is stamped onto jammed notes and auto-adopted when the cursor
+// lands on a populated cell or the user types into the inst column.
+// editOctave is the period index used as the base for white/black-snapped jamming.
+let patternEditMode  = false
+let currentInstrument = 1
+let editOctave        = ANCHOR_PERIOD
 
 if (exec_args[1] === undefined) {
     println(`Usage: ${exec_args[0]} path_to.taud`)
@@ -2067,6 +2117,7 @@ function switchSong(newIndex) {
     currentSongIndex = newIndex
     song = loadTaud(fullPathObj.full, newIndex)
     refreshSamplesCache()
+    invalidateMetaLayerFlags()
 
     applySongPitchPreset(songsMeta.songs[newIndex])
     applySongBeatDiv(songsMeta.songs[newIndex])
@@ -2273,6 +2324,7 @@ function cueInstToStr(inst) {
 
 function timelineInput(wo, event) {
     const keysym    = event[1]
+    const sc         = event[3]                      // primary physical scancode (layout-independent)
     const keyJustHit = (1 == event[2])
     const shiftDown  = (event.includes(59) || event.includes(60))
     const moveDelta  = shiftDown ? 4 : 1
@@ -2281,7 +2333,12 @@ function timelineInput(wo, event) {
     if (keyJustHit && shiftDown && event.includes(keys.E)) { setTimelineRowStyle(1); return }
     if (keyJustHit && shiftDown && event.includes(keys.R)) { setTimelineRowStyle(2); return }
 
-    if (keyJustHit && (keysym === '[' || keysym === ']')) { nudgeTickRate(keysym === '[' ? -1 : 1); return }
+    // [ / ] nudges the tick rate, EXCEPT in edit mode on the note column where they
+    // lower/raise the note by one unit (handled by the cell editor below).
+    if (keyJustHit && !shiftDown && (sc === keys.LEFT_BRACKET || sc === keys.RIGHT_BRACKET) &&
+        !(patternEditMode && playbackMode === PLAYMODE_NONE && timelineColCursor === 0)) {
+        nudgeTickRate(sc === keys.LEFT_BRACKET ? -1 : 1); return
+    }
 
     if (playbackMode !== PLAYMODE_NONE) {
         if (keyJustHit && shiftDown && event.includes(keys.Y) || keysym === " ") { stopPlayback(); redrawPanel(); drawAlwaysOnElems() }
@@ -2303,7 +2360,43 @@ function timelineInput(wo, event) {
     if (keyJustHit && shiftDown && event.includes(keys.Y)) { startPlaySong(); redrawPanel(); return }
     if (keyJustHit && shiftDown && event.includes(keys.U)) { startPlayCue();  redrawPanel(); return }
     if (              shiftDown && event.includes(keys.I)) { startPlayRow();  drawPatternRowAt(cursorRow - scrollRow); return }
-    if (keyJustHit && shiftDown && event.includes(keys.O) || keysym === " ") { stopPlayback(); drawAlwaysOnElems(); return }
+    if (keyJustHit && shiftDown && event.includes(keys.O)) { stopPlayback(); drawAlwaysOnElems(); return }
+    // Space toggles View/Edit while stopped (the playing branch above already stops on space).
+    if (keysym === " ") { if (keyJustHit) toggleEditMode(); return }
+
+    // ── Edit mode: insert/jam into the current cell (discrete, on key-down only);
+    // View mode: audition jam keys. Navigation keys fall through to the cursor logic. ──
+    // Cell editing needs the detailed timeline (style 0) where the sub-field cursor exists.
+    if (patternEditMode && keyJustHit && timelineRowStyle === 0) {
+        const cue    = song.cues[cueIdx]
+        const ptnIdx = cue ? cue.ptns[cursorVox] : CUE_EMPTY
+        if (ptnIdx !== CUE_EMPTY && ptnIdx < song.numPats) {
+            const ptnDat = song.patterns[ptnIdx]
+            const res = editPatternCell(ptnDat, cursorRow, timelineColCursor, event, noteFieldScreenPos())
+            if (res.changed) {
+                simStateKey = ''
+                if (res.audition >= 0 && typeof audio.jamNote === 'function')
+                    audio.jamNote(PLAYHEAD, cursorVox, res.audition, currentInstrument)
+                drawPatternRowAt(cursorRow - scrollRow)
+                if (res.advance) {
+                    const oc = cursorRow, os = scrollRow
+                    cursorRow = Math.min(ROWS_PER_PAT - 1, cursorRow + 1)
+                    clampCursor()
+                    if (scrollRow === os) drawPatternRowAt(oc - scrollRow)
+                    else                  drawPatternView()
+                    drawPatternRowAt(cursorRow - scrollRow)
+                    drawSeparators(separatorStyle)
+                }
+                drawAlwaysOnElems()
+                return
+            }
+            if (res.octave) { drawAlwaysOnElems(); return }   // octave-only change: refresh the indicator
+        }
+    } else if (!patternEditMode && keyJustHit && !shiftDown && jamScancodeToSemitone(sc) !== null) {
+        const n = semitoneToNote(jamScancodeToSemitone(sc), editOctave)
+        if (n !== null && typeof audio.jamNote === 'function') audio.jamNote(PLAYHEAD, cursorVox, n, currentInstrument)
+        return
+    }
 
     const oldCursor = cursorRow
     const oldScroll = scrollRow
@@ -2325,6 +2418,7 @@ function timelineInput(wo, event) {
         }
         clampVoice()
         if (triedCross && cursorVox === prevVox) timelineColCursor = dir < 0 ? 0 : 5
+        if (patternEditMode) { const c = currentEditCell(); if (c) adoptInstrumentFromCell(c.ptnDat, c.row) }
         const dVoice = voiceOff - oldVoiceOff
         if (dVoice !== 0) { shiftPatternAreaHorizontal(dVoice); drawVoiceColumnAt(dVoice > 0 ? VOCSIZE_TIMELINE_FULL - 1 : 0) }
         drawVoiceHeaders(); drawSeparators(separatorStyle); drawAlwaysOnElems(); drawVoiceDetail()
@@ -2332,8 +2426,9 @@ function timelineInput(wo, event) {
         return
     }
 
-    if (keyJustHit && !shiftDown && event.includes(keys.M)) { toggleMute(cursorVox); return }
-    if (keyJustHit && !shiftDown && event.includes(keys.N)) { toggleSolo(cursorVox); return }
+    // Mute / solo are View-mode only (not in the documented EDIT MODE controls).
+    if (!patternEditMode && keyJustHit && !shiftDown && event.includes(keys.M)) { toggleMute(cursorVox); return }
+    if (!patternEditMode && keyJustHit && !shiftDown && event.includes(keys.N)) { toggleSolo(cursorVox); return }
 
     if      (keysym === "<UP>")        { cursorRow -= moveDelta;      rowMove = true }
     else if (keysym === "<DOWN>")      { cursorRow += moveDelta;      rowMove = true }
@@ -2344,6 +2439,7 @@ function timelineInput(wo, event) {
     else return
 
     clampCursor(); clampVoice(); clampCue()
+    if (patternEditMode) { const c = currentEditCell(); if (c) adoptInstrumentFromCell(c.ptnDat, c.row) }
 
     if (fullRedraw) { drawAll(); return }
     if (!rowMove || cursorRow === oldCursor) return
@@ -2439,6 +2535,264 @@ function ordersInput(wo, event) {
         return
     }
     drawAlwaysOnElems()
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// PATTERN CELL EDITOR (shared by Timeline + Patterns panels)
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// Special note words (non-pitched). 0 = empty, 1..4 = key-off/cut/fade/fastfade.
+// 0x10..0x1F are reserved internal interrupts; pitched notes are >= 0x20.
+function noteIsPitched(n) { return n >= 0x0020 }
+
+// ── The cell editor dispatches on the raw key SCANCODE (event[3] = keys.head()), not the
+// layout-resolved keysym, so the piano layout and edit keys keep their physical positions on
+// any keyboard layout (QWERTY / Dvorak / Colemak). Shift state is read separately. ──
+
+// White/black piano layout by physical key: a s d f g h j k = white keys
+// (semitone 0 2 4 5 7 9 11 12), w e t y u = black keys (1 3 6 8 10).
+const SC_JAM = {}
+;[[keys.A,0],[keys.W,1],[keys.S,2],[keys.E,3],[keys.D,4],[keys.F,5],[keys.T,6],
+  [keys.G,7],[keys.Y,8],[keys.H,9],[keys.U,10],[keys.J,11],[keys.K,12]].forEach(p => SC_JAM[p[0]] = p[1])
+function jamScancodeToSemitone(sc) {
+    return Object.prototype.hasOwnProperty.call(SC_JAM, sc) ? SC_JAM[sc] : null
+}
+
+// Scancode → digit (0..9) and scancode → letter index (a=0..z=25), built from the keysym
+// table so they don't assume a contiguous scancode range.
+const SC_DIGIT = {}
+for (let d = 0; d <= 9; d++) SC_DIGIT[keys['NUM_' + d]] = d
+const SC_LETTER = {}
+;('ABCDEFGHIJKLMNOPQRSTUVWXYZ').split('').forEach((c, i) => { SC_LETTER[keys[c]] = i })
+// hex nibble (0..15) from a digit / a..f scancode, else -1
+function scToHexNibble(sc) {
+    if (Object.prototype.hasOwnProperty.call(SC_DIGIT, sc)) return SC_DIGIT[sc]
+    if (Object.prototype.hasOwnProperty.call(SC_LETTER, sc) && SC_LETTER[sc] < 6) return 10 + SC_LETTER[sc]
+    return -1
+}
+// base-36 value (0..35) from a digit / a..z scancode, else -1 (effect-op column)
+function scToBase36(sc) {
+    if (Object.prototype.hasOwnProperty.call(SC_DIGIT, sc)) return SC_DIGIT[sc]
+    if (Object.prototype.hasOwnProperty.call(SC_LETTER, sc)) return 10 + SC_LETTER[sc]
+    return -1
+}
+
+// Map a 12-EDO semitone to a note word in the active tuning by snapping the semitone's
+// fractional period position to the NEAREST entry of the preset's pitch table (white/black
+// snapped). Returns null for the Raw preset (no table) \u2014 jamming is then disabled.
+function semitoneToNote(semi, period) {
+    const preset = pitchTablePresets[PITCH_PRESET_IDX]
+    if (!preset || preset.table.length === 0) return null
+    const interval = preset.interval
+    const table    = preset.table
+    let pos   = Math.round(semi / 12 * interval)
+    let carry = 0
+    while (pos >= interval) { pos -= interval; carry++ }   // semitone 12 wraps to next period root
+    let bestIdx = 0, bestDist = Infinity
+    for (let i = 0; i < table.length; i++) {
+        const d = Math.abs(table[i] - pos)
+        if (d < bestDist) { bestDist = d; bestIdx = i }
+    }
+    // The next period's root (interval above) can be the true nearest degree near the top.
+    let off = table[bestIdx], periodAdj = carry
+    if ((interval - pos) < bestDist) { off = table[0]; periodAdj = carry + 1 }
+    // Clamp into the playable note range (>= 0x20; below that are the special-note words).
+    return Math.max(0x0020, Math.min(0xFFFF, composeNote(period + periodAdj, off, interval)))
+}
+
+// Shift a pitched note to the adjacent pitch-table degree (period-wrapping). No-op on
+// special notes. Raw preset: \u00b11 raw unit.
+function nudgeNoteUnit(note, dir) {
+    if (!noteIsPitched(note)) return note
+    const preset = pitchTablePresets[PITCH_PRESET_IDX]
+    if (!preset || preset.table.length === 0) return Math.max(0x20, Math.min(0xFFFF, note + dir))
+    const interval = preset.interval, table = preset.table
+    const [period, off] = decomposeNote(note, interval)
+    let idx = 0, best = Infinity
+    for (let i = 0; i < table.length; i++) { const d = Math.abs(table[i] - off); if (d < best) { best = d; idx = i } }
+    idx += dir
+    let per = period
+    if (idx < 0)                 { idx = table.length - 1; per -= 1 }
+    else if (idx >= table.length){ idx = 0;                per += 1 }
+    return Math.max(0x20, Math.min(0xFFFF, composeNote(per, table[idx], interval)))
+}
+
+// Shift a pitched note by one period (octave). No-op on special notes.
+function nudgeNoteOctave(note, dir) {
+    if (!noteIsPitched(note)) return note
+    const preset = pitchTablePresets[PITCH_PRESET_IDX]
+    const interval = (preset && preset.table.length) ? preset.interval : 0x1000
+    return Math.max(0x20, Math.min(0xFFFF, note + dir * interval))
+}
+
+// \u2500\u2500 cell byte accessors (ptnDat = the 512-byte Uint8Array, row 0..63) \u2500\u2500
+function cellNote(p, r)  { const o = 8*r; return p[o] | (p[o+1] << 8) }
+function writeNote(p, r, n) { const o = 8*r; p[o] = n & 0xFF; p[o+1] = (n >>> 8) & 0xFF }
+function cellInst(p, r)  { return p[8*r + 2] }
+function writeInst(p, r, v) { p[8*r + 2] = v & 0xFF }
+
+// Edit a vol/pan byte from one keystroke (by scancode + shift). Selector = top 2 bits
+// (0=SET, 1=up/right, 2=down/left, 3=fine; fine dir bit 0x20). Empty sentinel = 0xC0.
+// Physical keys: ^ = Shift+6 (vol slide up), v = V key (vol slide down), < / > = Shift+,/.
+// (pan slide left/right), - / = (fine down/up), . = clear, Backspace = drop a digit.
+function editVolPanByte(byte, sc, shiftDown, isPan) {
+    const SEL_SET = 0, SEL_UP = 1, SEL_DOWN = 2, SEL_FINE = 3
+    let sel = (byte >>> 6) & 3, arg = byte & 0x3F
+    const empty = (sel === SEL_FINE && arg === 0)   // 0xC0
+
+    if (sc === keys.PERIOD && !shiftDown) return 0xC0
+    if (sc === keys.BACKSPACE) {
+        if (empty) return 0xC0
+        if (sel === SEL_SET) return arg >>> 4                        // shift a set-vol digit out
+        const m = (arg & 0x1F) >>> 4                                 // shift a slide/fine digit out
+        if (m === 0) return 0xC0
+        return ((sel & 3) << 6) | (arg & 0x20) | (m & 0x1F)
+    }
+    // selector keys (checked before SET digits so Shift+6 is '^', not the digit 6)
+    const lowArg = arg & 0x0F
+    if (!isPan && shiftDown && sc === keys.NUM_6)  return (SEL_UP   << 6) | lowArg   // ^
+    if (!isPan && !shiftDown && sc === keys.V)     return (SEL_DOWN << 6) | lowArg   // v
+    if ( isPan && shiftDown && sc === keys.PERIOD) return (SEL_UP   << 6) | lowArg   // > (pan slide right)
+    if ( isPan && shiftDown && sc === keys.COMMA)  return (SEL_DOWN << 6) | lowArg   // < (pan slide left)
+    if (!shiftDown && sc === keys.MINUS)  return (SEL_FINE << 6) | Math.max(1, arg & 0x1F)         // - fine down
+    if (!shiftDown && sc === keys.EQUALS) return (SEL_FINE << 6) | 0x20 | Math.max(1, arg & 0x1F)  // = fine up
+    // hex digit edits the argument in the current selector's width
+    if (!shiftDown) {
+        const nib = scToHexNibble(sc)
+        if (nib >= 0) {
+            if (sel === SEL_SET || empty) return ((((empty ? 0 : arg) << 4) | nib) & 0x3F)  // SET, 2 digits
+            if (sel === SEL_UP || sel === SEL_DOWN) return (sel << 6) | (nib & 0x0F)         // slide, 1 digit
+            return (SEL_FINE << 6) | (arg & 0x20) | (nib & 0x1F)                             // fine magnitude
+        }
+    }
+    return byte
+}
+
+// The shared cell editor. Mutates ptnDat at (row, col) from key event `ev`.
+// `popupPos` = {y, x} of the note field (only used for the 'b' raw-hex popup).
+// Returns { changed, advance, audition } \u2014 audition is a note word to jam, or -1.
+function editPatternCell(ptnDat, row, col, ev, popupPos) {
+    let sc = ev[3]; if (sc == 59) sc = ev[4]; if (sc == 60) sc = ev[5]; // sc = first non-shift scancode
+    if (!sc) return { changed: false, advance: false, audition: -1, octave: false }
+    const shiftDown = (ev.includes(59) || ev.includes(60))
+    const isClear   = (sc === keys.PERIOD && !shiftDown)        // '.'
+    const isBack    = (sc === keys.BACKSPACE)
+    const o = 8 * row
+    let changed = false, advance = false, audition = -1, octave = false
+
+    if (col === 0) {                                   // \u2500\u2500 note \u2500\u2500
+        const semi = (!shiftDown) ? jamScancodeToSemitone(sc) : null
+        if (semi !== null) {
+            const n = semitoneToNote(semi, editOctave)
+            if (n !== null) { writeNote(ptnDat, row, n); writeInst(ptnDat, row, currentInstrument)
+                              changed = true; advance = true; audition = n }
+        }
+        // Special notes (key-off / cut / fade / fast-fade) are inserted but not auditioned
+        // (jamming a key-off through the trigger path would resolve a bogus sample).
+        else if (!shiftDown && sc === keys.Z) { writeNote(ptnDat, row, 0x0001); changed = true; advance = true }
+        else if (!shiftDown && sc === keys.X) { writeNote(ptnDat, row, 0x0002); changed = true; advance = true }
+        else if (!shiftDown && sc === keys.C) { writeNote(ptnDat, row, 0x0003); changed = true; advance = true }
+        else if (!shiftDown && sc === keys.V) { writeNote(ptnDat, row, 0x0004); changed = true; advance = true }
+        else if (!shiftDown && sc === keys.B && popupPos) {
+            const raw = openInlineHexEdit(popupPos.y, popupPos.x, 4, cellNote(ptnDat, row))
+            if (raw !== null) { const w = raw & 0xFFFF; writeNote(ptnDat, row, w); changed = true; advance = true; if (noteIsPitched(w)) audition = w }
+        }
+        // [ / ] unit nudge (no shift); { / } octave nudge (Shift+[ / Shift+])
+        else if (!shiftDown && (sc === keys.LEFT_BRACKET || sc === keys.RIGHT_BRACKET)) {
+            const cur = cellNote(ptnDat, row)
+            if (noteIsPitched(cur)) { const n = nudgeNoteUnit(cur, sc === keys.LEFT_BRACKET ? -1 : 1); writeNote(ptnDat, row, n); changed = true; audition = n }
+        }
+        else if (shiftDown && (sc === keys.LEFT_BRACKET || sc === keys.RIGHT_BRACKET)) {
+            const dir = (sc === keys.LEFT_BRACKET) ? -1 : 1
+            const cur = cellNote(ptnDat, row)
+            if (noteIsPitched(cur)) { const n = nudgeNoteOctave(cur, dir); writeNote(ptnDat, row, n); editOctave = decomposeNote(n, pitchTablePresets[PITCH_PRESET_IDX].interval)[0]; changed = true; audition = n }
+            // No-sound cell (< 0x20): nothing to transpose, so move the jam octave instead
+            // (octave-only — refreshes the indicator without dirtying the pattern).
+            else { editOctave = Math.max(1, Math.min(14, editOctave + dir)); octave = true }
+        }
+        else if (isClear || isBack) { writeNote(ptnDat, row, 0); changed = true }
+    }
+    else if (col === 1) {                              // \u2500\u2500 instrument \u2500\u2500
+        const nib = (!shiftDown) ? scToHexNibble(sc) : -1
+        if (nib >= 0) {
+            const v = ((cellInst(ptnDat, row) << 4) | nib) & 0xFF
+            writeInst(ptnDat, row, v); currentInstrument = v; changed = true
+        }
+        else if (isBack)  { writeInst(ptnDat, row, cellInst(ptnDat, row) >>> 4); changed = true }
+        else if (isClear) { writeInst(ptnDat, row, 0); changed = true }
+    }
+    else if (col === 2 || col === 3) {                 // \u2500\u2500 volume / panning \u2500\u2500
+        const off = (col === 2) ? o + 3 : o + 4
+        const nb  = editVolPanByte(ptnDat[off], sc, shiftDown, col === 3)
+        if (nb !== ptnDat[off]) { ptnDat[off] = nb & 0xFF; changed = true }
+    }
+    else if (col === 4) {                              // \u2500\u2500 effect op \u2500\u2500
+        const v = (!shiftDown) ? scToBase36(sc) : -1
+        if (v >= 0)            { ptnDat[o+5] = v & 0xFF; changed = true }
+        else if (isClear || isBack) { ptnDat[o+5] = 0; changed = true }
+    }
+    else if (col === 5) {                              // \u2500\u2500 effect arg (16-bit) \u2500\u2500
+        const cur = ptnDat[o+6] | (ptnDat[o+7] << 8)
+        const nib = (!shiftDown) ? scToHexNibble(sc) : -1
+        if (nib >= 0) {
+            const v = ((cur << 4) | nib) & 0xFFFF
+            ptnDat[o+6] = v & 0xFF; ptnDat[o+7] = (v >>> 8) & 0xFF; changed = true
+        }
+        else if (isBack)  { const v = cur >>> 4; ptnDat[o+6] = v & 0xFF; ptnDat[o+7] = (v >>> 8) & 0xFF; changed = true }
+        else if (isClear) { ptnDat[o+6] = 0; ptnDat[o+7] = 0; changed = true }
+    }
+
+    if (changed) { patternsOutOfSync = true; if (HUB && HUB.markUnsaved) HUB.markUnsaved() }
+    return { changed, advance, audition, octave }
+}
+
+// Adopt the instrument under a cell as the current instrument, if it carries one.
+function adoptInstrumentFromCell(ptnDat, row) {
+    const inst = cellInst(ptnDat, row)
+    if (inst !== 0) currentInstrument = inst
+}
+
+// Resolve the cell currently under the edit cursor for whichever pattern panel is active.
+// Returns { ptnDat, row, col, voice } or null (e.g. a timeline voice with no pattern).
+function currentEditCell() {
+    if (currentPanel === VIEW_TIMELINE) {
+        const cue = song.cues[cueIdx]
+        const pi  = cue ? cue.ptns[cursorVox] : CUE_EMPTY
+        if (pi !== CUE_EMPTY && pi < song.numPats)
+            return { ptnDat: song.patterns[pi], row: cursorRow, col: timelineColCursor, voice: cursorVox }
+    } else if (currentPanel === VIEW_PATTERN_DETAILS) {
+        if (song.numPats > 0)
+            return { ptnDat: song.patterns[patternIdx], row: patternGridRow, col: patternGridCol, voice: 0 }
+    }
+    return null
+}
+
+// Screen position {y, x} of the note field under the edit cursor (for the 'b' raw-hex popup).
+function noteFieldScreenPos() {
+    if (currentPanel === VIEW_TIMELINE) {
+        if (timelineRowStyle !== 0) return null   // sub-field cursor only exists in the detailed style
+        const x = PTNVIEW_OFFSET_X + COLSIZE_TIMELINE_FULL * (cursorVox - voiceOff) + TL_FIELD_OFFSETS[0]
+        const y = PTNVIEW_OFFSET_Y + (cursorRow - scrollRow)
+        return { y, x }
+    } else if (currentPanel === VIEW_PATTERN_DETAILS) {
+        return { y: PTNVIEW_OFFSET_Y + (patternGridRow - patternGridScroll), x: PATEDITOR_CELL_X }
+    }
+    return null
+}
+
+// Toggle View/Edit mode (shared by both pattern panels). On entering edit, seed the current
+// instrument from the Instruments-tab selection, then auto-adopt the cell under the cursor.
+// On leaving, silence any lingering audition.
+function toggleEditMode() {
+    patternEditMode = !patternEditMode
+    if (patternEditMode) {
+        const seed = (HUB.views && HUB.views.getSelectedInstrumentSlot && HUB.views.getSelectedInstrumentSlot()) || currentInstrument
+        currentInstrument = seed || 1
+        const c = currentEditCell(); if (c) adoptInstrumentFromCell(c.ptnDat, c.row)
+    } else if (typeof audio.jamStop === 'function') {
+        audio.jamStop(PLAYHEAD)
+    }
+    redrawPanel(); drawAlwaysOnElems()
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -2851,10 +3205,10 @@ function drawPatternGridRowAt(viewRow) {
             cell.sEffOp,
             cell.sEffArg,
         ]
-        const fieldFgs     = [colNote, colInst, colVol, colPan, colEffOp, colEffArg]
+        const fieldFgs     = [colNote, instColour(cell._inst), colVol, colPan, colEffOp, colEffArg]
         const col = patternGridCol
         con.move(y, PATEDITOR_CELL_X + fieldOffsets[col])
-        con.color_pair(fieldFgs[col], colHighlight)
+        con.color_pair(fieldFgs[col], patternEditMode ? colEditHL : colHighlight)
         print(fieldStrs[col])
     }
 }
@@ -2903,11 +3257,16 @@ function drawPatternsContents(wo) {
 
 function patternsInput(wo, event) {
     const keysym     = event[1]
+    const sc          = event[3]                     // primary physical scancode (layout-independent)
     const keyJustHit = (1 == event[2])
     const shiftDown  = (event.includes(59) || event.includes(60))
     const moveDelta  = shiftDown ? 4 : 1
 
-    if (keyJustHit && (keysym === '[' || keysym === ']')) { nudgeTickRate(keysym === '[' ? -1 : 1); return }
+    // [ / ] nudges tick rate, except in edit mode on the note column (unit nudge below).
+    if (keyJustHit && !shiftDown && (sc === keys.LEFT_BRACKET || sc === keys.RIGHT_BRACKET) &&
+        !(patternEditMode && playbackMode === PLAYMODE_NONE && patternGridCol === 0)) {
+        nudgeTickRate(sc === keys.LEFT_BRACKET ? -1 : 1); return
+    }
 
     if (playbackMode !== PLAYMODE_NONE) {
         if ((keyJustHit && shiftDown && event.includes(keys.Y)) || keysym === " ") {
@@ -2918,13 +3277,36 @@ function patternsInput(wo, event) {
 
     if (keyJustHit && shiftDown && event.includes(keys.U)) { startPlayPattern(); drawPatternsContents(wo); return }
     if (              shiftDown && event.includes(keys.I)) { startPlayPatternRow(); drawPatternGrid(); return }
-    if ((keyJustHit && shiftDown && event.includes(keys.O)) || keysym === " ") { stopPlayback(); drawAlwaysOnElems(); return }
+    if (keyJustHit && shiftDown && event.includes(keys.O)) { stopPlayback(); drawAlwaysOnElems(); return }
+    // Space toggles View/Edit while stopped.
+    if (keysym === " ") { if (keyJustHit) toggleEditMode(); return }
 
     if (song.numPats === 0) return
+
+    // ── Edit mode: insert/jam into the current cell (discrete); View mode: audition. ──
+    if (patternEditMode && keyJustHit) {
+        const ptnDat = song.patterns[patternIdx]
+        const res = editPatternCell(ptnDat, patternGridRow, patternGridCol, event, noteFieldScreenPos())
+        if (res.changed) {
+            if (res.audition >= 0 && typeof audio.jamNote === 'function')
+                audio.jamNote(PLAYHEAD, 0, res.audition, currentInstrument)
+            if (res.advance) { patternGridRow = Math.min(ROWS_PER_PAT - 1, patternGridRow + 1); clampPatternGrid() }
+            simStateKey = ''
+            drawPatternsContents(wo)
+            drawAlwaysOnElems()
+            return
+        }
+        if (res.octave) { drawAlwaysOnElems(); return }   // octave-only change: refresh the indicator
+    } else if (!patternEditMode && keyJustHit && !shiftDown && jamScancodeToSemitone(sc) !== null) {
+        const n = semitoneToNote(jamScancodeToSemitone(sc), editOctave)
+        if (n !== null && typeof audio.jamNote === 'function') audio.jamNote(PLAYHEAD, 0, n, currentInstrument)
+        return
+    }
 
     if (keysym === '<UP>' || keysym === '<DOWN>') {
         patternGridRow += (keysym === '<UP>') ? -moveDelta : moveDelta
         clampPatternGrid()
+        if (patternEditMode) { adoptInstrumentFromCell(song.patterns[patternIdx], patternGridRow); drawAlwaysOnElems() }
         simStateKey = ''
         drawPatternGrid()
         con.color_pair(colSep, 255)
@@ -2940,8 +3322,8 @@ function patternsInput(wo, event) {
         return
     }
 
-    if (keysym === '<HOME>') { patternGridRow = 0;              clampPatternGrid(); simStateKey = ''; drawPatternsContents(wo); return }
-    if (keysym === '<END>')  { patternGridRow = ROWS_PER_PAT-1; clampPatternGrid(); simStateKey = ''; drawPatternsContents(wo); return }
+    if (keysym === '<HOME>') { patternGridRow = 0;              clampPatternGrid(); if (patternEditMode) { adoptInstrumentFromCell(song.patterns[patternIdx], patternGridRow); drawAlwaysOnElems() } simStateKey = ''; drawPatternsContents(wo); return }
+    if (keysym === '<END>')  { patternGridRow = ROWS_PER_PAT-1; clampPatternGrid(); if (patternEditMode) { adoptInstrumentFromCell(song.patterns[patternIdx], patternGridRow); drawAlwaysOnElems() } simStateKey = ''; drawPatternsContents(wo); return }
 
     if (keysym === '<LEFT>' || keysym === '<RIGHT>') {
         patternGridCol += (keysym === '<LEFT>') ? -1 : 1
@@ -2956,6 +3338,7 @@ function patternsInput(wo, event) {
     if (keysym === '<PAGE_UP>' || keysym === '<PAGE_DOWN>') {
         patternIdx += (keysym === '<PAGE_UP>') ? -moveDelta : moveDelta
         clampPatternIdx()
+        if (patternEditMode) { adoptInstrumentFromCell(song.patterns[patternIdx], patternGridRow); drawAlwaysOnElems() }
         simStateKey = ''
         drawPatternsContents(wo)
         return
@@ -3622,6 +4005,7 @@ HUB.getPlaybackMode       = () => playbackMode
 HUB.markUnsaved           = () => { hasUnsavedChanges = true }
 // In-process editor modals (openSampleEdit / openAdvancedInstEdit) call this each
 // frame to keep playback + blobs alive while open — the whole point of going
+// frame to keep playback + blobs alive while open — the whole point of going
 // in-process (the old separate programs called stopPlayback on entry).
 HUB.tickPlayback          = () => { if (playbackMode !== PLAYMODE_NONE) updatePlayback() }
 HUB.stopPlayback          = stopPlayback
@@ -3920,6 +4304,8 @@ function addGlobalMouseRegion(x, y, w, h, handlers) { MOUSE_GLOBAL.push(Object.a
 // Apply the same panel-switch logic the Tab key path uses.
 function switchToPanel(newPanel) {
     if (newPanel === currentPanel) return
+    if (typeof audio.jamStop === 'function') audio.jamStop(PLAYHEAD)   // silence any lingering jam audition
+    invalidateMetaLayerFlags()                                         // instruments may have changed
     const wasTimeline = (currentPanel === VIEW_TIMELINE)
     const wasSamples  = (currentPanel === VIEW_SAMPLES)
     const wasInstrmnt = (currentPanel === VIEW_INSTRMNT)
@@ -4234,6 +4620,8 @@ while (!exitFlag) {
         }
 
         if (keyJustHit && keysym === "<TAB>") {
+            if (typeof audio.jamStop === 'function') audio.jamStop(PLAYHEAD)   // silence any lingering jam audition
+            invalidateMetaLayerFlags()                                         // instruments may have changed
             const wasTimeline = (currentPanel === VIEW_TIMELINE)
             const wasSamples  = (currentPanel === VIEW_SAMPLES)
             currentPanel = (currentPanel + (shiftDown ? -1 : 1))
