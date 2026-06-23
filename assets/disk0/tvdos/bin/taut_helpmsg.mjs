@@ -138,6 +138,36 @@ Timeline has two distinct modes: view and edit mode. Two modes are toggled using
 &bul;<b>Q</b> : <O>retunes current song into different tuning and strategy. In general, nearest-note works best for macrotonals, nearest-harmonic and nearest-delta works best for highly microtonals (31+); 17- and 19-TET takes nearest-harmonic pretty well, while 22-TET seem to only benefit from the nearest-note</O>
 `
 
+let helpCues = `<c>CUES VIEW</c>
+<c>\u00B7${'\u00B8'.repeat(9)}\u00B9</c>
+The cue sheet (order list) sequences patterns into a song. Each cue row plays the listed pattern of every voice at once; the command column drives playback flow.
+
+<b>&nbsp;NAVIGATION</b>
+<b>\u00B7${'\u00B8'.repeat(11)}\u00B9</b>
+&bul;<b>&udlr;</b> : <O>moves the cursor by cue rows and columns</O>
+&bul;<b>Y</b> : <O>plays the entire song from the selected cue</O>
+&bul;<b>U</b> : <O>plays the selected cue then stop</O>
+&bul;<b>ent</b> : <O>(voice column) jumps to the selected cue in the Timeline</O>
+
+<b>&nbsp;EDITING</b>
+<b>\u00B7${'\u00B8'.repeat(9)}\u00B9</b>
+&bul;<b>0</b>&ddot;<b>9</b> <b>a</b>&ddot;<b>f</b> : <O>(voice column) types the pattern number</O>
+&bul;<b>-</b> : <O>(voice column) clears the cell to empty</O>
+&bul;<b>bksp</b> : <O>(voice column) deletes one digit</O>
+&bul;<b>ent</b> : <O>(command column) opens the command editor (popup)</O>
+A blank row past the last cue is always available so a new cue can be appended.
+
+<b>&nbsp;COMMANDS</b>
+<b>\u00B7${'\u00B8'.repeat(10)}\u00B9</b>
+&bul;<b>No-op</b> : <O>no action</O>
+&bul;<b>Pattern length</b> : <O>set this cue's length to N+1 rows</O>
+&bul;<b>Fade out at</b> : <O>fade global volume to zero by row N, then stop</O>
+&bul;<b>Halt at end</b> : <O>play the full pattern, then stop</O>
+&bul;<b>Halt at row</b> : <O>play up to row N then stop (0 = full)</O>
+&bul;<b>Go back</b>&mdot;<b>Skip forward</b> : <O>jump N cues backward/forward</O>
+&bul;<b>Jump to cue</b> : <O>jump to absolute cue N (loop)</O>
+`
+
 let helpProjectFlags = `<c>MIXER FLAGS</c>
 <c>\u00B7${'\u00B8'.repeat(11)}\u00B9</c>
 Mixer flags define how should the mixer behave.
@@ -174,7 +204,7 @@ function init(HUB) {
 
     let helpMessages = [ // index: taut.js PANEL_NAMES
     /* Timeline */[helpJam, helpTimeline, helpCommon, helpNotation].join(HRULE),
-    /* Cues */[helpCommon, helpNotation].join(HRULE), // placeholder
+    /* Cues */[helpCues, helpCommon, helpNotation].join(HRULE),
     /* Patterns */[helpCommon, helpNotation].join(HRULE), // placeholder
     /* Samples */[helpCommon, helpNotation].join(HRULE), // placeholder
     /* Instruments */[helpCommon, helpNotation].join(HRULE), // placeholder

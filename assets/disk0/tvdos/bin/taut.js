@@ -1535,9 +1535,10 @@ function drawControlHint() {
     ]
     let hintElemOrders = [
         [`\u008428u\u008429u`,'Nav'],
-        [`ent`,'Go to cue'],
+        [`0${sym.doubledot}9 A${sym.doubledot}F`,'Ptn'],
+        ['-','Clr'],
     ['sep'],
-        ['sp','Edit'],
+        [`ent`,'Cmd/GoTo'],
     ['sep'],
         ['tab','Panel'],
     ['sep'],
@@ -1570,8 +1571,8 @@ function drawControlHint() {
         ['#',sym.sharp],
         ['@','Acc'],
     ['sep'],
-        ['=','KOff'],
-        ['^','KCut'],
+        ['z','KOff'],
+        ['x','KCut'],
     ['sep'],
         ['!','Help'],
 //    ['sep'],
@@ -1660,7 +1661,7 @@ function drawControlHint() {
         [`\u008428u\u008429u`,'Tab'],
         [`1${sym.doubledot}5`,'Jump tab'],
     ['sep'],
-        ['e','Edit'],
+        ['E','Edit'],
     ['sep'],
         ['tab','Panel'],
     ['sep'],
@@ -2186,7 +2187,7 @@ function drawOrdersRowAt(ci) {
     const vr = ci - ordersScroll
     if (vr < 0 || vr >= PTNVIEW_HEIGHT) return
     const y     = PTNVIEW_OFFSET_Y + vr
-    const maxCue = song.lastActiveCue < 0 ? 0 : song.lastActiveCue
+    const maxCue = ordersMaxRow()
     const isSel = (ci === ordersCursor)
     const isCur = playbackMode !== PLAYMODE_NONE && ci === cueIdx
     const back  = isSel ? (playbackMode !== PLAYMODE_NONE ? colPlayback : colHighlight)
@@ -2233,7 +2234,7 @@ function drawOrdersContents(wo) {
 function drawOrdersVoiceColumnAt(slot) {
     const v = ordersVoiceOff + slot
     const x = ORDERS_VOICE_X + slot * ORDERS_VOICE_COL_W
-    const maxCue = song.lastActiveCue < 0 ? 0 : song.lastActiveCue
+    const maxCue = ordersMaxRow()
 
     for (let vr = 0; vr < PTNVIEW_HEIGHT; vr++) {
         const ci = ordersScroll + vr
@@ -2320,6 +2321,61 @@ function cueInstToStr(inst) {
         default:
             return fallback
     }
+}
+
+// ── Cue-sheet editing helpers (shared by the Cues panel inline editor + the
+//    command popup). The Cues panel lets the cursor sit on ONE blank row past the
+//    last active cue so a new cue can be appended; ordersMaxRow() is that bound. ──
+function ordersMaxRow() {
+    const last = song.lastActiveCue < 0 ? 0 : song.lastActiveCue
+    return Math.min(NUM_CUES - 1, last + 1)
+}
+
+// Re-scan the cue sheet for the highest cue carrying any non-empty voice pattern.
+// Mirrors loadTaud's lastActiveCue rule (voices only; a command-only cue is not
+// "active"). Cheap enough to run on every cue edit.
+function recomputeLastActiveCue() {
+    let last = -1
+    for (let c = 0; c < NUM_CUES; c++) {
+        const ptns = song.cues[c].ptns
+        for (let v = 0; v < NUM_VOICES; v++) {
+            if (ptns[v] !== CUE_EMPTY) { last = c; break }
+        }
+    }
+    song.lastActiveCue = last
+}
+
+// Push one in-memory cue back to the audio adapter so playback reflects the edit
+// (cues are not lazily synced like patterns), then mark the project dirty.
+function commitCue(ci) {
+    audio.uploadCue(ci, encodeCue(song.cues[ci]))
+    hasUnsavedChanges = true
+}
+
+// Edit one voice's pattern index in cue `ci` from a single keystroke. Hex digits
+// accumulate (shift-register, masked to 12 bits); '-' clears to CUE_EMPTY (0xFFF);
+// Backspace drops a digit. Returns true if the cell changed.
+function editCuePtn(ci, voice, sc, shiftDown) {
+    const cue = song.cues[ci]
+    const cur = cue.ptns[voice]
+    let next = cur
+    if (sc === keys.MINUS && !shiftDown) {
+        next = CUE_EMPTY
+    } else if (sc === keys.BACKSPACE) {
+        next = (cur === CUE_EMPTY) ? CUE_EMPTY : (cur >>> 4)
+    } else if (!shiftDown) {
+        const nib = scToHexNibble(sc)
+        if (nib < 0) return false
+        const base = (cur === CUE_EMPTY) ? 0 : cur
+        next = ((base << 4) | nib) & 0xFFF
+    } else {
+        return false
+    }
+    if (next === cur) return false
+    cue.ptns[voice] = next
+    recomputeLastActiveCue()
+    commitCue(ci)
+    return true
 }
 
 function timelineInput(wo, event) {
@@ -2465,7 +2521,7 @@ function ordersInput(wo, event) {
     const keyJustHit = (1 == event[2])
     const shiftDown  = (event.includes(59) || event.includes(60))
     const moveDelta  = shiftDown ? 4 : 1
-    const maxCue     = song.lastActiveCue < 0 ? 0 : song.lastActiveCue
+    const maxCue     = ordersMaxRow()
 
     if (playbackMode !== PLAYMODE_NONE) {
         if ((keyJustHit && shiftDown && event.includes(keys.Y)) || keysym === " ") {
@@ -2479,6 +2535,33 @@ function ordersInput(wo, event) {
     }
     if ((keyJustHit && shiftDown && event.includes(keys.O)) || keysym === " ") {
         stopPlayback(); drawAlwaysOnElems(); return
+    }
+
+    // ── Cue editing (stopped only) ─────────────────────────────────────────────
+    // Command column (col 0): Enter opens the command popup.
+    // Voice columns (col >= 1): hex digits accumulate the pattern index, '-' clears
+    // it to empty (0xFFF), Backspace drops a digit. (Enter on a voice column falls
+    // through to the "go to cue" handler below.)
+    if (keyJustHit && !shiftDown && ordersColCursor === 0 && keysym === '\n') {
+        openCueCmdPopup(ordersCursor); return
+    }
+    if (keyJustHit && ordersColCursor >= 1) {
+        let sc = event[3]; if (sc == 59) sc = event[4]; if (sc == 60) sc = event[5]
+        const isEditKey = sc && (sc === keys.MINUS || sc === keys.BACKSPACE || scToHexNibble(sc) >= 0)
+        if (isEditKey) {
+            const oldMax = ordersMaxRow()
+            if (editCuePtn(ordersCursor, ordersColCursor - 1, sc, shiftDown)) {
+                if (ordersMaxRow() !== oldMax) {
+                    if (ordersCursor > ordersMaxRow()) ordersCursor = ordersMaxRow()
+                    scrollOrdersTo(ordersCursor)
+                    drawOrdersContents(wo)
+                } else {
+                    drawOrdersRowAt(ordersCursor)
+                }
+                drawAlwaysOnElems()
+            }
+            return
+        }
     }
 
     if (keysym === '<UP>' || keysym === '<DOWN>' || keysym === '<PAGE_UP>' || keysym === '<PAGE_DOWN>') {
@@ -2836,7 +2919,7 @@ function scrollPatternGridTo(row) {
 }
 
 function scrollOrdersTo(ci) {
-    const maxCue = song.lastActiveCue < 0 ? 0 : song.lastActiveCue
+    const maxCue = ordersMaxRow()
     ordersScroll = centerScroll(ci, ordersScroll, PTNVIEW_HEIGHT, maxCue + 1)
 }
 
@@ -3650,7 +3733,10 @@ function encodeCue(cue) {
         bin[10+i] = (((p0 >> 4) & 0xF) << 4) | ((p1 >> 4) & 0xF)
         bin[20+i] = (((p0 >> 8) & 0xF) << 4) | ((p1 >> 8) & 0xF)
     }
-    bin[30] = cue.instr || 0
+    // Byte 30 = instruction high (foreword/preamble), byte 31 = instruction low (arg).
+    const instr = cue.instr || 0
+    bin[30] = (instr >>> 8) & 0xFF
+    bin[31] = instr & 0xFF
     return bin
 }
 
@@ -3976,7 +4062,7 @@ HUB.commitMixerFlags  = (f) => { initialTrackerMixerflags = f; audio.setTrackerM
 HUB.hasUnsavedChanges = () => hasUnsavedChanges
 
 HUB.popups = requireTaut("taut_popups").init(HUB)
-const { openHelpPopup, openGotoPopup, openRetunePopup, openFlagsPopup, openConfirmQuit } = HUB.popups
+const { openHelpPopup, openGotoPopup, openRetunePopup, openFlagsPopup, openConfirmQuit, openCueCmdPopup } = HUB.popups
 
 // ── Views module (Samples + Instruments + blob/cursor) ──────────────────────
 // Wired here (not at the VIEWS marker above) because the module reads PLAYHEAD /
@@ -4003,6 +4089,10 @@ HUB.switchToPanel         = switchToPanel
 HUB.getSong               = () => song
 HUB.getPlaybackMode       = () => playbackMode
 HUB.markUnsaved           = () => { hasUnsavedChanges = true }
+// Cue command-column editing (taut_popups openCueCmdPopup): read the current cue
+// instruction word and commit a new one (push to the audio adapter + mark dirty).
+HUB.getCueInstr           = (ci) => song.cues[ci].instr
+HUB.commitCueInstr        = (ci, instr) => { song.cues[ci].instr = instr & 0xFFFF; commitCue(ci) }
 // In-process editor modals (openSampleEdit / openAdvancedInstEdit) call this each
 // frame to keep playback + blobs alive while open — the whole point of going
 // frame to keep playback + blobs alive while open — the whole point of going
@@ -4051,7 +4141,7 @@ function applyGoto(num) {
     if (currentPanel === VIEW_TIMELINE) {
         cueIdx = num; clampCue()
     } else if (currentPanel === VIEW_CUES) {
-        const maxCue = song.lastActiveCue < 0 ? 0 : song.lastActiveCue
+        const maxCue = ordersMaxRow()
         ordersCursor = Math.max(0, Math.min(maxCue, num))
         if (ordersCursor < ordersScroll) ordersScroll = ordersCursor
         if (ordersCursor >= ordersScroll + PTNVIEW_HEIGHT)
@@ -4481,7 +4571,7 @@ function registerOrdersMouse() {
             if (btn !== 1 || playbackMode !== PLAYMODE_NONE) return
             const viewRow   = cy - PTNVIEW_OFFSET_Y
             const targetIdx = ordersScroll + viewRow
-            const maxCue    = song.lastActiveCue < 0 ? 0 : song.lastActiveCue
+            const maxCue    = ordersMaxRow()
             if (targetIdx < 0 || targetIdx > maxCue) return
             ordersCursor = targetIdx
             const col = colAtX(cx)
@@ -4496,7 +4586,7 @@ function registerOrdersMouse() {
                 if (hscrollBy(dy * 3)) { redrawPanel(); drawAlwaysOnElems() }
                 return
             }
-            const maxCue = song.lastActiveCue < 0 ? 0 : song.lastActiveCue
+            const maxCue = ordersMaxRow()
             ordersCursor += dy * 3
             if (ordersCursor < 0) ordersCursor = 0
             if (ordersCursor > maxCue) ordersCursor = maxCue

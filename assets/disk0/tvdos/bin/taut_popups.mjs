@@ -324,8 +324,116 @@ function init(HUB) {
         HUB.drawAll()
     }
 
+    /////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    // CUE COMMAND POPUP
+    /////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+    // Edit the command word of cue `ci` (the Cues panel "Comand" column). The
+    // instruction lives in cue bytes 30..31; its encoding is documented in
+    // terranmon.txt ("Cue Sheet"). The dialog pairs a command list with a free
+    // argument field; the argument's radix/range depends on the chosen command.
+    const CUE_CMDS = [
+        { id: 'noop',   label: 'No-op',          hasArg: false },
+        { id: 'len',    label: 'Pattern length', hasArg: true, radix: 10, min: 0, max: 63 },
+        { id: 'fade',   label: 'Fade out at',    hasArg: true, radix: 10, min: 0, max: 63 },
+        { id: 'halt',   label: 'Halt at end',    hasArg: false },
+        { id: 'haltat', label: 'Halt at row',    hasArg: true, radix: 10, min: 0, max: 63 },
+        { id: 'bak',    label: 'Go back',        hasArg: true, radix: 16, min: 0, max: 4095 },
+        { id: 'fwd',    label: 'Skip forward',   hasArg: true, radix: 16, min: 0, max: 4095 },
+        { id: 'jmp',    label: 'Jump to cue',    hasArg: true, radix: 16, min: 0, max: 4095 },
+    ]
+
+    function decodeCueInstr(instr) {
+        const foreword = (instr >>> 12) & 15
+        const preamble = (instr >>> 8) & 15
+        const arg12 = instr & 0xFFF
+        const arg8  = instr & 0xFF
+        if (foreword === 0b1000) return { id: 'bak', arg: arg12 }
+        if (foreword === 0b1001) return { id: 'fwd', arg: arg12 }
+        if (foreword === 0b1111) return { id: 'jmp', arg: arg12 }
+        if (foreword === 0b0000) {
+            if (preamble === 0b0010) return { id: 'len', arg: arg8 & 0x3F }
+            if (preamble === 0b0001) {
+                if (arg8 === 0)            return { id: 'halt',   arg: 0 }
+                if ((arg8 >>> 6) === 0b00) return { id: 'fade',   arg: arg8 & 63 }
+                if ((arg8 >>> 6) === 0b01) return { id: 'haltat', arg: arg8 & 63 }
+            }
+            if (preamble === 0b0000) return { id: 'noop', arg: 0 }
+        }
+        return { id: 'noop', arg: 0 }   // unknown / non-conforming: edit as No-op
+    }
+
+    function encodeCueInstr(id, arg) {
+        switch (id) {
+            case 'len':    return 0x0200 | (arg & 0x3F)
+            case 'fade':   return 0x0100 | (arg & 0x3F)
+            case 'halt':   return 0x0100
+            case 'haltat': return 0x0100 | 0x40 | (arg & 0x3F)
+            case 'bak':    return 0x8000 | (arg & 0xFFF)
+            case 'fwd':    return 0x9000 | (arg & 0xFFF)
+            case 'jmp':    return 0xF000 | (arg & 0xFFF)
+            default:       return 0x0000   // noop
+        }
+    }
+
+    function openCueCmdPopup(ci) {
+        const cur = decodeCueInstr(HUB.getCueInstr(ci) | 0)
+        let selIdx = CUE_CMDS.findIndex(c => c.id === cur.id)
+        if (selIdx < 0) selIdx = 0
+        const curCmd  = CUE_CMDS[selIdx]
+        const argStr  = curCmd.hasArg ? cur.arg.toString(curCmd.radix).toUpperCase() : ''
+        const cueLbl  = '$' + (ci >>> 0).toString(16).toUpperCase().padStart(3, '0')
+
+        const items = CUE_CMDS.map(c => ({ label: c.label, cmd: c }))
+
+        const res = win.showDialog({
+            title: 'Cue ' + cueLbl + ' Command',
+            drawFrame: popupDrawFrame,
+            colours: popupColours,
+            message: ['Args: len/fade/halt 0-63 dec, back/fwd/jmp hex'],
+            fields: [{ label: 'Argument:', width: 5, maxLength: 3, initial: argStr }],
+            list: {
+                items: items,
+                height: items.length,
+                width: 24,
+                cursor: selIdx,
+                scrollbarChars: popupScrollbarChars,
+                renderItem: (ctx) => {
+                    const c = ctx.item.cmd
+                    const isCur = (c.id === cur.id)
+                    const useFg = (ctx.isCursor && ctx.focused) ? colWHITE : (isCur ? colVoiceHdr : colStatus)
+                    const useBg = (ctx.isCursor && ctx.focused) ? colHighlight : ctx.listBg
+                    con.color_pair(useFg, useBg)
+                    con.move(ctx.y, ctx.x)
+                    const marker = isCur ? sym.playhead : ' '
+                    const hint = c.hasArg ? (c.radix === 16 ? '  hex' : '  0-63') : ''
+                    let label = marker + ' ' + c.label + hint
+                    if (label.length > ctx.w) label = label.substring(0, ctx.w)
+                    else                       label = label.padEnd(ctx.w, ' ')
+                    print(label)
+                },
+            },
+            buttons: [
+                { label: 'OK',     action: 'ok' },
+                { label: 'Cancel', action: 'cancel' },
+            ],
+        })
+
+        if (res.action === 'ok') {
+            const chosen = (res.listItem && res.listItem.cmd) || curCmd
+            let arg = 0
+            if (chosen.hasArg) {
+                const n = parseInt((res.values[0] || '').trim(), chosen.radix)
+                arg = isNaN(n) ? 0 : Math.max(chosen.min, Math.min(chosen.max, n))
+            }
+            HUB.commitCueInstr(ci, encodeCueInstr(chosen.id, arg))
+        }
+        HUB.drawAll()
+    }
+
     return {
         openHelpPopup, openConfirmQuit, openGotoPopup, openRetunePopup, openFlagsPopup,
+        openCueCmdPopup,
         popupDrawFrame, popupColours, popupScrollbarChars,
     }
 }
