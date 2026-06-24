@@ -1,0 +1,18 @@
+{
+  "name": "tsvm-harness",
+  "version": "1.0.0",
+  "description": "Node.js test harness that runs TSVM/TVDOS JavaScript headlessly for automated testing.",
+  "type": "module",
+  "private": true,
+  "main": "index.mjs",
+  "bin": {
+    "tsvm-run": "./cli.mjs"
+  },
+  "scripts": {
+    "test": "node test/run_all.mjs",
+    "run": "node cli.mjs"
+  },
+  "engines": {
+    "node": ">=22.15.0"
+  }
+}

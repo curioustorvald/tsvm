@@ -1639,7 +1639,7 @@ function drawControlHint() {
 
     const hintElemExternal = [['Tab','Panel'],['sep'],['!','Help']]
     const hintElemFile = [
-        [`28u29u`,'Nav'],
+        [`\u008428u\u008429u`,'Nav'],
         ['u','Up'],
     ['sep'],
         ['O','Open'],['S','Save'],['A','SvAs'],['N','New'],

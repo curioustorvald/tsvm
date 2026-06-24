@@ -181,6 +181,29 @@ Peripheral memories can be accessed using `vm.peek()` and `vm.poke()` functions,
 
 - Use example programs in `My_BASIC_Programs/` for BASIC testing
 - JavaScript test programs available in `assets/disk0/`
+
+### Node Test Harness (`harness/`)
+
+`harness/` runs TSVM/TVDOS JavaScript **headlessly under Node.js** (no GraalVM /
+LibGDX) for automated testing and agentic iteration. It reproduces the host
+globals a real `js` VMRunner sets up — `sys` (8 MiB user space + faithful
+64-byte `malloc`, `peek/poke/memcpy/pokeBytes`, timers), `con`/`print` (from the
+repo's `JS_INIT.js`), `gzip`(=Zstd)/`base64`, and the TVDOS userland
+(`files`/`_TVDOS`/`_G.shell`/`require`) backed by the real `assets/disk0` with a
+**copy-on-write overlay** so tests never mutate the repo. `graphics` image/codec
+calls, `audio`, and `com` are stubbed (codecs throw; audio/com record calls into
+`vm.stubCalls`). Requires Node ≥ 22.15.
+
+```js
+import { createVM } from "./harness/index.mjs"
+const vm = createVM()
+vm.run(`println("hi"); sys.poke(256, 65)`)
+vm.outputText()   // "hi\n"
+```
+
+- CLI: `node harness/cli.mjs [--screen|--keys "..."|--no-tvdos|--module] <file.js> [args]`
+- Self-tests: `cd harness && node test/run_all.mjs`
+- Full surface + fidelity caveats: `harness/README.md`
 - Videotron2K assembly examples in documentation
 
 ## Notes
