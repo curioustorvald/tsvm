@@ -1,5 +1,6 @@
 const win = require("wintex")
 const keys = require("keysym")
+const filenav = require("filenav")
 
 const COL_TEXT = 253
 const COL_BACK = 255
@@ -9,6 +10,7 @@ const COL_HLACTION = 39
 const COL_DIR = COL_TEXT
 const COL_SUPERTEXT = 239
 const COL_DIMTEXT = 249
+const COL_DISABLED = 244 // greyed-out op-panel buttons (mid grey on the 232..255 ramp)
 const COL_LNUMBACK = 18
 const COL_LNUMFORE = 253
 const COL_BRAND = 161
@@ -171,234 +173,17 @@ function dispatchMouseEvent(event) {
     return false
 }
 
-let windowMode = 0 // 0 == left, 1 == right
+// Main-loop state (the navigator coordinates with these through the hooks below).
+let redrawRequested = false
+let exit = false
+let firstRunLatch = true
+let pendingPostExecDrain = false
 
-// window states
-let path = [["A:", "home"], ["A:"]]
-let scroll = [0, 0]
-let dirFileList = [[], []]
-let cursor = [0, 0] // absolute position!
-// end of window states
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// Op panel (sidebar). NOT part of the navigator — zfm owns it and routes its
+// buttons through nav.invokeAction(id).
+///////////////////////////////////////////////////////////////////////////////////////////////////
 
-
-function bytesToReadable(i) {
-    return ''+ (
-       (i > 999999999999) ? (((i / 10000000000)|0)/100 + "T") :
-       (i > 999999999) ? (((i / 10000000)|0)/100 + "G") :
-       (i > 999999) ? (((i / 10000)|0)/100 + "M") :
-       (i > 9999) ? (((i / 100)|0)/10 + "K") :
-       i
-   )
-}
-
-let filePanelCache = [[], []]
-
-function refreshFilePanelCache(side) {
-    let pathStr = path[side].concat(['']).join("\\").replaceAll('\\\\', '\\')
-    const showDrives = (pathStr.length == 0)
-
-
-
-    filePanelCache[side] = []
-
-    let ds = []
-    let fs = []
-
-    //serial.println(`pathStr=${pathStr}`)
-    if (!showDrives) {
-        let letter = pathStr[0]
-        let serialPath = pathStr.substring(3)
-        // remove trailing slashes
-        while (serialPath.endsWith("\\")) {
-            serialPath = serialPath.substring(0, serialPath.length - 1)
-        }
-
-        let port = _TVDOS.DRV.FS.SERIAL._toPorts(letter)
-        com.sendMessage(port[0], "DEVRST\x17")
-        com.sendMessage(port[0], "OPENR"+'"'+serialPath+'",'+port[1])
-        //serial.println("OPENR"+'"'+serialPath+'",'+port[1])
-        com.sendMessage(port[0], "LISTFILES")
-        let response = com.getStatusCode(port[0])
-        let rawStr = com.pullMessage(port[0]) // {\x11 | \x12} <name> [ \x1E {\x11 | \x12} <name> ] \x17
-
-        //serial.println(`rawStr=${rawStr}`)
-
-
-        rawStr.substring(0, rawStr.length).split('\x1E').forEach((s) => {
-            let fname = undefined
-            if (s[0] == '\x11') {
-                fname = s.substr(1)
-                //serial.println(`fname=(dir)${fname}`)
-                ds.push(files.open(`${pathStr}${fname}`))
-            }
-            else if (s[0] == '\x12') {
-                fname = s.substr(1)
-                //serial.println(`fname=(file)${fname}`)
-                fs.push(files.open(`${pathStr}${fname}`))
-            }
-        })
-    }
-    else {
-        Object.entries(_TVDOS.DRIVES).map(it=>{
-            let [letter, [port, drivenum]] = it
-            let dinfo = _TVDOS.DRIVEINFO[letter]
-
-            if (dinfo.type == "STOR") {
-                let file = files.open(`${letter}:\\`)
-                ds.push(file)
-                //serial.println(`fileList ${file.fullPath}`)
-            }
-        })
-    }
-
-    ds.sort((a,b) => (a.name > b.name) ? 1 : (a.name < b.name) ? -1 : 0)
-    fs.sort((a,b) => (a.name > b.name) ? 1 : (a.name < b.name) ? -1 : 0)
-    dirFileList[side] = ds.concat(fs)
-
-    let filesCount = dirFileList[side].length
-
-    for (let i = 0; i < filesCount; i++) {
-        let isDirectory = (i < ds.length)
-        let file = dirFileList[side][i]
-        let sizestr;
-        if (!showDrives) {
-            sizestr = (file) ? bytesToReadable(file.size) : ''  // FIXME file.size creates disk access
-        }
-        else if (file) {
-            let port = _TVDOS.DRIVES[file.driveLetter]
-            _TVDOS.DRV.FS.SERIAL._flush(port[0]);_TVDOS.DRV.FS.SERIAL._close(port[0])
-            com.sendMessage(port[0], "USAGE")
-            let response = com.getStatusCode(port[0])
-            if (0 == response) {
-                let rawStr = com.fetchResponse(port[0]).split('/') // USED1234/TOTAL23412341
-                let usedBytes = (rawStr[0].substring(4))|0
-                let totalBytes = (rawStr[1].substring(5))|0
-                sizestr = bytesToReadable(usedBytes)
-            }
-            else {
-                sizestr = ''
-            }
-        }
-        else {
-            sizestr = ''
-        }
-        let filename = (showDrives && file) ? file.fullPath : (file) ? file.name : ''
-        let fileext = filename.substring(filename.lastIndexOf(".") + 1).toLowerCase()
-
-        filePanelCache[side].push({
-            file: file,
-            isDirectory: isDirectory,
-            sizestr: sizestr,
-            filename: filename,
-            fileext: fileext
-        })
-    }
-}
-
-let filesPanelDraw = (wo) => {
-    let usedBytes = undefined
-    let totalBytes = undefined
-    let freeBytes = undefined
-    let pathStr = path[windowMode].concat(['']).join("\\").replaceAll('\\\\', '\\')
-
-    //serial.println(`pathStr=${pathStr}`)
-
-    let port = _TVDOS.DRIVES[pathStr[0]]
-
-    const showDrives = (pathStr.length == 0)
-
-    if (!showDrives) {
-        _TVDOS.DRV.FS.SERIAL._flush(port[0]);_TVDOS.DRV.FS.SERIAL._close(port[0])
-        com.sendMessage(port[0], "USAGE")
-        let response = com.getStatusCode(port[0])
-        if (0 == response) {
-            let rawStr = com.fetchResponse(port[0]).split('/') // USED1234/TOTAL23412341
-            usedBytes = (rawStr[0].substring(4))|0
-            totalBytes = (rawStr[1].substring(5))|0
-            freeBytes = totalBytes - usedBytes
-        }
-    }
-
-    let diskSizestr = (isNaN(freeBytes / totalBytes)) ? undefined : bytesToReadable(usedBytes)+"/"+bytesToReadable(totalBytes)
-
-    wo.titleLeft = (showDrives) ? "(drives)" : pathStr
-    wo.titleRight = diskSizestr
-
-
-    // draw list header
-    con.color_pair(COL_HLTEXT, COL_BACK)
-    con.move(wo.y + 1, wo.x + 1); print(" Name")
-    con.mvaddch(wo.y + 1, wo.x + FILELIST_WIDTH, 0xB3)
-    con.curs_right(); print(" Size")
-
-
-    con.color_pair(COL_TEXT, COL_BACK)
-
-    let s = scroll[windowMode]
-    let filesCount = dirFileList[windowMode].length
-
-    // print entries
-    for (let i = 0; i < LIST_HEIGHT; i++) {
-        let listObj = filePanelCache[windowMode][i+s]
-        if (listObj) {
-            let file = listObj.file
-            let isDirectory = listObj.isDirectory
-            let sizestr = listObj.sizestr
-            let filename = listObj.filename//(showDrives && file) ? file.fullPath : (file) ? file.name : ''
-            let fileext = listObj.fileext
-
-            // set bg colour
-            let backCol = (i == cursor[windowMode] - s) ? COL_BACK_SEL : COL_BACK
-            // set fg colour (if there are more at the top/bottom, dim the colour)
-            let foreCol = (i == 0 && s > 0 || i == LIST_HEIGHT - 1 && i + s < filesCount - 1) ? COL_DIMTEXT : (COL_HL_EXT[fileext] || COL_TEXT)
-
-            // print filename
-            con.color_pair(foreCol, backCol)
-            con.move(wo.y + 2+i, wo.x + 1)
-            print(((file && isDirectory && !showDrives) ? '\\' : ' ') + filename)
-            print(' '.repeat(FILELIST_WIDTH - 2 - filename.length))
-
-            // print |
-            con.color_pair(COL_TEXT, backCol)
-            con.mvaddch(wo.y + 2+i, wo.x + FILELIST_WIDTH, 0xB3)
-
-            // print filesize
-            con.color_pair(foreCol, backCol)
-            con.move(wo.y + 2+i, wo.x + FILELIST_WIDTH + 1)
-            if (file && isDirectory && !showDrives) {
-                print(' '.repeat(FILESIZE_WIDTH - sizestr.length))
-                print(sizestr); con.prnch(0x7F)
-            }
-            else {
-                print(' '.repeat(FILESIZE_WIDTH - sizestr.length + 1))
-                print(sizestr)
-            }
-        }
-        else {
-            // set bg colour
-            let backCol = (i == cursor[windowMode] - s) ? COL_BACK_SEL : COL_BACK
-            // set fg colour (if there are more at the top/bottom, dim the colour)
-            let foreCol = COL_TEXT
-
-            // print empty filename
-            con.color_pair(foreCol, backCol)
-            con.move(wo.y + 2+i, wo.x + 1)
-            print(' '.repeat(FILELIST_WIDTH - 1))
-
-            // print |
-            con.color_pair(COL_TEXT, backCol)
-            con.mvaddch(wo.y + 2+i, wo.x + FILELIST_WIDTH, 0xB3)
-
-            // print empty filesize
-            con.color_pair(foreCol, backCol)
-            con.move(wo.y + 2+i, wo.x + FILELIST_WIDTH + 1)
-            print(' '.repeat(FILESIZE_WIDTH + 1))
-        }
-    }
-
-    con.color_pair(COL_TEXT, COL_BACK)
-
-}
 // Op panel buttons. yOff is the row offset (icon) inside the op panel frame;
 // label sits at yOff+1. Hit regions span both rows.
 // hitH is the row count for the mouse hit-box. The switch button gets a taller
@@ -435,7 +220,12 @@ let opPanelDraw = (wo) => {
             print('\u00CD'.repeat(SIDEBAR_WIDTH - 2))
         }
     }
-    function labCol(i) { return (opHover === i) ? COL_HLTEXT : COL_TEXT }
+    // A disabled button (per nav.isEnabled) is drawn in a dim grey with its
+    // action key no longer popping, and registers no hover/click (see
+    // setupPanelMouseRegions), so it reads as inert rather than silently dead.
+    function enabled(i) { return nav.isEnabled(OP_BUTTONS[i].id) }
+    function labCol(i) { return !enabled(i) ? COL_DISABLED : (opHover === i) ? COL_HLTEXT : COL_TEXT }
+    function actCol(i) { return !enabled(i) ? COL_DISABLED : COL_HLACTION }
 
     con.color_pair(COL_TEXT, COL_BACK)
 
@@ -444,40 +234,40 @@ let opPanelDraw = (wo) => {
 
     // other panel
     con.move(yp + 2, xp + 3)
-    con.color_pair(labCol(0), 255); con.prnch((windowMode) ? 0x11 : 0x10)
+    con.color_pair(labCol(0), 255); con.prnch((nav.windowMode) ? 0x11 : 0x10)
     con.move(yp + 3, xp)
-    print(`  \x1B[38;5;${labCol(0)}m[\x1B[38;5;${COL_HLACTION}mZ\x1B[38;5;${labCol(0)}m]`)
+    print(`  \x1B[38;5;${labCol(0)}m[\x1B[38;5;${actCol(0)}mZ\x1B[38;5;${labCol(0)}m]`)
 
     hr(0, yp+5)
 
     // go up
     con.color_pair(labCol(1), 255); con.mvaddch(yp + 6, xp + 3, 0x18)
     con.move(yp + 7, xp)
-    print(` \x1B[38;5;${labCol(1)}mGo \x1B[38;5;${COL_HLACTION}mU\x1B[38;5;${labCol(1)}mp`)
+    print(` \x1B[38;5;${labCol(1)}mGo \x1B[38;5;${actCol(1)}mU\x1B[38;5;${labCol(1)}mp`)
 
     hr(1, yp+8)
 
     // copy
     con.move(yp + 9, xp + 2)
-    con.color_pair(labCol(2), 255); con.prnch(0xDB);con.prnch((windowMode) ? 0x1B : 0x1A);con.prnch(0xDB)
+    con.color_pair(labCol(2), 255); con.prnch(0xDB);con.prnch((nav.windowMode) ? 0x1B : 0x1A);con.prnch(0xDB)
     con.move(yp + 10, xp)
-    print(` \x1B[38;5;${COL_HLACTION}mC\x1B[38;5;${labCol(2)}mopy`)
+    print(` \x1B[38;5;${actCol(2)}mC\x1B[38;5;${labCol(2)}mopy`)
 
     hr(2, yp+11)
 
     // move
     con.move(yp + 12, xp + 2)
-    con.color_pair(labCol(3), 255); if (windowMode) con.prnch([0xDB, 0x1B, 0xB0]); else con.prnch([0xB0, 0x1A, 0xDB])
+    con.color_pair(labCol(3), 255); if (nav.windowMode) con.prnch([0xDB, 0x1B, 0xB0]); else con.prnch([0xB0, 0x1A, 0xDB])
     con.move(yp + 13, xp)
-    print(` \x1B[38;5;${labCol(3)}mMo\x1B[38;5;${COL_HLACTION}mv\x1B[38;5;${labCol(3)}me`)
+    print(` \x1B[38;5;${labCol(3)}mMo\x1B[38;5;${actCol(3)}mv\x1B[38;5;${labCol(3)}me`)
 
     hr(3, yp+14)
 
     // delete
     con.move(yp + 15, xp + 2)
-    con.color_pair(labCol(4), 255); if (windowMode) con.prnch([0xDB, 0x1A, 0xF9]); else con.prnch([0xF9, 0x1B, 0xDB])
+    con.color_pair(labCol(4), 255); if (nav.windowMode) con.prnch([0xDB, 0x1A, 0xF9]); else con.prnch([0xF9, 0x1B, 0xDB])
     con.move(yp + 16, xp)
-    print(` \x1B[38;5;${COL_HLACTION}mD\x1B[38;5;${labCol(4)}melete`)
+    print(` \x1B[38;5;${actCol(4)}mD\x1B[38;5;${labCol(4)}melete`)
 
     hr(4, yp+17)
 
@@ -488,7 +278,7 @@ let opPanelDraw = (wo) => {
     con.video_reverse();con.prnch(0x2B);con.video_reverse()
     con.prnch(0xDF)
     con.move(yp + 19, xp)
-    print(` \x1B[38;5;${labCol(5)}mM\x1B[38;5;${COL_HLACTION}mk\x1B[38;5;${labCol(5)}mDir`)
+    print(` \x1B[38;5;${labCol(5)}mM\x1B[38;5;${actCol(5)}mk\x1B[38;5;${labCol(5)}mDir`)
 
     hr(5, yp+20)
 
@@ -496,7 +286,7 @@ let opPanelDraw = (wo) => {
     con.move(yp + 21, xp + 2)
     con.color_pair(labCol(6), 255); con.prnch(0x4E);con.prnch(0x1A);con.prnch(0x52)
     con.move(yp + 22, xp)
-    print(` \x1B[38;5;${COL_HLACTION}mR\x1B[38;5;${labCol(6)}mename`)
+    print(` \x1B[38;5;${actCol(6)}mR\x1B[38;5;${labCol(6)}mename`)
 
     hr(6, yp+23)
 
@@ -504,7 +294,7 @@ let opPanelDraw = (wo) => {
     con.move(yp + 24, xp + 3)
     con.color_pair(labCol(7), 255); con.prnch(0xf0)
     con.move(yp + 25, xp)
-    print(` \x1B[38;5;${COL_HLACTION}mM\x1B[38;5;${labCol(7)}more`)
+    print(` \x1B[38;5;${actCol(7)}mM\x1B[38;5;${labCol(7)}more`)
 
     hr(7, yp+26)
 
@@ -512,90 +302,15 @@ let opPanelDraw = (wo) => {
     con.move(yp + 27, xp + 3)
     con.color_pair(labCol(8), 255); con.prnch(0x58)
     con.move(yp + 28, xp)
-    print(` \x1B[38;5;${COL_HLACTION}mQ\x1B[38;5;${labCol(8)}muit`)
+    print(` \x1B[38;5;${actCol(8)}mQ\x1B[38;5;${labCol(8)}muit`)
 
     con.color_pair(COL_TEXT, 255)
 }
 
-
-let filenavOninput = (window, event) => {
-    let eventName = event[0]
-    if (eventName !== "key_down") return
-
-    let keysym = event[1]
-    let keyJustHit = (1 == event[2])
-    let keycodes = [event[3],event[4],event[5],event[6],event[7],event[8],event[9],event[10]]
-    let keycode = keycodes[0]
-
-    let scrollPeek = (LIST_HEIGHT / 3)|0
-
-    if      (keyJustHit && keysym == "q") actQuit()
-    else if (keyJustHit && keysym == "z") actSwitchPanel()
-    else if (keyJustHit && keysym == 'u') actGoUp()
-    else if (keyJustHit && keysym == 'c') actCopy()
-    else if (keyJustHit && keysym == 'v') actMove()
-    else if (keyJustHit && keysym == 'd') actDelete()
-    else if (keyJustHit && keysym == 'k') actMkdir()
-    else if (keyJustHit && keysym == 'r') actRename()
-    else if (keyJustHit && keysym == 'm') actMore()
-    else if (keysym == "<UP>") {
-        [cursor[windowMode], scroll[windowMode]] = win.scrollVert(-1, dirFileList[windowMode].length, LIST_HEIGHT, cursor[windowMode], scroll[windowMode], scrollPeek)
-        drawFilePanel()
-    }
-    else if (keysym == "<DOWN>") {
-        [cursor[windowMode], scroll[windowMode]] = win.scrollVert(+1, dirFileList[windowMode].length, LIST_HEIGHT, cursor[windowMode], scroll[windowMode], scrollPeek)
-        drawFilePanel()
-    }
-    else if (keysym == "<PAGE_UP>") {
-        [cursor[windowMode], scroll[windowMode]] = win.scrollVert(-LIST_HEIGHT, dirFileList[windowMode].length, LIST_HEIGHT, cursor[windowMode], scroll[windowMode], scrollPeek)
-        drawFilePanel()
-    }
-    else if (keysym == "<PAGE_DOWN>") {
-        [cursor[windowMode], scroll[windowMode]] = win.scrollVert(+LIST_HEIGHT, dirFileList[windowMode].length, LIST_HEIGHT, cursor[windowMode], scroll[windowMode], scrollPeek)
-        drawFilePanel()
-    }
-    else if (keyJustHit && keycode == 66) { // enter
-        actActivate()
-    }
-}
-
 ///////////////////////////////////////////////////////////////////////////////////////////////////
-// Popup wrappers (delegate to win.showDialog in wintex.mjs)
+// More-op menu (the navigator's More hook). Vertical-list popup; selection runs
+// execute / edit / open-terminal-here for the highlighted file.
 ///////////////////////////////////////////////////////////////////////////////////////////////////
-
-function showConfirmPopup(title, message) {
-    const res = win.showDialog({
-        title: title,
-        message: message,
-        fields: [],
-        buttons: [
-            { label: 'OK',     action: 'ok', default: true },
-            { label: 'CANCEL', action: 'cancel' },
-        ],
-    })
-    return res.action === 'ok'
-}
-
-function showInputPopup(title, prompt, defaultVal) {
-    const res = win.showDialog({
-        title: title,
-        fields: [{ label: prompt, initial: defaultVal || '', width: POPUP_WIDTH - 6 }],
-        buttons: [
-            { label: 'OK',     action: 'ok', default: true },
-            { label: 'CANCEL', action: 'cancel' },
-        ],
-    })
-    return res.action === 'ok' ? res.values[0] : null
-}
-
-function showMessagePopup(title, message) {
-    win.showDialog({
-        title: title,
-        message: message,
-        fields: [],
-        buttons: [{ label: 'OK', action: 'ok', default: true }],
-    })
-}
 
 // Vertical-list popup: items are stacked rows, navigable with arrow keys /
 // mouse, selection (Enter / left-click on row) returns that item's action.
@@ -623,12 +338,87 @@ function showActionListPopup(opts) {
     return { action: res.action }
 }
 
+function onMore(cache, nav) {
+    const items = cache.isDirectory
+        ? [
+            { label: 'Open terminal here', action: 'terminal', default: true },
+        ]
+        : [
+            { label: 'Execute',            action: 'execute', default: true },
+            { label: 'Edit',               action: 'edit' },
+            { label: 'Open terminal here', action: 'terminal' },
+        ]
+
+    const res = showActionListPopup({
+        title: 'More',
+        message: cache.file.name,
+        items: items,
+    })
+    _redraw()
+
+    if (res.action === 'execute') {
+        nav.activate()
+        return
+    }
+    if (res.action === 'edit') {
+        const editfun = EDIT_FUNS[cache.fileext]
+            || ((f) => _G.shell.execute(`${DEFAULT_EDITOR} "${f}"`))
+        nav.runChild(() => editfun(cache.file.fullPath))
+        return
+    }
+    if (res.action === 'terminal') {
+        onTerminal(cache, nav)
+    }
+}
+
+function onTerminal(cache, nav) {
+    const targetDir = (cache && cache.isDirectory && cache.file)
+        ? cache.file.fullPath
+        : nav.getCurrentDirStr(nav.windowMode)
+    if (!targetDir || targetDir.length === 0) return
+
+    // TVDOS shell.parse has no working escape inside quotes (the `^` ESCAPE
+    // state is a TODO), so we can't pass a quoted path through `command -k
+    // "cd \"X\""`. The outer quotes carry the whole `cd <path>` as one token;
+    // shell.execute then re-parses it. This works for paths without spaces;
+    // paths with spaces will only cd to the first component.
+    nav.runChild(() => _G.shell.execute(`command -k "cd ${targetDir}"`))
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+// Navigator instance. zfm enables the full editing surface: quit, switch panel,
+// more, and the file-mutation operations (copy/move/delete/mkdir/rename). "Go
+// up" is the navigator's native function and needs no hook.
+///////////////////////////////////////////////////////////////////////////////////////////////////
+
+const nav = filenav.create({
+    C: {
+        LIST_HEIGHT, FILELIST_WIDTH, FILESIZE_WIDTH, POPUP_WIDTH,
+        COL_TEXT, COL_BACK, COL_BACK_SEL, COL_HLTEXT, COL_DIMTEXT, COL_HL_EXT,
+    },
+    execFuns: EXEC_FUNS,
+    win: win,
+    initialPaths: [["A:", "home"], ["A:"]],
+    addMouseRegion: addPanelMouseRegion,
+    requestRedraw: redraw,
+    redrawNow: _redraw,
+    drawActivePanel: drawFilePanel,
+    clearScr: clearScr,
+    onChildExit: () => { firstRunLatch = true; pendingPostExecDrain = true },
+    hooks: {
+        onQuit:        () => { exit = true },
+        onSwitchPanel: () => { nav.setWindowMode(1 - nav.windowMode); redraw() },
+        onMore:        onMore,
+        fs:            true,
+    },
+})
+
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 const windows = [
-    new win.WindowObject(1, 2, WIDTH - SIDEBAR_WIDTH, HEIGHT, filenavOninput, filesPanelDraw), // left panel
+    new win.WindowObject(1, 2, WIDTH - SIDEBAR_WIDTH, HEIGHT, nav.filenavOninput, nav.filesPanelDraw), // left panel
     new win.WindowObject(WIDTH - SIDEBAR_WIDTH+1, 2, SIDEBAR_WIDTH, HEIGHT, ()=>{}, opPanelDraw),
-    new win.WindowObject(SIDEBAR_WIDTH + 1, 2, WIDTH - SIDEBAR_WIDTH, HEIGHT, filenavOninput, filesPanelDraw), // right panel
+    new win.WindowObject(SIDEBAR_WIDTH + 1, 2, WIDTH - SIDEBAR_WIDTH, HEIGHT, nav.filenavOninput, nav.filesPanelDraw), // right panel
 ]
 
 const LEFTPANEL = windows[0]
@@ -652,9 +442,9 @@ function drawTitle() {
 
 function drawFilePanel() {
     windows.forEach((panel, i) => {
-        panel.isHighlighted = (i == 2 * windowMode)
+        panel.isHighlighted = (i == 2 * nav.windowMode)
     })
-    if (windowMode) {
+    if (nav.windowMode) {
         RIGHTPANEL.drawContents()
         RIGHTPANEL.drawFrame()
     }
@@ -665,7 +455,7 @@ function drawFilePanel() {
 }
 
 function drawOpPanel() {
-    if (windowMode)
+    if (nav.windowMode)
         OPPANEL.x = 1
     else
         OPPANEL.x = WIDTH - SIDEBAR_WIDTH+1
@@ -695,378 +485,14 @@ function clearScr() {
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
-// File operations and op-panel actions
-///////////////////////////////////////////////////////////////////////////////////////////////////
-
-function getCurrentDirStr(side) {
-    return path[side].concat(['']).join("\\").replaceAll('\\\\', '\\')
-}
-
-function clampCursorAfterChange() {
-    const len = dirFileList[windowMode].length
-    if (cursor[windowMode] >= len) cursor[windowMode] = Math.max(0, len - 1)
-    const maxScroll = Math.max(0, len - LIST_HEIGHT)
-    if (scroll[windowMode] > maxScroll) scroll[windowMode] = maxScroll
-    if (scroll[windowMode] < 0) scroll[windowMode] = 0
-}
-
-function actSwitchPanel() {
-    windowMode = 1 - windowMode
-    redraw()
-}
-
-function actGoUp() {
-    if (path[windowMode].length >= 1) {
-        path[windowMode].pop()
-        cursor[windowMode] = 0; scroll[windowMode] = 0
-        refreshFilePanelCache(windowMode)
-        _redraw()
-    }
-}
-
-function actActivate() {
-    let selectedFileCache = filePanelCache[windowMode][cursor[windowMode]]
-    if (!selectedFileCache || !selectedFileCache.file) return
-    let selectedFile = selectedFileCache.file
-
-    if (selectedFile.fullPath[1] == ":" && selectedFile.fullPath[2] == "\\" && selectedFile.fullPath.length == 3) {
-        path[windowMode].push(selectedFile.fullPath)
-        cursor[windowMode] = 0; scroll[windowMode] = 0
-        refreshFilePanelCache(windowMode)
-        _redraw()
-    }
-    else if (selectedFileCache.isDirectory) {
-        path[windowMode].push(selectedFileCache.filename)
-        cursor[windowMode] = 0; scroll[windowMode] = 0
-        refreshFilePanelCache(windowMode)
-        _redraw()
-    }
-    else {
-        let fileext = selectedFileCache.filename.substring(selectedFileCache.filename.lastIndexOf(".") + 1).toLowerCase()
-        let execfun = EXEC_FUNS[fileext] || ((f) => _G.shell.execute(f))
-        let errorlevel = 0
-
-        con.curs_set(1); clearScr(); con.move(1,1)
-        try {
-            errorlevel = execfun(selectedFile.fullPath)
-        }
-        catch (e) {
-            println(e)
-            errorlevel = 1
-        }
-
-        if (errorlevel) {
-            println("Hit Return/Enter key to continue . . . .")
-            sys.read()
-        }
-
-        firstRunLatch = true
-        con.curs_set(0); clearScr()
-        refreshFilePanelCache(windowMode)
-        pendingPostExecDrain = true
-        redraw()
-    }
-}
-
-function actCopy() {
-    if (path[windowMode].length === 0) return
-    const cache = filePanelCache[windowMode][cursor[windowMode]]
-    if (!cache || !cache.file) return
-    if (cache.isDirectory) { showMessagePopup('Copy', 'Directory copy is not supported.'); _redraw(); return }
-    if (path[1 - windowMode].length === 0) { showMessagePopup('Copy', 'Cannot copy to drive list view.'); _redraw(); return }
-
-    const srcPath = cache.file.fullPath
-    const dstDir = getCurrentDirStr(1 - windowMode)
-    const dstPath = dstDir + cache.file.name
-    if (srcPath === dstPath) { _redraw(); return } // both panels point to same directory
-
-    try {
-        const srcFile = files.open(srcPath)
-        const dstFile = files.open(dstPath)
-        if (!srcFile.exists) { showMessagePopup('Copy', 'Source not found.'); _redraw(); return }
-        if (dstFile.exists) {
-            if (!showConfirmPopup('Copy', `Overwrite "${cache.file.name}"?`)) { _redraw(); return }
-        }
-        if (!dstFile.exists) dstFile.mkFile()
-        dstFile.bwrite(srcFile.bread())
-        try { dstFile.flush() } catch (e) {}
-        try { dstFile.close() } catch (e) {}
-        try { srcFile.close() } catch (e) {}
-        refreshFilePanelCache(1 - windowMode)
-    }
-    catch (e) {
-        showMessagePopup('Copy failed', e.message || ('' + e))
-    }
-    _redraw()
-}
-
-function actMove() {
-    if (path[windowMode].length === 0) return
-    const cache = filePanelCache[windowMode][cursor[windowMode]]
-    if (!cache || !cache.file) return
-    if (cache.isDirectory) { showMessagePopup('Move', 'Directory move is not supported.'); _redraw(); return }
-    if (path[1 - windowMode].length === 0) { showMessagePopup('Move', 'Cannot move to drive list view.'); _redraw(); return }
-
-    const srcPath = cache.file.fullPath
-    const dstDir = getCurrentDirStr(1 - windowMode)
-    const dstPath = dstDir + cache.file.name
-    if (srcPath === dstPath) { _redraw(); return } // no-op
-
-    try {
-        const srcFile = files.open(srcPath)
-        const dstFile = files.open(dstPath)
-        if (!srcFile.exists) { showMessagePopup('Move', 'Source not found.'); _redraw(); return }
-        if (dstFile.exists) {
-            if (!showConfirmPopup('Move', `Overwrite "${cache.file.name}"?`)) { _redraw(); return }
-        }
-        if (!dstFile.exists) dstFile.mkFile()
-        dstFile.bwrite(srcFile.bread())
-        try { dstFile.flush() } catch (e) {}
-        try { dstFile.close() } catch (e) {}
-        srcFile.remove()
-        refreshFilePanelCache(windowMode)
-        refreshFilePanelCache(1 - windowMode)
-        clampCursorAfterChange()
-    }
-    catch (e) {
-        showMessagePopup('Move failed', e.message || ('' + e))
-    }
-    _redraw()
-}
-
-function actDelete() {
-    if (path[windowMode].length === 0) return
-    const cache = filePanelCache[windowMode][cursor[windowMode]]
-    if (!cache || !cache.file) return
-
-    const name = cache.file.name
-    const kind = cache.isDirectory ? 'directory' : 'file'
-    if (!showConfirmPopup('Delete', `Delete ${kind} "${name}"?`)) { _redraw(); return }
-
-    try {
-        const status = cache.file.remove()
-        if (status !== undefined && status !== 0 && status !== true) {
-            showMessagePopup('Delete failed', `Cannot delete "${name}" (status ${status}).`)
-        }
-        refreshFilePanelCache(windowMode)
-        clampCursorAfterChange()
-    }
-    catch (e) {
-        showMessagePopup('Delete failed', e.message || ('' + e))
-    }
-    _redraw()
-}
-
-function actMkdir() {
-    if (path[windowMode].length === 0) { showMessagePopup('Mkdir', 'Choose a directory first.'); _redraw(); return }
-    const name = showInputPopup('Make Directory', 'Directory name:', '')
-    if (name === null || name.length === 0) { _redraw(); return }
-
-    const dstPath = getCurrentDirStr(windowMode) + name
-    try {
-        const dstFile = files.open(dstPath)
-        if (dstFile.exists) {
-            showMessagePopup('Mkdir', `"${name}" already exists.`)
-        }
-        else {
-            const ok = dstFile.mkDir()
-            if (!ok) showMessagePopup('Mkdir failed', `Cannot create "${name}".`)
-            else refreshFilePanelCache(windowMode)
-        }
-    }
-    catch (e) {
-        showMessagePopup('Mkdir failed', e.message || ('' + e))
-    }
-    _redraw()
-}
-
-function actRename() {
-    if (path[windowMode].length === 0) return
-    const cache = filePanelCache[windowMode][cursor[windowMode]]
-    if (!cache || !cache.file) return
-    if (cache.isDirectory) { showMessagePopup('Rename', 'Directory rename is not supported.'); _redraw(); return }
-
-    const oldName = cache.file.name
-    const newName = showInputPopup('Rename', 'New name:', oldName)
-    if (newName === null || newName.length === 0 || newName === oldName) { _redraw(); return }
-
-    const dirStr = getCurrentDirStr(windowMode)
-    const srcPath = cache.file.fullPath
-    const dstPath = dirStr + newName
-
-    try {
-        const srcFile = files.open(srcPath)
-        const dstFile = files.open(dstPath)
-        if (dstFile.exists) {
-            if (!showConfirmPopup('Rename', `Overwrite "${newName}"?`)) { _redraw(); return }
-        }
-        if (!dstFile.exists) dstFile.mkFile()
-        dstFile.bwrite(srcFile.bread())
-        try { dstFile.flush() } catch (e) {}
-        try { dstFile.close() } catch (e) {}
-        srcFile.remove()
-        refreshFilePanelCache(windowMode)
-        clampCursorAfterChange()
-    }
-    catch (e) {
-        showMessagePopup('Rename failed', e.message || ('' + e))
-    }
-    _redraw()
-}
-
-function actMore() {
-    if (path[windowMode].length === 0) return
-    const cache = filePanelCache[windowMode][cursor[windowMode]]
-    if (!cache || !cache.file) return
-
-    const items = cache.isDirectory
-        ? [
-            { label: 'Open terminal here', action: 'terminal', default: true },
-        ]
-        : [
-            { label: 'Execute',            action: 'execute', default: true },
-            { label: 'Edit',               action: 'edit' },
-            { label: 'Open terminal here', action: 'terminal' },
-        ]
-
-    const res = showActionListPopup({
-        title: 'More',
-        message: cache.file.name,
-        items: items,
-    })
-    _redraw()
-
-    if (res.action === 'execute') {
-        actActivate()
-        return
-    }
-    if (res.action === 'edit') {
-        const editfun = EDIT_FUNS[cache.fileext]
-            || ((f) => _G.shell.execute(`${DEFAULT_EDITOR} "${f}"`))
-        let errorlevel = 0
-        con.curs_set(1); clearScr(); con.move(1, 1)
-        try {
-            errorlevel = editfun(cache.file.fullPath)
-        }
-        catch (e) {
-            println(e)
-            errorlevel = 1
-        }
-        if (errorlevel) {
-            println("Hit Return/Enter key to continue . . . .")
-            sys.read()
-        }
-        firstRunLatch = true
-        con.curs_set(0); clearScr()
-        refreshFilePanelCache(windowMode)
-        pendingPostExecDrain = true
-        redraw()
-        return
-    }
-    if (res.action === 'terminal') {
-        actTerminal(cache)
-    }
-}
-
-function actTerminal(cache) {
-    const targetDir = (cache && cache.isDirectory && cache.file)
-        ? cache.file.fullPath
-        : getCurrentDirStr(windowMode)
-    if (!targetDir || targetDir.length === 0) return
-
-    // TVDOS shell.parse has no working escape inside quotes (the `^` ESCAPE
-    // state is a TODO), so we can't pass a quoted path through `command -k
-    // "cd \"X\""`. The outer quotes carry the whole `cd <path>` as one token;
-    // shell.execute then re-parses it. This works for paths without spaces;
-    // paths with spaces will only cd to the first component.
-    let errorlevel = 0
-    con.curs_set(1); clearScr(); con.move(1, 1)
-    try {
-        errorlevel = _G.shell.execute(`command -k "cd ${targetDir}"`)
-    }
-    catch (e) {
-        println(e)
-        errorlevel = 1
-    }
-    if (errorlevel) {
-        println("Hit Return/Enter key to continue . . . .")
-        sys.read()
-    }
-    firstRunLatch = true
-    con.curs_set(0); clearScr()
-    refreshFilePanelCache(windowMode)
-    pendingPostExecDrain = true
-    redraw()
-}
-function actQuit() { exit = true }
-
-function invokeOpAction(id) {
-    if      (id === 'switch') actSwitchPanel()
-    else if (id === 'up')     actGoUp()
-    else if (id === 'copy')   actCopy()
-    else if (id === 'move')   actMove()
-    else if (id === 'delete') actDelete()
-    else if (id === 'mkdir')  actMkdir()
-    else if (id === 'rename') actRename()
-    else if (id === 'more')   actMore()
-    else if (id === 'quit')   actQuit()
-}
-
-///////////////////////////////////////////////////////////////////////////////////////////////////
-// Mouse region setup (file list + op buttons)
+// Mouse region setup (file list comes from the navigator; op buttons stay here)
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 function setupPanelMouseRegions() {
     clearPanelMouseRegions()
 
-    const fp = (windowMode === 0) ? LEFTPANEL : RIGHTPANEL
-    const fpX = fp.x + 1
-    const fpW = fp.width - 2
-    const fpY = fp.y + 2  // first file row (after frame top + header)
-
-    // Wheel-scroll over the file list. Wheel and keyboard are the only inputs allowed
-    // to move the scroll position; hover (below) only moves the caret.
-    addPanelMouseRegion(fpX, fpY, fpW, LIST_HEIGHT, {
-        onWheel: (cy, cx, dy) => {
-            const filesCount = dirFileList[windowMode].length
-            const maxScroll = Math.max(0, filesCount - LIST_HEIGHT)
-            let s = scroll[windowMode] + dy * 3
-            if (s > maxScroll) s = maxScroll
-            if (s < 0) s = 0
-            if (s !== scroll[windowMode]) {
-                scroll[windowMode] = s
-                drawFilePanel()
-            }
-        }
-    })
-
-    // One hover/click region per row so the caret can follow the mouse without
-    // calling scrollVert (which would re-scroll the list near the upper/lower thirds).
-    for (let i = 0; i < LIST_HEIGHT; i++) {
-        const rowIdx = i
-        addPanelMouseRegion(fpX, fpY + i, fpW, 1, {
-            onHover: () => {
-                const target = scroll[windowMode] + rowIdx
-                if (target < dirFileList[windowMode].length && cursor[windowMode] !== target) {
-                    cursor[windowMode] = target
-                    drawFilePanel()
-                }
-            },
-            onClick: (cy, cx, btn) => {
-                const target = scroll[windowMode] + rowIdx
-                if (target >= dirFileList[windowMode].length) return
-                if (btn === 1) {
-                    cursor[windowMode] = target
-                    actActivate()
-                }
-                else if (btn === 2) {
-                    cursor[windowMode] = target
-                    drawFilePanel()
-                    actMore()
-                }
-            }
-        })
-    }
+    const fp = (nav.windowMode === 0) ? LEFTPANEL : RIGHTPANEL
+    nav.setupMouseRegions(fp)
 
     // Op-panel button hover/click. Each button covers its icon row + label row.
     const opX = OPPANEL.x + 1
@@ -1074,6 +500,7 @@ function setupPanelMouseRegions() {
     for (let i = 0; i < OP_BUTTONS.length; i++) {
         const idx = i
         const btn = OP_BUTTONS[i]
+        if (!nav.isEnabled(btn.id)) continue // disabled buttons get no hover/click
         addPanelMouseRegion(opX, OPPANEL.y + 1 + btn.yOff, opW, btn.hitH || 2, {
             onHover: () => {
                 if (opHover !== idx) { opHover = idx; drawOpPanel() }
@@ -1083,7 +510,7 @@ function setupPanelMouseRegions() {
             },
             onClick: (cy, cx, btnNum) => {
                 if (btnNum !== 1) return
-                invokeOpAction(btn.id)
+                nav.invokeAction(btn.id)
             }
         })
     }
@@ -1092,8 +519,8 @@ function setupPanelMouseRegions() {
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 con.curs_set(0)
-refreshFilePanelCache(0)
-refreshFilePanelCache(1)
+nav.refreshFilePanelCache(0)
+nav.refreshFilePanelCache(1)
 _redraw()
 
 // Drain inherited mouse/key state from whoever launched us. Polling launchers
@@ -1104,15 +531,10 @@ _redraw()
 // The same problem reappears after every child app returns, but draining
 // inside the dispatcher callback is undone by TVDOS.SYS:1235 (input.withEvent
 // unconditionally writes inputwork.oldMouse = its-stale-local-snapshot at the
-// end of the outer call). So actActivate / actMore set pendingPostExecDrain
+// end of the outer call). So the navigator's runChild sets pendingPostExecDrain
 // and the main loop calls drainInheritedInput() AFTER input.withEvent returns.
 function drainInheritedInput() { input.withEvent(() => {}) }
 drainInheritedInput()
-
-let redrawRequested = false
-let exit = false
-let firstRunLatch = true
-let pendingPostExecDrain = false
 
 while (!exit) {
     // Fullscreen app: (re)assert the raw-keyboard grab each frame so cooked chars

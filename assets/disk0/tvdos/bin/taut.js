@@ -1638,6 +1638,17 @@ function drawControlHint() {
     ]
 
     const hintElemExternal = [['Tab','Panel'],['sep'],['!','Help']]
+    const hintElemFile = [
+        [`28u29u`,'Nav'],
+        ['u','Up'],
+    ['sep'],
+        ['O','Open'],['S','Save'],['A','SvAs'],['N','New'],
+    ['sep'],
+        ['K','MkDir'],['R','Rename'],
+    ['sep'],
+        ['tab','Panel'],
+        ['!','Help'],
+    ]
     const hintElemProject  = [
         [`\u008428u\u008429u`,'Nav'],
         [`ent`,'Edit/Switch'],
@@ -1667,7 +1678,7 @@ function drawControlHint() {
     ['sep'],
         ['!','Help'],
     ]
-    let hintElems = [hintElemTimeline, hintElemOrders, hintElemPatterns, hintElemSamples, hintElemInstruments, hintElemProject, hintElemExternal]
+    let hintElems = [hintElemTimeline, hintElemOrders, hintElemPatterns, hintElemSamples, hintElemInstruments, hintElemProject, hintElemFile]
     let hintElemPat = [hintElemEditNoteValue, hintElemEditInstValue, hintElemEditVolEff, hintElemEditPanEff, hintElemEditFxSym, hintElemEditFxVal]
 
     // erase current line
@@ -2077,6 +2088,11 @@ const PROJ_META_FLAGS = 0
 const PROJ_META_GVOL  = 1
 const PROJ_META_MVOL  = 2
 let song = loadTaud(fullPathObj.full, currentSongIndex)
+// The mutable "current file" pointer the File tab reads/writes. Starts at the
+// file taut was launched with; Open / Save As repoint it, New clears it to null
+// (an unsaved in-memory project). switchSong reloads from this, NOT fullPathObj
+// (which only records the launch path).
+let currentFilePath = fullPathObj.full
 applySongPitchPreset(songsMeta.songs[currentSongIndex])
 applySongBeatDiv(songsMeta.songs[currentSongIndex])
 
@@ -2105,25 +2121,14 @@ function applyMuteTransition(toPanel) {
     }
 }
 
-// Switch the active song within the currently-open multi-song .taud file.
-// Re-uploads patterns+cues (and the shared sample/inst bin) to the audio
-// adapter, reloads song metadata, and resets per-song UI / playback state.
-function switchSong(newIndex) {
-    if (newIndex < 0 || newIndex >= songsMeta.numSongs) return
-    if (newIndex === currentSongIndex) return
-
-    stopPlayback()
-    resetAudioDevice()
-
-    currentSongIndex = newIndex
-    song = loadTaud(fullPathObj.full, newIndex)
+// Shared tail of every "the project/song just changed" path (switchSong /
+// openProject / newProject): rebuild the sample cache, reset master + per-song
+// volumes, snapshot the device's initial mixer/volume state, and clear all the
+// per-song UI cursors / scroll / mutes / playback positions. The caller is
+// responsible for having uploaded the new song to the device first.
+function finishLoadCommon() {
     refreshSamplesCache()
     invalidateMetaLayerFlags()
-
-    applySongPitchPreset(songsMeta.songs[newIndex])
-    applySongBeatDiv(songsMeta.songs[newIndex])
-
-    taud.uploadTaudFile(fullPathObj.full, newIndex, PLAYHEAD)
     patternsOutOfSync = false
     audio.setMasterVolume(PLAYHEAD, 255)
     audio.setMasterPan(PLAYHEAD, 128)
@@ -2149,7 +2154,124 @@ function switchSong(newIndex) {
     previewActive = false
 
     clampCursor(); clampVoice(); clampCue(); clampOrdersHoriz(); clampPatternIdx(); clampPatternGrid()
+}
+
+// Load song `index` from `path` into the editor + audio device. Assumes the
+// caller has already stopped playback / reset the device and (for cross-file
+// loads) refreshed songsMeta. Does NOT redraw.
+function loadSongFromFile(path, index) {
+    currentSongIndex = index
+    song = loadTaud(path, index)
+    applySongPitchPreset(songsMeta.songs[index])
+    applySongBeatDiv(songsMeta.songs[index])
+    taud.uploadTaudFile(path, index, PLAYHEAD)
+    finishLoadCommon()
+}
+
+// Switch the active song within the currently-open multi-song .taud file.
+// Re-uploads patterns+cues (and the shared sample/inst bin) to the audio
+// adapter, reloads song metadata, and resets per-song UI / playback state.
+function switchSong(newIndex) {
+    if (newIndex < 0 || newIndex >= songsMeta.numSongs) return
+    if (newIndex === currentSongIndex) return
+    if (currentFilePath === null) return  // unsaved "new" project: nothing on disk to reload
+
+    stopPlayback()
+    resetAudioDevice()
+    loadSongFromFile(currentFilePath, newIndex)
     drawAll()
+}
+
+// ── File-tab operations (open / save / new) ─────────────────────────────────
+// Wired to taut_fileop's filenav-driven File tab through the HUB. The File tab
+// owns the popups (confirm-unsaved etc.); these just do the state work and may
+// throw (the caller reports the error).
+
+// Replace songsMeta's CONTENTS in place (not the binding) so taut_views — which
+// captured the songsMeta reference at init — keeps seeing the live metadata.
+function replaceSongsMeta(m) {
+    for (const k of Object.keys(songsMeta)) delete songsMeta[k]
+    Object.assign(songsMeta, m)
+}
+
+// Open `path` as the new current project (song 0). Validates the file before
+// touching any state, so a bad file leaves the current project intact.
+function openProject(path) {
+    const newMeta = loadTaudSongList(path)   // throws on bad magic / missing file
+    stopPlayback()
+    resetAudioDevice()
+    replaceSongsMeta(newMeta)
+    currentFilePath = path
+    loadSongFromFile(path, 0)
+    hasUnsavedChanges = false
+}
+
+// Overwrite `path` with the current device state (single-song capture).
+function saveProjectToFile(path) {
+    taud.captureTrackerDataToFile(path)   // throws on I/O error
+    hasUnsavedChanges = false
+}
+
+// A blank in-memory project: one empty pattern, all-empty cue sheet, no
+// instruments. currentFilePath becomes null (nothing on disk yet).
+const NUM_PATTERNS_MAX = 256
+function buildEmptyCueBytes() {
+    // 10 lo + 10 mid + 10 hi nibble-pair bytes (all 0xFF == every voice 0xFFF
+    // empty) + 2 instruction bytes (0). Inverse of loadTaud's cue decode.
+    const b = new Array(CUE_SIZE).fill(0)
+    for (let k = 0; k < 30; k++) b[k] = 0xFF
+    return b
+}
+function buildEmptySong() {
+    const patterns = [ new Uint8Array(PATTERN_SIZE) ]
+    const cues = new Array(NUM_CUES)
+    for (let c = 0; c < NUM_CUES; c++) {
+        cues[c] = { ptns: new Array(NUM_VOICES).fill(CUE_EMPTY), instr: 0 }
+    }
+    return {
+        filePath: null, songIndex: 0, version: 1, numSongs: 1,
+        numVoices: NUM_VOICES, numPats: 1, bpm: 125, tickRate: 6,
+        patterns, cues, lastActiveCue: -1,
+    }
+}
+function buildEmptyMeta() {
+    return {
+        numSongs: 1, projectName: '',
+        songs: [{
+            index: 0, numVoices: NUM_VOICES, numPats: 1, bpm: 125, tickRate: 6,
+            mixerflags: 0, songGlobalVolume: 0x80, songMixingVolume: 0x80,
+            name: '', composer: '', copyright: '',
+            pitchPresetIdx: null, beatDivPrimary: null, beatDivSecondary: null,
+        }],
+        instNames: [], sampleNames: [],
+    }
+}
+function uploadEmptyDeviceState() {
+    const zerosPat  = new Array(PATTERN_SIZE).fill(0)
+    const emptyCue  = buildEmptyCueBytes()
+    const zerosInst = new Array(256).fill(0)
+    for (let p = 0; p < NUM_PATTERNS_MAX; p++) audio.uploadPattern(p, zerosPat)
+    for (let c = 0; c < NUM_CUES; c++)         audio.uploadCue(c, emptyCue)
+    for (let s = 0; s < 256; s++) { audio.uploadInstrument(s, zerosInst); audio.uploadInstrumentPatches(s, []) }
+    audio.setTrackerMode(PLAYHEAD)
+    audio.setBPM(PLAYHEAD, 125)
+    audio.setTickRate(PLAYHEAD, 6)
+    audio.setTrackerMixerFlags(PLAYHEAD, 0)
+    audio.setSongGlobalVolume(PLAYHEAD, 0x80)
+    audio.setSongMixingVolume(PLAYHEAD, 0x80)
+}
+function newProject() {
+    stopPlayback()
+    resetAudioDevice()
+    uploadEmptyDeviceState()
+    replaceSongsMeta(buildEmptyMeta())
+    currentFilePath = null
+    currentSongIndex = 0
+    song = buildEmptySong()
+    applySongPitchPreset(songsMeta.songs[0])
+    applySongBeatDiv(songsMeta.songs[0])
+    finishLoadCommon()
+    hasUnsavedChanges = false
 }
 
 function redrawFull() { drawAll() }
@@ -3506,7 +3628,7 @@ function drawProjectContents(wo) {
     let intpModeStr = ['Default','None','A500','A1200','SNES','DPCM','',''][(mixerflag >>> 2) & 7]
     let flagStrSelected = [toneModeStr, intpModeStr]
     let projMeta = {
-        Filename: fullPathObj.string.split('\\').last(),
+        Filename: (currentFilePath ? currentFilePath.split('\\').last() : '(untitled)'),
         ProjName: songsMeta.projectName || '(unnamed)',
         Patterns: `${song.numPats}/4095 ($${song.numPats.hex03()})`,
         Cues: `${song.lastActiveCue}/1024 ($${song.lastActiveCue.hex03()})`,
@@ -4061,6 +4183,14 @@ HUB.getMixerFlags     = () => initialTrackerMixerflags
 HUB.commitMixerFlags  = (f) => { initialTrackerMixerflags = f; audio.setTrackerMixerFlags(PLAYHEAD, f); hasUnsavedChanges = true }
 HUB.hasUnsavedChanges = () => hasUnsavedChanges
 
+// File-tab operations (taut_fileop, filenav-driven). The File tab owns the
+// popups; these do the state work and may throw (the tab reports the error).
+HUB.getCurrentFilePath = () => currentFilePath
+HUB.setCurrentFilePath = (p) => { currentFilePath = p }
+HUB.openProject        = (path) => openProject(path)
+HUB.saveProject        = (path) => saveProjectToFile(path)
+HUB.newProject         = () => newProject()
+
 HUB.popups = requireTaut("taut_popups").init(HUB)
 const { openHelpPopup, openGotoPopup, openRetunePopup, openFlagsPopup, openConfirmQuit, openCueCmdPopup } = HUB.popups
 
@@ -4073,7 +4203,7 @@ const { openHelpPopup, openGotoPopup, openRetunePopup, openFlagsPopup, openConfi
 Object.assign(HUB.C, {
     SCRW, SCRH, CELL_PH, CELL_PW, VERT, NUM_VOICES, PLAYHEAD, PLAYMODE_NONE,
     PTNVIEW_HEIGHT, PTNVIEW_OFFSET_Y, SLIDER_TW_SMALL, SLIDER_TW_WIDE,
-    VIEW_INSTRMNT, VIEW_SAMPLES, fullPathObj, songsMeta,
+    VIEW_TIMELINE, VIEW_INSTRMNT, VIEW_SAMPLES, VIEW_FILE, fullPathObj, songsMeta,
     colBackPtn, colBLACK, colScrollBar, colSep, colTabActive, colTabBarBack2, colVol,
 })
 HUB.noteToStr             = noteToStr
@@ -4403,7 +4533,10 @@ function dispatchMouseEvent(event) {
     return false
 }
 
-function clearPanelMouseRegions() { MOUSE_PANEL.length = 0 }
+// Reset hover tracking too: on a panel switch the previously-hovered region is
+// about to be removed, so a stale onHoverLeave must not fire into the new panel
+// (the File panel is the first to register onHover regions).
+function clearPanelMouseRegions() { MOUSE_PANEL.length = 0; lastHoveredRegion = null }
 function addPanelMouseRegion(x, y, w, h, handlers)  { MOUSE_PANEL.push(Object.assign({x, y, w, h}, handlers)) }
 function addGlobalMouseRegion(x, y, w, h, handlers) { MOUSE_GLOBAL.push(Object.assign({x, y, w, h}, handlers)) }
 
@@ -4476,6 +4609,7 @@ function rebuildPanelMouseRegions() {
     else if (currentPanel === VIEW_SAMPLES)         registerSamplesMouse()
     else if (currentPanel === VIEW_INSTRMNT)        registerInstrumentsMouse()
     else if (currentPanel === VIEW_PROJECT)         registerProjectMouse()
+    else if (currentPanel === VIEW_FILE)            { HUB.fileop.onEnter(); HUB.fileop.registerMouse() }
 }
 
 // registerSamplesMouse moved into taut_views.mjs (it reads samples-private state);
