@@ -2955,6 +2955,7 @@ TODO:
     [ ] Taud instrument: add a 'percussion' flag so retuner/transposer won't touch them
     [ ] Zfm and Command: create rc files whenever they are missing
         Zfm: connect *rc to edit.js, with its own highlight colour
+    [ ] TSVM testing harness -- run js code with tsvm/tvdos environment using Node.js (for automated testing and better agentic coding)
 
 TODO - list of demo songs that MUST ship with Microtone:
     * 4THSYM (rename to Fourth Symmetriad) — excellent piece for demonstrating NNAs and filter envelopes
