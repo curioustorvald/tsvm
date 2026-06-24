@@ -4571,7 +4571,11 @@ function applyFileTabFontTransition(oldPanel, newPanel) {
 // Apply the same panel-switch logic the Tab key path uses.
 function switchToPanel(newPanel) {
     if (newPanel === currentPanel) return
-    if (typeof audio.jamStop === 'function') audio.jamStop(PLAYHEAD)   // silence any lingering jam audition
+    // Silence any lingering jam audition — but ONLY while stopped. Jam and playback are
+    // mutually exclusive (jam input is rejected during playback), so when the transport is
+    // running there is no audition to silence and jamStop would instead deactivate every
+    // foreground/background voice, cutting the live song on a tab switch.
+    if (playbackMode === PLAYMODE_NONE && typeof audio.jamStop === 'function') audio.jamStop(PLAYHEAD)
     invalidateMetaLayerFlags()                                         // instruments may have changed
     const wasTimeline = (currentPanel === VIEW_TIMELINE)
     const wasSamples  = (currentPanel === VIEW_SAMPLES)
@@ -4889,7 +4893,9 @@ while (!exitFlag) {
         }
 
         if (keyJustHit && keysym === "<TAB>") {
-            if (typeof audio.jamStop === 'function') audio.jamStop(PLAYHEAD)   // silence any lingering jam audition
+            // Only while stopped: during playback there is no jam audition (jam input is
+            // rejected mid-play), and jamStop would deactivate every voice — cutting the song.
+            if (playbackMode === PLAYMODE_NONE && typeof audio.jamStop === 'function') audio.jamStop(PLAYHEAD)
             invalidateMetaLayerFlags()                                         // instruments may have changed
             const wasTimeline = (currentPanel === VIEW_TIMELINE)
             const wasSamples  = (currentPanel === VIEW_SAMPLES)

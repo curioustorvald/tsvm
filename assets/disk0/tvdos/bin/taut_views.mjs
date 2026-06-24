@@ -2705,7 +2705,9 @@ function ovr(val, isDefault) { return isDefault ? '--' : ('$' + (val & 0xFF).toS
 // (bottom-right). Mouse-aware (patches + transport). See plan Step 2.
 function openAdvancedInstEdit(slot) {
     const SLOT = (slot !== undefined && slot >= 0) ? (slot | 0) : -1
-    if (typeof audio.jamStop === 'function') audio.jamStop(PLAYHEAD)   // clean slate: drop any list-view jam
+    // Drop any list-view jam audition, but ONLY while stopped — this view shows a live overlay of
+    // the song's sounding voices, and jamStop deactivates every voice, which would cut live playback.
+    if (HUB.getPlaybackMode() === PLAYMODE_NONE && typeof audio.jamStop === 'function') audio.jamStop(PLAYHEAD)
     const Y = PTNVIEW_OFFSET_Y - 1            // start one row above the normal panel top (row 4), 1 row taller
     const cHdr = colVoiceHdr, cStatus = colStatus, cDim = colSep, cBack = 255
 
@@ -3214,7 +3216,9 @@ function openAdvancedInstEdit(slot) {
         if (ks === '<RIGHT>') { envKind = (envKind + 1) % ENV_TABS.length; drawEnvGraph(); liveSig = '~'; return }
     }, refreshLiveVoices)
 
-    if (typeof audio.jamStop === 'function') audio.jamStop(PLAYHEAD)   // silence any lingering jam audition
+    // Silence any lingering jam audition only when stopped; during playback there is none and
+    // jamStop would cut the live song on the way back out of Advanced Edit.
+    if (HUB.getPlaybackMode() === PLAYMODE_NONE && typeof audio.jamStop === 'function') audio.jamStop(PLAYHEAD)
     clearEnvGraphics()                               // don't leave the graph over the restored viewer
     refreshInstrumentsCache()
     clampInstrumentsCursor()
