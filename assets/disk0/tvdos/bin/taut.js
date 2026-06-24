@@ -4554,6 +4554,20 @@ function clearPanelMouseRegions() { MOUSE_PANEL.length = 0; lastHoveredRegion = 
 function addPanelMouseRegion(x, y, w, h, handlers)  { MOUSE_PANEL.push(Object.assign({x, y, w, h}, handlers)) }
 function addGlobalMouseRegion(x, y, w, h, handlers) { MOUSE_GLOBAL.push(Object.assign({x, y, w, h}, handlers)) }
 
+// The File tab's filenav draws boxes with the stock line-drawing glyphs
+// (0xB3..0xDA), which taut's custom high font overrides. Swap just that range to
+// the stock font on entering File and restore taut's glyphs on leaving it, so
+// the rest of taut's chrome keeps its custom high glyphs on the File tab. (The
+// low ROM stays taut's throughout.) Both panel-switch paths (mouse
+// switchToPanel + keyboard <TAB>) call this.
+const FILE_TAB_STOCK_FONT = "A:"+_TVDOS.variables.DOSDIR+"/bin/sysfont_high.chr"
+const TAUT_HIGH_FONT      = "A:"+_TVDOS.variables.DOSDIR+"/bin/tautfont_high.chr"
+function applyFileTabFontTransition(oldPanel, newPanel) {
+    if (oldPanel === newPanel) return
+    if (newPanel === VIEW_FILE)      font.setHighRomChars(FILE_TAB_STOCK_FONT, 0xB3, 0xDA)
+    else if (oldPanel === VIEW_FILE) font.setHighRom(TAUT_HIGH_FONT)
+}
+
 // Apply the same panel-switch logic the Tab key path uses.
 function switchToPanel(newPanel) {
     if (newPanel === currentPanel) return
@@ -4562,6 +4576,7 @@ function switchToPanel(newPanel) {
     const wasTimeline = (currentPanel === VIEW_TIMELINE)
     const wasSamples  = (currentPanel === VIEW_SAMPLES)
     const wasInstrmnt = (currentPanel === VIEW_INSTRMNT)
+    applyFileTabFontTransition(currentPanel, newPanel)
     currentPanel = newPanel
     applyMuteTransition(currentPanel)
     if (wasTimeline && currentPanel !== VIEW_TIMELINE) clearVoiceMeters()
@@ -4878,9 +4893,11 @@ while (!exitFlag) {
             invalidateMetaLayerFlags()                                         // instruments may have changed
             const wasTimeline = (currentPanel === VIEW_TIMELINE)
             const wasSamples  = (currentPanel === VIEW_SAMPLES)
+            const prevPanel   = currentPanel
             currentPanel = (currentPanel + (shiftDown ? -1 : 1))
             if (currentPanel < 0) currentPanel += panels.length
             currentPanel = currentPanel % panels.length
+            applyFileTabFontTransition(prevPanel, currentPanel)
             applyMuteTransition(currentPanel)
             if (wasTimeline && currentPanel !== VIEW_TIMELINE) clearVoiceMeters()
             if (wasSamples  && currentPanel !== VIEW_SAMPLES)  clearSampleWaveformArea()

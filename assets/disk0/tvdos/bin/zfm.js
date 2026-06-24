@@ -30,7 +30,6 @@ const COL_HL_EXT = {
     ".js": 215,
     ".bas": 215,
     ".bat": 215,
-    "rc": 215,
     ".wav": 31,
     ".adpcm": 31,
     ".pcm": 32,
@@ -50,6 +49,7 @@ const COL_HL_EXT = {
     ".md": 223,
     ".log": 223,
     ".taud":109,
+    "rc": 224,
 }
 
 const EXEC_FUNS = {
