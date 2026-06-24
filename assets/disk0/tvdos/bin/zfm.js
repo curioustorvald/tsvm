@@ -83,10 +83,48 @@ function makeExecFun(template) {
     return (f) => _G.shell.execute(template.replaceAll("{0}", `"${f}"`))
 }
 
+function defaultZfmrc() {
+    return `# zfmrc -- zfm file manager configuration.
+# Lines beginning with '#' or ';' are comments; blank lines are ignored.
+# This file was created automatically with the stock defaults; edit freely.
+#
+# [EXEC_FUNS] -- command run to OPEN a file, keyed by lower-case extension.
+#   ext, command-template      ({0} is replaced with the quoted file path)
+# These extend/override zfm's built-in openers. Examples:
+#   txt, edit {0}
+#   tga, decodeipf {0} -i
+#
+# [COL_HL_EXT] -- list highlight colour (0-255) keyed by lower-case extension.
+#   ext, colour-number
+# Examples:
+#   csv, 223
+#   json, 215
+
+[EXEC_FUNS]
+
+[COL_HL_EXT]
+`
+}
+
+// Open the zfmrc, creating it (and its parent config directory) with the stock
+// defaults when it is missing so a fresh disk always has an editable template.
+function ensureZfmrc(zfmrcPath) {
+    let zfmrcFile = files.open(zfmrcPath)
+    if (zfmrcFile.exists) return zfmrcFile
+    try {
+        let cfgDir = files.open(`A:${_TVDOS.variables.USERCONFIGPATH}`)
+        if (!cfgDir.exists) cfgDir.mkDir()
+    } catch (e) {
+        serial.println("zfm: could not create config dir: " + e.message)
+    }
+    files.open(zfmrcPath).swrite(defaultZfmrc())
+    return files.open(zfmrcPath)
+}
+
 function loadZfmrc() {
     try {
         let zfmrcPath = `A:${_TVDOS.variables.USERCONFIGPATH}\\zfmrc`
-        let zfmrcFile = files.open(zfmrcPath)
+        let zfmrcFile = ensureZfmrc(zfmrcPath)
         if (!zfmrcFile.exists) return
 
         let content = zfmrcFile.sread()

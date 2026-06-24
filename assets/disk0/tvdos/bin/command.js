@@ -1231,6 +1231,28 @@ try {
     debugprintln("command.js > USERCONFIGPATH creation failed: " + e.message)
 }
 
+// ensure \commandrc exists. This is the environment-setup rc that TVDOS.SYS
+// replays (line-by-line, via `command -c`) in every context. Self-heal a
+// fresh/wiped disk by writing the stock defaults so the next boot has them.
+try {
+    let rcFile = files.open("A:\\commandrc")
+    if (!rcFile.exists) {
+        debugprintln("command.js > creating A:\\commandrc")
+        rcFile.swrite(`rem commandrc -- environment setup, run by TVDOS.SYS in EVERY context
+rem (the boot shell AND every virtual-console pane). Put \`set\` commands and
+rem other env-only configuration here. Do NOT launch apps from this file:
+rem app launches belong in AUTOEXEC.BAT (run per-console by vtmgr).
+
+set PATH=\\tvdos\\installer;\\tvdos\\tuidev;\\tbas;\\hopper\\bin;$PATH
+set INCLPATH=\\hopper\\include;$INCLPATH
+set HELPPATH=\\hopper\\help;$HELPPATH
+set KEYBOARD=us_colemak
+`)
+    }
+} catch (e) {
+    debugprintln("command.js > commandrc creation failed: " + e.message)
+}
+
 if (exec_args[1] !== undefined) {
     // only meaningful switches would be either -c or -k anyway
     var firstSwitch = exec_args[1].toLowerCase()

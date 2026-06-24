@@ -2835,7 +2835,6 @@ TODO:
     [x] do not reset tickspeed on pattern view play / add key to modify tick speed ('[' down/']' up)
     [x] expose song table on UI (test with `insaniq2.taud`)
     [x] 0x0000 - no-op; 0x0001 - key-off; 0x0002 - note-cut 0x0010..0x001F - INT0..INTF
-        [ ] establish hooks for the interrupts
     [x] Samples and Instruments view (viewer on taut.js; editor on separate .js)
         follow the ImpulseTracker design first, then improve from there
     [x] Sample desig for instrument in Pitch-Volume space (one rectangle = one patch). If undefined, the old sample pointer falls thru
@@ -2952,9 +2951,10 @@ TODO:
         * DONE 2026-06-20. See `con.setFullscreen()`
     [x] Taud double the BPM ceiling
         * DONE 2026-06-20. BPM range 25..535 via `T $FFxx` + the song-table byte-8 high bit (tickrate now 7-bit).
+    [ ] Interrupt callback management on taud.mjs (attachIntCallback, removeIntCallback, removeAllIntCallback)
     [ ] Taud instrument: add a 'percussion' flag so retuner/transposer won't touch them
-    [ ] Zfm and Command: create rc files whenever they are missing
-        Zfm: connect *rc to edit.js, with its own highlight colour
+    [x] Zfm and Command: create rc files whenever they are missing
+    [ ] Zfm: connect *rc to edit.js, with its own highlight colour
     [x] TSVM testing harness -- run js code with tsvm/tvdos environment using Node.js (for automated testing and better agentic coding)
 
 TODO - list of demo songs that MUST ship with Microtone:
