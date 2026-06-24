@@ -1217,6 +1217,7 @@ function runSliderDrag(s, downEvent) {
 // (the capsule itself already shows the decimal value). Kept terse for the
 // narrow value field.
 function annHex(v)    { return '$' + _hex(v, 2) }
+function annHex4(v)   { return '$' + _hex(v, 4) }
 function annFilter(v) { return (v === 0xFF) ? 'off' : '$' + _hex(v, 2) }
 function annFadeout(v) {
     if (v <= 0)    return 'none'
@@ -1446,19 +1447,25 @@ function buttonGroupRow(y, label, options, current, commit) {
     return rows
 }
 
-// Draw "label<glyph>" (glyph at column x+labelW) and register the label+glyph
-// span as a clickable toggle of byte `off` bit `bit`. Returns the column just
-// past the glyph, so callers can append trailing text there. `onToggle`, when
-// given, replaces the default single-bit flip (used by the Pitch/Filter Present
-// box, which must also stamp the slot's pitch/filter m-bit).
+// Draw "label<capsule>" and register the label+capsule span as a clickable toggle of
+// byte `off` bit `bit`. The tick glyph sits inside the same black half-block-cap capsule
+// as the number fields (drawNumCapsule) so it reads as an interactive control. Returns
+// the column just past the capsule, so callers can append trailing text there. `onToggle`,
+// when given, replaces the default single-bit flip (used by the Pitch/Filter Present box,
+// which must also stamp the slot's pitch/filter m-bit).
 function drawCheckbox(y, x, label, labelW, checked, off, bit, onToggle) {
     con.move(y, x); con.color_pair(colInstLabel, colBackPtn)
     print((label + ' '.repeat(labelW)).substring(0, labelW))
+    // Capsule = [▌ left cap][glyph][▐ right cap], cap colours mirroring drawNumCapsule
+    // EXACTLY: fg = panel bg, bg = black, with 0xDD (left-half) / 0xDE (right-half) so the
+    // black fills only the INNER half of each cap. Swapping the cap chars or the fg/bg
+    // order would push the black onto the outer halves and widen the pill by 2 px.
     const gx = x + labelW
-    con.move(y, gx); con.color_pair(colInstValue, colBackPtn)
-    print(checked ? sym.ticked : sym.unticked)
-    instCheckboxes.push({ y, xs: x, xe: gx, off, bit, onToggle })
-    return gx + 1
+    con.color_pair(colBackPtn,   colBLACK); con.move(y, gx);     con.prnch(0xDD)
+    con.color_pair(colInstValue, colBLACK); con.move(y, gx + 1); print(checked ? sym.ticked : sym.unticked)
+    con.color_pair(colBackPtn,   colBLACK); con.move(y, gx + 2); con.prnch(0xDE)
+    instCheckboxes.push({ y, xs: x, xe: gx + 2, off, bit, onToggle })
+    return gx + 3
 }
 
 // ── Tab body: General (page 1 + page 2) ───────────────────────────────────
@@ -1540,12 +1547,13 @@ function drawInstTabGeneral1(e) {
     sliderRow(y++, e, '  Default:', d.defPan,      0,    255, annHex, (v) => [[177, v]])
     sliderRow(y++, e, '  Sep:',     d.pitchPanSep, -128, 127, null,       (v) => [[180, v & 0xFF]])
     sliderRow(y++, e, '  Swing:',   d.panSwing,    0,    255, annHex, (v) => [[181, v]])
-    con.move(y, INST_RIGHT_X); con.color_pair(colInstLabel, colBackPtn)
-    print(('  PPanCnt:' + ' '.repeat(12)).substring(0, 12))
-    con.move(y, INST_RIGHT_X + 12); con.color_pair(colInstValue, colBackPtn)
-    print('$' + _hex(d.pitchPanCenter, 4) + '  ')
+    // Pitch-Pan Centre — 16-bit noteVal (bytes 178/179). Editable like the other
+    // numeric fields: drag the knob, wheel ±1, or click the capsule to type a decimal;
+    // the annotation shows it in the familiar $XXXX hex.
+    sliderRow(y++, e, '  PPanCnt:', d.pitchPanCenter, 0, 0xFFFF, annHex4,
+              (v) => [[178, v & 0xFF], [179, (v >> 8) & 0xFF]])
     // "Use default pan" mirrors the Pan tab's UseDef checkbox (pan loopWord bit 7).
-    const ppx = drawCheckbox(y, INST_RIGHT_X + 21, 'Use:', 5, d.panEnv.panUseDef, 17, 7)
+    const ppx = drawCheckbox(y, INST_RIGHT_X, '  Use def.pan:', 14, d.panEnv.panUseDef, 17, 7)
     con.move(y, ppx); con.color_pair(colInstValue, colBackPtn)
     print(d.panEnv.panUseDef ? ' on' : ' off')
     y++
