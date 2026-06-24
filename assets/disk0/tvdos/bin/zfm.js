@@ -27,51 +27,53 @@ const CELL_PW = (SCRPW / WIDTH) | 0
 const CELL_PH = (SCRPH / WHEIGHT) | 0
 
 const COL_HL_EXT = {
-    "js": 215,
-    "bas": 215,
-    "bat": 215,
-    "wav": 31,
-    "adpcm": 31,
-    "pcm": 32,
-//    "mp3": 33,
-    "tad": 33,
-    "mp2": 34,
-    "mv1": 213,
-    "mv2": 213,
-    "mv3": 213,
-    "tav": 213,
-    "ipf": 190,
-    "ipf1": 190,
-    "ipf2": 190,
-    "im3": 190,
-    "tap": 190,
-    "txt": 223,
-    "md": 223,
-    "log": 223,
-    "taud":109,
+    ".js": 215,
+    ".bas": 215,
+    ".bat": 215,
+    "rc": 215,
+    ".wav": 31,
+    ".adpcm": 31,
+    ".pcm": 32,
+//    ".mp3": 33,
+    ".tad": 33,
+    ".mp2": 34,
+    ".mv1": 213,
+    ".mv2": 213,
+    ".mv3": 213,
+    ".tav": 213,
+    ".ipf": 190,
+    ".ipf1": 190,
+    ".ipf2": 190,
+    ".im3": 190,
+    ".tap": 190,
+    ".txt": 223,
+    ".md": 223,
+    ".log": 223,
+    ".taud":109,
 }
 
 const EXEC_FUNS = {
-    "wav": (f) => _G.shell.execute(`playwav "${f}" -i`),
-    "adpcm": (f) => _G.shell.execute(`playwav "${f}" -i`),
-//    "mp3": (f) => _G.shell.execute(`playmp3 "${f}" -i`),
-    "mp2": (f) => _G.shell.execute(`playmp2 "${f}" -i`),
-    "mv1": (f) => _G.shell.execute(`playmov "${f}" -i`),
-    "mv2": (f) => _G.shell.execute(`playmov "${f}" -i`),
-    "mv3": (f) => _G.shell.execute(`playmov "${f}" -i`),
-    "tav": (f) => _G.shell.execute(`playmov "${f}" -i`),
-    "im3": (f) => _G.shell.execute(`playmov "${f}" -i`),
-    "tap": (f) => _G.shell.execute(`playmov "${f}" -i`),
-    "tad": (f) => _G.shell.execute(`playtad "${f}" -i`),
-    "pcm": (f) => _G.shell.execute(`playpcm "${f}" -i`),
-    "ipf": (f) => _G.shell.execute(`decodeipf "${f}" -i`),
-    "ipf1": (f) => _G.shell.execute(`decodeipf "${f}" -i`),
-    "ipf2": (f) => _G.shell.execute(`decodeipf "${f}" -i`),
-    "bas": (f) => _G.shell.execute(`basic "${f}"`),
-    "txt": (f) => _G.shell.execute(`less "${f}"`),
-    "md": (f) => _G.shell.execute(`less "${f}"`),
-    "log": (f) => _G.shell.execute(`less "${f}"`),
-    "taud": (f) => _G.shell.execute(`playtaud "${f}"`),
+    ".wav": (f) => _G.shell.execute(`playwav "${f}" -i`),
+    ".adpcm": (f) => _G.shell.execute(`playwav "${f}" -i`),
+//    ".mp3": (f) => _G.shell.execute(`playmp3 "${f}" -i`),
+    ".mp2": (f) => _G.shell.execute(`playmp2 "${f}" -i`),
+    ".mv1": (f) => _G.shell.execute(`playmov "${f}" -i`),
+    ".mv2": (f) => _G.shell.execute(`playmov "${f}" -i`),
+    ".mv3": (f) => _G.shell.execute(`playmov "${f}" -i`),
+    ".tav": (f) => _G.shell.execute(`playmov "${f}" -i`),
+    ".im3": (f) => _G.shell.execute(`playmov "${f}" -i`),
+    ".tap": (f) => _G.shell.execute(`playmov "${f}" -i`),
+    ".tad": (f) => _G.shell.execute(`playtad "${f}" -i`),
+    ".pcm": (f) => _G.shell.execute(`playpcm "${f}" -i`),
+    ".ipf": (f) => _G.shell.execute(`decodeipf "${f}" -i`),
+    ".ipf1": (f) => _G.shell.execute(`decodeipf "${f}" -i`),
+    ".ipf2": (f) => _G.shell.execute(`decodeipf "${f}" -i`),
+    ".bas": (f) => _G.shell.execute(`basic "${f}"`),
+    ".txt": (f) => _G.shell.execute(`less "${f}"`),
+    ".md": (f) => _G.shell.execute(`less "${f}"`),
+    ".log": (f) => _G.shell.execute(`less "${f}"`),
+    ".taud": (f) => _G.shell.execute(`playtaud "${f}"`),
+    "rc": (f) => _G.shell.execute(`edit "${f}"`),
 }
 
 const EDIT_FUNS = {
@@ -89,16 +91,16 @@ function defaultZfmrc() {
 # This file was created automatically with the stock defaults; edit freely.
 #
 # [EXEC_FUNS] -- command run to OPEN a file, keyed by lower-case extension.
-#   ext, command-template      ({0} is replaced with the quoted file path)
+#   .ext, command-template      ({0} is replaced with the quoted file path)
 # These extend/override zfm's built-in openers. Examples:
-#   txt, edit {0}
-#   tga, decodeipf {0} -i
+#   .txt, edit {0}
+#   .tga, decodeipf {0} -i
 #
 # [COL_HL_EXT] -- list highlight colour (0-255) keyed by lower-case extension.
 #   ext, colour-number
 # Examples:
-#   csv, 223
-#   json, 215
+#   .csv, 223
+#   .json, 215
 
 [EXEC_FUNS]
 

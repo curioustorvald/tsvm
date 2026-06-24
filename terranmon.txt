@@ -2957,7 +2957,7 @@ TODO:
           taud.mjs (attach/remove/removeAll + pollInterrupts, called once per frame by playtaud's loop).
     [ ] Taud instrument: add a 'percussion' flag so retuner/transposer won't touch them
     [x] Zfm and Command: create rc files whenever they are missing
-    [ ] Zfm: connect *rc to edit.js, with its own highlight colour
+    [x] Zfm: connect *rc to edit.js, with its own highlight colour
     [x] TSVM testing harness -- run js code with tsvm/tvdos environment using Node.js (for automated testing and better agentic coding)
 
 TODO - list of demo songs that MUST ship with Microtone:

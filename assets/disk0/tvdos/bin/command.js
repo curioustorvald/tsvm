@@ -1243,10 +1243,10 @@ rem (the boot shell AND every virtual-console pane). Put \`set\` commands and
 rem other env-only configuration here. Do NOT launch apps from this file:
 rem app launches belong in AUTOEXEC.BAT (run per-console by vtmgr).
 
-set PATH=\\tvdos\\installer;\\tvdos\\tuidev;\\tbas;\\hopper\\bin;$PATH
+set PATH=\\hopper\\bin;$PATH
 set INCLPATH=\\hopper\\include;$INCLPATH
 set HELPPATH=\\hopper\\help;$HELPPATH
-set KEYBOARD=us_colemak
+set KEYBOARD=us_qwerty
 `)
     }
 } catch (e) {

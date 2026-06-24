@@ -70,6 +70,26 @@
  * }
  */
 
+// Resolve a per-extension table entry (COL_HL_EXT, execFuns, ...) by SUFFIX
+// match rather than literal extension extraction: the LONGEST key K with
+// lower(filename).endsWith(K) wins. This catches dotless suffixes like "rc"
+// (commandrc, zfmrc, .bashrc) that have no "." to split on, while dotted keys
+// (".js", ".bat", ".taud") keep matching exactly. Longest-match keeps the more
+// specific key deterministic regardless of object key order. Returns undefined
+// when nothing matches.
+function matchExtKey(filename, map) {
+    let lower = filename.toLowerCase()
+    let best = undefined
+    let bestLen = -1
+    for (let k in map) {
+        if (k.length > bestLen && lower.endsWith(k)) {
+            best = map[k]
+            bestLen = k.length
+        }
+    }
+    return best
+}
+
 function create(opts) {
     const C = opts.C
     const LIST_HEIGHT    = C.LIST_HEIGHT
@@ -329,12 +349,11 @@ function create(opts) {
                 let isDirectory = listObj.isDirectory
                 let sizestr = listObj.sizestr
                 let filename = listObj.filename
-                let fileext = listObj.fileext
 
                 // set bg colour
                 let backCol = (i == cursor[windowMode] - s) ? COL_BACK_SEL : COL_BACK
                 // set fg colour (if there are more at the top/bottom, dim the colour)
-                let foreCol = (i == 0 && s > 0 || i == LIST_HEIGHT - 1 && i + s < filesCount - 1) ? COL_DIMTEXT : (COL_HL_EXT[fileext] || COL_TEXT)
+                let foreCol = (i == 0 && s > 0 || i == LIST_HEIGHT - 1 && i + s < filesCount - 1) ? COL_DIMTEXT : (matchExtKey(filename, COL_HL_EXT) || COL_TEXT)
 
                 // print filename
                 con.color_pair(foreCol, backCol)
@@ -494,8 +513,7 @@ function create(opts) {
             redrawNow()
         }
         else {
-            let fileext = selectedFileCache.filename.substring(selectedFileCache.filename.lastIndexOf(".") + 1).toLowerCase()
-            let execfun = execFuns[fileext] || (allowDefaultExec ? ((f) => _G.shell.execute(f)) : null)
+            let execfun = matchExtKey(selectedFileCache.filename, execFuns) || (allowDefaultExec ? ((f) => _G.shell.execute(f)) : null)
             if (execfun) runChild(() => execfun(selectedFile.fullPath))
         }
     }
