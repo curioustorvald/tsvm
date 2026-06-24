@@ -3402,7 +3402,15 @@ function drawPatternGridRowAt(viewRow) {
     const rowNumBack = isPbRow ? colPlayback : (isCurRow ? colHighlight : colBackPtn)
     const cellBack   = isPbRow ? colPlayback : colBackPtn
 
-    con.color_pair(actualRow % 4 === 0 ? colRowNumEmph1 : colRowNum, rowNumBack)
+    // Row-number beat emphasis: primary-beat lines get colRowNumEmph1, measure starts
+    // colRowNumEmph2 — driven by the song's beat division (applySongBeatDiv / sMet), mirroring
+    // the Timeline's drawPatternRowAt, rather than a hardcoded /4.
+    let rowNumFore = colRowNum
+    let beatRow = actualRow
+    while (beatRow >= beatDivSecondary) beatRow -= beatDivSecondary
+    if (beatRow % beatDivPrimary == 0)   rowNumFore = colRowNumEmph1
+    if (beatRow % beatDivSecondary == 0) rowNumFore = colRowNumEmph2
+    con.color_pair(rowNumFore, rowNumBack)
     const rowstr = actualRow.dec02()
     con.move(y, PATEDITOR_GRID_X);   con.prnch(rowstr.charCodeAt(0))
     con.move(y, PATEDITOR_GRID_X+1); con.prnch(rowstr.charCodeAt(1))
@@ -4451,7 +4459,6 @@ function openInlineNumEdit(y, x, digits, initialValue, min, max) {
 }
 
 clampCursor(); clampVoice(); clampCue(); clampOrdersHoriz(); clampPatternIdx(); clampPatternGrid()
-drawAll()
 
 resetAudioDevice()
 taud.uploadTaudFile(fullPathObj.full, currentSongIndex, PLAYHEAD)
@@ -4461,6 +4468,12 @@ audio.setMasterPan(PLAYHEAD, 128)
 let initialTrackerMixerflags = audio.getTrackerMixerFlags(PLAYHEAD)
 let initialGlobalVolume = audio.getSongGlobalVolume(PLAYHEAD)
 let initialMixingVolume = audio.getSongMixingVolume(PLAYHEAD)
+
+// First paint must happen AFTER the song's instruments are uploaded to the device:
+// instColour()'s metaLayerFlags cache is lazily built from the device's instrument bin, so
+// drawing before the upload would cache stale (empty-device) flags and mis-colour stray
+// meta-layer children until the next tab switch (which invalidates the cache) "fixed" it.
+drawAll()
 
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////

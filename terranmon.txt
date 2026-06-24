@@ -2959,6 +2959,7 @@ TODO:
     [x] Zfm and Command: create rc files whenever they are missing
     [x] Zfm: connect *rc to edit.js, with its own highlight colour
     [x] TSVM testing harness -- run js code with tsvm/tvdos environment using Node.js (for automated testing and better agentic coding)
+    [x] taut: pattern view does not make use of applySongBeatDiv()
 
 TODO - list of demo songs that MUST ship with Microtone:
     * 4THSYM (rename to Fourth Symmetriad) — excellent piece for demonstrating NNAs and filter envelopes
