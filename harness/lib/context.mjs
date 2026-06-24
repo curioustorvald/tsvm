@@ -56,6 +56,7 @@ export function createVM(userOpts = {}) {
         rawKeys: mem.rawKeys,
         serialOut: "",
         stubCalls: [],           // recorded com/audio calls
+        pendingTrackerInterrupts: {}, // per-playhead Taud interrupt-note latch (see audio stub)
         roms: [],
         romMapping: 255,
         sysrqDown: false,
@@ -70,6 +71,12 @@ export function createVM(userOpts = {}) {
         feedKeys(arr) { for (const k of arr) mem.inputQueue.push(k | 0); return this },
         feedLine(str) { for (const ch of String(str)) mem.inputQueue.push(ch.charCodeAt(0) & 0xff); mem.inputQueue.push(13); return this },
         setRawKeys(bytes) { for (let i = 0; i < 8; i++) mem.rawKeys[i] = bytes[i] | 0; return this },
+        // Stage a Taud interrupt-note fire (Int0..IntF) for playhead, mirroring the engine's
+        // accumulating OR; the next audio.pollTrackerInterrupts(playhead) drains it.
+        fireTrackerInterrupt(playhead, intNum) {
+            this.pendingTrackerInterrupts[playhead] = (this.pendingTrackerInterrupts[playhead] | 0) | (1 << intNum)
+            return this
+        },
     }
 
     // ----- host delegates ---------------------------------------------------

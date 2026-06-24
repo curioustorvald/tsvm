@@ -448,4 +448,127 @@ function captureTrackerDataToFile(outFile) {
     fileHandle.flush(); fileHandle.close()
 }
 
-exports = { uploadTaudFile, captureTrackerDataToFile }
+// ── Interrupt-note callbacks ──────────────────────────────────────────────────
+//
+// Taud reserves 16 "interrupt notes" — Int0..IntF, the note words 0x0010..0x001F
+// (terranmon.txt §Play Data). They produce no sound; they are sync markers a song
+// can sprinkle through its patterns so a host program reacts to the music (trigger a
+// visual, swap a sample, advance a script…). The engine has no built-in behaviour
+// for them: when one is encountered during playback it merely latches the interrupt
+// number in the adapter (AudioAdapter TrackerState.pendingInterrupts). A program
+// registers JS callbacks here, and the engine "plays" each interrupt by invoking its
+// callbacks when `pollInterrupts` next drains the latch.
+//
+// WHY POLLING: a JS module cannot be called from the native audio render thread, so
+// the firings are accumulated in a per-playhead latch and dispatched from the
+// program's own loop. Call `pollInterrupts(playhead)` once per frame; the latch
+// accumulates between calls, so no interrupt is ever missed (repeated fires of the
+// SAME interrupt between two polls collapse into a single callback invocation —
+// edge-triggered, level-collapsed).
+//
+// Usage:
+//     const taud = require("taud")
+//     taud.uploadTaudFile("A:/music/song.taud", 0, PLAYHEAD)
+//     taud.attachIntCallback(PLAYHEAD, 0, () => triggerStrobe())
+//     audio.play(PLAYHEAD)
+//     while (audio.isPlaying(PLAYHEAD)) {
+//         taud.pollInterrupts(PLAYHEAD)   // fires any callbacks for interrupts hit this frame
+//         ...draw a frame...
+//     }
+
+const NUM_INTERRUPTS = 16
+
+// _intCallbacks[playhead] -> Array(16) where each slot is an Array<fn> or null.
+const _intCallbacks = {}
+
+function _ensurePh(playhead) {
+    let ph = _intCallbacks[playhead]
+    if (!ph) {
+        ph = new Array(NUM_INTERRUPTS).fill(null)
+        _intCallbacks[playhead] = ph
+        // Drop any interrupts latched before the FIRST callback was attached so stale
+        // pre-registration fires don't spuriously trigger the new callback on the next poll.
+        if (typeof audio.pollTrackerInterrupts === "function") audio.pollTrackerInterrupts(playhead)
+    }
+    return ph
+}
+
+/**
+ * Register `callback` to fire when interrupt note `intNum` (0..15 → Int0..IntF, note
+ * words 0x0010..0x001F) is encountered on `playhead` during playback. Multiple
+ * callbacks may share one interrupt; they fire in registration order. The callback is
+ * invoked as `callback(intNum, playhead)`. Returns `callback` (use it with
+ * `removeIntCallback`). Callbacks only fire while the program drives `pollInterrupts`.
+ */
+function attachIntCallback(playhead, intNum, callback) {
+    if (typeof callback !== "function") throw Error("taud: interrupt callback must be a function")
+    if (intNum < 0 || intNum >= NUM_INTERRUPTS) throw Error("taud: intNum out of range (0..15): " + intNum)
+    const ph = _ensurePh(playhead)
+    if (!ph[intNum]) ph[intNum] = []
+    ph[intNum].push(callback)
+    return callback
+}
+
+/**
+ * Remove a single `callback` previously attached to interrupt `intNum` on `playhead`.
+ * Returns true if a matching callback was found and removed, false otherwise.
+ */
+function removeIntCallback(playhead, intNum, callback) {
+    const ph = _intCallbacks[playhead]
+    if (!ph || intNum < 0 || intNum >= NUM_INTERRUPTS || !ph[intNum]) return false
+    const list = ph[intNum]
+    const i = list.indexOf(callback)
+    if (i < 0) return false
+    list.splice(i, 1)
+    if (list.length === 0) ph[intNum] = null
+    return true
+}
+
+/**
+ * Remove interrupt callbacks in bulk:
+ *   removeAllIntCallback()                  → every callback on every playhead
+ *   removeAllIntCallback(playhead)          → every interrupt on that playhead
+ *   removeAllIntCallback(playhead, intNum)  → every callback on that one interrupt slot
+ */
+function removeAllIntCallback(playhead, intNum) {
+    if (playhead === undefined) {
+        for (const k in _intCallbacks) delete _intCallbacks[k]
+        return
+    }
+    const ph = _intCallbacks[playhead]
+    if (!ph) return
+    if (intNum === undefined) { delete _intCallbacks[playhead]; return }
+    if (intNum >= 0 && intNum < NUM_INTERRUPTS) ph[intNum] = null
+}
+
+/**
+ * Drain `playhead`'s pending interrupt latch and invoke the registered callbacks for
+ * every interrupt that fired since the last call. Call this once per frame from the
+ * player's main loop. Returns the 16-bit mask of interrupts that fired (bit n = IntN),
+ * or 0 when none fired. No-op — and skips the hardware read entirely — when nothing is
+ * attached to `playhead`, so the common "no interrupts wanted" path costs nothing. A
+ * throwing callback is isolated: it neither aborts the poll nor stops sibling callbacks.
+ */
+function pollInterrupts(playhead) {
+    const ph = _intCallbacks[playhead]
+    if (!ph) return 0
+    const mask = (audio.pollTrackerInterrupts(playhead) | 0) & 0xFFFF
+    if (mask === 0) return 0
+    for (let n = 0; n < NUM_INTERRUPTS; n++) {
+        if ((mask & (1 << n)) === 0) continue
+        const list = ph[n]
+        if (!list) continue
+        // Iterate a snapshot so a callback may safely attach/detach during dispatch.
+        const snapshot = list.slice()
+        for (let i = 0; i < snapshot.length; i++) {
+            try { snapshot[i](n, playhead) }
+            catch (e) { /* a faulty callback must not break the play loop or its siblings */ }
+        }
+    }
+    return mask
+}
+
+exports = {
+    uploadTaudFile, captureTrackerDataToFile,
+    attachIntCallback, removeIntCallback, removeAllIntCallback, pollInterrupts,
+}

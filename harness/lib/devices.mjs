@@ -86,6 +86,15 @@ export function makeDevices(vm) {
         getSongGlobalVolume: () => 64,
         getSongMixingVolume: () => 48,
         getVoiceMute: () => false,
+        // Models AudioJSR223Delegate.pollTrackerInterrupts: drain-on-read of the per-playhead
+        // interrupt-note latch. Tests stage fires with vm.fireTrackerInterrupt(playhead, intNum).
+        pollTrackerInterrupts: (ph) => {
+            const q = vm.pendingTrackerInterrupts
+            if (!q) return 0
+            const m = (q[ph] | 0) & 0xFFFF
+            q[ph] = 0
+            return m
+        },
     })
 
     return { serial, dma, com, audio }

@@ -1274,6 +1274,11 @@ try {
         }
         lastNavKey = rawKey
 
+        // Dispatch any Taud interrupt notes (Int0..IntF) hit since the last frame to
+        // callbacks registered via taud.attachIntCallback. No-op (and no hardware read)
+        // unless a callback is attached, so this is free for ordinary playback.
+        taud.pollInterrupts(PLAYHEAD)
+
         const curCue = audio.getCuePosition(PLAYHEAD)
         const curRow = audio.getTrackerRow(PLAYHEAD)
         if (curCue !== lastSeenCue || curRow !== lastSeenRow) {

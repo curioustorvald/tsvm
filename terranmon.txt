@@ -2951,7 +2951,10 @@ TODO:
         * DONE 2026-06-20. See `con.setFullscreen()`
     [x] Taud double the BPM ceiling
         * DONE 2026-06-20. BPM range 25..535 via `T $FFxx` + the song-table byte-8 high bit (tickrate now 7-bit).
-    [ ] Interrupt callback management on taud.mjs (attachIntCallback, removeIntCallback, removeAllIntCallback)
+    [x] Interrupt callback management on taud.mjs (attachIntCallback, removeIntCallback, removeAllIntCallback)
+        * DONE 2026-06-24. Engine latches Int0..IntF in TrackerState.pendingInterrupts (AudioAdapter,
+          applyTrackerRow); JS drains via audio.pollTrackerInterrupts(playhead) and dispatches through
+          taud.mjs (attach/remove/removeAll + pollInterrupts, called once per frame by playtaud's loop).
     [ ] Taud instrument: add a 'percussion' flag so retuner/transposer won't touch them
     [x] Zfm and Command: create rc files whenever they are missing
     [ ] Zfm: connect *rc to edit.js, with its own highlight colour
@@ -2987,7 +2990,12 @@ note 0x0001: key-off (====)
 note 0x0002: note cut (^^^^)
 note 0x0003: note fade (~~~~)
 note 0x0004: fast fade (vvvv)
-note 0x0010..0x001F: Interrupt 0..F (notation: Int0..IntF) — reserved interrupt slots; engine has no default handler.
+note 0x0010..0x001F: Interrupt 0..F (notation: Int0..IntF) — sync markers that produce no sound. The
+    engine has no built-in behaviour: when one is processed it latches interrupt n in the playhead's
+    pending-interrupt mask (one bit per slot). The host drains the mask with the AudioJSR223Delegate
+    `pollTrackerInterrupts(playhead)` call (read-to-acknowledge, accumulating so no fire is lost) and
+    dispatches registered JS callbacks via taud.mjs (attachIntCallback / removeIntCallback /
+    removeAllIntCallback / pollInterrupts).
 
 inst 0: no instrument change
 

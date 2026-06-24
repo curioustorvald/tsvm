@@ -1098,7 +1098,10 @@ const VIEW_FILE     = 6
 const colPlayback  = 86
 const colHighlight = 41
 const colEditHL    = 86   // sub-field cursor background while in pattern edit mode (red = editing)
-const colColumnSep = 6
+// Background-colour cycle for the timeline voice columns. Indexed by ABSOLUTE voice number
+// (voiceOff + slot), so the bands shift as you scroll horizontally — the visual cue that you
+// are scrolling. May be any length; e.g. [colColumnSep, 255] alternates every column.
+const colColumnPattern = [6, 255]
 const colRowNum    = 250
 const colRowNumEmph1 = 225
 const colRowNumEmph2 = 155
@@ -1319,14 +1322,24 @@ function drawSeparators(style) {
         }
     }
     else {
-        // paint the first column of pattern view with colour
-        for (let x = PTNVIEW_OFFSET_X; x < SCRW - 3; x += COLSIZE_TIMELINE_FULL) {
-            for (let y = 0; y < PTNVIEW_HEIGHT+1; y++) {
-                let memOffset = (y+PTNVIEW_OFFSET_Y-2) * SCRW + (x-1)
-                let bgColOffset = vaddr(TEXT_BACK_OFF + memOffset)
-                let oldBgCol = sys.peek(bgColOffset)
-                if (oldBgCol == 255) {
-                    sys.poke(bgColOffset, colColumnSep)
+        // Tint each voice column's FULL width by cycling colColumnPattern, indexed by the
+        // ABSOLUTE voice number (voiceOff + c) so the bands scroll with the columns. Only
+        // cells currently holding a pattern colour are repainted, so cursor / playback
+        // highlight rows are preserved and a horizontally-salvaged column gets re-tinted to
+        // its new colour even though the memcpy carried the previous tint along.
+        const maxCol = (timelineRowStyle !== 1) ? (SCRW - 3) : (SCRW - 1) // keep off the right-edge row numbers
+        for (let c = 0; c < VOCSIZE_TIMELINE_FULL; c++) {
+            const col = colColumnPattern[(voiceOff + c) % colColumnPattern.length]
+            const x0  = PTNVIEW_OFFSET_X + COLSIZE_TIMELINE_FULL * c
+            for (let dx = 0; dx < COLSIZE_TIMELINE_FULL; dx++) {
+                const x = x0 + dx
+                if (x > maxCol) break
+                for (let y = 0; y < PTNVIEW_HEIGHT+1; y++) {
+                    let bgColOffset = vaddr(TEXT_BACK_OFF + (y+PTNVIEW_OFFSET_Y-2) * SCRW + (x-1))
+                    let oldBgCol = sys.peek(bgColOffset)
+                    if (oldBgCol !== col && colColumnPattern.indexOf(oldBgCol) >= 0) {
+                        sys.poke(bgColOffset, col)
+                    }
                 }
             }
         }
@@ -2023,8 +2036,9 @@ function setTimelineRowStyle(style) {
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 con.curs_set(0)
-graphics.setBackground(0x23,0x39,0x58)
-//graphics.setBackground(0x12,0x32,0x5f)
+// graphics.setBackground(0x23,0x39,0x58)
+graphics.setBackground(0x20,0x34,0x51) // the columns must remain distinguishable under complex patterns, yet not too bright
+// graphics.setBackground(0x1d,0x30,0x4a)
 graphics.setGraphicsMode(0)
 
 let currentPanel = VIEW_TIMELINE

@@ -71,6 +71,8 @@ Common `opts`:
   `vm.screenText()` — the 80×32 grid rendered as text; `vm.clearOutput()`.
 - `vm.feedKeys([codes])`, `vm.feedLine("str")`, `vm.setRawKeys([8 bytes])` — input.
 - `vm.stubCalls` — recorded `com`/`audio`/`parallel` calls (`{ns, method, args}`).
+- `vm.fireTrackerInterrupt(playhead, intNum)` — stage a Taud interrupt note (Int0..IntF)
+  so the next `audio.pollTrackerInterrupts(playhead)` drains it (models the engine latch).
 - `vm.serialOut` — captured serial debug text.
 - `vm.sandbox` — the live globals (`sys`, `con`, `files`, `require`, …).
 - `vm.mem`, `vm.tty` — the underlying memory model and TTY.

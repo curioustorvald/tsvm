@@ -25,7 +25,8 @@ import net.torvald.tsvm.peripheral.MP2Env
  * Note values: 0x4000 = C3 (sample's native pitch), 4096 steps per octave.
  * Empty row: note = 0x0000 (no trigger). Note sentinels (0x0000..0x001F): 0x0000 = no-op,
  * 0x0001 = key-off, 0x0002 = note cut, 0x0003 = note fade (IT-style, by instrument fadeout),
- * 0x0004 = fast fade, 0x0010..0x001F = Int0..IntF (reserved interrupts).
+ * 0x0004 = fast fade, 0x0010..0x001F = Int0..IntF (interrupt notes — produce no sound; the engine
+ * latches them for the host to dispatch via pollTrackerInterrupts / taud.mjs attachIntCallback).
  * Valid playable notes are 0x0020..0xFFFF. All 256 instrument slots (0-255) are valid.
  *
  * ## How to upload PCM audio into a playhead
@@ -124,6 +125,14 @@ class AudioJSR223Delegate(private val vm: VM) {
     fun getCuePosition(playhead: Int) = getPlayhead(playhead)?.position
 
     fun getTrackerRow(playhead: Int) = getPlayhead(playhead)?.trackerState?.rowIndex ?: 0
+
+    /** Drain and return the playhead's pending interrupt-note latch: a 16-bit mask where bit n is set
+     *  if interrupt note IntN (note word 0x0010+n) was encountered since the last call. Reading clears
+     *  the latch (read-to-acknowledge), so the mask accumulates every IntN fired between two reads and
+     *  none is lost. Repeated fires of the SAME interrupt within one read window collapse into one bit.
+     *  Returns 0 in PCM mode or when no interrupts are pending. Consumed by taud.mjs pollInterrupts. */
+    fun pollTrackerInterrupts(playhead: Int): Int =
+        getPlayhead(playhead)?.trackerState?.pendingInterrupts?.getAndSet(0) ?: 0
 
     /** Mute is now a thin wrapper over the per-voice fader: muting writes 255 (silence),
      *  unmuting clears the fader back to 0 (unity). Callers that want a partial attenuation

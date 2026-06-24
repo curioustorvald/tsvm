@@ -4,6 +4,7 @@ import com.badlogic.gdx.Gdx
 import com.badlogic.gdx.backends.lwjgl3.audio.OpenALLwjgl3Audio
 import com.badlogic.gdx.utils.GdxRuntimeException
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.atomic.AtomicInteger
 import io.airlift.compress.zstd.ZstdInputStream
 import net.torvald.UnsafeHelper
 import net.torvald.UnsafePtr
@@ -3057,7 +3058,13 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                     }
                 }
                 in 0x0005..0x000F -> { /* reserved sentinel range, no engine handler */ }
-                in 0x0010..0x001F -> { /* Int0..IntF: reserved interrupt slots, no engine handler yet */ }
+                in 0x0010..0x001F -> {
+                    // Int0..IntF: latch the interrupt for the JS side to dispatch. The engine itself
+                    // produces no sound and touches no voice state (the note is purely a signalling
+                    // marker); taud.mjs callbacks registered via attachIntCallback are invoked when the
+                    // host drains the latch with pollInterrupts/pollTrackerInterrupts.
+                    ts.pendingInterrupts.getAndUpdate { it or (1 shl (row.note - 0x0010)) }
+                }
                 else -> {
                     if (toneG && voice.active) {
                         // Tone porta: target the note, do not retrigger sample.
@@ -4837,6 +4844,15 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         // Fine pattern delay (S$6x) — extra ticks added to the current row; accumulated across all channels.
         var finePatternDelayExtra = 0
 
+        // Interrupt-note latch (Int0..IntF, note words 0x0010..0x001F; terranmon.txt §Play Data).
+        // The render thread ORs bit n when an IntN note is processed in applyTrackerRow; the JS
+        // thread drains the accumulated mask via AudioJSR223Delegate.pollTrackerInterrupts (taud.mjs
+        // attachIntCallback / pollInterrupts). AtomicInteger so the cross-thread set/drain is
+        // lock-free and lossless — no interrupt is dropped between two polls (repeated fires of the
+        // SAME interrupt within one poll window collapse into one set bit, which is the intended
+        // edge-triggered semantics).
+        val pendingInterrupts = AtomicInteger(0)
+
         // Pre-allocated mix buffers for dither path (reused each audio chunk).
         val mixLeft  = FloatArray(TRACKER_CHUNK)
         val mixRight = FloatArray(TRACKER_CHUNK)
@@ -4991,6 +5007,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 ts.patternDelayRemaining = 0; ts.patternDelayActive = false
                 ts.sexWinningChannel = -1
                 ts.finePatternDelayExtra = 0
+                ts.pendingInterrupts.set(0)
                 ts.toneMode = initialGlobalFlags and 3
                 ts.interpolationMode = (initialGlobalFlags ushr 2) and 7
                 ts.ledFilterOn = false
