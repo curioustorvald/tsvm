@@ -523,6 +523,19 @@ function retuneAllPatterns(newIdx, method) {
     // the original behaviour (both intervals are 0x1000).
     const srcInterval = srcPreset.interval || 0x1000
 
+    // Percussion instruments (sample-flags byte 14 bit 4) must NOT be retuned/transposed
+    // (terranmon.txt:2127-2132). percSlots[slot] is truthy for a percussion instrument
+    // (or a Metainstrument whose layers are percussion). A note is skipped when its
+    // effective instrument — the cell's explicit instrument, or the last one set earlier
+    // in the pattern when the cell carries none — is percussion.
+    const percSlots = (HUB.views && HUB.views.buildPercussionSlots)
+        ? HUB.views.buildPercussionSlots() : null
+    const isPercNote = (ptn, off, runningInst) => {
+        if (!percSlots) return false
+        const eInst = ptn[off+2] !== 0 ? ptn[off+2] : runningInst
+        return eInst >= 1 && percSlots[eInst] !== 0
+    }
+
     // Yield candidate absolute pitches in the new tuning whose period root
     // lies within ±1 period of `absRef`. Includes the next period's root
     // itself so a target that lands just past the top entry can snap up.
@@ -546,20 +559,26 @@ function retuneAllPatterns(newIdx, method) {
             let prevMappedAbs = 0
             let tonic = 0
             if (method === 'cadence' || method === 'harmonic') {
+                let runningInst = 0
                 for (let row = 0; row < ROWS_PER_PAT; row++) {
                     const off = 8 * row
+                    if (ptn[off+2] !== 0) runningInst = ptn[off+2]
                     const note = ptn[off] | (ptn[off+1] << 8)
                     if (note >= 0x0000 && note <= 0x001F) continue
+                    if (isPercNote(ptn, off, runningInst)) continue
                     // Use the full absolute pitch as tonic; the modular ops
                     // in _cadTension / _harmonicCost normalise it.
                     tonic = note
                     break
                 }
             }
+            let runningInst = 0
             for (let row = 0; row < ROWS_PER_PAT; row++) {
                 const off = 8 * row
+                if (ptn[off+2] !== 0) runningInst = ptn[off+2]
                 const note = ptn[off] | (ptn[off+1] << 8)
                 if (note >= 0x0000 && note <= 0x001F) continue
+                if (isPercNote(ptn, off, runningInst)) continue
                 const origAbs = note
                 let newAbs
                 if ((method === 'delta' || method === 'cadence' || method === 'harmonic') && prevOrigAbs >= 0) {
@@ -1657,7 +1676,7 @@ function drawControlHint() {
     ['sep'],
         ['O','Open'],['S','Save'],['A','SvAs'],['N','New'],
     ['sep'],
-        ['K','MkDir'],['R','Rename'],
+        ['k','MkDir'],['R','Rename'],
     ['sep'],
         ['tab','Panel'],
         ['!','Help'],

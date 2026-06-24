@@ -248,7 +248,9 @@ def parse_meta(rec):
             'vol_start':  rec[o + 8],
             'vol_end':    rec[o + 9],
         })
-    return {'type': typ >> 1, 'strict': typ & 1, 'count': count, 'layers': layers}
+    # byte 0 = 0b tttt_00Ps : t=type (bits 4-7), P=percussion (bit 1), s=strict (bit 0)
+    return {'type': typ >> 4, 'strict': typ & 1, 'percussion': (typ >> 1) & 1,
+            'count': count, 'layers': layers}
 
 
 def parse_instrument(rec):
@@ -265,6 +267,7 @@ def parse_instrument(rec):
         'loop_end':     u16(rec, 12),
         'loop_mode':    rec[14] & 0x03,
         'loop_sustain': (rec[14] >> 2) & 1,
+        'percussion':   (rec[14] >> 4) & 1,   # bit 4 (P): retuner/transposer must not touch
         'igv':          rec[171],
         'fadeout':      fadeout,
         'sf_filter':    sf_mode,
@@ -661,8 +664,9 @@ def main():
 
             if is_meta(rec):
                 m = parse_meta(rec)
-                print("  METAINSTRUMENT  type=%d  strict-layering=%s  layers=%d"
-                      % (m['type'], "yes" if m['strict'] else "no (legacy)", m['count']))
+                print("  METAINSTRUMENT  type=%d  strict-layering=%s  layers=%d%s"
+                      % (m['type'], "yes" if m['strict'] else "no (legacy)", m['count'],
+                         "  [PERCUSSION]" if m['percussion'] else ""))
                 print("  %-3s %-26s %-9s %-7s %-26s %s"
                       % ("#", "layer instrument", "mix", "detune", "pitch range", "vol range"))
                 for li, L in enumerate(m['layers']):
@@ -680,10 +684,11 @@ def main():
             print("  BASE SAMPLE")
             print("    pointer=0x%06X  length=%d  rate@C4=%d Hz"
                   % (inst['sample_ptr'], inst['sample_len'], inst['rate']))
-            print("    play_start=%d  loop=%d..%d  loop_mode=%s%s"
+            print("    play_start=%d  loop=%d..%d  loop_mode=%s%s%s"
                   % (inst['play_start'], inst['loop_start'], inst['loop_end'],
                      LOOPMODE[inst['loop_mode']],
-                     "  (sustain-loop)" if inst['loop_sustain'] else ""))
+                     "  (sustain-loop)" if inst['loop_sustain'] else "",
+                     "  [PERCUSSION]" if inst['percussion'] else ""))
             if inst['detune']:
                 print("    sample detune=%+d (4096-TET units)" % inst['detune'])
             if args.samples and samplebin is not None:

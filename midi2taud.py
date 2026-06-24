@@ -1752,6 +1752,14 @@ META_UNITY_OCTET = 159
 # Metainstrument record byte-0 flag: STRICT layering (see build_sample_inst_bin). The
 # layered-meta sentinel lives in bytes 2-3 (0xFFFF), so byte 0 is free for this flag.
 META_STRICT_FLAG = 0x01
+# Metainstrument record byte-0 bit 1 (P): percussion (terranmon.txt:2419-2428). A meta
+# carries its own P bit because its byte 14 is layer-table data, not a sample-flags byte.
+META_PERCUSSION_FLAG = 0x02
+
+# Instrument/Sample Flags byte (record offset 14, terranmon.txt:2127-2132). Bit 4 (P)
+# marks the instrument as percussion: a retuner/transposer MUST NOT touch its notes.
+# OR'd into the loop-mode byte (bits 0-2) of every drum-kit instrument record.
+PERCUSSION_FLAG = 0x10
 
 
 def _layer_bbox(ti: 'TaudInstrument'):
@@ -2282,6 +2290,10 @@ def build_sample_inst_bin(sf: SF2, pool: list, layer_insts: list, meta_records: 
     vprint(f"  sample pool: {len(pool)} sample(s), {pos} bytes")
 
     inst_bin = bytearray(INSTBIN_SIZE)
+    # Slots of the drum-kit layer instruments, so a Metainstrument built from them can be
+    # flagged percussion on its own byte-0 P bit (its byte 14 is layer-table data).
+    drum_layer_slots = {ti.slot for ti in layer_insts
+                        if ti.usable and ti.inst_key is not None and ti.inst_key[0] == 'd'}
     for ti in layer_insts:
         if not ti.usable:
             continue
@@ -2305,6 +2317,10 @@ def build_sample_inst_bin(sf: SF2, pool: list, layer_insts: list, meta_records: 
             lm_w = c.loop_mode
         struct.pack_into('<H', inst_bin, base + 10, min(0xFFFF, ls_w))
         struct.pack_into('<H', inst_bin, base + 12, min(0xFFFF, le_w))
+        # Drum-kit presets carry inst_key ('d', prog); flag them as percussion so an
+        # editor's retuner/transposer leaves their notes alone (terranmon.txt:2127-2132).
+        if ti.inst_key is not None and ti.inst_key[0] == 'd':
+            lm_w |= PERCUSSION_FLAG
         inst_bin[base + 14] = lm_w
 
         def wenv(loop_off, sus_off, nodes_off, blk):
@@ -2391,7 +2407,9 @@ def build_sample_inst_bin(sf: SF2, pool: list, layer_insts: list, meta_records: 
         # note but whose patches do not, instead of sounding that layer's base/canonical
         # (the spurious meta-layer fallback). Old files left byte 0 = 0 (legacy: base
         # fallback) and have no canonical patch, so the engine gates this on the flag.
-        inst_bin[base + 0] = META_STRICT_FLAG                  # type 0 = layered, +strict bit
+        is_drum = any(layer_slot in drum_layer_slots for layer_slot, _rect in layer_descs)
+        inst_bin[base + 0] = (META_STRICT_FLAG                  # type 0 = layered, +strict bit
+                              | (META_PERCUSSION_FLAG if is_drum else 0))  # +percussion (P) for drum kits
         inst_bin[base + 1] = len(layer_descs) & 0xFF            # layer count
         inst_bin[base + 2] = 0xFF; inst_bin[base + 3] = 0xFF    # identifier (hi 16 bits)
         o = base + 4

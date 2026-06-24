@@ -86,6 +86,29 @@ function buildMetaLayerChildSlots() {
     return flagged
 }
 
+// Build a 256-entry flag array: perc[slot] = 1 when `slot` is a percussion instrument
+// (the editor's retuner / transposer MUST NOT touch notes that reference such a slot).
+// The flag lives in a different byte for the two record kinds:
+//   - ordinary instrument: sample-flags byte 14, bit 4 (P)  — terranmon.txt:2127-2132
+//   - Metainstrument:       type/flags byte 0, bit 1 (P)    — terranmon.txt:2419-2428
+//     (a meta has no byte-14 flag — bytes 4.. are its layer table — so it carries its
+//      own P bit, which midi2taud sets for drum kits and the editor toggles.)
+const SAMPLE_FLAG_PERCUSSION = 0x10   // ordinary inst, byte 14 bit 4
+const META_FLAG_PERCUSSION   = 0x02   // Metainstrument, byte 0 bit 1
+function buildPercussionSlots() {
+    const memBase = audio.getMemAddr()
+    const perc = new Uint8Array(TAUT_INST_COUNT)
+    for (let slot = 1; slot < TAUT_INST_COUNT; slot++) {
+        const base = TAUT_INST_WINDOW_OFF + slot * TAUT_INST_RECORD_SIZE
+        const isMeta = (sys.peek(memBase - (base + 2)) & 0xFF) === 0xFF &&
+                       (sys.peek(memBase - (base + 3)) & 0xFF) === 0xFF
+        const flagByte = isMeta ? (sys.peek(memBase - base) & 0xFF)
+                                : (sys.peek(memBase - (base + 14)) & 0xFF)
+        if (flagByte & (isMeta ? META_FLAG_PERCUSSION : SAMPLE_FLAG_PERCUSSION)) perc[slot] = 1
+    }
+    return perc
+}
+
 // Decode the fields the viewer actually cares about. Offsets from terranmon.txt:2071+.
 function decodeInstRecord(rec) {
     const samplePtr  = (rec[0]) | (rec[1] << 8) | (rec[2] << 16) | (rec[3] * 0x1000000)
@@ -1378,6 +1401,18 @@ function toggleInstBit(e, off, bit) {
     e.decoded = decodeInstFull(readInstRecord(e.slot))
 }
 
+// Flip a single bit of a Metainstrument's byte via the re-upload path. A live poke is
+// invisible on a meta because getByte serves the cached metaRaw and setByte uses the
+// normal-record layout (same reason sliderRow re-uploads — see its commit). Used by the
+// meta percussion checkbox (byte 0 bit 1).
+function toggleMetaBit(e, off, bit) {
+    const rec = Array.prototype.slice.call(readInstRecord(e.slot))
+    rec[off] ^= (1 << bit)
+    audio.uploadInstrument(e.slot, rec)
+    HUB.markUnsaved()
+    e.decoded = decodeInstFull(readInstRecord(e.slot))
+}
+
 // Draw one pill button at (y, x). Cap scheme mirrors drawNumCapsule so it reads
 // as the same "interactive field" affordance. Returns the pill's total width
 // (2 caps + a 1-space-padded label).
@@ -1485,6 +1520,13 @@ function drawInstTabGeneral1(e) {
     drawLabelRow(y++, '  Play st:', '$' + _hex(d.playStart, 4))
     drawLabelRow(y++, '  Loop:',    loopModeNameInst(d.sampleFlags) +
                                     '  [$' + _hex(d.sLoopStart, 4) + '..$' + _hex(d.sLoopEnd, 4) + ']')
+    // Percussion (sample-flags byte 14 bit 4): the retuner/transposer skips this
+    // instrument's notes (terranmon.txt:2127-2132).
+    const isPerc = ((d.sampleFlags >> 4) & 1) !== 0
+    const percX  = drawCheckbox(y, INST_RIGHT_X, '  Percuss:', 12, isPerc, 14, 4)
+    con.move(y, percX); con.color_pair(colInstValue, colBackPtn)
+    print(isPerc ? ' on' : ' off')
+    y++
 
     y++
     drawGroupHeader(y++, 'Volume')
@@ -1818,6 +1860,16 @@ function drawInstTabMeta(e) {
     let y = INST_BODY_Y
     drawGroupHeader(y++, 'Metainstrument  (' + d.layers.length + ' layer' +
                          (d.layers.length === 1 ? '' : 's') + ')')
+    // Percussion (type/flags byte 0 bit 1): the retuner/transposer skips notes that
+    // reference this meta (terranmon.txt:2419-2428). A meta carries its own P bit —
+    // bytes 4.. are the layer table, so there is no byte-14 flag to read here. The
+    // onToggle re-uploads (a live poke is invisible on a meta — see toggleMetaBit).
+    const isPerc = ((d.metaType >> 1) & 1) !== 0
+    const percX  = drawCheckbox(y, INST_RIGHT_X, '  Percuss:', 12, isPerc, 0, 1,
+                                (ee) => toggleMetaBit(ee, 0, 1))
+    con.move(y, percX); con.color_pair(colInstValue, colBackPtn)
+    print(isPerc ? ' on' : ' off')
+    y++
     // Each layer gets a read-only context line (target inst + pitch/vel rect) plus an
     // editable Mix-volume and Detune slider (registered in instSliders, so mouse drag /
     // wheel / click-to-type all work; commit re-uploads the record so the engine re-parses
@@ -3234,7 +3286,7 @@ function openAdvancedInstEdit(slot) {
         drawSamplesUsedBy, computeSampleRAMBytes, formatSampleRamK, launchInstrumentViewerFor,
         registerInstrumentsMouse, registerSamplesMouse, sampleRamSummary,
         drawSlider, drawNumCapsule, runSliderDrag,
-        getSelectedInstrumentSlot, buildMetaLayerChildSlots,
+        getSelectedInstrumentSlot, buildMetaLayerChildSlots, buildPercussionSlots,
     }
 }
 

@@ -5299,7 +5299,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         var samplePlayStart: Int,
         var sampleLoopStart: Int,
         var sampleLoopEnd: Int,
-        var loopMode: Int,
+        var loopMode: Int,                  // byte 14: bits 0-1 mode, bit 2 sustain, bit 4 percussion (P)
         var volEnvLoop: Int,                // bytes 15-16 (LOOP word)
         var panEnvLoop: Int,                // bytes 17-18
         var pfEnvLoop: Int,                 // bytes 19-20
@@ -5349,6 +5349,12 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         /** Sample-flag byte 14 bit 2 — when set, the sample loop is a sustain loop:
          *  it loops while the note is held and is escaped on key-off. */
         val sampleLoopSustain: Boolean get() = (loopMode and 0x04) != 0
+        /** Percussion (P) — playback-neutral hint that editor retuners/transposers MUST NOT
+         *  touch this instrument's notes. The flag lives in a different byte per record kind:
+         *  ordinary inst = sample-flag byte 14 bit 4 (in [loopMode]; terranmon.txt:2127-2132);
+         *  Metainstrument = type/flags byte 0 bit 1 (in [metaRaw]; terranmon.txt:2419-2428). */
+        val isPercussion: Boolean get() =
+            metaRaw?.let { (it[0] and 0x02) != 0 } ?: ((loopMode and 0x10) != 0)
         /** Key Lift — instrumentFlag bit 5 (terranmon byte 186, NNA pattern 0b100).
          *  MIDI-exact key release: on key-off the volume-envelope playhead jumps
          *  straight to the sustain-end node so the post-sustain (release) nodes
@@ -5553,7 +5559,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             12 -> sampleLoopEnd.toByte()
             13 -> sampleLoopEnd.ushr(8).toByte()
 
-            14 -> (loopMode and 7).toByte()
+            14 -> (loopMode and 0x17).toByte()
             15 -> volEnvLoop.toByte()
             16 -> volEnvLoop.ushr(8).toByte()
             17 -> panEnvLoop.toByte()
@@ -5622,7 +5628,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             12 -> { sampleLoopEnd = (sampleLoopEnd and 0xff00) or byte }
             13 -> { sampleLoopEnd = (sampleLoopEnd and 0x00ff) or (byte shl 8) }
 
-            14 -> { loopMode = byte and 7 }
+            14 -> { loopMode = byte and 0x17 }   // bits 0-1 mode, bit 2 sustain, bit 4 percussion (P)
             15 -> { volEnvLoop = (volEnvLoop and 0xff00) or byte }
             16 -> { volEnvLoop = (volEnvLoop and 0x00ff) or (byte shl 8) }
             17 -> { panEnvLoop = (panEnvLoop and 0xff00) or byte }
