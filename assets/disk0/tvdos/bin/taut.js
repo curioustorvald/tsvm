@@ -4727,10 +4727,22 @@ function registerTimelineMouse() {
                 drawAlwaysOnElems(); drawVoiceDetail()
             }
         },
-        onWheel: (cy, cx, dy) => {
+        onWheel: (cy, cx, dy, ev) => {
             if (playbackMode !== PLAYMODE_NONE) return
-            cursorRow += dy * 3
-            clampCursor()
+            if (ev.includes(59) || ev.includes(60)) {
+                // Shift+wheel: free horizontal scroll of the voice viewport (cursor stays put).
+                const maxOff = Math.max(0, song.numVoices - VOCSIZE_TIMELINE_FULL)
+                const next = Math.max(0, Math.min(maxOff, voiceOff + dy * 3))
+                if (next === voiceOff) return
+                voiceOff = next
+                drawVoiceHeaders(); drawPatternView(); drawSeparators(separatorStyle); drawAlwaysOnElems(); drawVoiceDetail()
+                return
+            }
+            // Free scroll: move the view, not the cursor (the cursor may scroll off-screen).
+            const maxS = Math.max(0, ROWS_PER_PAT - PTNVIEW_HEIGHT)
+            const next = Math.max(0, Math.min(maxS, scrollRow + dy * 3))
+            if (next === scrollRow) return
+            scrollRow = next
             drawPatternView(); drawSeparators(separatorStyle); drawAlwaysOnElems(); drawVoiceDetail()
         }
     })
@@ -4803,11 +4815,12 @@ function registerOrdersMouse() {
                 if (hscrollBy(dy * 3)) { redrawPanel(); drawAlwaysOnElems() }
                 return
             }
+            // Free scroll: move the view, not the selection (the cursor may scroll off-screen).
             const maxCue = ordersMaxRow()
-            ordersCursor += dy * 3
-            if (ordersCursor < 0) ordersCursor = 0
-            if (ordersCursor > maxCue) ordersCursor = maxCue
-            scrollOrdersTo(ordersCursor)
+            const maxS = Math.max(0, (maxCue + 1) - PTNVIEW_HEIGHT)
+            const next = Math.max(0, Math.min(maxS, ordersScroll + dy * 3))
+            if (next === ordersScroll) return
+            ordersScroll = next
             redrawPanel(); drawAlwaysOnElems()
         }
     })
@@ -4827,9 +4840,12 @@ function registerPatternsMouse() {
         },
         onWheel: (cy, cx, dy) => {
             if (song.numPats === 0) return
-            patternIdx += dy
-            clampPatternIdx(); simStateKey = ''
-            drawPatternsContents(panelPatterns)
+            // Free scroll: move the list view, not the selection (click selects).
+            const maxS = Math.max(0, song.numPats - PTNVIEW_HEIGHT)
+            const next = Math.max(0, Math.min(maxS, patternListScroll + dy * 3))
+            if (next === patternListScroll) return
+            patternListScroll = next
+            drawPatternListColumn()
         }
     })
     // Middle grid: pattern editor cells. cx in [PATEDITOR_GRID_X, PATEDITOR_DETAIL_X)
@@ -4851,9 +4867,18 @@ function registerPatternsMouse() {
         },
         onWheel: (cy, cx, dy) => {
             if (song.numPats === 0) return
-            patternGridRow += dy * 3
-            clampPatternGrid(); simStateKey = ''
-            drawPatternsContents(panelPatterns)
+            // Free scroll: move the grid view, not the cursor (the cursor may scroll off-screen).
+            const maxS = Math.max(0, ROWS_PER_PAT - PTNVIEW_HEIGHT)
+            const next = Math.max(0, Math.min(maxS, patternGridScroll + dy * 3))
+            if (next === patternGridScroll) return
+            patternGridScroll = next
+            drawPatternGrid()
+            // Repaint the column separators the grid rows don't own (mirrors the keyboard nav path).
+            con.color_pair(colSep, 255)
+            for (let y = PTNVIEW_OFFSET_Y - 1; y < PTNVIEW_OFFSET_Y + PTNVIEW_HEIGHT; y++) {
+                con.move(y, PATEDITOR_SEP1_X); con.prnch(VERT)
+                con.move(y, PATEDITOR_SEP2_X); con.prnch(VERT)
+            }
         }
     })
 }
