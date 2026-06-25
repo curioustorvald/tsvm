@@ -704,7 +704,7 @@ require = function(path) {
     }
 }
 
-shell.execute = function(line, nameOverride) {
+shell.execute = function(line, nameOverride, inheritedOp) {
     if (0 == line.size) return
     let parsedTokens = shell.parse(line) // echo, "hai", |, less
     let statements = [] // [[echo, "hai"], [less]]
@@ -738,11 +738,20 @@ shell.execute = function(line, nameOverride) {
 
         let op = operators[c]
 
+        // When this is a nested alias expansion (inheritedOp set), the alias body's
+        // LAST statement inherits the parent's pipe operator, so the alias's output
+        // still flows into the surrounding pipeline instead of falling back to stdout.
+        // (The pipe itself was already pushed by the parent statement, so we must NOT
+        // push another here — only the print binding follows the effective op.)
+        let effectiveOp = (op === undefined && inheritedOp !== undefined && c === statements.length - 1) ? inheritedOp : op
+
         // TODO : if operator is not undefined, swap built-in print functions with ones that 'prints' on pipes instead of stdout
         if (op == '|') {
             debugprintln(`Statement #${c+1}: pushing anon pipe`)
             shell.pushAnonPipe('')
+        }
 
+        if (effectiveOp == '|') {
             print = shell.stdio.pipe.print
             println = shell.stdio.pipe.println
             printerr = shell.stdio.pipe.printerr
@@ -864,7 +873,10 @@ shell.execute = function(line, nameOverride) {
                         // replace $0
                         newLine = newLine.replaceAll('$0', tokens.slice(1).map(quoteAliasArg).join(' '))
 
-                        shell.execute(newLine, cmd)
+                        // Propagate this statement's operator so an alias on the left of a
+                        // pipe (e.g. "hop ls | less") feeds its output into the pipe instead
+                        // of stdout, and so the nested call does not flush the parent pipeline.
+                        shell.execute(newLine, cmd, op)
                     })
                 }
                 else if ("APP" == extension) {
@@ -935,16 +947,20 @@ shell.execute = function(line, nameOverride) {
         }
 
 
-        // destroy pipe if operator is not pipe
-        if (op != "|" && op != ">>" && op != ">") {
+        // destroy pipe if operator is not pipe (use effectiveOp so a nested alias's
+        // last statement leaves the inherited parent pipe intact for the next stage)
+        if (effectiveOp != "|" && effectiveOp != ">>" && effectiveOp != ">") {
             debugprintln(`Statement #${c+1}: destroying pipe`)
             debugprintln(`its content was: ${shell.removePipe()}`)
         }
     }
     serial.println("[shell.execute] final retvalue: "+retValue)
 
-    // flush pipes
-    while (1) { if (undefined === shell.removePipe()) break }
+    // flush pipes — but only at the top level; a nested alias expansion must leave
+    // the surrounding pipeline's pipes untouched for the parent to consume.
+    if (inheritedOp === undefined) {
+        while (1) { if (undefined === shell.removePipe()) break }
+    }
 
     return retValue
 }
