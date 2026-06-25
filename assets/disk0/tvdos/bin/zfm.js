@@ -27,7 +27,7 @@ const [SCRPW, SCRPH] = graphics.getPixelDimension()
 const CELL_PW = (SCRPW / WIDTH) | 0
 const CELL_PH = (SCRPH / WHEIGHT) | 0
 
-font.setHighRomChars("A:"+_TVDOS.variables.DOSDIR+"/bin/zfmfont_high.chr", 0xE0, 0xF6)
+font.setHighRom("A:"+_TVDOS.variables.DOSDIR+"/bin/zfmfont_high.chr")
 
 const COL_HL_EXT = {
     ".js": 215,

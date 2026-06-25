@@ -659,6 +659,12 @@ Number.prototype.decD2 = function() {
 }
 
 
+// When true, pitched notes render as their raw 16-bit hex value instead of
+// tuning notation (C-4 etc). Toggled with Shift+N in the Timeline and Patterns
+// panels; the special markers (empty / key-off / cut / fade / Int) keep their
+// symbols either way. Raw hex is 4 chars wide, matching the notation column.
+let rawNoteView = false
+
 function noteToStr(note) {
     if (note === 0x0000) return sym.middot.repeat(4)
     if (note === 0x0001) return sym.keyoff
@@ -666,6 +672,7 @@ function noteToStr(note) {
     if (note === 0x0003) return sym.notefade
     if (note === 0x0004) return sym.notefastfade
     if (note >= 0x0010 && note <= 0x001F) return ('Int' + (note & 0xF).toString(16).toUpperCase()).padEnd(4)
+    if (rawNoteView) return note.hex04()
     const preset = pitchTablePresets[PITCH_PRESET_IDX]
     if (preset.table.length === 0) return note.hex04()
     const [period, offset] = decomposeNote(note, preset.interval)
@@ -2050,6 +2057,14 @@ function setTimelineRowStyle(style) {
     drawAll()
 }
 
+// Flip the note column between tuning notation and raw 16-bit hex, then redraw
+// the current panel. Bound to Shift+N in the Timeline and Patterns panels.
+function toggleNoteDisplay() {
+    rawNoteView = !rawNoteView
+    redrawPanel()
+    drawAlwaysOnElems()
+}
+
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////
 // APPLICATION STUB
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -2543,6 +2558,7 @@ function timelineInput(wo, event) {
     if (keyJustHit && shiftDown && event.includes(keys.W)) { setTimelineRowStyle(0); return }
     if (keyJustHit && shiftDown && event.includes(keys.E)) { setTimelineRowStyle(1); return }
     if (keyJustHit && shiftDown && event.includes(keys.R)) { setTimelineRowStyle(2); return }
+    if (keyJustHit && shiftDown && event.includes(keys.N)) { toggleNoteDisplay(); return }
 
     // [ / ] nudges the tick rate, EXCEPT in edit mode on the note column where they
     // lower/raise the note by one unit (handled by the cell editor below).
@@ -3507,6 +3523,8 @@ function patternsInput(wo, event) {
     const keyJustHit = (1 == event[2])
     const shiftDown  = (event.includes(59) || event.includes(60))
     const moveDelta  = shiftDown ? 4 : 1
+
+    if (keyJustHit && shiftDown && event.includes(keys.N)) { toggleNoteDisplay(); return }
 
     // [ / ] nudges tick rate, except in edit mode on the note column (unit nudge below).
     if (keyJustHit && !shiftDown && (sc === keys.LEFT_BRACKET || sc === keys.RIGHT_BRACKET) &&

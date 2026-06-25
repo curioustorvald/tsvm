@@ -2964,7 +2964,7 @@ TODO:
     [x] taut: pattern view does not make use of applySongBeatDiv()
     [x] taut: make PPanCnt editable
     [x] taut: improve checkbox visibility by using black background with padding (just like number input; wrong order = too wide by 2 px)
-    [ ] taut: timeline and patterns: push 'Shift+N' to toggle between notation and raw notes
+    [x] taut: timeline and patterns: push 'Shift+N' to toggle between notation and raw notes
     [ ] taut: free scroll on everything (timeline, cues, patterns, etc.)
 
 TODO - list of demo songs that MUST ship with Microtone:

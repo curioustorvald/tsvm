@@ -104,6 +104,7 @@ Timeline has two distinct modes: view and edit mode. Two modes are toggled using
 &bul;<b>&udlr;</b> : <O>moves the viewing cursor by voices and rows</O>
 &bul;<b>pg&updn;</b> : <O>goes to previous/next cue</O>
 &bul;<b>W</b>&mdot;<b>E</b>&mdot;<b>R</b> : <O>toggles timeline view mode. W-most detailed, R-most abridged</O>
+&bul;<b>N</b> : <O>toggles the note column between notation and raw hex (also in Patterns)</O>
 &bul;<b>n</b> : <O>toggles soloing of the selected voice</O>
 &bul;<b>m</b> : <O>toggles muting of the selected voice</O>
 &bul;<b>[</b>&mdot;<b>]</b> : <O>changes tick rate of playhead</O>
