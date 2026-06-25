@@ -300,7 +300,8 @@ class VMJSR223Delegate(private val vm: VM) {
      * Read series of key inputs until Enter/Return key is pressed. Backspace will work but any other non-printable
      * characters (e.g. arrow keys) won't work.
      */
-    fun read(): String {
+    // use read() from JS_INIT
+    /*fun read(): String {
 //        val inputStream = vm.getInputStream()
         val sb = StringBuilder()
         var key: Int
@@ -321,13 +322,14 @@ class VMJSR223Delegate(private val vm: VM) {
 
 //        inputStream.close()
         return sb.toString()
-    }
+    }*/
 
     /**
      * Read series of key inputs until Enter/Return key is pressed. Backspace will work but any other non-printable
      * characters (e.g. arrow keys) won't work.
      */
-    fun readNoEcho(): String {
+    // use read(true) from JS_INIT
+    /*fun readNoEcho(): String {
 //        val inputStream = vm.getInputStream()
         val sb = StringBuilder()
         var key: Int
@@ -344,7 +346,7 @@ class VMJSR223Delegate(private val vm: VM) {
 
 //        inputStream.close()
         return sb.toString()
-    }
+    }*/
 
     fun spin() {
         vm.isIdle.set(true)

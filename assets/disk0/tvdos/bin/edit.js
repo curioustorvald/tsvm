@@ -17,7 +17,7 @@ const BIG_STRIDE = 10000;
 const TAB_SIZE = 4;
 
 let filename = undefined;
-
+con.resetkeybuf()
 if (exec_args !== undefined && exec_args[1] !== undefined) {
     filename = exec_args[1];
 }
@@ -25,7 +25,7 @@ else {
     println("File to edit?");
     filename = read();
 }
-
+con.resetkeybuf()
 let contentChanged = false;
 
 let scroll = 0;
@@ -500,4 +500,5 @@ while (!exit) {
 }
 
 con.clear();
+con.resetkeybuf()
 return 0;

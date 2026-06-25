@@ -1339,7 +1339,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     let troValue = args[0].troValue
 
     // print out prompt text
-    print("? "); var rh = sys.read().trim()
+    print("? "); var rh = read().trim()
 
     // if string we got can be cast to number, do it
     // NOTE: empty string will be cast to 0, which corresponds to GW-BASIC
@@ -1348,7 +1348,7 @@ if no arg text were given (e.g. "10 NEXT"), args will have zero length
     return bS.addAsBasicVar(lnum, troValue, rh)
 }},
 "CIN" : {argc:0, f:function(lnum, stmtnum, args) {
-    return sys.read().trim()
+    return read().trim()
 }},
 "END" : {argc:0, f:function(lnum, stmtnum, args) {
     serial.println("Program terminated in "+lnum)
@@ -4317,7 +4317,7 @@ if (exec_args !== undefined && exec_args[1] !== undefined) {
 }
 
 while (!tbasexit) {
-    var line = sys.read().trim()
+    var line = read().trim()
 
     cmdbufMemFootPrint += line.length
 

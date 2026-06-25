@@ -478,7 +478,7 @@ function create(opts) {
         }
         if (errorlevel) {
             println("Hit Return/Enter key to continue . . . .")
-            sys.read()
+            read()
         }
         if (onChildExit) onChildExit()
         con.curs_set(0); clearScr()
@@ -515,6 +515,7 @@ function create(opts) {
         else {
             let execfun = matchExtKey(selectedFileCache.filename, execFuns) || (allowDefaultExec ? ((f) => _G.shell.execute(f)) : null)
             if (execfun) runChild(() => execfun(selectedFile.fullPath))
+            con.resetkeybuf()
         }
     }
 

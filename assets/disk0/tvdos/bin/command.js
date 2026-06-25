@@ -1432,6 +1432,7 @@ if (goInteractive) {
 
                 cmdHistoryScroll = 0
                 con.curs_set(1)
+                con.resetkeybuf()
 
                 break
             }

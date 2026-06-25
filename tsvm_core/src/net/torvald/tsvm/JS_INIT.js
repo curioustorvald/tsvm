@@ -426,8 +426,31 @@ function printerr(s) {
 function printerrln(s) {
     println("\x1B[31m"+s+"\x1B[m");
 }
-function read() {
-    return sys.read();
+function read(noecho) {
+    // Cooked line input built on con.getch + print rather than the host
+    // sys.read(), so it is automatically VT-aware: under vtmgr both primitives
+    // are shimmed (con.getch drains this pane's input ring; print writes this
+    // pane's text plane). The old sys.read() read the physical keyboard MMIO
+    // directly — racing the dispatcher's cooked collector (chars leaked into a
+    // ring nobody read / went missing) and echoing to the physical GPU (the
+    // char flashed for one frame before the 30 Hz compositor blit wiped it).
+    // On bare metal con.getch === sys.readKey and print === sys.print, so this
+    // is behaviourally identical to the old host read().
+    var sb = "";
+    var key;
+    do {
+        key = con.getch();
+        if (!noecho && ((key == 8 && sb.length > 0) || (key >= 0x20 && key <= 0x7E)))
+            print(String.fromCharCode(key));
+        if (key == 8) {
+            if (sb.length > 0) sb = sb.slice(0, -1);
+        }
+        else if (key >= 0x20 && key <= 0x7E) {
+            sb += String.fromCharCode(key);
+        }
+    } while (key != 13 && key != 10);
+    print("\n");
+    return sb;
 }
 String.prototype.trimNull = function() {
     let cnt = this.length - 1

@@ -355,11 +355,11 @@ function EMIT(values, seps) {
 
 function INPUT(promptOrVarname) {
     print("? ")
-    let r = sys.read().trim()
+    let r = read().trim()
     if (!isNaN(r)) r = tonum(r)
     return r
 }
-function CIN() { return sys.read().trim() }
+function CIN() { return read().trim() }
 
 // ---------------------------------------------------------------------------
 // Numeric builtins
