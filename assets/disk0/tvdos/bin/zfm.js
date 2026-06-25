@@ -1,6 +1,7 @@
 const win = require("wintex")
 const keys = require("keysym")
 const filenav = require("filenav")
+const font = require("font")
 
 const COL_TEXT = 253
 const COL_BACK = 255
@@ -25,6 +26,8 @@ const POPUP_WIDTH = 52 // always even number
 const [SCRPW, SCRPH] = graphics.getPixelDimension()
 const CELL_PW = (SCRPW / WIDTH) | 0
 const CELL_PH = (SCRPH / WHEIGHT) | 0
+
+font.setHighRomChars("A:"+_TVDOS.variables.DOSDIR+"/bin/zfmfont_high.chr", 0xE0, 0xF6)
 
 const COL_HL_EXT = {
     ".js": 215,
@@ -242,6 +245,30 @@ const OP_BUTTONS = [
 ]
 let opHover = -1
 
+const OP_ICONS_LEFT = {
+    otherpanel: ' \u008416u ',
+    up: ' \u008424u ',
+    copy: '\u00E0\u00E1\u00E2',
+    move: '\u00F0\u00E1\u00E2',
+    del: '\u00E3\u00E4\u00E5',
+    mkdir: '\u00E6\u00E7\u00E8',
+    rename: '\u00E9\u00EA\u00EB',
+    more: '\u00F1\u00F2\u00F3',
+    quit: ' X ',
+}
+
+const OP_ICONS_RIGHT = {
+    otherpanel: ' \u008417u ',
+    up: ' \u008424u ',
+    copy: '\u00EE\u00E1\u00EF',
+    move: '\u00EE\u00E1\u00F6',
+    del: '\u00E3\u00E4\u00E5',
+    mkdir: '\u00E6\u00E7\u00E8',
+    rename: '\u00E9\u00EA\u00EB',
+    more: '\u00F1\u00F2\u00F3',
+    quit: ' X ',
+}
+
 let opPanelDraw = (wo) => {
     function hr(i, y) {
         // draw horizontal rule...
@@ -272,16 +299,19 @@ let opPanelDraw = (wo) => {
     let xp = wo.x + 1
     let yp = wo.y + 1
 
+    let sym = (nav.windowMode) ? OP_ICONS_RIGHT : OP_ICONS_LEFT
+
     // other panel
-    con.move(yp + 2, xp + 3)
-    con.color_pair(labCol(0), 255); con.prnch((nav.windowMode) ? 0x11 : 0x10)
+    con.move(yp + 2, xp + 2)
+    con.color_pair(labCol(0), 255); print(sym.otherpanel)
     con.move(yp + 3, xp)
     print(`  \x1B[38;5;${labCol(0)}m[\x1B[38;5;${actCol(0)}mZ\x1B[38;5;${labCol(0)}m]`)
 
     hr(0, yp+5)
 
     // go up
-    con.color_pair(labCol(1), 255); con.mvaddch(yp + 6, xp + 3, 0x18)
+    con.move(yp + 6, xp + 2)
+    con.color_pair(labCol(1), 255); print(sym.up)
     con.move(yp + 7, xp)
     print(` \x1B[38;5;${labCol(1)}mGo \x1B[38;5;${actCol(1)}mU\x1B[38;5;${labCol(1)}mp`)
 
@@ -289,7 +319,7 @@ let opPanelDraw = (wo) => {
 
     // copy
     con.move(yp + 9, xp + 2)
-    con.color_pair(labCol(2), 255); con.prnch(0xDB);con.prnch((nav.windowMode) ? 0x1B : 0x1A);con.prnch(0xDB)
+    con.color_pair(labCol(2), 255); print(sym.copy)
     con.move(yp + 10, xp)
     print(` \x1B[38;5;${actCol(2)}mC\x1B[38;5;${labCol(2)}mopy`)
 
@@ -297,7 +327,7 @@ let opPanelDraw = (wo) => {
 
     // move
     con.move(yp + 12, xp + 2)
-    con.color_pair(labCol(3), 255); if (nav.windowMode) con.prnch([0xDB, 0x1B, 0xB0]); else con.prnch([0xB0, 0x1A, 0xDB])
+    con.color_pair(labCol(3), 255); print(sym.move)
     con.move(yp + 13, xp)
     print(` \x1B[38;5;${labCol(3)}mMo\x1B[38;5;${actCol(3)}mv\x1B[38;5;${labCol(3)}me`)
 
@@ -305,7 +335,7 @@ let opPanelDraw = (wo) => {
 
     // delete
     con.move(yp + 15, xp + 2)
-    con.color_pair(labCol(4), 255); if (nav.windowMode) con.prnch([0xDB, 0x1A, 0xF9]); else con.prnch([0xF9, 0x1B, 0xDB])
+    con.color_pair(labCol(4), 255); print(sym.del)
     con.move(yp + 16, xp)
     print(` \x1B[38;5;${actCol(4)}mD\x1B[38;5;${labCol(4)}melete`)
 
@@ -313,10 +343,7 @@ let opPanelDraw = (wo) => {
 
     // mkdir
     con.move(yp + 18, xp + 2)
-    con.color_pair(labCol(5), 255);
-    con.prnch(0xDB)
-    con.video_reverse();con.prnch(0x2B);con.video_reverse()
-    con.prnch(0xDF)
+    con.color_pair(labCol(5), 255); print(sym.mkdir)
     con.move(yp + 19, xp)
     print(` \x1B[38;5;${labCol(5)}mM\x1B[38;5;${actCol(5)}mk\x1B[38;5;${labCol(5)}mDir`)
 
@@ -324,23 +351,23 @@ let opPanelDraw = (wo) => {
 
     // rename
     con.move(yp + 21, xp + 2)
-    con.color_pair(labCol(6), 255); con.prnch(0x4E);con.prnch(0x1A);con.prnch(0x52)
+    con.color_pair(labCol(6), 255); print(sym.rename)
     con.move(yp + 22, xp)
     print(` \x1B[38;5;${actCol(6)}mR\x1B[38;5;${labCol(6)}mename`)
 
     hr(6, yp+23)
 
     // the dreaded hamburger menu
-    con.move(yp + 24, xp + 3)
-    con.color_pair(labCol(7), 255); con.prnch(0xf0)
+    con.move(yp + 24, xp + 2)
+    con.color_pair(labCol(7), 255); print(sym.more)
     con.move(yp + 25, xp)
     print(` \x1B[38;5;${actCol(7)}mM\x1B[38;5;${labCol(7)}more`)
 
     hr(7, yp+26)
 
     // quit
-    con.move(yp + 27, xp + 3)
-    con.color_pair(labCol(8), 255); con.prnch(0x58)
+    con.move(yp + 27, xp + 2)
+    con.color_pair(labCol(8), 255); print(sym.quit)
     con.move(yp + 28, xp)
     print(` \x1B[38;5;${actCol(8)}mQ\x1B[38;5;${labCol(8)}muit`)
 
@@ -629,6 +656,7 @@ while (!exit) {
 }
 
 con.setFullscreen(false)
+font.resetHighRom()
 con.curs_set(1)
 con.clear()
 return 0

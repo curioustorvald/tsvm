@@ -44,6 +44,19 @@ function setHighRomChars(fullPath, firstChar, lastChar) {
     sys.poke(-1299460, 19) // commit staging buffer to high rom
 }
 
+function setLowRomChars(fullPath, firstChar, lastChar) {
+    const fontFile = files.open(fullPath)
+    const fontData = fontFile.bread()
+    fontFile.close()
+
+    const GLYPH_BYTES = 14 // font_rom_builder.c GLYPH_BYTES
+    for (let c = firstChar; c <= lastChar; c++) {
+        const off = c * GLYPH_BYTES
+        for (let l = 0; l < GLYPH_BYTES; l++) sys.poke(-133121 - (off + l), fontData[off + l])
+    }
+    sys.poke(-1299460, 18) // commit staging buffer to high rom
+}
+
 function resetHighRom() {
     sys.poke(-1299460, 21)
 }
@@ -52,4 +65,4 @@ function resetLowRom() {
     sys.poke(-1299460, 20)
 }
 
-exports = { setHighRom, setLowRom, setHighRomChars, resetHighRom, resetLowRom }
+exports = { setHighRom, setLowRom, setHighRomChars, setLowRomChars, resetHighRom, resetLowRom }
