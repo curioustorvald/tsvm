@@ -77,3 +77,4 @@ assets/disk0/hopper/*
 
 # TVDOS runtime caches (regenerated on the VM; never commit)
 assets/disk0/tvdos/cache/
+assets/disk0/AUTOEXEC.BAT

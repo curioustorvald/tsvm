@@ -418,7 +418,7 @@ function onMore(cache, nav) {
 
     const res = showActionListPopup({
         title: 'More',
-        message: cache.file.name,
+        message: ((cache.isDirectory) ? '\\' : '') + cache.file.name,
         items: items,
     })
     _redraw()

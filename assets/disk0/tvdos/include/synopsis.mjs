@@ -44,7 +44,7 @@
  */
 
 const TSF_VERSION   = "1.0"
-const CACHE_VERSION = 1                         // bump when compile()'s output shape changes
+const CACHE_VERSION = 2                         // bump when compile()'s output shape changes
 const SYN_DIR       = "\\tvdos\\synopsis"        // built-in / coreutil synopses
 const CACHE_PARENT  = "\\tvdos\\cache"
 const CACHE_DIR     = "\\tvdos\\cache\\synopsis" // compiled-model disk cache
@@ -118,9 +118,48 @@ function findExecutable(cmd) {
     return null
 }
 
-// Resolve a command token to the full path of its .synopsis document, or null.
-function resolveSynopsisPath(token) {
-    if (!token) return null
+// Split an alias body line into tokens, honouring "double-quoted" runs (the only
+// quoting command.js applies when it re-quotes substituted args).
+function tokeniseAliasBody(line) {
+    let toks = [], re = /"([^"]*)"|(\S+)/g, m
+    while ((m = re.exec(line)) !== null) toks.push(m[1] !== undefined ? m[1] : m[2])
+    return toks
+}
+
+// Parse a `.alias` file into { target, args }, mirroring command.js's alias
+// expansion: the head token is the real program, and the tokens that follow --
+// up to the first `$0`..`$9` placeholder -- are fixed arguments the alias inserts
+// *before* the user's own arguments. (Tokens at/after the placeholder are where
+// the user's args slot in, so they impose no leading offset.) Returns null when
+// the file is unreadable or has no body.
+function parseAlias(aliasPath) {
+    let src = readText(aliasPath)
+    if (src === null) return null
+    let lines = src.split('\n')
+    for (let i = 0; i < lines.length; i++) {
+        let line = lines[i].trim()
+        if (!line.length) continue
+        let toks = tokeniseAliasBody(line)
+        if (!toks.length) return null
+        let args = []
+        for (let j = 1; j < toks.length; j++) {
+            if (/\$[0-9]/.test(toks[j])) break   // the user's args slot in here
+            args.push(toks[j])
+        }
+        return { target: toks[0], args: args }
+    }
+    return null
+}
+
+// Resolve a command token through any `.alias` chain to BOTH its target's
+// synopsis path and the fixed leading arguments the alias(es) impose. Returns
+// { path, lead } where `lead` is the ordered list of arg tokens inserted before
+// the user's own (so completion can shift the positional index past them) and
+// `path` is null when no synopsis exists. A depth guard stops a self- or
+// mutually-referential alias from looping.
+function resolveCommandChain(token, depth) {
+    let none = { path: null, lead: [] }
+    if (!token || depth > 8) return none
     let d = drive()
     let lower = token.toLowerCase()
 
@@ -136,16 +175,33 @@ function resolveSynopsisPath(token) {
         })
         for (let i = 0; i < names.length; i++) {
             let p = `${d}:${SYN_DIR}\\${names[i]}.synopsis`
-            if (fileExists(p)) return p
+            if (fileExists(p)) return { path: p, lead: [] }
         }
-        return null
+        return none
     }
 
     // app -> <executable>.synopsis colocated with the program
     let exe = findExecutable(token)
-    if (!exe) return null
+    if (!exe) return none
+
+    // a `.alias` shim has no synopsis of its own: follow it to the real command,
+    // prepending the inner target's own leading args (it expands first).
+    if (exe.toLowerCase().endsWith('.alias')) {
+        let parsed = parseAlias(exe)
+        if (!parsed) return none
+        let inner = resolveCommandChain(parsed.target, depth + 1)
+        return { path: inner.path, lead: inner.lead.concat(parsed.args) }
+    }
+
     let p = exe + ".synopsis"
-    return fileExists(p) ? p : null
+    return { path: fileExists(p) ? p : null, lead: [] }
+}
+
+// Resolve a command token to the full path of its .synopsis document, or null.
+// `.alias` files are followed to their target command, so e.g. `synopsis doom`
+// follows doom.alias to wadplayer and shows wadplayer's synopsis.
+function resolveSynopsisPath(token) {
+    return token ? resolveCommandChain(token, 0).path : null
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -183,6 +239,7 @@ function compile(doc) {
     // ---- positionals + subcommands, in grammar order ----
     let positionals = []
     let subcommands = []
+    let subcommandSlot = -1   // positional index at which the subcommand choice sits
     let seenSub = {}
     function walk(node, inRepeat) {
         if (!node || typeof node !== 'object') return
@@ -207,6 +264,7 @@ function compile(doc) {
                         repeatable: !!inRepeat
                     })
                 } else if (sym.kind === 'subcommand') {
+                    if (subcommandSlot < 0) subcommandSlot = positionals.length
                     if (!seenSub[node.symbol]) {
                         seenSub[node.symbol] = true
                         subcommands.push({ name: sym.name || node.symbol, summary: sym.summary || '', tsf: sym.tsf || null })
@@ -231,6 +289,7 @@ function compile(doc) {
         flagMap: flagMap,
         positionals: positionals,
         subcommands: subcommands,
+        subcommandSlot: subcommandSlot,
         constraints: doc.constraints || []
     }
 }
@@ -240,7 +299,7 @@ function compile(doc) {
 ///////////////////////////////////////////////////////////////////////////////
 
 let _mem = {}          // synopsisPath -> { srcSize, model }
-let _resolveMemo = {}  // "drive|pwd|token" -> synopsisPath | null
+let _resolveMemo = {}  // "drive|pwd|token" -> { path, lead }
 
 function cacheKey(p) {
     // FNV-1a 32-bit hash, prefixed with a sanitised basename for readability.
@@ -285,13 +344,21 @@ function loadModel(synPath) {
     return model
 }
 
+// Memoised resolve of a command token to { path, lead } (synopsis path + the
+// fixed leading args any alias chain imposes), keyed by drive + pwd + token.
+function resolveCommand(token) {
+    if (!token) return { path: null, lead: [] }
+    let key = drive() + '|' + ((typeof _G !== "undefined" && _G.shell) ? _G.shell.getPwdString() : '') + '|' + token
+    if (Object.prototype.hasOwnProperty.call(_resolveMemo, key)) return _resolveMemo[key]
+    let r = resolveCommandChain(token, 0)
+    _resolveMemo[key] = r
+    return r
+}
+
 function getModel(token) {
     if (!token) return null
-    let key = drive() + '|' + ((typeof _G !== "undefined" && _G.shell) ? _G.shell.getPwdString() : '') + '|' + token
-    let synPath
-    if (Object.prototype.hasOwnProperty.call(_resolveMemo, key)) synPath = _resolveMemo[key]
-    else { synPath = resolveSynopsisPath(token); _resolveMemo[key] = synPath }
-    return synPath ? loadModel(synPath) : null
+    let r = resolveCommand(token)
+    return r.path ? loadModel(r.path) : null
 }
 
 function clearCache() { _mem = {}; _resolveMemo = {}; _cacheDirReady = false }
@@ -454,10 +521,19 @@ function finalise(r) { return { ok: true, candidates: r.candidates, filesystem: 
  * additionally offer matching filesystem entries.
  */
 function getCompletion(commandToken, prefixTokens, word) {
-    let model = getModel(commandToken)
+    let resolved = resolveCommand(commandToken)
+    let model = resolved.path ? loadModel(resolved.path) : null
     if (!model) return { ok: false }
     word = word || ''
     prefixTokens = prefixTokens || []
+
+    // An alias inserts fixed arguments before the user's own (e.g. `doom` is
+    // `wadplayer DOOM.WAD $0`), so prepend them: this shifts the positional
+    // count past the alias-supplied args and lets a leading flag-with-value in
+    // the alias body claim the user's first word as its value -- exactly as the
+    // expanded command line would behave. Branch (1) keys off `word` and branch
+    // (2) off the user's last token, so neither is disturbed by the prefix.
+    if (resolved.lead.length) prefixTokens = resolved.lead.concat(prefixTokens)
 
     // (1) the caret is on an option flag
     if (word.length > 0 && word.charAt(0) === '-') {
@@ -494,9 +570,9 @@ function getCompletion(commandToken, prefixTokens, word) {
             return finalise(descriptorCandidates(entry.value, word, model))
     }
 
-    // (3) a positional argument (or a subcommand in the first slot)
+    // (3) a positional argument (or a subcommand in its grammar slot)
     let posIndex = countPositionals(prefixTokens, model)
-    if (posIndex === 0 && model.subcommands.length > 0) {
+    if (model.subcommands.length > 0 && posIndex === model.subcommandSlot) {
         let out = model.subcommands
             .filter(function (s) { return s.name.indexOf(word) === 0 })
             .map(function (s) { return { label: s.name, value: s.name + ' ', summary: s.summary, isDir: false } })
