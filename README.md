@@ -86,6 +86,7 @@ implementation under `tsvm_core/.../vdc/`.
   network fetcher (`geturl`), gzip/Zstd helpers, palette tools, and a battery
   of media players (`playmp2`, `playpcm`, `playwav`, `playmv1`, `playtev`,
   `playtav`, `playtad`, `playucf`).
+- **Package manager** (`hopper.js`) — an automated software installation from the repository with dependency resolution. Just try `hop in doom`!
 - **Taut tracker** — a full in-VM tracker (`taut.js`,
   `taut_instredit.js`, `taut_sampleedit.js`, `taut_notationedit.js`,
   `taut_fileop.js`) with its own font and chrome assets.

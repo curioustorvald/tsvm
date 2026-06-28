@@ -2966,6 +2966,7 @@ TODO:
     [x] taut: improve checkbox visibility by using black background with padding (just like number input; wrong order = too wide by 2 px)
     [x] taut: timeline and patterns: push 'Shift+N' to toggle between notation and raw notes
     [x] taut: free scroll on everything (timeline, cues, patterns, etc.)
+    [ ] taut: see if you can have 256 more instrument slots ($100..$1FF) dedicated for Metainstrument definition
 
 TODO - list of demo songs that MUST ship with Microtone:
     * 4THSYM (rename to Fourth Symmetriad) — excellent piece for demonstrating NNAs and filter envelopes
