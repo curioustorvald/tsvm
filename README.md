@@ -2,7 +2,7 @@
 
 # tsvm
 
-**tsvm** /tiː.ɛs.viː.ɛm/ is a fantasy computer platform: a virtual machine whose
+**tsvm** /tiː.ɛs.viː.ɛm/ is a fantasy computer platform: a software-defined computer whose
 architecture is inspired by the 8-bit and early 16-bit home computers, built
 from the ground up around running JavaScript as its native machine code.
 
@@ -13,7 +13,7 @@ assembly language, tracker music format, and a stack of userland tools that
 together come closer to a small alternate-history computer line than a
 single-binary emulator.
 
-This repository contains the virtual machine core, the reference BIOS
+This repository contains the machine core, the reference BIOS
 implementations, the **TVDOS** operating system, the **Videotron2K** video
 display controller, hardware-accelerated codec backends for the **TEV / TAV /
 TAD** media formats, and the multi-platform packaging scripts. The
@@ -29,11 +29,10 @@ provides the matching BASIC dialect that ships on the system disk.
   Up to 8 hot-pluggable peripheral slots, each with a dedicated MMIO window
   and memory-space window mapped into the VM's negative address range.
 - **Multiple BIOS implementations** (`assets/bios/`) — including the reference
-  `tsvmbios.js`, an OpenBIOS variant, the TBM-BIOS for TerranBASIC machines,
-  and the Pip-Boy-style `pipboot.rom`. BIOSes are first-class swappable
-  components, not a fixed boot blob.
-- **Reference monitor / debugger** (`mon.js`) for poking at memory and
-  peripherals from a running machine.
+  `tsvmbios.js`, an OpenBIOS variant, the TBM-BIOS for TerranBASIC machines. 
+  BIOSes are first-class swappable components, not a fixed boot blob.
+- **Reference monitor / debugger** — `TSVMEmulator` for fully-fledged development environment,
+  and `mon.js` for poking at memory and peripherals from a running machine.
 - **Multi-platform packaging** (`buildapp/`) — scripts to produce Linux x86_64
   / ARM64 AppImages, macOS Intel / Apple Silicon bundles, and Windows builds,
   each with its own `jlink`-trimmed JDK 21 runtime.
@@ -45,10 +44,8 @@ Living under `tsvm_core/src/net/torvald/tsvm/peripheral/`:
 - **Graphics adapters** — the standard `GraphicsAdapter`, plus `TexticsAdapter`
   for text-mode framebuffers, `ExtDisp` for external displays, and a
   `RemoteGraphicsAdapter` for networked rendering.
-- **Audio devices** — `AudioAdapter` (the main programmable sound chip with
-  PCM channels, an Impulse Tracker-style resonant low-pass filter, and a
-  hardware-accelerated **TAD** decoder), `OpenALBufferedAudioDevice`, and the
-  `MP2Env` MPEG audio environment.
+- **Audio devices** — `AudioAdapter`, the main programmable sound chip with
+  PCM channels, a full tracker engine, a **TAD** and **MP2** decoders.
 - **Disk drives** — `TevdDiskDrive` (TEVD custom filesystem),
   `ClusteredDiskDrive`, `TestDiskDrive`, and a latency-simulator script for
   testing slow-storage behaviour.
@@ -60,22 +57,11 @@ Living under `tsvm_core/src/net/torvald/tsvm/peripheral/`:
 - **Memory expansion** — `RamBank` for bank-switched memory, plus a
   programmable `TestFunctionGenerator`.
 
-### Videotron2K — the video coprocessor
-
-Videotron2K is a programmable video display controller with its **own
-assembly-like language**, six general registers (`r1`–`r6`), special registers
-(`tmr`, `frm`, `px`, `py`, `c1`–`c6`), a scene-based programming model, and
-conditional postfixes (`zr`, `nz`, `gt`, `ls`, `ge`, `le`). Programs declare
-`SCENE` blocks and dispatch them with `perform`. Drawing primitives include
-`plot`, `fillin`, `fillscr`, and `goto`. See `Videotron2K.md` and the VDC
-implementation under `tsvm_core/.../vdc/`.
-
 ### TVDOS — the operating system
 
 `assets/disk0/tvdos/` is a complete DOS-style userland:
 
-- **Kernel and drivers** — `TVDOS.SYS`, `HSDPADRV.SYS`, `hyve.SYS`,
-  installable drivers under `moviedev/` and `tuidev/`.
+- **Kernel and drivers** — `TVDOS.SYS`, with built-in drivers `HSDPADRV.SYS`, `hyve.SYS`, and a room for user-installed ones.
 - **Custom filesystem** — TEVD, with the on-disk format documented in
   `tvdos/filesystem.md`.
 - **Internationalisation** — Colemak / Dvorak / QWERTY keymaps and an `i18n/`
@@ -87,9 +73,7 @@ implementation under `tsvm_core/.../vdc/`.
   of media players (`playmp2`, `playpcm`, `playwav`, `playmv1`, `playtev`,
   `playtav`, `playtad`, `playucf`).
 - **Package manager** (`hopper.js`) — an automated software installation from the repository with dependency resolution. Just try `hop in doom`!
-- **Taut tracker** — a full in-VM tracker (`taut.js`,
-  `taut_instredit.js`, `taut_sampleedit.js`, `taut_notationedit.js`,
-  `taut_fileop.js`) with its own font and chrome assets.
+- **Music tracker** — a full in-VM tracker (`microtone`) with its own font and chrome assets.
 
 ### Codecs and media formats
 
@@ -127,6 +111,16 @@ and hardware-accelerated Kotlin backends in the VM core.
 - **MP2** — reference MPEG-1 Layer II environment via `MP2Env.kt` and
   `playmp2.js`.
 
+### Videotron2K — the video coprocessor
+
+Videotron2K is an experimental programmable video display controller with its **own
+assembly-like language**, six general registers (`r1`–`r6`), special registers
+(`tmr`, `frm`, `px`, `py`, `c1`–`c6`), a scene-based programming model, and
+conditional postfixes (`zr`, `nz`, `gt`, `ls`, `ge`, `le`). Programs declare
+`SCENE` blocks and dispatch them with `perform`. Drawing primitives include
+`plot`, `fillin`, `fillscr`, and `goto`. See `Videotron2K.md` and the VDC
+implementation under `tsvm_core/.../vdc/`.
+
 ### Languages and runtimes
 
 - **JavaScript** is the VM's native code, executed by GraalVM in a sandboxed
@@ -143,11 +137,15 @@ and hardware-accelerated Kotlin backends in the VM core.
 - `terranmon.txt` — the architecture reference (memory map, peripheral
   protocol, codec bitstreams).
 - `doc/*.tex` — machine-readable LaTeX sources for the TSVM and TVDOS manuals,
-  built with `doc/makepdf.sh`.
+  build a PDF with `doc/makepdf.sh`.
 - `Videotron2K.md` — VDC programming guide.
 - `TAUD_NOTE_EFFECTS.md` — tracker effect reference.
 - `CLAUDE.md` — a condensed map of the project for collaborators (and
   language-model assistants) working in the tree.
+
+### External TSVM components
+
+- **Hopper** — the package manager for TVDOS. https://github.com/curioustorvald/hopper
 
 ## Building and running
 
@@ -217,6 +215,10 @@ buildapp/              Per-platform packaging scripts
 My_BASIC_Programs/     Example BASIC programs
 *.py, *.sh, *.kts      Conversion tools and ad-hoc utilities
 ```
+
+## Screenshots
+
+(TBA: DOS, edit.js, Microtone, video playback, DOOM with repo URL, TVNES with repo URL)
 
 ## Licence
 
