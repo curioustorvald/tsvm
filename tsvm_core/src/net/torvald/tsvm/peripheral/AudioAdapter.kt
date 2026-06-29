@@ -436,15 +436,18 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         printdbg("buffer size: $deviceBufferSize x $deviceBufferCount")
 
         playheads = Array(4) {
-            val adev  = OpenALBufferedAudioDevice(
-                Gdx.audio as OpenALLwjgl3Audio,
-                SAMPLING_RATE,
-                false,
-                deviceBufferSize,
-                deviceBufferCount
-            ) {
+            // The host may capture the VM's audio by installing vm.audioSinkFactory (e.g. to route it
+            // through a spatialised in-world mixer); otherwise we fall back to playing straight to OpenAL.
+            val adev: TsvmAudioSink = vm.audioSinkFactory?.invoke(vm, it, SAMPLING_RATE, deviceBufferSize, deviceBufferCount)
+                ?: OpenALBufferedAudioDevice(
+                    Gdx.audio as OpenALLwjgl3Audio,
+                    SAMPLING_RATE,
+                    false,
+                    deviceBufferSize,
+                    deviceBufferCount
+                ) {
 
-            }
+                }
 
 
             Playhead(this, index = it, audioDevice = adev)
@@ -4887,7 +4890,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         // threw a sporadic ArrayIndexOutOfBoundsException during PCM playback.
         var pcmQueue: ConcurrentLinkedQueue<ByteArray> = ConcurrentLinkedQueue<ByteArray>(),
         var pcmQueueSizeIndex: Int = 0,
-        val audioDevice: OpenALBufferedAudioDevice,
+        val audioDevice: TsvmAudioSink,
     ) {
         fun updateTrackerGlobalBehaviour(flags: Int) {
             trackerState?.let { ts ->

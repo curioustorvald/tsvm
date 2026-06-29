@@ -1,0 +1,15 @@
+{
+  "tsfVersion": "1.0",
+  "name": "microtone",
+  "summary": "A music tracker for TSVM featuring microtonal editing",
+  "description": "Edits or creates a TSVM tracker music. If the FILE does not exist, new file/project will be created.",
+  "symbols": {
+    "file": { "kind": "positional", "type": "file", "name": "FILE", "summary": ".taud file to open or create" }
+  },
+  "synopsis": {
+    "type": "sequence",
+    "children": [
+      { "type": "reference", "symbol": "file" }
+    ]
+  }
+}

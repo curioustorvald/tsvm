@@ -89,13 +89,17 @@ open class GraphicsAdapter(private val assetsRoot: String, val vm: VM, val confi
         rgba.shr((3 - channel) * 8).and(255) / 255f
     }
     protected fun getOriginalChrrom(): Pixmap {
-        fun getFileHandle(): FileHandle =
+        // With an empty chrRomPath, use the font ROM bundled in this jar. Read it through this class's
+        // own classloader rather than Gdx.files.classpath(): the latter only searches the system
+        // classpath, so it fails when the VM is embedded and loaded from a separate mod jar.
+        val stream: java.io.InputStream =
             if (config.chrRomPath.isEmpty())
-                Gdx.files.classpath("net/torvald/tsvm/rom/FontROM7x14.png")
+                this::class.java.classLoader.getResourceAsStream("net/torvald/tsvm/rom/FontROM7x14.png")
+                    ?: throw GdxRuntimeException("bundled font ROM 'net/torvald/tsvm/rom/FontROM7x14.png' not found on the classloader")
             else
-                Gdx.files.internal("$assetsRoot/"+config.chrRomPath)
+                Gdx.files.internal("$assetsRoot/" + config.chrRomPath).read()
 
-        return Pixmap(Gdx2DPixmap(getFileHandle().read(), Gdx2DPixmap.GDX2D_FORMAT_RGBA8888))
+        return Pixmap(Gdx2DPixmap(stream, Gdx2DPixmap.GDX2D_FORMAT_RGBA8888))
     }
     protected lateinit var chrrom: Pixmap
     protected var chrrom0 = Texture(1,1,Pixmap.Format.RGBA8888)

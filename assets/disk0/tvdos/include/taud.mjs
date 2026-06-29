@@ -52,6 +52,24 @@ function _pokeU32LE(ptr, off, v) {
     sys.poke(ptr+off+3, (v >>> 24) & 0xFF)
 }
 
+// Little-endian IEEE-754 float32 → 4-byte array. Used to serialise the song
+// table's "Frequency at the base note" field (terranmon.txt §"Song Table").
+function _f32leBytes(v) {
+    const fa = new Float32Array(1); fa[0] = v
+    const u8 = new Uint8Array(fa.buffer)
+    return [u8[0] & 0xFF, u8[1] & 0xFF, u8[2] & 0xFF, u8[3] & 0xFF]
+}
+
+// UTF-8-ish (byte-per-char, mirrors the loadTaudSongList reader's
+// String.fromCharCode) null-terminated byte run for a string field.
+function _strBytesNul(s) {
+    const out = []
+    const str = (s == null) ? '' : ('' + s)
+    for (let i = 0; i < str.length; i++) out.push(str.charCodeAt(i) & 0xFF)
+    out.push(0)
+    return out
+}
+
 // ── uploadTaudFile ──────────────────────────────────────────────────────────
 
 /**
@@ -259,8 +277,18 @@ function uploadTaudFile(inFile, songIndex, playhead) {
  * taken from playhead 0.
  *
  * @param outFile Full path with drive letter, e.g. "A:/music/out.taud"
+ * @param meta    Optional song metadata to bake into the file. When omitted the
+ *                output is byte-identical to the legacy behaviour (tracker-default
+ *                tuning, no sMet). Recognised fields:
+ *                  baseNote    Uint16 tuning base note (default 0xA000 / C9)
+ *                  baseFreq    Float32 frequency at baseNote (default 8363.0)
+ *                  projectName project name → PNam section
+ *                  sMet        { notation, beatPri, beatSec, name, composer,
+ *                                copyright } → sMet section for song 0
+ *                The new-project flow (taut "create on missing file") passes this
+ *                so the chosen notation / beat divisions / tuning persist.
  */
-function captureTrackerDataToFile(outFile) {
+function captureTrackerDataToFile(outFile, meta) {
     const drive    = outFile[0].toUpperCase()
     const diskPath = outFile.substring(2)
 
@@ -307,6 +335,11 @@ function captureTrackerDataToFile(outFile) {
     if (songGlobalVolume === undefined || songGlobalVolume === null) songGlobalVolume = 0x80
     if (songMixingVolume === undefined || songMixingVolume === null) songMixingVolume = 0x80
 
+    // Tuning (song table base note + frequency). Tracker default is C9 / 8363 Hz
+    // unless `meta` overrides it (e.g. the new-project dialog's A4@440 choice).
+    const baseNote  = (meta && meta.baseNote) ? (meta.baseNote & 0xFFFF) : 0xA000
+    const baseFreqB = _f32leBytes((meta && meta.baseFreq > 0) ? meta.baseFreq : 8363.0)
+
     // -- 4. Compress pattern bin ----------------------------------------------
     let patBinSize = patsToSave * PATTERN_SIZE
     let patBuf     = sys.malloc(patBinSize)
@@ -350,18 +383,45 @@ function captureTrackerDataToFile(outFile) {
         ixmpPayload.push(s & 0xFF, cnt & 0xFF, (cnt >>> 8) & 0xFF, (cnt >>> 16) & 0xFF)
         for (let k = 0; k < blob.length; k++) ixmpPayload.push(blob[k] & 0xFF)
     }
+    // Build the optional sMet payload (song 0 metadata) from `meta`. The sMet
+    // SECTION payload is a concatenation of per-song sub-entries; here just one.
+    // Sub-entry layout mirrors loadTaudSongList's reader:
+    //   Uint8 songIndex, Uint32 subLen, then subLen bytes of
+    //   { notation(u16) beatPri(u8) beatSec(u8) name\0 composer\0 copyright\0 }.
+    let smetPayload = null
+    if (meta && meta.sMet) {
+        const m = meta.sMet
+        const notation = (m.notation | 0) & 0xFFFF
+        const sub = [ notation & 0xFF, (notation >>> 8) & 0xFF, (m.beatPri | 0) & 0xFF, (m.beatSec | 0) & 0xFF ]
+            .concat(_strBytesNul(m.name))
+            .concat(_strBytesNul(m.composer))
+            .concat(_strBytesNul(m.copyright))
+        smetPayload = [ 0, sub.length & 0xFF, (sub.length >>> 8) & 0xFF, (sub.length >>> 16) & 0xFF, (sub.length >>> 24) & 0xFF ]
+            .concat(sub)
+    }
+
+    // Assemble the Project Data sections. Ixmp (multi-sample instruments) is
+    // emitted when present; sMet / PNam only when `meta` supplies them. The block
+    // header (magic + reserved) is written only when at least one section exists,
+    // so a legacy capture with no Ixmp/meta still produces projOff = 0.
+    const _sections = []
+    if (ixmpPayload.length > 0)    _sections.push({ fourcc: [0x49,0x78,0x6D,0x70], payload: ixmpPayload })  // 'Ixmp'
+    if (smetPayload)               _sections.push({ fourcc: [0x73,0x4D,0x65,0x74], payload: smetPayload })  // 'sMet'
+    if (meta && meta.projectName)  _sections.push({ fourcc: [0x50,0x4E,0x61,0x6D], payload: _strBytesNul(meta.projectName) })  // 'PNam'
+
     let projData = []
     let projOff  = 0
-    if (ixmpPayload.length > 0) {
+    if (_sections.length > 0) {
         projData = [
             0x1E, 0x54, 0x61, 0x75, 0x64, 0x50, 0x72, 0x4A,   // \x1ETaudPrJ
             0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,   // reserved
-            0x49, 0x78, 0x6D, 0x70,                            // 'Ixmp'
-            (ixmpPayload.length        ) & 0xFF,
-            (ixmpPayload.length >>>  8) & 0xFF,
-            (ixmpPayload.length >>> 16) & 0xFF,
-            (ixmpPayload.length >>> 24) & 0xFF,
-        ].concat(ixmpPayload)
+        ]
+        for (const sec of _sections) {
+            const L = sec.payload.length
+            projData.push(sec.fourcc[0], sec.fourcc[1], sec.fourcc[2], sec.fourcc[3],
+                          L & 0xFF, (L >>> 8) & 0xFF, (L >>> 16) & 0xFF, (L >>> 24) & 0xFF)
+            for (let k = 0; k < L; k++) projData.push(sec.payload[k] & 0xFF)
+        }
         projOff = songOffset + patCompSize + cueCompSize
     }
 
@@ -397,8 +457,8 @@ function captureTrackerDataToFile(outFile) {
         numPats & 0xFF, (numPats >>> 8) & 0xFF, // numPatterns Uint16 LE
         bpmStored & 0xFF,                      // BPM with −25 bias (low 8 bits)
         (((bpmStored >> 8) & 1) << 7) | (tickRate & 0x7F),  // bit 7 = BPM high bit; bits 0..6 = tick-rate
-        0x00,0xA0,                             // basenote (0xA000 -- C9)
-        0x00,0xAC,0x02,0x46,                   // basefreq (8363 Hz)
+        baseNote & 0xFF, (baseNote >>> 8) & 0xFF,  // basenote (Uint16 LE; default 0xA000 -- C9)
+        baseFreqB[0], baseFreqB[1], baseFreqB[2], baseFreqB[3],  // basefreq (Float32 LE; default 8363 Hz)
         sys.peek(baseAddr - 7),                // mixer flags
         songGlobalVolume & 0xFF,               // global volume
         songMixingVolume & 0xFF,               // mixing volume
@@ -416,32 +476,37 @@ function captureTrackerDataToFile(outFile) {
         0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     ]
 
-    // -- 9. Write header (creates / truncates file) ---------------------------
+    // -- 9. Write the file (header truncates/creates; the rest is appended) ----
+    // The sections are laid out strictly sequentially (header → sample+inst →
+    // song table → pattern bin → cue sheet → project data), so we write the
+    // header with bwrite (truncate) and APPEND everything after it. This avoids
+    // pwrite-with-offset, which serial-attached disk drives (the boot drive's
+    // SERIAL driver) reject — captureTrackerDataToFile must work on those too.
+    // The stored projOff / songOffset stay valid because the append order
+    // reproduces the exact offsets they were computed from.
     const fileHandle = files.open(outFile)
     fileHandle.bwrite(header)
 
     // -- 10. Append compressed sample+inst bin --------------------------------
-    fileHandle.pwrite(compBuf, compressedSize, TAUD_HEADER_SIZE)
+    fileHandle.pappend(compBuf, compressedSize)
     sys.free(compBuf)
 
-    // -- 11. Write song table -------------------------------------------------
-    fileHandle.bwrite(songTable)
+    // -- 11. Append song table ------------------------------------------------
+    fileHandle.bappend(songTable)
 
     // -- 12. Append compressed pattern bin ------------------------------------
-    fileHandle.pwrite(patCompBuf, patCompSize,
-        TAUD_HEADER_SIZE + compressedSize + songTable.length)
+    fileHandle.pappend(patCompBuf, patCompSize)
     sys.free(patCompBuf)
 
     // -- 13. Append compressed cue sheet --------------------------------------
-    fileHandle.pwrite(cueCompBuf, cueCompSize,
-        TAUD_HEADER_SIZE + compressedSize + songTable.length + patCompSize)
+    fileHandle.pappend(cueCompBuf, cueCompSize)
     sys.free(cueCompBuf)
 
-    // -- 14. Append project data (Ixmp) at projOff ----------------------------
+    // -- 14. Append project data (Ixmp / sMet / PNam) at projOff --------------
     if (projData.length > 0) {
         let projBuf = sys.malloc(projData.length)
         for (let k = 0; k < projData.length; k++) sys.poke(projBuf + k, projData[k])
-        fileHandle.pwrite(projBuf, projData.length, projOff)
+        fileHandle.pappend(projBuf, projData.length)
         sys.free(projBuf)
     }
 

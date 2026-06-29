@@ -8,4 +8,5 @@ rem run per-console here rather than once at boot.
 tvdos/i18n/korean
 
 rem The interactive shell for this console.
+zfm
 command -fancy

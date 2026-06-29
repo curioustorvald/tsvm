@@ -37,10 +37,10 @@ class OpenALBufferedAudioDevice(
     private val audio: OpenALLwjgl3Audio,
     val rate: Int,
     isMono: Boolean,
-    val bufferSize: Int,
-    val bufferCount: Int,
+    override val bufferSize: Int,
+    override val bufferCount: Int,
     private val fillBufferCallback: () -> Unit
-) : AudioDevice {
+) : AudioDevice, TsvmAudioSink {
     private val channels: Int
     private var buffers: IntBuffer? = null
     private var sourceID = -1
@@ -82,7 +82,7 @@ class OpenALBufferedAudioDevice(
     }
 
     /** Write interleaved stereo unsigned-8-bit samples [L0, R0, L1, R1, ...] to the device. */
-    fun writeStereoSamplesUI8(samples: ByteArray, offset: Int, numPairs: Int) {
+    override fun writeStereoSamplesUI8(samples: ByteArray, offset: Int, numPairs: Int) {
         if (bytes == null || bytes!!.size < numPairs * 4) bytes = ByteArray(numPairs * 4)
         var i = offset
         var ii = 0

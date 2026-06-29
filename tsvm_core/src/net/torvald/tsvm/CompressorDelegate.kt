@@ -21,48 +21,33 @@ class CompressorDelegate(private val vm: VM) {
     fun compFromTo(input: Int, len: Int, output: Int): Int {
         val inbytes = ByteArray(len) { vm.peek(input.toLong() + it)!! }
         val bytes = comp(inbytes)
-        vm.getDev(output.toLong(), bytes.size.toLong(), true).let {
-            if (it != null) {
-                val bytesReversed = bytes.reversedArray() // backward addressing: copy over reversed bytes starting from the end of the destination
-                UnsafeHelper.memcpyRaw(bytesReversed, UnsafeHelper.getArrayOffset(bytesReversed), null, output.toLong() - bytes.size, bytes.size.toLong())
-            }
-            else {
-                bytes.forEachIndexed { index, byte ->
-                    vm.poke(output.toLong() + index, byte)
-                }
-            }
+        // NOTE: the old `if (getDev != null)` fast path wrote to a RAW, untranslated
+        // address (`output - bytes.size`, no usermem base). getDev() returns non-null
+        // for ANY positive user-space output, so that branch crashed (SIGSEGV) on
+        // every compFromTo to a malloc'd buffer — e.g. taud capture/save. The
+        // forward vm.poke loop translates addresses correctly for both user space and
+        // peripherals, so always use it (mirrors the already-fixed decompFromTo).
+        bytes.forEachIndexed { index, byte ->
+            vm.poke(output.toLong() + index, byte)
         }
         return bytes.size
     }
 
     fun compTo(str: String, output: Int): Int {
         val bytes = comp(str)
-        vm.getDev(output.toLong(), bytes.size.toLong(), true).let {
-            if (it != null) {
-                val bytesReversed = bytes.reversedArray() // backward addressing: copy over reversed bytes starting from the end of the destination
-                UnsafeHelper.memcpyRaw(bytesReversed, UnsafeHelper.getArrayOffset(bytesReversed), null, output.toLong() - bytes.size, bytes.size.toLong())
-            }
-            else {
-                bytes.forEachIndexed { index, byte ->
-                    vm.poke(output.toLong() + index, byte)
-                }
-            }
+        // See compFromTo: always use the address-translating vm.poke loop; the old
+        // getDev fast path wrote to a raw untranslated address and crashed.
+        bytes.forEachIndexed { index, byte ->
+            vm.poke(output.toLong() + index, byte)
         }
         return bytes.size
     }
 
     fun compTo(ba: ByteArray, output: Int): Int {
         val bytes = comp(ba)
-        vm.getDev(output.toLong(), bytes.size.toLong(), true).let {
-            if (it != null) {
-                val bytesReversed = bytes.reversedArray() // backward addressing: copy over reversed bytes starting from the end of the destination
-                UnsafeHelper.memcpyRaw(bytesReversed, UnsafeHelper.getArrayOffset(bytesReversed), null, output.toLong() - bytes.size, bytes.size.toLong())
-            }
-            else {
-                bytes.forEachIndexed { index, byte ->
-                    vm.poke(output.toLong() + index, byte)
-                }
-            }
+        // See compFromTo: always use the address-translating vm.poke loop.
+        bytes.forEachIndexed { index, byte ->
+            vm.poke(output.toLong() + index, byte)
         }
         return bytes.size
     }
@@ -73,32 +58,19 @@ class CompressorDelegate(private val vm: VM) {
 
     fun decompTo(str: String, pointer: Int): Int {
         val bytes = decomp(str)
-        vm.getDev(pointer.toLong(), bytes.size.toLong(), true).let {
-            if (it != null) {
-                val bytesReversed = bytes.reversedArray() // backward addressing: copy over reversed bytes starting from the end of the destination
-                UnsafeHelper.memcpyRaw(bytesReversed, UnsafeHelper.getArrayOffset(bytesReversed), null, pointer.toLong() - bytes.size, bytes.size.toLong())
-            }
-            else {
-                bytes.forEachIndexed { index, byte ->
-                    vm.poke(pointer.toLong() + index, byte)
-                }
-            }
+        // See compFromTo: always use the address-translating vm.poke loop; the old
+        // getDev fast path wrote to a raw untranslated address and crashed.
+        bytes.forEachIndexed { index, byte ->
+            vm.poke(pointer.toLong() + index, byte)
         }
         return bytes.size
     }
 
     fun decompTo(ba: ByteArray, pointer: Int): Int {
         val bytes = decomp(ba)
-        vm.getDev(pointer.toLong(), bytes.size.toLong(), true).let {
-            if (it != null) {
-                val bytesReversed = bytes.reversedArray() // backward addressing: copy over reversed bytes starting from the end of the destination
-                UnsafeHelper.memcpyRaw(bytesReversed, UnsafeHelper.getArrayOffset(bytesReversed), null, pointer.toLong() - bytes.size, bytes.size.toLong())
-            }
-            else {
-                bytes.forEachIndexed { index, byte ->
-                    vm.poke(pointer.toLong() + index, byte)
-                }
-            }
+        // See compFromTo: always use the address-translating vm.poke loop.
+        bytes.forEachIndexed { index, byte ->
+            vm.poke(pointer.toLong() + index, byte)
         }
         return bytes.size
     }

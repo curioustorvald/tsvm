@@ -65,6 +65,17 @@ class VM(
     var getErrorStream: () -> OutputStream = { TODO() }
     var getInputStream: () -> InputStream = { TODO() }
 
+    /**
+     * Optional host-supplied factory for the AudioAdapter's per-playhead output sink.
+     *
+     * When set (before the AudioAdapter is constructed), [net.torvald.tsvm.peripheral.AudioAdapter]
+     * obtains one [net.torvald.tsvm.peripheral.TsvmAudioSink] per playhead from this factory instead
+     * of creating a stock OpenAL device, letting the host capture/redirect the VM's audio.
+     *
+     * Args: (vm, channelIndex 0..3, sampleRate, deviceBufferSize, deviceBufferCount).
+     */
+    var audioSinkFactory: ((VM, Int, Int, Int, Int) -> net.torvald.tsvm.peripheral.TsvmAudioSink)? = null
+
     var startTime: Long = -1; private set
 
     var resetDown = false

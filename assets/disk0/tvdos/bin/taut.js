@@ -856,6 +856,12 @@ function loadTaud(filePath, songIndex) {
     const fh = files.open(filePath)
     if (!fh.exists) throw Error(`taut: file not exists: ${filePath}`)
     const fileSize = fh.size
+    // A truncated file (e.g. a failed earlier write that only got the header out)
+    // must not reach sys.malloc(0) further down — reject it cleanly here.
+    if (fileSize < TAUD_HEADER_SIZE) {
+        fh.close()
+        throw Error(`taut: '${filePath}' is corrupt or truncated (${fileSize} bytes)`)
+    }
     const ptr = sys.malloc(fileSize)
     fh.pread(ptr, fileSize, 0)
     fh.close()
@@ -878,6 +884,10 @@ function loadTaud(filePath, songIndex) {
 
     const songTableOff = TAUD_HEADER_SIZE + compSize
     const entryOff     = songTableOff + songIndex * TAUD_SONG_ENTRY
+    if (entryOff + TAUD_SONG_ENTRY > fileSize) {
+        sys.free(ptr)
+        throw Error(`taut: '${filePath}' is truncated (song table past end of file); corrupt`)
+    }
 
     const songOff   = _peekU32LE(ptr, entryOff)
     const numVoices = sys.peek(ptr + entryOff + 4) & 0xFF
@@ -891,6 +901,10 @@ function loadTaud(filePath, songIndex) {
 
     // Decompress pattern bin
     const patBinSize = numPats * PATTERN_SIZE
+    if (patBinSize <= 0) {
+        sys.free(ptr)
+        throw Error(`taut: '${filePath}' declares no patterns (numPats=${numPats}); corrupt`)
+    }
     const patBinPtr  = sys.malloc(patBinSize)
     gzip.decompFromTo(ptr + songOff, patBinCompSize, patBinPtr)
 
@@ -948,6 +962,10 @@ function loadTaudSongList(filePath) {
     const fh = files.open(filePath)
     if (!fh.exists) throw Error(`taut: file not exists: ${filePath}`)
     const fileSize = fh.size
+    if (fileSize < TAUD_HEADER_SIZE) {
+        fh.close()
+        throw Error(`taut: '${filePath}' is corrupt or truncated (${fileSize} bytes)`)
+    }
     const ptr = sys.malloc(fileSize)
     fh.pread(ptr, fileSize, 0)
     fh.close()
@@ -2126,7 +2144,62 @@ const buttonTexture = new gl.Texture(2, 28, buttonBytes)
 
 font.setLowRom("A:"+_TVDOS.variables.DOSDIR+"/bin/tautfont_low.chr")
 font.setHighRom("A:"+_TVDOS.variables.DOSDIR+"/bin/tautfont_high.chr")
-const songsMeta = loadTaudSongList(fullPathObj.full)
+
+// ── New-project flow (launch path does not exist) ────────────────────────────
+// `taut foo.taud` on a non-existent foo.taud means "create it". Per spec we (1)
+// fail fast if the target directory cannot be written, (2) collect the song's
+// settings in a full-screen modal, (3) quit silently — touching nothing on disk —
+// if the user cancels, and (4) seed an empty project from the settings on OK. The
+// file itself is written once the audio device is up (see the upload site below).
+function _parentDirOf(fullPath) {
+    const norm = ('' + fullPath).replaceAll('/', '\\')
+    const li = norm.lastIndexOf('\\')
+    if (li <= 2) return norm.substring(0, 2) + '\\'   // file lives in the drive root
+    return norm.substring(0, li)
+}
+function canCreateFileAt(fullPath) {
+    // TVDOS has no permission bits; "writable" reduces to "the parent directory
+    // exists and is a directory" (a bad drive letter / missing dir throws or
+    // reports !exists). The target file itself is known not to exist here.
+    try {
+        const parent = files.open(_parentDirOf(fullPath))
+        return parent.exists && parent.isDirectory
+    } catch (e) { return false }
+}
+
+let newProjectSettings = null
+if (!files.open(fullPathObj.full).exists) {
+    if (!canCreateFileAt(fullPathObj.full)) {
+        println(`taut: cannot create '${fullPathObj.full}': directory not writable`)
+        return 1
+    }
+    const npCtx = {
+        SCRW, SCRH, sym, pitchTablePresets,
+        C: {
+            white: colWHITE, black: colBLACK,
+            popupBack: colPopupBack, popupBack2: colPopupBack2,
+            highlight: colHighlight, status: colStatus, sep: colSep,
+            rowNum: colRowNum, emph1: colRowNumEmph1, emph2: colRowNumEmph2,
+            backPtn: colBackPtn, voiceHdr: colVoiceHdr, brand: colBrand,
+            titleOrn: colTabBarOrn, titleBack: colTabBarBack, titleText: colTabInactive,
+            scrollBar: colScrollBar, pan: colPan, inst: colInst, playback: colPlayback,
+        },
+    }
+    newProjectSettings = requireTaut("taut_newproj").init(npCtx).openNewProjectDialog(fullPathObj.full)
+    if (newProjectSettings === null) {
+        // Cancelled: write nothing and exit as if nothing happened. Mirror the
+        // normal teardown for everything already set up by this point (the scratch
+        // buffer + the swapped-in font ROM); the audio device was never touched.
+        sys.free(SCRATCH_PTR)
+        font.resetLowRom(); font.resetHighRom()
+        graphics.clearPixels(255); con.clear(); con.move(1, 1); con.curs_set(1)
+        return 0
+    }
+}
+
+const songsMeta = newProjectSettings
+    ? buildEmptyMeta(newProjectSettings)
+    : loadTaudSongList(fullPathObj.full)
 let currentSongIndex = 0
 // Unified cursor: 0..PROJ_META_ROWS_COUNT-1 = editable meta rows (Flags / GVol / MVol);
 //                 >= PROJ_META_ROWS_COUNT   = song list, songIdx = projectCursor - PROJ_META_ROWS_COUNT
@@ -2135,7 +2208,13 @@ const PROJ_META_ROWS_COUNT = 3
 const PROJ_META_FLAGS = 0
 const PROJ_META_GVOL  = 1
 const PROJ_META_MVOL  = 2
-let song = loadTaud(fullPathObj.full, currentSongIndex)
+let song
+if (newProjectSettings) {
+    song = buildEmptySong(newProjectSettings)
+    song.filePath = fullPathObj.full   // it WILL be written to this path on first upload
+} else {
+    song = loadTaud(fullPathObj.full, currentSongIndex)
+}
 // The mutable "current file" pointer the File tab reads/writes. Starts at the
 // file taut was launched with; Open / Save As repoint it, New clears it to null
 // (an unsaved in-memory project). switchSong reloads from this, NOT fullPathObj
@@ -2270,7 +2349,9 @@ function buildEmptyCueBytes() {
     for (let k = 0; k < 30; k++) b[k] = 0xFF
     return b
 }
-function buildEmptySong() {
+// `settings` (optional) is the new-project dialog's result; when present it seeds
+// the tempo. The File-tab "New" path calls these with no args → tracker defaults.
+function buildEmptySong(settings) {
     const patterns = [ new Uint8Array(PATTERN_SIZE) ]
     const cues = new Array(NUM_CUES)
     for (let c = 0; c < NUM_CUES; c++) {
@@ -2278,20 +2359,46 @@ function buildEmptySong() {
     }
     return {
         filePath: null, songIndex: 0, version: 1, numSongs: 1,
-        numVoices: NUM_VOICES, numPats: 1, bpm: 125, tickRate: 6,
+        numVoices: NUM_VOICES, numPats: 1,
+        bpm: (settings && settings.bpm) || 125,
+        tickRate: (settings && settings.tickRate) || 6,
         patterns, cues, lastActiveCue: -1,
     }
 }
-function buildEmptyMeta() {
+function buildEmptyMeta(settings) {
     return {
-        numSongs: 1, projectName: '',
+        numSongs: 1, projectName: (settings && settings.name) || '',
         songs: [{
-            index: 0, numVoices: NUM_VOICES, numPats: 1, bpm: 125, tickRate: 6,
+            index: 0, numVoices: NUM_VOICES, numPats: 1,
+            bpm: (settings && settings.bpm) || 125,
+            tickRate: (settings && settings.tickRate) || 6,
             mixerflags: 0, songGlobalVolume: 0x80, songMixingVolume: 0x80,
-            name: '', composer: '', copyright: '',
-            pitchPresetIdx: null, beatDivPrimary: null, beatDivSecondary: null,
+            name: (settings && settings.name) || '',
+            composer: (settings && settings.composer) || '',
+            copyright: (settings && settings.copyright) || '',
+            pitchPresetIdx:   settings ? settings.notation : null,
+            beatDivPrimary:   settings ? settings.beatPri  : null,
+            beatDivSecondary: settings ? settings.beatSec  : null,
         }],
         instNames: [], sampleNames: [],
+    }
+}
+
+// Project-data metadata (tuning + sMet) handed to taud.captureTrackerDataToFile
+// so a freshly-created project's notation / beat divisions / tuning persist on disk.
+function newProjectMeta(s) {
+    return {
+        baseNote: s.baseNote,
+        baseFreq: s.baseFreq,
+        projectName: s.name,
+        sMet: {
+            notation:  s.notation,
+            beatPri:   s.beatPri,
+            beatSec:   s.beatSec,
+            name:      s.name,
+            composer:  s.composer,
+            copyright: s.copyright,
+        },
     }
 }
 function uploadEmptyDeviceState() {
@@ -4498,7 +4605,19 @@ function openInlineNumEdit(y, x, digits, initialValue, min, max) {
 clampCursor(); clampVoice(); clampCue(); clampOrdersHoriz(); clampPatternIdx(); clampPatternGrid()
 
 resetAudioDevice()
-taud.uploadTaudFile(fullPathObj.full, currentSongIndex, PLAYHEAD)
+if (newProjectSettings) {
+    // Fresh project: seed the device with an empty song at the chosen tempo, then
+    // write it to disk (the meta carries notation / beat divisions / tuning so they
+    // round-trip on the next open). After this the file exists and behaves like any
+    // other opened project.
+    uploadEmptyDeviceState()
+    audio.setBPM(PLAYHEAD, newProjectSettings.bpm)
+    audio.setTickRate(PLAYHEAD, newProjectSettings.tickRate)
+    taud.captureTrackerDataToFile(fullPathObj.full, newProjectMeta(newProjectSettings))
+    hasUnsavedChanges = false
+} else {
+    taud.uploadTaudFile(fullPathObj.full, currentSongIndex, PLAYHEAD)
+}
 refreshSamplesCache()
 audio.setMasterVolume(PLAYHEAD, 255)
 audio.setMasterPan(PLAYHEAD, 128)
