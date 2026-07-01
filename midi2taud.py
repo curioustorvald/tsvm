@@ -2415,12 +2415,15 @@ def build_sample_inst_bin(sf: SF2, pool: list, layer_insts: list, meta_records: 
         o = base + 4
         for layer_slot, rect in layer_descs:
             plo, phi, vlo, vhi = rect
+            # 9-bit layer instrument index: low 8 bits in byte 0; bit 8 (the auxiliary-bin
+            # $100..$1FF selector) in bit 6 of the volume-start byte (offset +8). Layers of
+            # multi-layer presets live in the aux bin, so this bit is normally set.
             inst_bin[o]     = layer_slot & 0xFF
             inst_bin[o + 1] = META_UNITY_OCTET
             struct.pack_into('<h', inst_bin, o + 2, 0)          # sample detune (neutral)
             struct.pack_into('<H', inst_bin, o + 4, plo & 0xFFFF)
             struct.pack_into('<H', inst_bin, o + 6, phi & 0xFFFF)
-            inst_bin[o + 8] = vlo & 0x3F
+            inst_bin[o + 8] = (vlo & 0x3F) | (((layer_slot >> 8) & 1) << 6)
             inst_bin[o + 9] = vhi & 0x3F
             o += 10
 
@@ -3363,41 +3366,59 @@ def collect_triggers(song: Song, slot_keys: list, seen_keys: set,
 
 
 def allocate_slots(presets: dict, slot_keys: list):
-    """Assign instrument-bin slots across `slot_keys`. Each layer is a normal
-    instrument; a preset with >1 layer also takes a Metainstrument slot the note
-    references. Single-layer presets stay plain instruments (no meta, no extra
-    slot). Returns (layer_insts, meta_records, slot_name, note_slot)."""
-    next_slot   = 1
-    layer_insts = []      # all normal instruments, .slot assigned
-    meta_records = []     # (meta_slot, name, [(layer_slot, bbox_rect)])
-    slot_name   = {}      # slot → display name
-    note_slot   = {}      # inst_key → slot a note triggers (0 = unplayable)
+    """Assign instrument-bin slots across `slot_keys`.
+
+    Two bins (terranmon.txt:2036-2044): the directly-addressable bin $01..$FF (255
+    slots) holds everything a pattern cell references — single-layer presets and the
+    Metainstrument slot of a multi-layer preset; the auxiliary bin $100..$1FF (256
+    slots) holds the layer SUBINSTRUMENTS of multi-layer presets, which are reachable
+    only through their Metainstrument's layer table (never a pattern cell). So a meta
+    at e.g. $01 with 10 layers puts those layers at $100..$109 and the meta at $01.
+    Metainstruments themselves are NEVER allocated in the aux bin.
+
+    Returns (layer_insts, meta_records, slot_name, note_slot)."""
+    next_norm   = 1          # directly-addressable bin $01..$FF
+    next_aux    = 0x100      # auxiliary bin $100..$1FF (layer subinstruments)
+    layer_insts = []         # all normal instruments, .slot assigned
+    meta_records = []        # (meta_slot, name, [(layer_slot, bbox_rect)])
+    slot_name   = {}         # slot → display name
+    note_slot   = {}         # inst_key → slot a note triggers (0 = unplayable)
     for ik in slot_keys:
         name, layers = presets[ik]
         if not layers:
             note_slot[ik] = 0
             continue
-        need = len(layers) + (1 if len(layers) > 1 else 0)
-        if next_slot + need - 1 > 255:
-            vprint(f"  warning: 255-slot budget exhausted — preset '{name}' dropped")
-            note_slot[ik] = 0
-            continue
-        for li, ti in enumerate(layers):
-            ti.slot = next_slot; next_slot += 1
-            layer_insts.append(ti)
-            slot_name[ti.slot] = name if len(layers) == 1 else f"{name} L{li}"
         if len(layers) == 1:
-            note_slot[ik] = layers[0].slot
+            # Single layer: a plain instrument the pattern references directly.
+            if next_norm > 255:
+                vprint(f"  warning: $01..$FF budget exhausted — preset '{name}' dropped")
+                note_slot[ik] = 0
+                continue
+            ti = layers[0]
+            ti.slot = next_norm; next_norm += 1
+            ti.is_meta_layer = False
+            layer_insts.append(ti)
+            slot_name[ti.slot] = name
+            note_slot[ik] = ti.slot
         else:
-            for ti in layers:           # mark as meta layers: emit canonical into Ixmp too
-                ti.is_meta_layer = True
-            meta_slot = next_slot; next_slot += 1
+            # Multi-layer: the Metainstrument goes in the directly-addressable bin;
+            # its layer subinstruments go in the auxiliary bin.
+            if next_norm > 255 or next_aux + len(layers) - 1 > 0x1FF:
+                vprint(f"  warning: instrument budget exhausted — preset '{name}' dropped")
+                note_slot[ik] = 0
+                continue
+            meta_slot = next_norm; next_norm += 1
+            for li, ti in enumerate(layers):
+                ti.slot = next_aux; next_aux += 1
+                ti.is_meta_layer = True     # emit canonical into Ixmp too (strict layering)
+                layer_insts.append(ti)
+                slot_name[ti.slot] = f"{name} L{li}"
             meta_records.append((meta_slot, name,
                                  [(ti.slot, _layer_bbox(ti)) for ti in layers]))
             slot_name[meta_slot] = name
             note_slot[ik] = meta_slot
-    vprint(f"  slots: {next_slot - 1} used — {len(layer_insts)} instrument(s), "
-           f"{len(meta_records)} Metainstrument(s)")
+    vprint(f"  slots: {next_norm - 1} in $01..$FF, {next_aux - 0x100} in aux $100..$1FF — "
+           f"{len(layer_insts)} instrument(s), {len(meta_records)} Metainstrument(s)")
     return layer_insts, meta_records, slot_name, note_slot
 
 

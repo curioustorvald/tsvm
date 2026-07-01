@@ -42,16 +42,27 @@ function init(HUB) {
 // scripts pack samples into the 8 MB pool in slot order, so sorting unique
 // pointers ascending lines up with SNam[i] in the project-data block.
 
-// Peripheral memory window offsets, from terranmon.txt:1994-1999.
+// Peripheral memory window offsets, from terranmon.txt:1985-2044.
 const TAUT_SBANK_SIZE       = 524288  // 512 K window for sample bin
-const TAUT_INST_WINDOW_OFF  = 720896  // instrument bin starts here in peri space
+const TAUT_INST_WINDOW_OFF  = 720896  // directly-addressable bin $00..$FF starts here in peri space
+const TAUT_AUXBIN_WINDOW_OFF = 655360 // auxiliary bin $100..$1FF (Metainstrument-layer-only)
 const TAUT_INST_RECORD_SIZE = 256
-const TAUT_INST_COUNT       = 256     // slots 0..255; slot 0 is unused
+const TAUT_INST_COUNT       = 256     // directly-addressable slots 0..255 (pattern-reachable); slot 0 unused
+const TAUT_INST_TOTAL       = 512     // including aux bin 256..511 ($100..$1FF); not pattern-reachable
+
+// Peripheral byte offset of instrument `slot`'s record. 0..255 live in the
+// directly-addressable bin; 256..511 in the auxiliary bin, which sits at a LOWER
+// peri address (terranmon.txt:2036-2044) and is reachable only as meta layers.
+function instRecordBase(slot) {
+    return (slot < TAUT_INST_COUNT)
+        ? (TAUT_INST_WINDOW_OFF  + slot * TAUT_INST_RECORD_SIZE)
+        : (TAUT_AUXBIN_WINDOW_OFF + (slot - TAUT_INST_COUNT) * TAUT_INST_RECORD_SIZE)
+}
 
 // Read one 256-byte instrument record straight out of the audio adapter.
 function readInstRecord(slot) {
     const memBase = audio.getMemAddr()
-    const base    = TAUT_INST_WINDOW_OFF + slot * TAUT_INST_RECORD_SIZE
+    const base    = instRecordBase(slot)
     const rec = new Uint8Array(TAUT_INST_RECORD_SIZE)
     for (let i = 0; i < TAUT_INST_RECORD_SIZE; i++) {
         rec[i] = sys.peek(memBase - (base + i)) & 0xFF
@@ -75,8 +86,13 @@ function buildMetaLayerChildSlots() {
             const count = sys.peek(memBase - (base + 1)) & 0xFF
             let o = 4
             for (let i = 0; i < count && o + 10 <= TAUT_INST_RECORD_SIZE; i++, o += 10) {
-                const idx = sys.peek(memBase - (base + o)) & 0xFF
-                if (idx >= 1) child[idx] = 1
+                // 9-bit layer index: low 8 bits in byte 0, bit 8 in bit 6 of the
+                // vol-start byte (offset +8). Aux-bin layers ($100..$1FF) can't be
+                // punched into a pattern, so only flag directly-addressable children.
+                const idxLo = sys.peek(memBase - (base + o)) & 0xFF
+                const volSt = sys.peek(memBase - (base + o + 8)) & 0xFF
+                const idx   = idxLo | (((volSt >> 6) & 1) << 8)
+                if (idx >= 1 && idx < TAUT_INST_COUNT) child[idx] = 1
             }
         }
     }
@@ -207,7 +223,9 @@ function buildSampleIndex() {
         const e = byPtr.get(key)
         if (e.usedBy.indexOf(slot) < 0) e.usedBy.push(slot)
     }
-    for (let i = 1; i < TAUT_INST_COUNT; i++) {
+    // Scan both bins: $00..$FF and the auxiliary $100..$1FF (multi-layer presets keep
+    // their layer subinstruments there, so their samples live only in aux records).
+    for (let i = 1; i < TAUT_INST_TOTAL; i++) {
         const rec = readInstRecord(i)
         // Metainstruments (samplePtr high 16 bits == 0xFFFF) carry no sample of their
         // own — only a layer table — so skip their bogus base pointer here.
@@ -424,11 +442,13 @@ function drawSamplesUsedBy() {
         }
         const slot = used[idx]
         const iname = names[slot] || '(unnamed)'
+        // Aux-bin slots ($100..$1FF) print as 3 hex digits; size the name field off the
+        // actual label length so the row stays within the right pane.
         const numStr = '$' + slot.toString(16).toUpperCase().padStart(2, '0')
         con.color_pair(colSmpUsedFg, colBackPtn)
         print(' ' + numStr + ' ')
         con.color_pair(colSmpPropValue, colBackPtn)
-        const nameW = rightW - 5
+        const nameW = rightW - 2 - numStr.length
         print(iname.length > nameW ? iname.substring(0, nameW) : iname.padEnd(nameW))
     }
 }
@@ -788,9 +808,11 @@ function decodeEnvelope(rec, kind) {
 
 // Decode a Metainstrument record (terranmon.txt §"Metainstrument definition"):
 // byte0 = type (0 = layered), byte1 = layer count, bytes2-3 = 0xFFFF identifier,
-// then `count` 10-byte layer descriptors from byte4. Each: u8 instIdx, u8 mixOctet
+// then `count` 10-byte layer descriptors from byte4. Each: u8 instIdx-low, u8 mixOctet
 // (Perceptually-Significant-Octet dB, 159 = unity), s16 detune (4096-TET),
-// u16 pitchStart, u16 pitchEnd, u8 volStart, u8 volEnd (0..63).
+// u16 pitchStart, u16 pitchEnd, u8 volStart, u8 volEnd (0..63). The layer instrument
+// index is 9 bits: low 8 in byte 0, bit 8 (the aux-bin $100..$1FF selector) in bit 6
+// of the volStart byte (offset +8); volStart/volEnd themselves are bits 0..5.
 function decodeMetaRecord(rec) {
     const count = rec[1] & 0xFF
     const layers = []
@@ -798,7 +820,7 @@ function decodeMetaRecord(rec) {
     for (let i = 0; i < count && o + 10 <= 256; i++, o += 10) {
         let det = rec[o+2] | (rec[o+3] << 8); if (det >= 0x8000) det -= 0x10000
         layers.push({
-            instIdx:    rec[o] & 0xFF,
+            instIdx:    (rec[o] & 0xFF) | (((rec[o+8] >> 6) & 1) << 8),
             mixOctet:   rec[o+1] & 0xFF,
             detune:     det,
             pitchStart: rec[o+4] | (rec[o+5] << 8),
@@ -881,21 +903,24 @@ function decodeInstFull(rec) {
     }
 }
 
-// Scan slots 1..255. Keep any slot that either has a non-empty sample length
-// or a project-data INam entry. Returns a flat list — UI cursor walks this,
-// not raw slot numbers — and a {slot → cacheIdx} reverse map for
-// launchInstrumentViewerFor's jump-to-slot path.
+// Scan slots 1..511 (directly-addressable bin $01..$FF then auxiliary bin $100..$1FF).
+// Keep any slot that either has a non-empty sample length, is a Metainstrument, or has a
+// project-data INam entry. Returns a flat list — UI cursor walks this, not raw slot
+// numbers — and a {slot → cacheIdx} reverse map for launchInstrumentViewerFor's
+// jump-to-slot path. Aux-bin instruments ($100..$1FF) are the layer subinstruments of
+// multi-layer Metainstruments; they are editable here but are NOT pattern-addressable.
 let instrumentsCache = null
 let instSlotToIdx    = null
 
 function buildInstrumentIndex() {
     const list = []
     const names = (songsMeta && songsMeta.instNames) || []
-    for (let i = 1; i < TAUT_INST_COUNT; i++) {
+    for (let i = 1; i < TAUT_INST_TOTAL; i++) {
         const rec = readInstRecord(i)
         const sampleLen = rec[4] | (rec[5] << 8)
+        const isMeta = ((rec[2] | (rec[3] << 8)) & 0xFFFF) === 0xFFFF
         const nm = names[i] || ''
-        if (sampleLen === 0 && nm === '') continue
+        if (sampleLen === 0 && nm === '' && !isMeta) continue
         list.push({ slot: i, name: nm, decoded: decodeInstFull(rec) })
     }
     instSlotToIdx = {}
@@ -985,9 +1010,11 @@ function drawInstrumentsListColumn() {
         const e = instrumentsCache[idx]
         const isSel = (idx === instListCursor)
         const back  = isSel ? colInstListSel : colInstListBg
+        // Aux-bin slots ($100..$1FF) render as 3 hex digits; shrink the name field by
+        // that extra digit so the row stays INST_LIST_BODY_W wide and aligned.
         const numStr = e.slot.toString(16).toUpperCase().padStart(2, '0')
         const nameRaw = (e.name && e.name.length) ? e.name : '(instrument $' + numStr + ')'
-        const nameW = INST_LIST_BODY_W - 6
+        const nameW = INST_LIST_BODY_W - 4 - numStr.length
         const nameStr = (nameRaw.length > nameW ? nameRaw.substring(0, nameW) : nameRaw.padEnd(nameW))
         con.color_pair(colInstListNumFg, back); print(' ' + numStr + ' ')
         con.color_pair(colInstListNameFg, back); print(' ')
@@ -1182,7 +1209,7 @@ function sliderMouseToVal(s, pxX) {
 // record. The audio adapter decodes these live, so edits take effect at once.
 function instWriteBytes(slot, pairs) {
     const memBase = audio.getMemAddr()
-    const base = TAUT_INST_WINDOW_OFF + slot * TAUT_INST_RECORD_SIZE
+    const base = instRecordBase(slot)
     for (let i = 0; i < pairs.length; i++) {
         sys.poke(memBase - (base + pairs[i][0]), pairs[i][1] & 0xFF)
     }

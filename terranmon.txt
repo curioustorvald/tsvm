@@ -2036,7 +2036,8 @@ Synchronisation between playheads are not guaranteed. Do not play a music across
 Memory Space
 
 0..524287 RW: Sample bin window (512k)
-720896..786431 RW: Instrument bin (256 instruments, 256 bytes each; instrument 0 does nothing; 64k)
+655360..720895 RW: Auxilliary instrument bin (256 instruments $100..$1FF, 256 bytes each; not directly addressable--only for Metainstruments; 64k)
+720896..786431 RW: Instrument bin (256 instruments $00..$FF, 256 bytes each; instrument 0 does nothing; 64k)
 786432..851967 RW: Play data 1 (currently exposed bank; 64k)
 851968..917503 RW: Play data 2 (currently exposed bank; 64k)
 917504..983039 RW: TAD Input Buffer (64k)
@@ -2430,13 +2431,17 @@ instrument record). Layer records begin at byte 4.
 2   Bit16  Metainstrument identifier
     - 0xFFFF
 4   * Repetition of (one 10-byte record per layer):
-    Uint8  Instrument index (MUST be a normal instrument, never a Metainstrument)
+    Uint8  Instrument index (low 8 bits) — MUST be a normal instrument, never a
+           Metainstrument. The full index is 9 bits (0..511): bits 0..7 here, bit 8
+           in bit 6 of the Volume-start byte (offset +8 below). 0..255 = directly-
+           addressable bin $00..$FF; 256..511 = auxiliary bin $100..$1FF.
     Uint8  Mix volume according to "Perceptually Significant Octet to Decibel Table" (octet 159 = 0 dB / unity)
     Sint16 Sample detune (in 4096-TET unit)
     Uint16 Pitch start                 ; note-range low,  4096-TET noteVal (same scale as pattern-cell note); full range = 0x0000
     Uint16 Pitch end (inclusive)       ; note-range high; full range = 0xFFFF
-    Uint8  Volume start                ; velocity/volume-range low,  0..0x3F; full range = 0x00
-    Uint8  Volume end (inclusive)      ; velocity/volume-range high, 0..0x3F; full range = 0x3F
+    Uint8  Volume start                ; bits 0..5 = velocity/volume-range low (0..0x3F; full range = 0x00);
+                                         bit 6 = instrument index bit 8 (the auxiliary-bin selector); bit 7 reserved (0)
+    Uint8  Volume end (inclusive)      ; bits 0..5 = velocity/volume-range high (0..0x3F; full range = 0x3F); bits 6..7 reserved (0)
 
     Notes:
     a. The four range fields define a rectangle over the same Pitch-Volume space
@@ -2463,8 +2468,12 @@ instrument record). Layer records begin at byte 4.
        / DCA on key-off, so a key-lift melodic layer and a ring-to-tail layer can
        coexist in one Metainstrument.
     e. Recursion is forbidden: a layer's Instrument index MUST resolve to a normal
-       instrument. The engine ignores (skips) any layer pointing at another
-       Metainstrument or at instrument 0.
+       instrument (in either the directly-addressable bin $01..$FF or the auxiliary
+       bin $100..$1FF). The engine ignores (skips) any layer pointing at another
+       Metainstrument or at instrument 0. The auxiliary bin exists precisely to hold
+       layer subinstruments without spending directly-addressable slots: a layer
+       reaches it via the 9-bit index above; a pattern cell cannot (its instrument
+       field is 8-bit, so $100..$1FF is unreachable except as a Metainstrument layer).
     f. Voice budget: a single Metainstrument trigger costs up to `length` voices
        against the mixer pool.
     g. STRICT layering (byte 0 bit 0). A layer's rectangle (note a) is a single
@@ -3341,8 +3350,13 @@ prefixes:
 
 * Ixmp. Instrument extra samples
     * Repetition of:
-    Uint8   Instrument ID
-    Uint24  Count of patches
+    Uint8   Instrument ID (low 8 bits)
+    Uint16  Count of patches
+    Uint8   Instrument ID (high bits): bit 0 = instrument ID bit 8 (the auxiliary-bin
+            $100..$1FF selector); bits 1..7 reserved (0). This was the top byte of the
+            former Uint24 count, which was always 0 for the tiny real patch counts, so a
+            pre-2026-06-30 reader still parses legacy $00..$FF entries unchanged.
+            Together the two ID fields give a 9-bit instrument ID 0..511 (256..511 = aux bin).
         ** Repetition of:
         Bit8   Patch definition version
             Version numbers are essentially feature bit-flags, where:

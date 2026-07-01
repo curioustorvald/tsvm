@@ -93,8 +93,10 @@ INST_RECORD_SIZE = 256      # widened 2026-05-06 (was 192). 256 inst × 256 = 64
 SAMPLE_BANK_SIZE = 524288               # 512 K per bank
 SAMPLE_BANK_COUNT = 16                  # 16 banks × 512 K = 8 MB
 SAMPLEBIN_SIZE   = SAMPLE_BANK_SIZE * SAMPLE_BANK_COUNT   # 8 MB
-INSTBIN_SIZE     = INST_RECORD_SIZE * 256   # 65536 = 64K
-SAMPLEINST_SIZE  = SAMPLEBIN_SIZE + INSTBIN_SIZE          # 8454144 = 8256 kB
+# 512 instrument records: 0..255 = directly-addressable bin $00..$FF, 256..511 =
+# auxiliary bin $100..$1FF (Metainstrument-layer-only; terranmon.txt:2036-2044, 2026-06-30).
+INSTBIN_SIZE     = INST_RECORD_SIZE * 512   # 131072 = 128K
+SAMPLEINST_SIZE  = SAMPLEBIN_SIZE + INSTBIN_SIZE          # 8519680 = 8320 kB
 PATTERN_ROWS     = 64
 PATTERN_BYTES    = PATTERN_ROWS * 8     # 512
 NUM_PATTERNS_MAX = 4095
@@ -892,9 +894,14 @@ def encode_ixmp_payload(patches_by_inst: dict) -> bytes:
         patches = patches_by_inst[inst_id]
         if not patches:
             continue
-        out.append(int(inst_id) & 0xFF)
+        iid = int(inst_id) & 0x1FF                                # 9-bit: 0..511
+        # Header is 4 bytes. byte0 = instId low 8; bytes1-2 = Uint16 count; byte3 =
+        # instId high (bit0 -> instId bit 8; the auxiliary-bin $100..$1FF selector).
+        # byte3 was the Uint24 count's top byte (always 0 for the tiny real counts),
+        # so a pre-2026-06-30 reader still parses legacy $00..$FF entries correctly.
+        out.append(iid & 0xFF)
         cnt = len(patches)
-        out += bytes([cnt & 0xFF, (cnt >> 8) & 0xFF, (cnt >> 16) & 0xFF])  # Uint24 LE
+        out += bytes([cnt & 0xFF, (cnt >> 8) & 0xFF, (iid >> 8) & 0x01])
         for patch in patches:
             out += encode_ixmp_patch(patch)
     return bytes(out)

@@ -19,15 +19,16 @@ const TAUD_KIND_FULL       = 0x00
 const TAUD_KIND_SAMPLEINST = 0x80
 const TAUD_KIND_PATTERN    = 0xC0
 const TAUD_SONG_ENTRY   = 32     // see encodeSongEntry / decodeSongEntry below
-// Sample+instrument image: 8 MB sample pool (banked, 16 × 512 K) + 64 K instrument bin = 8256 kB total.
+// Sample+instrument image: 8 MB sample pool (banked, 16 × 512 K) + 128 K instrument bin = 8320 kB total.
 // (terranmon.txt:1985-1997, 2533-2564 — bank-switched via MMIO 46.)
 const SAMPLE_BANK_SIZE  = 524288             // 512 K — size of the sample-bin window
 const SAMPLE_BANK_COUNT = 16                 // 16 banks × 512 K = 8 MB
 const SAMPLEBIN_SIZE    = SAMPLE_BANK_SIZE * SAMPLE_BANK_COUNT   // 8 MB
-const INSTBIN_SIZE      = 65536              // 256 inst × 256 bytes
-const SAMPLEINST_SIZE   = SAMPLEBIN_SIZE + INSTBIN_SIZE          // 8454144 = 8256 kB
+const INSTBIN_SIZE      = 131072             // 512 inst × 256 bytes ($00..$FF + aux $100..$1FF)
+const SAMPLEINST_SIZE   = SAMPLEBIN_SIZE + INSTBIN_SIZE          // 8519680 = 8320 kB
 const SAMPLEBIN_WINDOW_OFFSET = 0            // peripheral memory window for the active sample bank
-const INSTBIN_WINDOW_OFFSET   = 720896       // peripheral memory offset of instrument bin
+const AUXBIN_WINDOW_OFFSET    = 655360       // peripheral memory offset of aux instrument bin $100..$1FF
+const INSTBIN_WINDOW_OFFSET   = 720896       // peripheral memory offset of instrument bin $00..$FF
 const PATTERN_SIZE      = 512    // bytes per pattern (64 rows × 8 bytes)
 const NUM_PATTERNS_MAX  = 256
 const NUM_CUES          = 1024
@@ -130,7 +131,7 @@ function uploadTaudFile(inFile, songIndex, playhead) {
     const isPattern    = (kind === TAUD_KIND_PATTERN)      // .tpif: patterns only
 
     // -- 4. Decompress and upload sample+instrument bin -----------------------
-    // The decompressed image is 8256 kB (8 MB samples bank-major + 64 K instruments)
+    // The decompressed image is 8320 kB (8 MB samples bank-major + 128 K instruments)
     // which exceeds the 8 MB user-space cap, so we route through a hardware helper
     // that decompresses straight into the adapter's native sample/instrument
     // storage instead of staging a buffer in user memory.
@@ -235,15 +236,19 @@ function uploadTaudFile(inFile, songIndex, playhead) {
                 const payload = p + 8
                 if (payload + secLen > fileSize) break
                 if (fc === 'Ixmp') {
-                    // Each entry: Uint8 instId + Uint24 patchCount + variable-length patches.
+                    // Each entry header is 4 bytes: byte0 = instId low 8, bytes1-2 = Uint16
+                    // patchCount, byte3 = instId high (bit0 -> instId bit 8, the aux-bin
+                    // $100..$1FF selector). byte3 was the old Uint24 count's top byte (always
+                    // 0 for real counts) so legacy $00..$FF files still parse correctly.
                     let q = payload
                     const qEnd = payload + secLen
                     while (q + 4 <= qEnd) {
-                        const instId   = sys.peek(filePtr + q) & 0xFF; q++
+                        const idLo     = sys.peek(filePtr + q) & 0xFF; q++
                         const cntLo    = sys.peek(filePtr + q) & 0xFF; q++
                         const cntMid   = sys.peek(filePtr + q) & 0xFF; q++
-                        const cntHi    = sys.peek(filePtr + q) & 0xFF; q++
-                        const patchCnt = cntLo | (cntMid << 8) | (cntHi << 16)
+                        const idHi     = sys.peek(filePtr + q) & 0xFF; q++
+                        const instId   = idLo | ((idHi & 0x01) << 8)
+                        const patchCnt = cntLo | (cntMid << 8)
                         // Walk the patches to find the blob length (each depends on its version byte).
                         let blobLen = 0, scan = q, ok = true
                         for (let i = 0; i < patchCnt; i++) {
@@ -296,7 +301,7 @@ function captureTrackerDataToFile(outFile, meta) {
     const baseAddr = audio.getBaseAddr()
 
     // -- 1. Compress sample+instrument bin ------------------------------------
-    // The 8256 kB raw image (8 MB samples + 64 K instruments) cannot fit in the
+    // The 8320 kB raw image (8 MB samples + 128 K instruments) cannot fit in the
     // 8 MB user space, so we hand the entire compress step to a hardware helper
     // that reads directly out of the adapter's native sample/instrument storage.
     // Realistic sample data compresses well under both gzip and zstd; we cap the
@@ -374,13 +379,14 @@ function captureTrackerDataToFile(outFile, meta) {
     // keyboard tables, SF2 imports) would silently collapse every instrument to
     // its base sample on the next load. Section format per terranmon.txt
     // §"Project Data" / §"Ixmp": magic(8) + reserved(8) + FourCC + Uint32 len +
-    // repetition of { Uint8 instId, Uint24 count, count × variable-length patches }.
+    // repetition of { Uint8 instId-low, Uint16 count, Uint8 instId-high, patches }.
+    // Slots 0..511: 0..255 = directly-addressable bin, 256..511 = aux bin (meta layers).
     let ixmpPayload = []
-    for (let s = 0; s < 256; s++) {
+    for (let s = 0; s < 512; s++) {
         const cnt = audio.getInstrumentPatchCount(s)
         if (cnt <= 0) continue
         const blob = audio.getInstrumentPatches(s)   // flat variable-length patch bytes
-        ixmpPayload.push(s & 0xFF, cnt & 0xFF, (cnt >>> 8) & 0xFF, (cnt >>> 16) & 0xFF)
+        ixmpPayload.push(s & 0xFF, cnt & 0xFF, (cnt >>> 8) & 0xFF, (s >>> 8) & 0x01)
         for (let k = 0; k < blob.length; k++) ixmpPayload.push(blob[k] & 0xFF)
     }
     // Build the optional sMet payload (song 0 metadata) from `meta`. The sMet

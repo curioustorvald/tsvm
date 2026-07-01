@@ -384,6 +384,12 @@ function composeNote(periodIdx, offset, interval) {
 // to the preset's interval so non-octave tunings (e.g. BP at 0x195C) work.
 let pitchSymLut = new Array(0x1000)
 
+// pitchTargetLut[offsetInPeriod] = the in-period offset of the grid pitch the
+// notation snaps to (mirrors pitchSymLut's choice; the next-period root is
+// stored as interval+table[0] so |target-offset| stays small near a wrap). Used
+// by noteOffGrid() to flag mistuned notes. Same sizing/rebuild as pitchSymLut.
+let pitchTargetLut = new Array(0x1000)
+
 function rebuildPitchLut() {
     const preset = pitchTablePresets[PITCH_PRESET_IDX]
     if (!preset || preset.table.length === 0) return
@@ -391,6 +397,7 @@ function rebuildPitchLut() {
     const syms  = preset.sym
     const interval = preset.interval
     if (pitchSymLut.length !== interval) pitchSymLut = new Array(interval)
+    if (pitchTargetLut.length !== interval) pitchTargetLut = new Array(interval)
     for (let p = 0; p < interval; p++) {
         let best = 0, bestDist = interval
         for (let i = 0; i < table.length; i++) {
@@ -400,8 +407,10 @@ function rebuildPitchLut() {
         // Distance to the next period's root (one interval up) vs nearest table entry.
         if ((interval - p) < bestDist) {
             pitchSymLut[p] = [syms[0], 1]
+            pitchTargetLut[p] = interval + table[0]
         } else {
             pitchSymLut[p] = [syms[best], 0]
+            pitchTargetLut[p] = table[best]
         }
     }
 }
@@ -680,6 +689,25 @@ function noteToStr(note) {
     return s + (period - 1 + o).toString(16) // period 10 -> 'a'
 }
 
+// A pitched note whose raw value sits >= NOTE_OFFGRID_THRESHOLD units away from
+// the notation grid pitch it snaps to is a noticeable mistuning, so its number
+// is drawn in the header colour (colVoiceHdr, yellow) instead of colNote. This
+// holds regardless of rawNoteView. Special markers (empty/cut/key-off/fade/Int,
+// note < 0x0020) and the Raw-format preset (empty table) are never flagged. E.g.
+// for a 12-TET target of 0x3555, 0x3554..0x3556 pass; 0x3553/0x3557 and beyond
+// are flagged.
+const NOTE_OFFGRID_THRESHOLD = 2
+function noteOffGrid(note) {
+    if (note < 0x0020) return false
+    const preset = pitchTablePresets[PITCH_PRESET_IDX]
+    if (!preset || preset.table.length === 0) return false
+    const offset = decomposeNote(note, preset.interval)[1]
+    const target = pitchTargetLut[offset]
+    if (target == null) return false
+    return Math.abs(target - offset) >= NOTE_OFFGRID_THRESHOLD
+}
+function noteColour(note) { return noteOffGrid(note) ? 235 : colNote }
+
 /**
  * Builds the coloured string fragments for a single row of pattern data.
  */
@@ -773,7 +801,7 @@ const EMPTY_CELL = {
 
 function drawCellAt(y, x, cell, back) {
     con.move(y, x)
-    con.color_pair(colNote,   back); print(cell.sNote)
+    con.color_pair(noteColour(cell._note), back); print(cell.sNote)
     con.color_pair(instColour(cell._inst), back); print(cell.sInst)
     con.color_pair(colVol,    back); print(cell.sVolEff)
     con.color_pair(colVol,    back); print(cell.sVolArg)
@@ -791,7 +819,7 @@ function drawCellAtStyled(y, x, cell, back, style) {
     if (style === 0) { drawCellAt(y, x, cell, back); return }
     if (style === -1) {
         con.move(y, x)
-        con.color_pair(colNote,    back); print(cell.sNote)
+        con.color_pair(noteColour(cell._note), back); print(cell.sNote)
         con.color_pair(colBackPtn, back); print(' ')
         con.color_pair(instColour(cell._inst), back); print(cell.sInst)
         con.color_pair(colBackPtn, back); print(' ')
@@ -811,7 +839,7 @@ function drawCellAtStyled(y, x, cell, back, style) {
     con.move(y, x)
     if (!noteEmpty) {
         con.color_pair(colBackPtn, back); print(' ')
-        con.color_pair(colNote,    back); print(cell.sNote)
+        con.color_pair(noteColour(cell._note), back); print(cell.sNote)
     } else if (!fxEmpty) {
         con.color_pair(colEffOp,  back); print(cell.sEffOp)
         con.color_pair(colEffArg, back); print(cell.sEffArg)
@@ -1558,7 +1586,9 @@ function drawPatternRowAt(viewRow, style = timelineRowStyle) {
         if (style === 0 && highlight && playbackMode === PLAYMODE_NONE && voice === cursorVox) {
             const fieldStr = [cell.sNote, cell.sInst, cell.sVolEff+cell.sVolArg,
                               cell.sPanEff+cell.sPanArg, cell.sEffOp, cell.sEffArg][timelineColCursor]
-            const ovFg = (timelineColCursor === 1) ? instColour(cell._inst) : TL_FIELD_FGS[timelineColCursor]
+            const ovFg = (timelineColCursor === 0) ? noteColour(cell._note)
+                       : (timelineColCursor === 1) ? instColour(cell._inst)
+                       : TL_FIELD_FGS[timelineColCursor]
             con.move(y, x + TL_FIELD_OFFSETS[timelineColCursor])
             con.color_pair(ovFg, patternEditMode ? colEditHL : colPlayback)
             print(fieldStr)
@@ -1859,7 +1889,7 @@ function drawVoiceDetail(isVerticalLayout = false, ptn = null, activeRow = -1, c
         }
 
         const upperLeft = [
-            { label: 'Note ', value: `${noteToStr(note)} ($${note.hex04()})`, fg: colNote },
+            { label: 'Note ', value: `${noteToStr(note)} ($${note.hex04()})`, fg: noteColour(note) },
             { label: 'Inst ', value: inst === 0 ? '---' : ('$'+inst.hex02()), fg: colInst },
             { label: 'Vx   ', value: `${volFxNames[voleffop1]} ${voleffarg1}`, fg: colVol },
             { label: 'Px   ', value: `${panFxNames[paneffop1]} ${paneffarg1}`, fg: colPan },
@@ -1892,9 +1922,10 @@ function drawVoiceDetail(isVerticalLayout = false, ptn = null, activeRow = -1, c
         if (cumState !== null && lowerH > 0) {
             const _apo  = Math.abs(cumState.pitchOff)
             const _psgn = cumState.pitchOff > 0 ? '+' : cumState.pitchOff < 0 ? '-' : ' '
-            const _absN = (cumState.lastNote !== 0x0000 && cumState.pitchOff !== 0)
-                ? noteToStr(Math.max(0x20, Math.min(0xFFFF, cumState.lastNote + cumState.pitchOff))) + ' '
-                : ''
+            const _resolvedNote = (cumState.lastNote !== 0x0000 && cumState.pitchOff !== 0)
+                ? Math.max(0x20, Math.min(0xFFFF, cumState.lastNote + cumState.pitchOff))
+                : null
+            const _absN = (_resolvedNote !== null) ? noteToStr(_resolvedNote) + ' ' : ''
             const _clipNm = ['clamp','fold','wrap','wrap'][cumState.clipMode]
             const _bcStr  = (cumState.bitcrushDepth === 0 && cumState.bitcrushSkip === 0)
                 ? 'off'
@@ -1902,11 +1933,11 @@ function drawVoiceDetail(isVerticalLayout = false, ptn = null, activeRow = -1, c
             const _odStr  = (cumState.overdriveAmp === 0) ? 'off' : `$${cumState.overdriveAmp.hex02()}`
 
             cumLines = [
-                { label: 'L.Note', value: noteToStr(cumState.lastNote),                                          fg: colNote   },
+                { label: 'L.Note', value: noteToStr(cumState.lastNote),                                          fg: noteColour(cumState.lastNote) },
                 { label: 'L.Inst', value: cumState.lastInst === 0 ? '---' : ('$'+cumState.lastInst.hex02()),     fg: colInst   },
                 { label: 'Vol   ', value: `$${cumState.volAbs.hex02()}`,                                         fg: colVol    },
                 { label: 'Pan   ', value: `$${cumState.panAbs.hex02()}`,                                         fg: colPan    },
-                { label: 'Pitch ', value: `${_absN}(${_psgn}$${_apo.hex04()})`,                                  fg: colNote   },
+                { label: 'Pitch ', value: `${_absN}(${_psgn}$${_apo.hex04()})`,                                  fg: (_resolvedNote !== null) ? noteColour(_resolvedNote) : colNote },
                 { label: 'BPM   ', value: `${cumState.bpm}`,                                                     fg: colStatus },
                 { label: 'Spd   ', value: `${cumState.speed}`,                                                   fg: colStatus },
                 { label: 'GVol  ', value: `$${cumState.globalVol.hex02()}`,                                      fg: colStatus },
@@ -2055,7 +2086,9 @@ function drawVoiceColumnAt(slot) {
         if (timelineRowStyle === 0 && highlight && playbackMode === PLAYMODE_NONE && voice === cursorVox) {
             const fieldStr = [cell.sNote, cell.sInst, cell.sVolEff+cell.sVolArg,
                               cell.sPanEff+cell.sPanArg, cell.sEffOp, cell.sEffArg][timelineColCursor]
-            const ovFg = (timelineColCursor === 1) ? instColour(cell._inst) : TL_FIELD_FGS[timelineColCursor]
+            const ovFg = (timelineColCursor === 0) ? noteColour(cell._note)
+                       : (timelineColCursor === 1) ? instColour(cell._inst)
+                       : TL_FIELD_FGS[timelineColCursor]
             con.move(y, x + TL_FIELD_OFFSETS[timelineColCursor])
             con.color_pair(ovFg, patternEditMode ? colEditHL : colPlayback)
             print(fieldStr)
@@ -3147,7 +3180,12 @@ function noteFieldScreenPos() {
 function toggleEditMode() {
     patternEditMode = !patternEditMode
     if (patternEditMode) {
-        const seed = (HUB.views && HUB.views.getSelectedInstrumentSlot && HUB.views.getSelectedInstrumentSlot()) || currentInstrument
+        // Seed the pattern instrument from the Instruments-tab selection, but only when
+        // it is pattern-addressable ($01..$FF). An aux-bin slot ($100..$1FF) is a
+        // Metainstrument layer that a pattern cell cannot reference, so keep the
+        // existing currentInstrument instead of letting it wrap to (slot & 0xFF).
+        const sel = (HUB.views && HUB.views.getSelectedInstrumentSlot && HUB.views.getSelectedInstrumentSlot()) || 0
+        const seed = (sel >= 1 && sel <= 255) ? sel : currentInstrument
         currentInstrument = seed || 1
         const c = currentEditCell(); if (c) adoptInstrumentFromCell(c.ptnDat, c.row)
     } else if (typeof audio.jamStop === 'function') {
@@ -3574,7 +3612,7 @@ function drawPatternGridRowAt(viewRow) {
             cell.sEffOp,
             cell.sEffArg,
         ]
-        const fieldFgs     = [colNote, instColour(cell._inst), colVol, colPan, colEffOp, colEffArg]
+        const fieldFgs     = [noteColour(cell._note), instColour(cell._inst), colVol, colPan, colEffOp, colEffArg]
         const col = patternGridCol
         con.move(y, PATEDITOR_CELL_X + fieldOffsets[col])
         con.color_pair(fieldFgs[col], patternEditMode ? colEditHL : colHighlight)

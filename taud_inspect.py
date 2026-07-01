@@ -239,14 +239,17 @@ def parse_meta(rec):
         o = 4 + i * 10
         if o + 10 > 256:
             break
+        # 9-bit layer instrument index: low 8 bits in byte 0, bit 8 (the aux-bin
+        # $100..$1FF selector) in bit 6 of the volume-start byte (offset +8).
+        inst_idx = rec[o] | (((rec[o + 8] >> 6) & 1) << 8)
         layers.append({
-            'inst':       rec[o],
+            'inst':       inst_idx,
             'mixvol':     rec[o + 1],
             'detune':     s16(rec, o + 2),
             'pitch_start': u16(rec, o + 4),
             'pitch_end':  u16(rec, o + 6),
-            'vol_start':  rec[o + 8],
-            'vol_end':    rec[o + 9],
+            'vol_start':  rec[o + 8] & 0x3F,
+            'vol_end':    rec[o + 9] & 0x3F,
         })
     # byte 0 = 0b tttt_00Ps : t=type (bits 4-7), P=percussion (bit 1), s=strict (bit 0)
     return {'type': typ >> 4, 'strict': typ & 1, 'percussion': (typ >> 1) & 1,
@@ -364,8 +367,11 @@ def parse_ixmp_section(payload):
     q = 0
     end = len(payload)
     while q + 4 <= end:
-        inst_id = payload[q]
-        cnt = u24(payload, q + 1)
+        # Header: byte0 = instId low 8, bytes1-2 = Uint16 count, byte3 = instId high
+        # (bit0 -> instId bit 8, the aux-bin $100..$1FF selector). byte3 was the old
+        # Uint24 count's top byte (always 0 for real counts), so legacy files still parse.
+        inst_id = payload[q] | ((payload[q + 3] & 0x01) << 8)
+        cnt = payload[q + 1] | (payload[q + 2] << 8)
         q += 4
         patches = []
         ok = True
@@ -629,12 +635,15 @@ def main():
         blob = decomp(data[32:32 + comp_size])
         SAMPLE_SIZE = 8 * 1024 * 1024
         samplebin = blob[:SAMPLE_SIZE]
-        instbin = blob[SAMPLE_SIZE:SAMPLE_SIZE + 65536]
+        # Instrument bin: 128 K (512 records) for current files, 64 K (256) for legacy.
+        # 0..255 = directly-addressable bin $00..$FF, 256..511 = aux bin $100..$1FF.
+        instbin = blob[SAMPLE_SIZE:SAMPLE_SIZE + 131072]
 
     if instbin is not None and not args.no_instruments:
+        inst_count = len(instbin) // 256
         print(hr("SAMPLES & INSTRUMENTS"))
         present = []
-        for i in range(256):
+        for i in range(inst_count):
             rec = instbin[i * 256:i * 256 + 256]
             has_ixmp = i in ixmp_by_inst
             if is_meta(rec):
@@ -648,7 +657,7 @@ def main():
 
         # sample-bin high-water mark
         hi = 0
-        for i in range(256):
+        for i in range(inst_count):
             rec = instbin[i * 256:i * 256 + 256]
             if not is_meta(rec):
                 hi = max(hi, u32(rec, 0) + u16(rec, 4))
@@ -660,7 +669,8 @@ def main():
         for i in present:
             rec = instbin[i * 256:i * 256 + 256]
             nm = inst_name(i)
-            print(sub("INSTRUMENT %d (0x%02X)%s" % (i, i, ("  \"%s\"" % nm) if nm else "")))
+            aux = "  [AUX — Metainstrument layer only]" if i >= 256 else ""
+            print(sub("INSTRUMENT %d (0x%02X)%s%s" % (i, i, ("  \"%s\"" % nm) if nm else "", aux)))
 
             if is_meta(rec):
                 m = parse_meta(rec)
