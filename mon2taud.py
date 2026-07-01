@@ -36,6 +36,7 @@ from taud_common import (
     SEL_SET, SEL_FINE,
     J_SEMI_TABLE,
     encode_cue, deduplicate_patterns, encode_song_entry, compress_blob,
+    finalize_cue_sheet, set_cue_instruction, CUE_INST_HALT,
     build_project_data, detect_subsongs,
 )
 
@@ -288,9 +289,9 @@ def build_cue_sheet(order_list: list, num_voices: int, pat_remap: dict) -> bytes
         cue_idx += 1
 
     if last_active >= 0:
-        sheet[last_active * CUE_SIZE + 30] = 0x01
+        set_cue_instruction(sheet, last_active, CUE_INST_HALT)
 
-    return bytes(sheet)
+    return finalize_cue_sheet(sheet)[0]
 
 
 # ── Initial speed scan ───────────────────────────────────────────────────────
@@ -417,10 +418,11 @@ def _build_song_payload_mon(mon: dict, patterns_template: list,
             [pat_remap[p] for p in orig_pats], 0)
         last_active = cue_idx
     if last_active >= 0:
-        sheet[last_active * CUE_SIZE + 30] = 0x01
+        set_cue_instruction(sheet, last_active, CUE_INST_HALT)
 
+    cue_bytes, num_cues = finalize_cue_sheet(sheet)
     pat_comp = compress_blob(bytes(pat_bin), f"[{song_label}] pattern bin")
-    cue_comp = compress_blob(bytes(sheet),   f"[{song_label}] cue sheet")
+    cue_comp = compress_blob(cue_bytes,      f"[{song_label}] cue sheet")
 
     flags_byte = GLOBAL_FLAGS_LINEAR_FREQ | GLOBAL_FLAGS_NO_INTERPOLATION
     bpm_stored = 150 - 25
@@ -436,6 +438,7 @@ def _build_song_payload_mon(mon: dict, patterns_template: list,
         cue_sheet_comp_size=len(cue_comp),
         global_vol=0xFF,
         mixing_vol=round(180 / num_voices),
+        num_cues=num_cues,
     )
     return pat_comp, cue_comp, entry_kwargs
 

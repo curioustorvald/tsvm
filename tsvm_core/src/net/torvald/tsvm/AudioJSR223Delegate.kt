@@ -122,7 +122,7 @@ class AudioJSR223Delegate(private val vm: VM) {
 
     fun setCuePosition(playhead: Int, pos: Int) {
         getPlayhead(playhead)?.let { ph ->
-            ph.position = pos and 1023
+            ph.position = pos and (AudioAdapter.NUM_CUES - 1)   // 0..8191
             ph.trackerState?.cuePos = ph.position
         }
     }
@@ -142,25 +142,25 @@ class AudioJSR223Delegate(private val vm: VM) {
      *  unmuting clears the fader back to 0 (unity). Callers that want a partial attenuation
      *  should use setVoiceFader directly. */
     fun setVoiceMute(playhead: Int, voice: Int, muted: Boolean) {
-        getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19))?.fader = if (muted) 255 else 0
+        getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, AudioAdapter.NUM_VOICES - 1))?.fader = if (muted) 255 else 0
     }
     fun getVoiceMute(playhead: Int, voice: Int): Boolean =
-        (getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19))?.fader ?: 0) == 255
+        (getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, AudioAdapter.NUM_VOICES - 1))?.fader ?: 0) == 255
 
     /** Externally-controlled per-voice fader. 0 = unity, 255 = silence; values are masked to 8 bits.
-     *  Mirrors MMIO 4098.. (256 bytes per playhead, first 20 entries map to live voice slots). */
+     *  Mirrors MMIO 4098.. (256 bytes per playhead, first NUM_VOICES entries map to live voice slots). */
     fun setVoiceFader(playhead: Int, voice: Int, fader: Int) {
-        getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19))?.fader = fader and 255
+        getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, AudioAdapter.NUM_VOICES - 1))?.fader = fader and 255
     }
     fun getVoiceFader(playhead: Int, voice: Int): Int =
-        getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19))?.fader ?: 0
+        getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, AudioAdapter.NUM_VOICES - 1))?.fader ?: 0
 
     /** Effective per-voice tracker volume (0.0..1.0) — what the mixer applies right now after the
      *  envelope, fadeout, vol-column / D-slide / tremolo ramp, and the host-owned per-voice fader,
      *  but BEFORE master/mixing/global volumes. Returns 0.0 for inactive voices. Mirrors the
      *  perVoiceGain assembled in the per-sample mix loop (AudioAdapter.kt:3201). */
     fun getVoiceEffectiveVolume(playhead: Int, voice: Int): Double {
-        val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19)) ?: return 0.0
+        val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, AudioAdapter.NUM_VOICES - 1)) ?: return 0.0
         if (!v.active) return 0.0
         val effEnvVol = if (v.volEnvOn) v.envVolMix else 1.0
         val faderGain = (255 - v.fader) / 255.0
@@ -171,7 +171,7 @@ class AudioJSR223Delegate(private val vm: VM) {
      *  envelope when it is active. Returns 128 (centre) for inactive voices. Mirrors the pan
      *  selection in the per-sample mix loop (AudioAdapter.kt:3205). */
     fun getVoiceEffectivePan(playhead: Int, voice: Int): Int {
-        val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19)) ?: return 128
+        val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, AudioAdapter.NUM_VOICES - 1)) ?: return 128
         if (!v.active) return 128
         return if (v.hasPanEnv && v.panEnvOn) {
             val envPanRaw = (v.envPan * 255.0).toInt().coerceIn(0, 255)
@@ -183,7 +183,7 @@ class AudioJSR223Delegate(private val vm: VM) {
      *  `Voice.active` which is the source of truth for "is this voice contributing to the mix
      *  right now". Visualisers should treat this as the authoritative on/off bit. */
     fun getVoiceActive(playhead: Int, voice: Int): Boolean =
-        getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19))?.active == true
+        getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, AudioAdapter.NUM_VOICES - 1))?.active == true
 
     /** Active-note counts per instrument id (index 0..1023; 256..1023 = aux bin, where a
      *  Metainstrument's layer voices count): how many notes are sounding *right now* for each
@@ -213,7 +213,7 @@ class AudioJSR223Delegate(private val vm: VM) {
      *  accumulator increment. A non-zero value on an active voice means the voice is live-inverting
      *  its instrument's loop region right now — visualisers can use this to gate the funk overlay. */
     fun getVoiceFunkSpeed(playhead: Int, voice: Int): Int {
-        val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19)) ?: return 0
+        val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, AudioAdapter.NUM_VOICES - 1)) ?: return 0
         if (!v.active) return 0
         return v.funkSpeed
     }
@@ -231,14 +231,14 @@ class AudioJSR223Delegate(private val vm: VM) {
      *  *right now* including any in-flight vibrato / arpeggio / portamento delta. Returns 0 for
      *  inactive voices. */
     fun getVoiceNote(playhead: Int, voice: Int): Int {
-        val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19)) ?: return 0
+        val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, AudioAdapter.NUM_VOICES - 1)) ?: return 0
         if (!v.active) return 0
         return v.noteVal and 0xFFFF
     }
 
     /** Instrument id (0..255) currently bound to the voice slot, or 0 if the voice is inactive. */
     fun getVoiceInstrument(playhead: Int, voice: Int): Int {
-        val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19)) ?: return 0
+        val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, AudioAdapter.NUM_VOICES - 1)) ?: return 0
         if (!v.active) return 0
         return v.instrumentId and 0x3FF   // 0..1023 (256..1023 = aux bin); a meta layer plays an aux slot
     }
@@ -246,7 +246,7 @@ class AudioJSR223Delegate(private val vm: VM) {
     /** Current sample-frame playback position (fractional double) of the voice. Returns -1.0
      *  when the voice is inactive so visualisers can distinguish "no cursor" from "cursor at 0". */
     fun getVoiceSamplePos(playhead: Int, voice: Int): Double {
-        val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19)) ?: return -1.0
+        val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, AudioAdapter.NUM_VOICES - 1)) ?: return -1.0
         if (!v.active) return -1.0
         return v.samplePos
     }
@@ -257,7 +257,7 @@ class AudioJSR223Delegate(private val vm: VM) {
      *  identity of the deduped sample, so visualisers can light only the truly-playing sample of
      *  a multisample instrument instead of every sample the instrument references. */
     fun getVoiceSamplePtr(playhead: Int, voice: Int): Int {
-        val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19)) ?: return -1
+        val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, AudioAdapter.NUM_VOICES - 1)) ?: return -1
         if (!v.active) return -1
         return v.activeSamplePtr
     }
@@ -265,7 +265,7 @@ class AudioJSR223Delegate(private val vm: VM) {
     /** Sample length (bytes) of the sample the voice is actually sounding — see [getVoiceSamplePtr].
      *  Returns 0 when inactive (a real sample is always ≥ 1 byte, so 0 is an unambiguous "none"). */
     fun getVoiceSampleLength(playhead: Int, voice: Int): Int {
-        val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19)) ?: return 0
+        val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, AudioAdapter.NUM_VOICES - 1)) ?: return 0
         if (!v.active) return 0
         return v.activeSampleLength
     }
@@ -273,39 +273,39 @@ class AudioJSR223Delegate(private val vm: VM) {
     /** Volume-envelope segment index — i.e. the node the voice is currently moving *away* from
      *  (the next node it will hit is index + 1). Returns -1 when inactive. */
     fun getVoiceEnvVolIndex(playhead: Int, voice: Int): Int {
-        val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19)) ?: return -1
+        val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, AudioAdapter.NUM_VOICES - 1)) ?: return -1
         if (!v.active) return -1
         return v.envIndex
     }
     /** Seconds elapsed *into* the current volume-envelope segment (0 ≤ t < segment.offset). */
     fun getVoiceEnvVolTime(playhead: Int, voice: Int): Double {
-        val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19)) ?: return 0.0
+        val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, AudioAdapter.NUM_VOICES - 1)) ?: return 0.0
         if (!v.active) return 0.0
         return v.envTimeSec
     }
 
     /** Pan-envelope segment index — see [getVoiceEnvVolIndex]. */
     fun getVoiceEnvPanIndex(playhead: Int, voice: Int): Int {
-        val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19)) ?: return -1
+        val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, AudioAdapter.NUM_VOICES - 1)) ?: return -1
         if (!v.active) return -1
         return v.envPanIndex
     }
     /** Seconds elapsed into the current pan-envelope segment. */
     fun getVoiceEnvPanTime(playhead: Int, voice: Int): Double {
-        val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19)) ?: return 0.0
+        val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, AudioAdapter.NUM_VOICES - 1)) ?: return 0.0
         if (!v.active) return 0.0
         return v.envPanTimeSec
     }
 
     /** Pitch-envelope segment index — see [getVoiceEnvVolIndex]. */
     fun getVoiceEnvPitchIndex(playhead: Int, voice: Int): Int {
-        val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19)) ?: return -1
+        val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, AudioAdapter.NUM_VOICES - 1)) ?: return -1
         if (!v.active) return -1
         return v.envPitchIndex
     }
     /** Seconds elapsed into the current pitch-envelope segment. */
     fun getVoiceEnvPitchTime(playhead: Int, voice: Int): Double {
-        val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19)) ?: return 0.0
+        val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, AudioAdapter.NUM_VOICES - 1)) ?: return 0.0
         if (!v.active) return 0.0
         return v.envPitchTimeSec
     }
@@ -313,13 +313,13 @@ class AudioJSR223Delegate(private val vm: VM) {
     /** Filter-envelope segment index — see [getVoiceEnvVolIndex]. The pitch and filter
      *  envelopes are independent now (two pf-slots), so each role has its own playhead. */
     fun getVoiceEnvFilterIndex(playhead: Int, voice: Int): Int {
-        val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19)) ?: return -1
+        val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, AudioAdapter.NUM_VOICES - 1)) ?: return -1
         if (!v.active) return -1
         return v.envFilterIndex
     }
     /** Seconds elapsed into the current filter-envelope segment. */
     fun getVoiceEnvFilterTime(playhead: Int, voice: Int): Double {
-        val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19)) ?: return 0.0
+        val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, AudioAdapter.NUM_VOICES - 1)) ?: return 0.0
         if (!v.active) return 0.0
         return v.envFilterTimeSec
     }
@@ -481,17 +481,22 @@ class AudioJSR223Delegate(private val vm: VM) {
 
     /** Upload 512 bytes (64 rows × 8 bytes) defining pattern `slot` (0-4094). */
     fun uploadPattern(slot: Int, bytes: IntArray) {
-        getFirstSnd()?.playdata?.get(slot and 0xFFF)?.let { pat ->
-            for (i in 0 until minOf(512, bytes.size)) pat[i / 8].setByte(i % 8, bytes[i] and 0xFF)
+        val ad = getFirstSnd() ?: return
+        val pat = ad.patternFor(slot and 0x7FFF)   // 15-bit pattern index (0..32766); 32767 = scratch
+        for (i in 0 until minOf(512, bytes.size)) pat[i / 8].setByte(i % 8, bytes[i] and 0xFF)
+    }
+
+    /** Upload 64 bytes defining cue entry `idx` (0..8191): 32 little-endian Sint16, one per
+     *  channel — low 15 bits = pattern number, sign bit = instruction bit (terranmon.txt §"Cue sheet"). */
+    fun uploadCue(idx: Int, bytes: IntArray) {
+        getFirstSnd()?.cueSheet?.get(idx and (AudioAdapter.NUM_CUES - 1))?.let { cue ->
+            for (i in 0 until minOf(AudioAdapter.CUE_BYTES, bytes.size)) cue.write(i, bytes[i] and 0xFF)
         }
     }
 
-    /** Upload 32 bytes defining cue entry `idx` (0-1023): packed 12-bit pattern numbers for 20 voices + instruction. */
-    fun uploadCue(idx: Int, bytes: IntArray) {
-        getFirstSnd()?.cueSheet?.get(idx and 0x3FF)?.let { cue ->
-            for (i in 0 until minOf(32, bytes.size)) cue.write(i, bytes[i] and 0xFF)
-        }
-    }
+    /** Cue-sheet bank exposed by the 524288 memory window (0..3); mirrors MMIO 47. */
+    fun setCueBank(bank: Int) { getFirstSnd()?.cueBank = bank and (AudioAdapter.CUE_BANK_COUNT - 1) }
+    fun getCueBank(): Int = getFirstSnd()?.cueBank ?: 0
 
     fun setTrackerMixerFlags(playhead: Int, flags: Int) {
         getFirstSnd()?.playheads?.get(playhead)?.let { ph ->

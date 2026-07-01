@@ -40,6 +40,7 @@ from taud_common import (
     SEL_SET, SEL_UP, SEL_DOWN, SEL_FINE,
     J_SEMI_TABLE,
     d_arg_to_col, resample_linear, rescale_offset_effects, encode_cue, deduplicate_patterns,
+    finalize_cue_sheet, set_cue_instruction, CUE_INST_HALT,
     encode_song_entry, compress_blob,
     build_project_data, detect_subsongs,
 )
@@ -675,11 +676,11 @@ def build_cue_sheet(order_list: list, n_pats_mod: int, n_channels: int,
         cue_idx += 1
 
     if last_active >= 0:
-        sheet[last_active * CUE_SIZE + 30] = 0x01
+        set_cue_instruction(sheet, last_active, CUE_INST_HALT)
     elif cue_idx < NUM_CUES:
-        sheet[30] = 0x01
+        set_cue_instruction(sheet, 0, CUE_INST_HALT)
 
-    return bytes(sheet)
+    return finalize_cue_sheet(sheet)[0]
 
 
 def find_initial_bpm_speed(patterns: list, order_list: list) -> tuple:
@@ -821,12 +822,13 @@ def _build_song_payload_mod(mod: dict, patterns_template: list,
         last_active = cue_idx
 
     if last_active >= 0:
-        sheet[last_active * CUE_SIZE + 30] = 0x01
+        set_cue_instruction(sheet, last_active, CUE_INST_HALT)
     else:
-        sheet[30] = 0x01
+        set_cue_instruction(sheet, 0, CUE_INST_HALT)
 
+    cue_bytes, num_cues = finalize_cue_sheet(sheet)
     pat_comp = compress_blob(bytes(pat_bin), f"[{song_label}] pattern bin")
-    cue_comp = compress_blob(bytes(sheet),   f"[{song_label}] cue sheet")
+    cue_comp = compress_blob(cue_bytes,      f"[{song_label}] cue sheet")
 
     flags_byte = GLOBAL_FLAGS_AMIGA_FREQ | GLOBAL_FLAGS_A500_INTP
     entry_kwargs = dict(
@@ -841,6 +843,7 @@ def _build_song_payload_mod(mod: dict, patterns_template: list,
         cue_sheet_comp_size=len(cue_comp),
         global_vol=0xFF,
         mixing_vol=180,
+        num_cues=num_cues,
     )
     return pat_comp, cue_comp, entry_kwargs
 

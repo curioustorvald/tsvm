@@ -2036,8 +2036,30 @@ Synchronisation between playheads are not guaranteed. Do not play a music across
 Memory Space
 
 0..524287 RW: Sample bin (512k WINDOW; BANKED)
-524288..655359 RW: Cue sheet (128k WINDOW; BANKED)
-    TODO
+524288..655359 RW: Cue sheet (128k WINDOW; BANKED -- write MMIO 47 to select bank 0..3,
+                    exposing cues 0..2047 / 2048..4095 / 4096..6143 / 6144..8191, so 8192 cues total)
+    Sint16*(32*2048)    Cue+Inst combo (32 channels, 2048 cues per bank)
+                        Lower 15 bits encode pattern number (0..0x7FFE); 0x7FFF is the
+                        "no pattern on this channel" sentinel (was 0xFFF in the old
+                        MMIO cue sheet). A song may thus carry up to 32767 patterns.
+                        The 16 sign bits of lower 16 channels encode a 16-bit instruction word (sign of chn 0..15; channel c -> word bit c)
+                        The 16 sign bits of higher 16 channels encode a second 16-bit instruction word (sign of chn 16..31; channel c -> word bit c-16)
+                        Each 16-bit instruction word uses the SAME layout the old cue
+                        sheet packed into byte 30 (high) / byte 31 (low): word =
+                        (byte30 << 8) | byte31, decoded per "## Instruction" below.
+                        A cue may therefore carry up to two instructions (e.g. LEN + JMP).
+                        BAK / FWD / JMP arguments stay 12-bit (0..4095) even though the
+                        sheet holds 8192 cues.
+                        In 64-channel mode, two "rows" encode one cue, the two-instruction limit is maintained (sign bits of every even row don't encode anything). 64-channel mode is RESERVED and not implemented by the current engine.
+
+    ## Instruction (16-bit word; byte30 = word>>8, byte31 = word&0xFF)
+        1000xxxx yyyyyyyy (BAK) - Go back 0bxxxxyyyyyyyy cues
+        1001xxxx yyyyyyyy (FWD) - Skip forward 0bxxxxyyyyyyyy cues
+        1111xxxx yyyyyyyy (JMP) - Go to absolute cue 0bxxxxyyyyyyyy (loop back)
+        00000010 00xxxxxx (LEN) - Pattern length for this cue (rows = xxxxxx + 1, 1..64)
+        00000001 00000000 (HALT) - Play the full pattern then stop
+        00000001 01xxxxxx (HALT x) - Play x rows then stop (x = 0 is a plain HALT)
+        00000000          (NOP) - No operation (default 64-row cue)
 655360..720895 RW: Auxilliary instrument bin (768 instruments $100..$3FF, 256 bytes each; not directly addressable--only for Metainstruments; 64k WINDOW, BANKED -- write MMIO 48 to select bank 0..2, exposing $100..$1FF / $200..$2FF / $300..$3FF)
 720896..786431 RW: Instrument bin (256 instruments $00..$FF, 256 bytes each; instrument 0 does nothing; 64k; NOT BANKED)
 786432..851967 RW: Play data 1 (64k WINDOW; BANKED)
@@ -3139,7 +3161,12 @@ Play Head Flags
     If the queue is full, any more uploads will be silently discarded.
 
 
-32768..65535 RW: Cue Sheet (1024 cues)
+32768..65535 RW: Cue Sheet (1024 cues) -- OBSOLETE as of 2026-07-01.
+    Superseded by the banked cue-sheet window at memory space 524288..655359 (32
+    channels, 15-bit pattern numbers, 8192 cues; see "Cue sheet" in the Memory Space
+    section above). The engine now returns 0 on read and ignores writes here. The
+    legacy 20-voice / 12-bit / 32-byte-per-cue format below is retained for reference
+    (readers of pre-2026-07-01 .taud files translate it into the new layout).
     Byte 1..10: Pattern number low nybble for voice 1..20
     Byte 11..20: Pattern number middle nybble for voice 1..20
     Byte 21..30: Pattern number high nybble for voice 1..20
@@ -3241,7 +3268,12 @@ Endianness: Little
 
 ## Header
     Byte[8] Magic
-    Uint8   Format version (always 1)
+    Uint8   Format version (low six bits; top two bits = container kind, see .tsii/.tpif)
+                1 = legacy cue sheet (20 voices, 12-bit pattern numbers, 32-byte cues)
+                2 = extended cue sheet (2026-07-01): 32 voices, 15-bit pattern numbers,
+                    64-byte cues with sign-bit instructions (see "Cue sheet" above and
+                    "Pattern Bin and Cue Sheet" below). Loaders translate a v1 cue image
+                    into the v2 engine layout on load.
     Uint8   Number of songs in SONG TABLE
     Uint32  Compressed size of SAMPLE+INST section (used to calculate offset to SONG TABLE)
     Uint32  Offset to Project Data. Zero if Project Data is nonexistent
@@ -3269,7 +3301,10 @@ Endianness: Little
         * ImpulseTracker has range of 0..128; multiply by (255/128) then round to int
     Uint32  Compressed size of PATTERN BIN for this song
     Uint32  Compressed size of CUE SHEET for this song
-    Byte[6] RESERVED
+    Uint16  Number of cues in the (v2) CUE SHEET. Lets a loader size the cue image
+            without deriving it from the decompressed length; 0 in a legacy v1 file
+            (where the reader falls back to decompressed_size / 32). Added 2026-07-01.
+    Byte[4] RESERVED
 
     Taud device can queue up to 2 "playdata" in its buffer, which can be interpreted as a song.
 
@@ -3284,7 +3319,11 @@ Endianness: Little
     For your reference, tracker default tuning at A4 is 439.548 Hz ((3579545/428)*2^(3/4) / 32)
 
 ## Pattern Bin and Cue Sheet
-    RAM image of Pattern Bin/Cue Sheet
+    RAM image of Pattern Bin/Cue Sheet.
+    The CUE SHEET image holds the song's cues back-to-back in the format selected by
+    the header Format version: v2 = 64 bytes per cue (the banked-window layout in the
+    Memory Space "Cue sheet" section), v1 = 32 bytes per cue (legacy). The cue count is
+    the song table's num_cues field (v2) or decompressed_length / cue_size.
 
 ## Project Data
 

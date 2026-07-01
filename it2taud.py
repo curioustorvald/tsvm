@@ -53,7 +53,7 @@ from taud_common import (
     EFF_U, EFF_V, EFF_W, EFF_X, EFF_Y, EFF_Z,
     J_SEMI_TABLE,
     d_arg_to_col, resample_linear, rescale_offset_effects_per_slot,
-    encode_cue, deduplicate_patterns,
+    encode_cue, deduplicate_patterns, finalize_cue_sheet, set_cue_instruction,
     normalise_sample, encode_song_entry, nearest_minifloat, compress_blob,
     CUE_INST_NOP, CUE_INST_HALT, cue_instruction_len,
     cue_instruction_halt_at,
@@ -1894,13 +1894,14 @@ def _build_song_payload(h: ITHeader, patterns_rows_template: list,
         sheet[cue_idx*CUE_SIZE:(cue_idx+1)*CUE_SIZE] = encode_cue(pat_idx_list, instr)
 
     if n_emit == 0:
-        sheet[30] = CUE_INST_HALT
+        set_cue_instruction(sheet, 0, CUE_INST_HALT)
     if len_cue_count:
         vprint(f"  [{song_label}] emitted {len_cue_count} LEN cue instruction(s) "
                f"for partial-length patterns")
 
+    cue_bytes, num_cues = finalize_cue_sheet(sheet)
     pat_comp = compress_blob(bytes(pat_bin), f"[{song_label}] pattern bin")
-    cue_comp = compress_blob(bytes(sheet),   f"[{song_label}] cue sheet")
+    cue_comp = compress_blob(cue_bytes,      f"[{song_label}] cue sheet")
 
     flags_byte = 0x00 if h.linear_slides else 0x01
     global_vol_taud = min(0xFF, round(h.global_vol * 255 / 128))
@@ -1918,6 +1919,7 @@ def _build_song_payload(h: ITHeader, patterns_rows_template: list,
         cue_sheet_comp_size=len(cue_comp),
         global_vol=global_vol_taud,
         mixing_vol=mixing_vol_taud,
+        num_cues=num_cues,
     )
     return pat_comp, cue_comp, entry_kwargs
 

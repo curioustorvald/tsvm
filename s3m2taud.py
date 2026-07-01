@@ -44,6 +44,7 @@ from taud_common import (
     EFF_U, EFF_V, EFF_W, EFF_X, EFF_Y, EFF_Z,
     J_SEMI_TABLE,
     d_arg_to_col, resample_linear, rescale_offset_effects, encode_cue, deduplicate_patterns,
+    finalize_cue_sheet, set_cue_instruction, CUE_INST_HALT,
     normalise_sample, encode_song_entry, compress_blob,
     build_project_data, detect_subsongs,
 )
@@ -645,12 +646,12 @@ def build_cue_sheet(order_list: list, num_pats_s3m: int, num_channels: int,
     # Halt on the last active cue (instruction byte at offset 30), so the
     # engine stops immediately after that pattern completes with no silent gap.
     if last_active >= 0:
-        sheet[last_active * CUE_SIZE + 30] = 0x01
+        set_cue_instruction(sheet, last_active, CUE_INST_HALT)
     elif cue_idx < NUM_CUES:
         # Edge case: no active cues at all — halt at cue 0.
-        sheet[30] = 0x01
+        set_cue_instruction(sheet, 0, CUE_INST_HALT)
 
-    return bytes(sheet)
+    return finalize_cue_sheet(sheet)[0]
 
 
 def relocate_late_note_delays(patterns: list, order_list: list,
@@ -860,12 +861,13 @@ def _build_song_payload_s3m(h: S3MHeader, patterns_template: list,
         last_active = cue_idx
 
     if last_active >= 0:
-        sheet[last_active * CUE_SIZE + 30] = 0x01
+        set_cue_instruction(sheet, last_active, CUE_INST_HALT)
     else:
-        sheet[30] = 0x01
+        set_cue_instruction(sheet, 0, CUE_INST_HALT)
 
+    cue_bytes, num_cues = finalize_cue_sheet(sheet)
     pat_comp = compress_blob(bytes(pat_bin), f"[{song_label}] pattern bin")
-    cue_comp = compress_blob(bytes(sheet),   f"[{song_label}] cue sheet")
+    cue_comp = compress_blob(cue_bytes,      f"[{song_label}] cue sheet")
 
     flags_byte = (0x00 if h.linear_slides else 0x01)
     entry_kwargs = dict(
@@ -880,6 +882,7 @@ def _build_song_payload_s3m(h: S3MHeader, patterns_template: list,
         cue_sheet_comp_size=len(cue_comp),
         global_vol=0xFF,
         mixing_vol=180,
+        num_cues=num_cues,
     )
     return pat_comp, cue_comp, entry_kwargs
 

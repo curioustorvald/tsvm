@@ -62,7 +62,7 @@ from taud_common import (
     SEL_SET, SEL_UP, SEL_DOWN, SEL_FINE,
     J_SEMI_TABLE,
     d_arg_to_col, resample_linear, rescale_offset_effects_per_slot,
-    encode_cue, deduplicate_patterns,
+    encode_cue, deduplicate_patterns, finalize_cue_sheet, set_cue_instruction,
     normalise_sample, encode_song_entry, nearest_minifloat, compress_blob,
     CUE_INST_NOP, CUE_INST_HALT, cue_instruction_len,
     cue_instruction_halt_at,
@@ -1397,13 +1397,14 @@ def _build_song_payload_xm(h: XMHeader, patterns_template: list,
         sheet[cue_idx * CUE_SIZE:(cue_idx + 1) * CUE_SIZE] = encode_cue(pats, instr)
 
     if n_emit == 0:
-        sheet[30] = CUE_INST_HALT
+        set_cue_instruction(sheet, 0, CUE_INST_HALT)
     if len_cue_count:
         vprint(f"  [{song_label}] emitted {len_cue_count} LEN cue instruction(s) "
                f"for partial-length patterns")
 
+    cue_bytes, num_cues = finalize_cue_sheet(sheet)
     pat_comp = compress_blob(bytes(pat_bin), f"[{song_label}] pattern bin")
-    cue_comp = compress_blob(bytes(sheet),   f"[{song_label}] cue sheet")
+    cue_comp = compress_blob(cue_bytes,      f"[{song_label}] cue sheet")
 
     # Speed/tempo are file-wide for XM; pass them through the kwargs so the
     # outer function fills in shared header fields uniformly.
@@ -1419,6 +1420,7 @@ def _build_song_payload_xm(h: XMHeader, patterns_template: list,
         tick_rate=speed,
         pat_bin_comp_size=len(pat_comp),
         cue_sheet_comp_size=len(cue_comp),
+        num_cues=num_cues,
     )
     return pat_comp, cue_comp, entry_kwargs
 

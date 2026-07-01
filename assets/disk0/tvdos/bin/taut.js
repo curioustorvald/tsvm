@@ -864,14 +864,22 @@ function drawCellAtStyled(y, x, cell, back, style) {
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 const TAUD_MAGIC       = [0x1F,0x54,0x53,0x56,0x4D,0x61,0x75,0x64]
+const TAUD_VERSION_MASK = 0x3F   // low six bits of the version byte hold the format version
 const TAUD_HEADER_SIZE = 32
 const TAUD_SONG_ENTRY  = 32
 const PATTERN_SIZE     = 512
 const ROWS_PER_PAT     = 64
-const NUM_CUES         = 1024
-const CUE_SIZE         = 32
-const NUM_VOICES       = 20
-const CUE_EMPTY        = 0xFFF
+// Extended cue sheet (v2): 32 voices, 15-bit pattern numbers, 64-byte cues with
+// sign-bit instructions (terranmon.txt §"Cue sheet").
+const NUM_CUES         = 8192
+const CUE_SIZE         = 64
+const NUM_VOICES       = 32
+const CUE_EMPTY        = 0x7FFF
+// Legacy v1 cue sheet (for loading pre-2026-07-01 files).
+const NUM_CUES_V1      = 1024
+const CUE_SIZE_V1      = 32
+const NUM_VOICES_V1    = 20
+const CUE_EMPTY_V1     = 0xFFF
 
 function _peekU32LE(ptr, off) {
     return ((sys.peek(ptr+off)   & 0xFF)       ) |
@@ -946,28 +954,55 @@ function loadTaud(filePath, songIndex) {
     }
     sys.free(patBinPtr)
 
-    // Decompress cue sheet
-    const cueSheetSize = NUM_CUES * CUE_SIZE
-    const cueSheetPtr  = sys.malloc(cueSheetSize)
-    gzip.decompFromTo(ptr + songOff + patBinCompSize, cueSheetCompSize, cueSheetPtr)
+    // Decompress cue sheet. Format v2 = 64-byte cues (32 Sint16, low 15 bits = pattern,
+    // sign bit = instruction-word bit); legacy v1 = 32-byte cues (20×12-bit + byte30/31).
+    // The v2 cue count is in the song-table num_cues field (bytes 26..27); fall back to
+    // deriving it from the decompressed size.
+    const fmtVer     = version & TAUD_VERSION_MASK
+    const isV2       = fmtVer >= 2
+    const cueStride  = isV2 ? CUE_SIZE : CUE_SIZE_V1
+    const numCuesFld = (sys.peek(ptr + entryOff + 26) & 0xFF) | ((sys.peek(ptr + entryOff + 27) & 0xFF) << 8)
+    const cueBufSize = isV2 ? ((numCuesFld > 0 ? numCuesFld : NUM_CUES) * CUE_SIZE) : (NUM_CUES_V1 * CUE_SIZE_V1)
+    const cueSheetPtr = sys.malloc(cueBufSize)
+    const cueBinSize  = gzip.decompFromTo(ptr + songOff + patBinCompSize, cueSheetCompSize, cueSheetPtr)
+    const numCuesFile = Math.min((cueBinSize / cueStride) | 0, NUM_CUES)
 
     const cues = new Array(NUM_CUES)
     let lastActiveCue = -1
     for (let c = 0; c < NUM_CUES; c++) {
-        const ptns = new Array(NUM_VOICES)
-        for (let i = 0; i < 10; i++) {
-            const lo = sys.peek(cueSheetPtr + c * CUE_SIZE + i)      & 0xFF
-            const mi = sys.peek(cueSheetPtr + c * CUE_SIZE + 10 + i) & 0xFF
-            const hi = sys.peek(cueSheetPtr + c * CUE_SIZE + 20 + i) & 0xFF
-            ptns[i*2]   = ((hi >> 4) << 8) | ((mi >> 4) << 4) | (lo >> 4)
-            ptns[i*2+1] = ((hi & 0xF) << 8) | ((mi & 0xF) << 4) | (lo & 0xF)
+        const ptns = new Array(NUM_VOICES).fill(CUE_EMPTY)
+        let instr = 0, instr1 = 0
+        if (c < numCuesFile) {
+            if (isV2) {
+                const raw = new Array(NUM_VOICES)
+                for (let ch = 0; ch < NUM_VOICES; ch++) {
+                    raw[ch] = (sys.peek(cueSheetPtr + c * CUE_SIZE + ch*2)     & 0xFF) |
+                             ((sys.peek(cueSheetPtr + c * CUE_SIZE + ch*2 + 1) & 0xFF) << 8)
+                    ptns[ch] = raw[ch] & 0x7FFF
+                }
+                for (let k = 0; k < 16; k++) {
+                    instr  |= ((raw[k]      >> 15) & 1) << k
+                    instr1 |= ((raw[k + 16] >> 15) & 1) << k
+                }
+            } else {
+                for (let i = 0; i < 10; i++) {
+                    const lo = sys.peek(cueSheetPtr + c * CUE_SIZE_V1 + i)      & 0xFF
+                    const mi = sys.peek(cueSheetPtr + c * CUE_SIZE_V1 + 10 + i) & 0xFF
+                    const hi = sys.peek(cueSheetPtr + c * CUE_SIZE_V1 + 20 + i) & 0xFF
+                    const p0 = ((hi >> 4) << 8) | ((mi >> 4) << 4) | (lo >> 4)
+                    const p1 = ((hi & 0xF) << 8) | ((mi & 0xF) << 4) | (lo & 0xF)
+                    ptns[i*2]   = (p0 === CUE_EMPTY_V1) ? CUE_EMPTY : p0
+                    ptns[i*2+1] = (p1 === CUE_EMPTY_V1) ? CUE_EMPTY : p1
+                }
+                instr = (sys.peek(cueSheetPtr + c * CUE_SIZE_V1 + 30) << 8) | sys.peek(cueSheetPtr + c * CUE_SIZE_V1 + 31)
+            }
         }
-        const instr = (sys.peek(cueSheetPtr + c * CUE_SIZE + 30) << 8) | sys.peek(cueSheetPtr + c * CUE_SIZE + 31)
-        cues[c] = { ptns, instr }
+        cues[c] = { ptns, instr, instr1 }
 
         for (let v = 0; v < NUM_VOICES; v++) {
             if (ptns[v] !== CUE_EMPTY) { lastActiveCue = c; break }
         }
+        if ((instr || instr1) && c < numCuesFile && c > lastActiveCue) lastActiveCue = c
     }
     sys.free(cueSheetPtr)
 
@@ -1154,9 +1189,10 @@ let timelineRowStyle      = 0
 let COLSIZE_TIMELINE_FULL = TIMELINE_COLSIZES[0]
 let VOCSIZE_TIMELINE_FULL = Math.floor((SCRW - 3) / COLSIZE_TIMELINE_FULL)
 
-const ORDERS_CMD_X       = 5
-const ORDERS_VOICE_X     = 12  // 1-indexed col where voice columns begin
-const ORDERS_VOICE_COL_W = 4
+// Cue-index and pattern numbers are 4 hex digits (cues 0..0x1FFF, patterns 0..0x7FFE).
+const ORDERS_CMD_X       = 6
+const ORDERS_VOICE_X     = 13  // 1-indexed col where voice columns begin
+const ORDERS_VOICE_COL_W = 5
 const VOCSIZE_ORDERS     = Math.floor((SCRW - (ORDERS_VOICE_X - 1)) / ORDERS_VOICE_COL_W)
 
 const VIEW_TIMELINE = 0
@@ -1245,8 +1281,8 @@ function drawStatusBar() {
     fillLine(1, colWHITE, 255)
     fillLine(2, colWHITE, 255)
 
-    const sCueIdx = cueIdx.hex03()
-    const sCueMax = (song.lastActiveCue < 0 ? 0 : song.lastActiveCue).hex03()
+    const sCueIdx = cueIdx.hex04()
+    const sCueMax = (song.lastActiveCue < 0 ? 0 : song.lastActiveCue).hex04()
     const vMax = song.numVoices.dec02()
     const vHi = Math.min(voiceOff + VOCSIZE_TIMELINE_FULL, song.numVoices).dec02()
     const vLow = (voiceOff+1).dec02()
@@ -1438,10 +1474,10 @@ function drawVoiceHeaders() {
             con.color_pair(voiceHdrColByFlags[isMuted*2 + isCursor], 255)
             const ptnIdx = cue.ptns[voice]
             const vlabel = `V${(voice+1).dec02()}`
-            const plabel = (ptnIdx === CUE_EMPTY) ? '---' : ptnIdx.hex03()
+            const plabel = (ptnIdx === CUE_EMPTY) ? '----' : ptnIdx.hex04()
             const label =
                 (timelineRowStyle == 0) ? `  ${vlabel} ptn ${plabel}    ` :
-                (timelineRowStyle == 1) ? ` ${vlabel.substring(1)}:${plabel}` :
+                (timelineRowStyle == 1) ? `${vlabel.substring(1)}:${plabel}` :
                 ` ${vlabel}`
             print((label + '                     ').substring(0, COLSIZE_TIMELINE_FULL))
         }
@@ -2368,7 +2404,11 @@ function openProject(path) {
 
 // Overwrite `path` with the current device state (single-song capture).
 function saveProjectToFile(path) {
-    taud.captureTrackerDataToFile(path)   // throws on I/O error
+    taud.captureTrackerDataToFile(path, {
+        numVoices: song.numVoices,
+        numPats:   song.numPats,
+        numCues:   Math.max(1, song.lastActiveCue + 1),
+    })   // throws on I/O error
     hasUnsavedChanges = false
 }
 
@@ -2376,10 +2416,9 @@ function saveProjectToFile(path) {
 // instruments. currentFilePath becomes null (nothing on disk yet).
 const NUM_PATTERNS_MAX = 256
 function buildEmptyCueBytes() {
-    // 10 lo + 10 mid + 10 hi nibble-pair bytes (all 0xFF == every voice 0xFFF
-    // empty) + 2 instruction bytes (0). Inverse of loadTaud's cue decode.
+    // 32 Sint16 = 0x7FFF (every channel empty, no instruction): bytes FF 7F × 32.
     const b = new Array(CUE_SIZE).fill(0)
-    for (let k = 0; k < 30; k++) b[k] = 0xFF
+    for (let ch = 0; ch < NUM_VOICES; ch++) { b[ch*2] = 0xFF; b[ch*2+1] = 0x7F }
     return b
 }
 // `settings` (optional) is the new-project dialog's result; when present it seeds
@@ -2388,7 +2427,7 @@ function buildEmptySong(settings) {
     const patterns = [ new Uint8Array(PATTERN_SIZE) ]
     const cues = new Array(NUM_CUES)
     for (let c = 0; c < NUM_CUES; c++) {
-        cues[c] = { ptns: new Array(NUM_VOICES).fill(CUE_EMPTY), instr: 0 }
+        cues[c] = { ptns: new Array(NUM_VOICES).fill(CUE_EMPTY), instr: 0, instr1: 0 }
     }
     return {
         filePath: null, songIndex: 0, version: 1, numSongs: 1,
@@ -2423,6 +2462,9 @@ function newProjectMeta(s) {
     return {
         baseNote: s.baseNote,
         baseFreq: s.baseFreq,
+        numVoices: song.numVoices,
+        numPats:   song.numPats,
+        numCues:   Math.max(1, song.lastActiveCue + 1),
         projectName: s.name,
         sMet: {
             notation:  s.notation,
@@ -2483,13 +2525,13 @@ function drawOrdersHeader() {
     fillLine(PTNVIEW_OFFSET_Y - 1, colVoiceHdr, 255)
     con.move(PTNVIEW_OFFSET_Y - 1, 1)
     con.color_pair(colVoiceHdr, 255)
-    print('    ')
+    print('     ')   // 4-digit cue index + 1 space
     con.color_pair(colVoiceHdr, ordersColCursor === 0 ? colHighlight : 255)
     print('Comand ')
     for (let c = 0; c < VOCSIZE_ORDERS; c++) {
         const v = ordersVoiceOff + c
         con.color_pair(colVoiceHdr, ordersColCursor === v + 1 ? colHighlight : 255)
-        print(v < song.numVoices ? `V${(v+1).dec02()} ` : '    ')
+        print(v < song.numVoices ? `V${(v+1).dec02()}  ` : '     ')
     }
 }
 
@@ -2512,7 +2554,7 @@ function drawOrdersRowAt(ci) {
 
     const cue = song.cues[ci]
     con.color_pair(ci % 4 === 0 ? colRowNumEmph1 : colRowNum, back)
-    print(ci.hex03())
+    print(ci.hex04())
     con.color_pair(colBackPtn, back)
     print(' ')
     // CMD column — crosshair highlight at (ordersCursor, col 0)
@@ -2527,7 +2569,7 @@ function drawOrdersRowAt(ci) {
         const ptn   = v < song.numVoices ? cue.ptns[v] : CUE_EMPTY
         const vBack = (isSel && ordersColCursor === v + 1) ? colPlayback : back
         con.color_pair(ptn === CUE_EMPTY ? colSep : colStatus, vBack)
-        print(ptn === CUE_EMPTY ? '---' : ptn.hex03())
+        print(ptn === CUE_EMPTY ? '----' : ptn.hex04())
         con.color_pair(colBackPtn, back)
         print(' ')
     }
@@ -2553,7 +2595,7 @@ function drawOrdersVoiceColumnAt(slot) {
         if (ci > maxCue) {
             con.move(y, x)
             con.color_pair(colBackPtn, colBackPtn)
-            print('    ')
+            print('     ')   // clear the full 5-wide voice column
             continue
         }
         const isSel = (ci === ordersCursor)
@@ -2566,7 +2608,7 @@ function drawOrdersVoiceColumnAt(slot) {
 
         con.move(y, x)
         con.color_pair(ptn === CUE_EMPTY ? colSep : colStatus, vBack)
-        print(ptn === CUE_EMPTY ? '---' : ptn.hex03())
+        print(ptn === CUE_EMPTY ? '----' : ptn.hex04())
         con.color_pair(colBackPtn, back)
         print(' ')
     }
@@ -2647,7 +2689,9 @@ function ordersMaxRow() {
 function recomputeLastActiveCue() {
     let last = -1
     for (let c = 0; c < NUM_CUES; c++) {
-        const ptns = song.cues[c].ptns
+        const cue = song.cues[c]
+        if (cue.instr || cue.instr1) { last = c; continue }
+        const ptns = cue.ptns
         for (let v = 0; v < NUM_VOICES; v++) {
             if (ptns[v] !== CUE_EMPTY) { last = c; break }
         }
@@ -2663,7 +2707,7 @@ function commitCue(ci) {
 }
 
 // Edit one voice's pattern index in cue `ci` from a single keystroke. Hex digits
-// accumulate (shift-register, masked to 12 bits); '-' clears to CUE_EMPTY (0xFFF);
+// accumulate (shift-register, masked to 15 bits); '-' clears to CUE_EMPTY (0x7FFF);
 // Backspace drops a digit. Returns true if the cell changed.
 function editCuePtn(ci, voice, sc, shiftDown) {
     const cue = song.cues[ci]
@@ -2677,7 +2721,7 @@ function editCuePtn(ci, voice, sc, shiftDown) {
         const nib = scToHexNibble(sc)
         if (nib < 0) return false
         const base = (cur === CUE_EMPTY) ? 0 : cur
-        next = ((base << 4) | nib) & 0xFFF
+        next = ((base << 4) | nib) & 0x7FFF
     } else {
         return false
     }
@@ -2851,7 +2895,7 @@ function ordersInput(wo, event) {
     // ── Cue editing (stopped only) ─────────────────────────────────────────────
     // Command column (col 0): Enter opens the command popup.
     // Voice columns (col >= 1): hex digits accumulate the pattern index, '-' clears
-    // it to empty (0xFFF), Backspace drops a digit. (Enter on a voice column falls
+    // it to empty (0x7FFF), Backspace drops a digit. (Enter on a voice column falls
     // through to the "go to cue" handler below.)
     if (keyJustHit && !shiftDown && ordersColCursor === 0 && keysym === '\n') {
         openCueCmdPopup(ordersCursor); return
@@ -3551,10 +3595,10 @@ function drawPatternListColumn() {
         con.move(y, PATEDITOR_LIST_X)
         if (pi >= song.numPats) {
             con.color_pair(255, colBackPtn)
-            print('    ')
+            print('     ')
         } else {
             con.color_pair(isCur ? colStatus : colRowNum, isCur ? colHighlight : 255)
-            print(pi.hex03())
+            print(pi.hex04())
             con.color_pair(colSep, 255)
             print(' ')
         }
@@ -3628,10 +3672,10 @@ function drawPatternsHeader() {
     fillLine(PTNVIEW_OFFSET_Y - 1, colVoiceHdr, 255)
     con.move(PTNVIEW_OFFSET_Y - 1, PATEDITOR_LIST_X)
     con.color_pair(colVoiceHdr, 255)
-    print('Ptn ')
+    print('Ptn  ')
     con.move(PTNVIEW_OFFSET_Y - 1, PATEDITOR_GRID_X)
     if (song.numPats > 0)
-        print(`Pattern ${patternIdx.hex03()}  Row ${patternGridRow.dec02()}`)
+        print(`Pattern ${patternIdx.hex04()}  Row ${patternGridRow.dec02()}`)
 }
 
 function drawPatternsContents(wo) {
@@ -3834,8 +3878,8 @@ function drawProjectContents(wo) {
     let projMeta = {
         Filename: (currentFilePath ? currentFilePath.split('\\').last() : '(untitled)'),
         ProjName: songsMeta.projectName || '(unnamed)',
-        Patterns: `${song.numPats}/4095 ($${song.numPats.hex03()})`,
-        Cues: `${song.lastActiveCue}/1024 ($${song.lastActiveCue.hex03()})`,
+        Patterns: `${song.numPats}/32766 ($${song.numPats.hex04()})`,
+        Cues: `${song.lastActiveCue}/8192 ($${song.lastActiveCue.hex04()})`,
         Samples: sampleRamSummary(),
         Notation: pitchTablePresets[PITCH_PRESET_IDX].name,
         Flags: `${flagStrSelected.join(', ')} ($${mixerflag.hex02()})`,
@@ -4051,28 +4095,28 @@ let pbRow = 0
 let previewActive = false  // true while a pattern-only preview is loaded in PREVIEW_CUE_IDX
 
 // Encode a cue object (from song.cues[]) back to its 32-byte wire format
+// 64-byte cue: 32 Sint16 (low 15 bits = pattern, sign bit = instruction-word bit).
+// Sign bits of channels 0..15 form instr (word0); 16..31 form instr1 (word1).
 function encodeCue(cue) {
     const bin = new Uint8Array(CUE_SIZE)
-    for (let i = 0; i < 10; i++) {
-        const p0 = cue.ptns[i*2], p1 = cue.ptns[i*2+1]
-        bin[i]    = ((p0 & 0xF) << 4)        | (p1 & 0xF)
-        bin[10+i] = (((p0 >> 4) & 0xF) << 4) | ((p1 >> 4) & 0xF)
-        bin[20+i] = (((p0 >> 8) & 0xF) << 4) | ((p1 >> 8) & 0xF)
+    const w0 = (cue.instr  || 0) & 0xFFFF
+    const w1 = (cue.instr1 || 0) & 0xFFFF
+    for (let ch = 0; ch < NUM_VOICES; ch++) {
+        let val = (cue.ptns[ch] & 0x7FFF)
+        const bit = (ch < 16) ? ((w0 >> ch) & 1) : ((w1 >> (ch - 16)) & 1)
+        if (bit) val |= 0x8000
+        bin[ch*2]     = val & 0xFF
+        bin[ch*2 + 1] = (val >>> 8) & 0xFF
     }
-    // Byte 30 = instruction high (foreword/preamble), byte 31 = instruction low (arg).
-    const instr = cue.instr || 0
-    bin[30] = (instr >>> 8) & 0xFF
-    bin[31] = instr & 0xFF
     return bin
 }
 
-// Build a preview cue with voice 0 = pidx, all other voices = CUE_EMPTY
+// Build a preview cue with voice 0 = pidx, all other voices = CUE_EMPTY, no instruction.
 function buildPreviewCue(pidx) {
     const bin = new Uint8Array(CUE_SIZE)
-    for (let b = 0; b < 30; b++) bin[b] = 0xFF
-    bin[0]  = ((pidx & 0xF) << 4)        | 0xF
-    bin[10] = (((pidx >> 4) & 0xF) << 4) | 0xF
-    bin[20] = (((pidx >> 8) & 0xF) << 4) | 0xF
+    for (let ch = 0; ch < NUM_VOICES; ch++) { bin[ch*2] = 0xFF; bin[ch*2+1] = 0x7F }
+    bin[0] = pidx & 0xFF
+    bin[1] = (pidx >>> 8) & 0x7F
     return bin
 }
 
@@ -4907,11 +4951,11 @@ function registerTimelineMouse() {
 
 function registerOrdersMouse() {
     // Layout (1-indexed cells, mirrors drawOrdersRowAt):
-    //   cols 1..3   = row number       (no column meaning)
-    //   col  4      = gap
-    //   cols 5..10  = CMD               (ordersColCursor = 0)
-    //   col  11     = gap
-    //   cols 12 + s*4 .. 12 + s*4 + 3   = voice slot s on screen
+    //   cols 1..4   = row number (4 hex digits)  (no column meaning)
+    //   col  5      = gap
+    //   cols 6..11  = CMD               (ordersColCursor = 0)
+    //   col  12     = gap
+    //   cols 13 + s*5 .. 13 + s*5 + 4   = voice slot s on screen
     //                                     (ordersColCursor = ordersVoiceOff + s + 1)
     //
     // Returns the ordersColCursor value for a given cx, or -1 if not on a column.

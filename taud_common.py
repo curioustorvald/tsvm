@@ -66,10 +66,13 @@ def compress_blob(payload: bytes, label: str) -> bytes:
 # ── Taud container constants ─────────────────────────────────────────────────
 
 TAUD_MAGIC       = bytes([0x1F,0x54,0x53,0x56,0x4D,0x61,0x75,0x64])
-# Bumped 2026-05-07: envelope offset minifloat rebiased (smallest step 1/256 s,
-# max 15.75 s; previously 1/32 s, max 126 s). v1 .taud envelopes will play with
-# the wrong tempo on a v2 engine — re-convert from source.
-TAUD_VERSION     = 1
+# Format version carried in the low six bits of the version byte (top two = kind).
+#   1 → legacy cue sheet (20 voices, 12-bit pattern numbers, 32-byte cues).
+#   2 → extended cue sheet (2026-07-01): 32 voices, 15-bit pattern numbers, 64-byte
+#       cues with sign-bit instructions; song-table reserved[0:2] carries the cue
+#       count. See terranmon.txt §"Cue sheet". Loaders branch on this to pick the
+#       cue-image layout; a v1 file must be re-converted for full 32-channel range.
+TAUD_VERSION     = 2
 TAUD_HEADER_SIZE = 32       # magic(8)+ver(1)+numSongs(1)+compSize(4)+projOff(4)+sig(14)
 TAUD_SONG_ENTRY  = 32       # full spec entry (see encode_song_entry)
 
@@ -101,10 +104,15 @@ INSTBIN_SIZE     = INST_RECORD_SIZE * 1024   # 262144 = 256K
 SAMPLEINST_SIZE  = SAMPLEBIN_SIZE + INSTBIN_SIZE          # 8650752 = 8448 kB
 PATTERN_ROWS     = 64
 PATTERN_BYTES    = PATTERN_ROWS * 8     # 512
-NUM_PATTERNS_MAX = 4095
-NUM_CUES         = 1024
-CUE_SIZE         = 32
-NUM_VOICES       = 20
+# Extended cue sheet (terranmon.txt §"Cue sheet", 2026-07-01). Pattern numbers are now
+# 15-bit (0..0x7FFE; 0x7FFF = "no pattern on this channel"), so a song may carry up to
+# 32767 distinct patterns. Cues are 64 bytes = 32 little-endian Sint16 (one per channel);
+# the sign bits encode two per-cue instruction words. The engine holds 8192 cues (4 banks).
+NUM_PATTERNS_MAX = 32767            # max distinct patterns (indices 0..32766)
+NUM_CUES         = 8192            # 4 banks × 2048 cues
+CUE_SIZE         = 64             # bytes per cue entry (32 × Sint16)
+NUM_VOICES       = 32
+CUE_EMPTY        = 0x7FFF          # pattern-number sentinel: no pattern on this channel
 
 # Per-sample length cap. Taud instrument records carry the sample length as
 # a u16 (terranmon.txt:2001+ — bytes 4..5), so any single sample must fit in
@@ -434,28 +442,82 @@ def rescale_offset_effects_per_slot(pat_bin: bytes,
     return bytes(out)
 
 
-def encode_cue(patterns12: list, instruction) -> bytearray:
-    """Encode a 32-byte cue entry for up to 20 voices with 12-bit pattern numbers.
+def _inst_to_word(instruction) -> int:
+    """Fold a cue instruction into its 16-bit word (terranmon.txt §"Cue sheet").
 
-    `instruction` is either an int (legacy single-byte value placed at byte 30,
-    byte 31 = 0) or a 2-tuple `(byte30, byte31)` for two-byte forms such as
-    LEN (CUE_INST_LEN with row count - 1).
+    `instruction` is either an int (single byte30 value, byte31 = 0 — e.g. a plain
+    HALT 0x01) or a 2-tuple `(byte30, byte31)` for two-byte forms (LEN, HALT-at,
+    BAK, FWD, JMP). The word is `(byte30 << 8) | byte31`, the same encoding the old
+    byte30/byte31 pair used; it is spread across channel sign bits by encode_cue.
     """
-    pats = list(patterns12) + [0xFFF] * NUM_VOICES
-    pats = pats[:NUM_VOICES]
-    entry = bytearray(CUE_SIZE)
-    for i in range(10):      # 10 bytes: 2 voices per byte
-        v0, v1 = pats[i*2], pats[i*2+1]
-        entry[i]      = ((v0 & 0xF) << 4) | (v1 & 0xF)               # low nybbles
-        entry[10 + i] = (((v0 >> 4) & 0xF) << 4) | ((v1 >> 4) & 0xF) # mid nybbles
-        entry[20 + i] = (((v0 >> 8) & 0xF) << 4) | ((v1 >> 8) & 0xF) # high nybbles
     if isinstance(instruction, tuple):
         b30, b31 = instruction
-        entry[30] = b30 & 0xFF
-        entry[31] = b31 & 0xFF
     else:
-        entry[30] = instruction & 0xFF
+        b30, b31 = instruction, 0
+    return ((b30 & 0xFF) << 8) | (b31 & 0xFF)
+
+
+def encode_cue(patterns, instruction=0, instruction1=None) -> bytearray:
+    """Encode a 64-byte cue entry for up to 32 voices (terranmon.txt §"Cue sheet").
+
+    The cue is 32 little-endian Sint16, one per channel: low 15 bits = pattern
+    number (0..0x7FFE; CUE_EMPTY = 0x7FFF = no pattern on this channel), sign bit =
+    one bit of an instruction word. Sign bits of channels 0..15 form `instruction`
+    (word 0); sign bits of channels 16..31 form `instruction1` (word 1). Each word
+    uses the same layout as the legacy byte30/byte31 pair. Most callers emit a
+    single instruction (word 0) and leave word 1 as NOP.
+    """
+    pats = list(patterns) + [CUE_EMPTY] * NUM_VOICES
+    pats = pats[:NUM_VOICES]
+    word0 = _inst_to_word(instruction)
+    word1 = _inst_to_word(instruction1) if instruction1 is not None else 0
+    entry = bytearray(CUE_SIZE)
+    for ch in range(NUM_VOICES):
+        val = pats[ch] & 0x7FFF
+        if ch < 16:
+            if (word0 >> ch) & 1:        val |= 0x8000
+        else:
+            if (word1 >> (ch - 16)) & 1: val |= 0x8000
+        entry[ch*2]     = val & 0xFF
+        entry[ch*2 + 1] = (val >> 8) & 0xFF
     return entry
+
+
+# A fully-empty cue: every channel CUE_EMPTY, both instruction words NOP.
+EMPTY_CUE = bytes(encode_cue([], 0))
+
+
+def set_cue_instruction(sheet: bytearray, cue_idx: int, instruction, instruction1=None) -> None:
+    """Overlay instruction words onto an already-encoded cue's channel sign bits.
+
+    Replaces the legacy `sheet[cue*CUE_SIZE + 30] = ...` poke: the instruction no
+    longer occupies dedicated bytes, so we set the sign bit of each affected
+    channel's Sint16 in place, leaving the pattern numbers intact.
+    """
+    word0 = _inst_to_word(instruction)
+    word1 = _inst_to_word(instruction1) if instruction1 is not None else 0
+    base = cue_idx * CUE_SIZE
+    for ch in range(NUM_VOICES):
+        bit = ((word0 >> ch) & 1) if ch < 16 else ((word1 >> (ch - 16)) & 1)
+        hi = base + ch*2 + 1
+        sheet[hi] = (sheet[hi] & 0x7F) | (0x80 if bit else 0x00)
+
+
+def finalize_cue_sheet(sheet: bytearray) -> tuple:
+    """Trim trailing empty cues and return (trimmed_bytes, num_cues).
+
+    A cue is "empty" only when every channel is CUE_EMPTY and both instruction
+    words are NOP (byte-identical to EMPTY_CUE). Only TRAILING empties are dropped
+    so interior rests survive; at least one cue is always kept. `num_cues` is the
+    kept count, to be stored in the song table (terranmon.txt §"Song Table").
+    """
+    n = len(sheet) // CUE_SIZE
+    last = 0
+    for ci in range(n):
+        if bytes(sheet[ci*CUE_SIZE:(ci+1)*CUE_SIZE]) != EMPTY_CUE:
+            last = ci
+    num_cues = last + 1
+    return bytes(sheet[:num_cues * CUE_SIZE]), num_cues
 
 
 def cue_instruction_len(rows: int) -> tuple:
@@ -487,9 +549,10 @@ def cue_instruction_halt_at(rows: int) -> tuple:
 def cue_instruction_jump(cue: int) -> tuple:
     """Build the 2-byte JMP cue instruction (terranmon.txt §"Cue Sheet").
 
-    Go to absolute cue `cue` (0..4095) when this cue finishes its full pattern —
-    the engine never halts here, so it loops. Encoding is byte30 = 0b1111xxxx
-    (high nybble of the 12-bit cue) and byte31 = low 8 bits.
+    Go to absolute cue `cue` when this cue finishes its full pattern — the engine
+    never halts here, so it loops. Encoding is byte30 = 0b1111xxxx (high nybble of
+    the 12-bit cue) and byte31 = low 8 bits; the instruction word is 12-bit, so a
+    JMP target must be 0..4095 even though the sheet holds up to 8192 cues.
     """
     if not 0 <= cue <= 0xFFF:
         raise ValueError(f"JMP cue target must be 0..4095, got {cue}")
@@ -543,7 +606,8 @@ def encode_song_entry(song_offset: int, num_voices: int, num_patterns: int,
                       bpm_stored: int, tick_rate: int,
                       base_note: int, base_freq: float, flags_byte: int,
                       pat_bin_comp_size: int, cue_sheet_comp_size: int,
-                      global_vol: int = 0x80, mixing_vol: int = 0x80) -> bytes:
+                      global_vol: int = 0x80, mixing_vol: int = 0x80,
+                      num_cues: int = 0) -> bytes:
     """Pack a 32-byte Taud song table entry.
 
     Layout:
@@ -552,14 +616,16 @@ def encode_song_entry(song_offset: int, num_voices: int, num_patterns: int,
         u16 base_note, f32 base_freq,
         u8 flags, u8 global_vol, u8 mixing_vol,
         u32 pat_bin_comp_size, u32 cue_sheet_comp_size,
-        byte[6] reserved.
+        u16 num_cues (was reserved), byte[4] reserved.
 
     `bpm_stored` is `bpm - 25` and may be a 9-bit value (0..510 ⇒ BPM 25..535);
     its low 8 bits go to the bpm byte and bit 8 is packed into bit 7 of the
-    tick-rate byte (which therefore caps tick_rate at 0..127). See terranmon.txt.
+    tick-rate byte (which therefore caps tick_rate at 0..127). `num_cues` is the
+    cue count of the (v2) cue sheet, so a loader need not derive it from the
+    decompressed size (0 in a legacy v1 file). See terranmon.txt §"Song Table".
     """
     bpm_stored = max(0, min(0x1FE, bpm_stored))
-    entry = struct.pack('<IBHBBHfBBBII',
+    entry = struct.pack('<IBHBBHfBBBIIH',
         song_offset,
         num_voices & 0xFF,
         num_patterns & 0xFFFF,
@@ -572,7 +638,8 @@ def encode_song_entry(song_offset: int, num_voices: int, num_patterns: int,
         mixing_vol & 0xFF,
         pat_bin_comp_size & 0xFFFFFFFF,
         cue_sheet_comp_size & 0xFFFFFFFF,
-    ) + b'\x00' * 6
+        num_cues & 0xFFFF,
+    ) + b'\x00' * 4
     assert len(entry) == TAUD_SONG_ENTRY
     return entry
 

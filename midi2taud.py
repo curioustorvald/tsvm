@@ -123,6 +123,7 @@ from taud_common import (
     TAUD_KIND_FULL, TAUD_KIND_SAMPLEINST, TAUD_KIND_PATTERN,
     SAMPLEBIN_SIZE, INSTBIN_SIZE, SAMPLEINST_SIZE, SAMPLE_LEN_LIMIT,
     PATTERN_ROWS, PATTERN_BYTES, NUM_PATTERNS_MAX, NUM_CUES, CUE_SIZE, NUM_VOICES,
+    CUE_EMPTY, EMPTY_CUE, finalize_cue_sheet, set_cue_instruction,
     NOTE_NOP, NOTE_KEYOFF, NOTE_FASTFADE, TAUD_C4,
     TOP_B, TOP_C, TOP_G, TOP_M, TOP_S, TOP_T,
     SEL_SET, SEL_FINE,
@@ -3009,9 +3010,7 @@ def build_song_section(song: Song, speed: int, rpb: int, src_path: str,
            f"{n_cues} cue(s), {n_voices} voice(s), {total_rows} rows"
            + (f"; {n_breaks} time-signature break(s)" if n_breaks > 0 else ""))
 
-    sheet = bytearray(NUM_CUES * CUE_SIZE)
-    for ci in range(NUM_CUES):
-        sheet[ci*CUE_SIZE:(ci+1)*CUE_SIZE] = encode_cue([], 0)
+    sheet = bytearray(EMPTY_CUE * n_cues)
     for ci in range(n_cues):
         pats = [remap[ci * n_voices + v] for v in range(n_voices)]
         if ci == n_cues - 1:
@@ -3036,9 +3035,12 @@ def build_song_section(song: Song, speed: int, rpb: int, src_path: str,
     beat_pri = max(1, round(rpb * 4 / (2 ** init_dpow)))
     title = song.title or os.path.splitext(os.path.basename(src_path))[0]
 
+    cue_bytes, n_cues_stored = finalize_cue_sheet(sheet)
+
     return {
         'pat_comp':  compress_blob(pat_bin,      "pattern bin"),
-        'cue_comp':  compress_blob(bytes(sheet), "cue sheet"),
+        'cue_comp':  compress_blob(cue_bytes,    "cue sheet"),
+        'n_cues':    n_cues_stored,
         'n_voices':  n_voices,
         'n_unique':  n_unique,
         'bpm0':      bpm0,
@@ -3064,6 +3066,7 @@ def make_song_entry(section: dict, song_off: int, args) -> bytes:
         cue_sheet_comp_size=len(section['cue_comp']),
         global_vol=0xFF,
         mixing_vol=args.mixing_vol,
+        num_cues=section['n_cues'],
     )
 
 

@@ -503,8 +503,34 @@ def vol_col(b):
     return "%s%02X" % (SEL_NAMES[sel][0], val)
 
 
-def cue_patterns(cue_bin, ci):
-    """Decode one cue's 20 voice→pattern numbers + instruction bytes."""
+# Cue sheet layout differs by format version (terranmon.txt §"Cue sheet").
+#   v1: 32-byte cue, 20 voices, 12-bit packed pattern numbers, instruction in
+#       bytes 30/31. Empty sentinel 0xFFF.
+#   v2: 64-byte cue, 32 voices, 32 little-endian Sint16 (low 15 bits = pattern,
+#       sign bit = one bit of an instruction word — chn 0..15 → word0, chn 16..31
+#       → word1). Empty sentinel 0x7FFF.
+CUE_SIZE_V1 = 32
+CUE_SIZE_V2 = 64
+
+
+def cue_stride(ver):
+    return CUE_SIZE_V2 if ver >= 2 else CUE_SIZE_V1
+
+
+def cue_empty(ver):
+    return 0x7FFF if ver >= 2 else 0xFFF
+
+
+def cue_patterns(cue_bin, ci, ver=2):
+    """Decode one cue → (pattern list, instruction word0, instruction word1)."""
+    if ver >= 2:
+        e = cue_bin[ci * 64:ci * 64 + 64]
+        raw = [e[c * 2] | (e[c * 2 + 1] << 8) for c in range(32)]
+        pats = [r & 0x7FFF for r in raw]
+        w0 = sum(((raw[c] >> 15) & 1) << c for c in range(16))
+        w1 = sum(((raw[c + 16] >> 15) & 1) << c for c in range(16))
+        return pats, w0, w1
+    # v1 legacy
     e = cue_bin[ci * 32:ci * 32 + 32]
     pats = []
     for v in range(20):
@@ -518,20 +544,22 @@ def cue_patterns(cue_bin, ci):
             mi = e[10 + bi] & 0xF
             hi = e[20 + bi] & 0xF
         pats.append((hi << 8) | (mi << 4) | lo)
-    return pats, e[30], e[31]
+    return pats, (e[30] << 8) | e[31], 0
 
 
-def cue_instruction(b30, b31):
-    """Decode cue instruction bytes (terranmon §Cue Sheet 32768..)."""
-    if b30 == 0 and b31 == 0:
+def cue_instruction_word(w):
+    """Decode one 16-bit cue instruction word (terranmon §"Cue sheet")."""
+    if w == 0:
         return None
+    b30 = (w >> 8) & 0xFF
+    b31 = w & 0xFF
     hi = b30 & 0xF0
     if hi == 0x80:
         return "BACK %d" % (((b30 & 0xF) << 8) | b31)
     if hi == 0x90:
         return "FWD %d" % (((b30 & 0xF) << 8) | b31)
     if hi == 0xF0:
-        return "JMP -> pat %d" % (((b30 & 0xF) << 8) | b31)
+        return "JMP -> cue %d" % (((b30 & 0xF) << 8) | b31)
     if b30 == 0x02:
         return "LEN %d rows" % ((b31 & 0x3F) + 1)
     if b30 == 0x01:
@@ -540,7 +568,13 @@ def cue_instruction(b30, b31):
         if (b31 & 0x3F) == 0:
             return "HALT"
         return "FADE -> row %d" % (b31 & 0x3F)
-    return "?%02X%02X" % (b30, b31)
+    return "?%04X" % w
+
+
+def cue_instruction(w0, w1=0):
+    """Human-readable instruction(s) for a cue's two instruction words."""
+    parts = [x for x in (cue_instruction_word(w0), cue_instruction_word(w1)) if x]
+    return " + ".join(parts) if parts else None
 
 
 # ── output helpers ───────────────────────────────────────────────────────────
@@ -842,7 +876,8 @@ def main():
                 print("  [could not decompress patterns/cues: %s]" % e)
                 continue
             npat_real = len(pat_bin) // PATTERN_SIZE
-            ncue_real = len(cue_bin) // CUE_SIZE
+            ncue_real = len(cue_bin) // cue_stride(base_ver)
+            empty = cue_empty(base_ver)
 
             # non-empty pattern count
             nonempty = 0
@@ -850,11 +885,11 @@ def main():
                 blk = pat_bin[p * PATTERN_SIZE:(p + 1) * PATTERN_SIZE]
                 if any(blk):
                     nonempty += 1
-            # used cue count (last cue with any non-FFF voice or instruction)
+            # used cue count (last cue with any non-empty voice or instruction)
             used_cues = 0
             for c in range(ncue_real):
-                pats, b30, b31 = cue_patterns(cue_bin, c)
-                if any(x != 0xFFF for x in pats) or (b30 or b31):
+                pats, w0, w1 = cue_patterns(cue_bin, c, base_ver)
+                if any(x != empty for x in pats) or w0 or w1:
                     used_cues = c + 1
             print("  patterns in bin=%d (%d non-empty)   cues used=%d" % (npat_real, nonempty, used_cues))
 
@@ -865,9 +900,9 @@ def main():
                 for c in clist:
                     if c >= ncue_real:
                         continue
-                    pats, b30, b31 = cue_patterns(cue_bin, c)
-                    ins = cue_instruction(b30, b31)
-                    body = " ".join("v%d=%03X" % (vi, x) for vi, x in enumerate(pats) if x != 0xFFF)
+                    pats, w0, w1 = cue_patterns(cue_bin, c, base_ver)
+                    ins = cue_instruction(w0, w1)
+                    body = " ".join("v%d=%03X" % (vi, x) for vi, x in enumerate(pats) if x != empty)
                     print("    cue %3d: %s%s" % (c, body, ("   [%s]" % ins) if ins else ""))
 
             if args.pattern is not None and (args.song is None or args.song == s):

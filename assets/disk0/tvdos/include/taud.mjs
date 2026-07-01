@@ -7,7 +7,13 @@
 // ── Format constants ────────────────────────────────────────────────────────
 
 const TAUD_MAGIC        = [0x1F,0x54,0x53,0x56,0x4D,0x61,0x75,0x64]  // \x1F TSVMaud
-const TAUD_VERSION      = 1
+// Format version in the LOW SIX bits of the version byte (top two = kind).
+//   1 → legacy cue sheet (20 voices, 12-bit patterns, 32-byte cues).
+//   2 → extended cue sheet (2026-07-01): 32 voices, 15-bit patterns, 64-byte cues
+//       with sign-bit instructions (terranmon.txt §"Cue sheet"). Loaders translate
+//       a v1 cue image into the v2 engine format on the fly; new files save as v2.
+const TAUD_VERSION      = 2
+const TAUD_VERSION_MASK = 0x3F
 const TAUD_HEADER_SIZE  = 32     // magic(8) + version(1) + numSongs(1) + compSize(4) + projOff(4) + sig(14)
 // Container kind = top two bits of the version byte (terranmon.txt:3342-3401).
 //   00 → full .taud  (sample+inst image + song table + patterns)
@@ -29,10 +35,24 @@ const SAMPLEINST_SIZE   = SAMPLEBIN_SIZE + INSTBIN_SIZE          // 8650752 = 84
 const SAMPLEBIN_WINDOW_OFFSET = 0            // peripheral memory window for the active sample bank
 const AUXBIN_WINDOW_OFFSET    = 655360       // peri offset of aux instrument-bin window $100..$3FF (banked, MMIO 48)
 const INSTBIN_WINDOW_OFFSET   = 720896       // peripheral memory offset of instrument bin $00..$FF
+const PLAYDATA1_WINDOW_OFFSET = 786432       // peripheral memory offset of Play data 1 (128 patterns, banked via MMIO byte 2)
+const PATS_PER_BANK           = 128          // patterns exposed through one Play data window
+const CAPTURE_MAX_PATTERNS    = 1024         // upper bound for the capture (save) pattern scan
 const PATTERN_SIZE      = 512    // bytes per pattern (64 rows × 8 bytes)
-const NUM_PATTERNS_MAX  = 256
-const NUM_CUES          = 1024
-const CUE_SIZE          = 32     // bytes per cue entry (packed 12-bit×20 voices + instruction + pad)
+const NUM_PATTERNS_MAX  = 0x7FFF // 32767 pattern slots (0..32766; 0x7FFF = empty)
+// Extended cue sheet (v2). Cues live in the banked memory window at 524288 (MMIO 47
+// selects the bank); each cue is 32 little-endian Sint16 = 64 bytes.
+const NUM_VOICES        = 32
+const NUM_CUES          = 8192   // 4 banks × 2048 cues
+const CUE_SIZE          = 64     // bytes per cue entry (32 × Sint16)
+const CUE_EMPTY         = 0x7FFF // pattern-number sentinel: no pattern on this channel
+const CUEBIN_WINDOW_OFFSET = 524288   // peripheral memory offset of the cue-sheet window (banked, MMIO 47)
+const CUES_PER_BANK     = 2048        // cues addressable through one 128 K window
+// Legacy v1 cue sheet (for loading pre-2026-07-01 files).
+const NUM_CUES_V1       = 1024
+const CUE_SIZE_V1       = 32
+const NUM_VOICES_V1     = 20
+const CUE_EMPTY_V1      = 0xFFF
 
 // Signature written into the file (14 bytes, space-padded)
 const CAPTURE_SIGNATURE = "LibTaud/TSVM  "
@@ -51,6 +71,39 @@ function _pokeU32LE(ptr, off, v) {
     sys.poke(ptr+off+1, (v >>>  8) & 0xFF)
     sys.poke(ptr+off+2, (v >>> 16) & 0xFF)
     sys.poke(ptr+off+3, (v >>> 24) & 0xFF)
+}
+
+function _peekU16LE(ptr, off) {
+    return ((sys.peek(ptr+off) & 0xFF)) | ((sys.peek(ptr+off+1) & 0xFF) << 8)
+}
+
+// Translate a 32-byte legacy (v1) cue image at `srcPtr + c*32` into the 64-byte
+// v2 cue payload the engine's uploadCue expects. v1 packs 20 voices as 12-bit
+// pattern numbers (lo/mid/hi nibble planes) + a 16-bit instruction in bytes 30/31;
+// v2 stores 32 Sint16 (low 15 bits = pattern, sign bit = instruction word0 bit).
+// The instruction bits ride on the sign bits of channels 0..15 (word0); channels
+// 20..31 and word1 are empty. (terranmon.txt §"Cue sheet".)
+function _v1CueToV2(srcPtr, c) {
+    const b = new Array(CUE_SIZE_V1)
+    for (let k = 0; k < CUE_SIZE_V1; k++) b[k] = sys.peek(srcPtr + c * CUE_SIZE_V1 + k) & 0xFF
+    const word0 = (b[30] << 8) | b[31]
+    const out = new Array(CUE_SIZE)
+    for (let ch = 0; ch < NUM_VOICES; ch++) {
+        let pat = CUE_EMPTY
+        if (ch < NUM_VOICES_V1) {
+            const bi = ch >> 1
+            const lo = (ch & 1) ? (b[bi] & 0xF)        : ((b[bi] >> 4) & 0xF)
+            const mi = (ch & 1) ? (b[10 + bi] & 0xF)   : ((b[10 + bi] >> 4) & 0xF)
+            const hi = (ch & 1) ? (b[20 + bi] & 0xF)   : ((b[20 + bi] >> 4) & 0xF)
+            const p12 = (hi << 8) | (mi << 4) | lo
+            pat = (p12 === CUE_EMPTY_V1) ? CUE_EMPTY : p12
+        }
+        let val = pat & 0x7FFF
+        if (ch < 16 && ((word0 >> ch) & 1)) val |= 0x8000
+        out[ch * 2]     = val & 0xFF
+        out[ch * 2 + 1] = (val >>> 8) & 0xFF
+    }
+    return out
 }
 
 // Little-endian IEEE-754 float32 → 4-byte array. Used to serialise the song
@@ -184,15 +237,29 @@ function uploadTaudFile(inFile, songIndex, playhead) {
     sys.free(patBinPtr)
 
     // -- 7. Decompress + upload cue sheet -------------------------------------
-    let cueSheetSize = NUM_CUES * CUE_SIZE
-    let cueSheetPtr  = sys.malloc(cueSheetSize)
-    gzip.decompFromTo(filePtr + songOffset + patBinCompSize, cueSheetCompSize, cueSheetPtr)
+    // Format v2 stores 64-byte cues (uploaded verbatim); a legacy v1 file stores
+    // 32-byte cues that we translate to the v2 engine layout on the fly. The v2
+    // cue count is carried in the song-table's num_cues field (bytes 26..27); we
+    // fall back to deriving it from the decompressed size when it is absent.
+    let fmtVer      = version & TAUD_VERSION_MASK
+    let cueStride   = (fmtVer >= 2) ? CUE_SIZE : CUE_SIZE_V1
+    let numCuesFld  = _peekU16LE(filePtr, entryOff + 26)
+    let cueBufSize  = (fmtVer >= 2)
+        ? ((numCuesFld > 0 ? numCuesFld : NUM_CUES) * CUE_SIZE)
+        : (NUM_CUES_V1 * CUE_SIZE_V1)
+    let cueSheetPtr = sys.malloc(cueBufSize)
+    let cueBinSize  = gzip.decompFromTo(filePtr + songOffset + patBinCompSize, cueSheetCompSize, cueSheetPtr)
+    let numCues     = Math.min((cueBinSize / cueStride) | 0, NUM_CUES)
 
-    let cueBytes = new Array(CUE_SIZE)
-    for (let c = 0; c < NUM_CUES; c++) {
-        for (let k = 0; k < CUE_SIZE; k++)
-            cueBytes[k] = sys.peek(cueSheetPtr + c * CUE_SIZE + k) & 0xFF
-        audio.uploadCue(c, cueBytes)
+    if (fmtVer >= 2) {
+        let cueBytes = new Array(CUE_SIZE)
+        for (let c = 0; c < numCues; c++) {
+            for (let k = 0; k < CUE_SIZE; k++)
+                cueBytes[k] = sys.peek(cueSheetPtr + c * CUE_SIZE + k) & 0xFF
+            audio.uploadCue(c, cueBytes)
+        }
+    } else {
+        for (let c = 0; c < numCues; c++) audio.uploadCue(c, _v1CueToV2(cueSheetPtr, c))
     }
     sys.free(cueSheetPtr)
 
@@ -315,14 +382,25 @@ function captureTrackerDataToFile(outFile, meta) {
         throw Error("taud: compressed sample+inst blob exceeded " + COMP_BUF_CAP + " bytes (got " + compressedSize + ")")
     }
 
-    // -- 2. Find last non-empty pattern in bank 0 (all-zero = uninitialized) --
+    // -- 2. Determine the pattern count and prep patBank1 helpers -------------
+    // Patterns live at memory-space offset 786432 (Play data 1, 128 patterns per
+    // patBank1 bank, MMIO byte 2). The caller (taut) knows its exact pattern count
+    // and passes it in meta.numPats; otherwise fall back to a bounded top-down scan
+    // for the last non-empty (all-zero) pattern.
+    const savedPatBank1 = sys.peek(baseAddr - 2) & 0xFF
+    const _setPatBank1 = (bank) => sys.poke(baseAddr - 2, bank & 0xFF)  // MMIO playhead-0 byte 2
     let numPatsActual = 0
-    outer: for (let p = NUM_PATTERNS_MAX - 1; p >= 0; p--) {
-        let patBase = 131072 + p * PATTERN_SIZE  // offset within peripheral memory space
-        for (let k = 0; k < PATTERN_SIZE; k++) {
-            if ((sys.peek(memBase - (patBase + k)) & 0xFF) !== 0) {
-                numPatsActual = p + 1
-                break outer
+    if (meta && meta.numPats > 0) {
+        numPatsActual = Math.min(meta.numPats, CAPTURE_MAX_PATTERNS)
+    } else {
+        outer: for (let p = CAPTURE_MAX_PATTERNS - 1; p >= 0; p--) {
+            _setPatBank1((p / PATS_PER_BANK) | 0)
+            let winOff = PLAYDATA1_WINDOW_OFFSET + (p % PATS_PER_BANK) * PATTERN_SIZE
+            for (let k = 0; k < PATTERN_SIZE; k++) {
+                if ((sys.peek(memBase - (winOff + k)) & 0xFF) !== 0) {
+                    numPatsActual = p + 1
+                    break outer
+                }
             }
         }
     }
@@ -346,29 +424,49 @@ function captureTrackerDataToFile(outFile, meta) {
     const baseFreqB = _f32leBytes((meta && meta.baseFreq > 0) ? meta.baseFreq : 8363.0)
 
     // -- 4. Compress pattern bin ----------------------------------------------
+    // Bulk-read each 128-pattern patBank1 bank straight out of the Play data 1
+    // window (sys.memcpy copies forward in the resolved native memory).
     let patBinSize = patsToSave * PATTERN_SIZE
     let patBuf     = sys.malloc(patBinSize)
-    sys.memcpy(memBase - 131072, patBuf, patBinSize)
+    for (let bank = 0; bank * PATS_PER_BANK < patsToSave; bank++) {
+        _setPatBank1(bank)
+        let first = bank * PATS_PER_BANK
+        let count = Math.min(PATS_PER_BANK, patsToSave - first)
+        sys.memcpy(memBase - PLAYDATA1_WINDOW_OFFSET, patBuf + first * PATTERN_SIZE, count * PATTERN_SIZE)
+    }
+    _setPatBank1(savedPatBank1)
 
     let patCompBuf = sys.malloc(patBinSize + 4096)
     let patCompSize = gzip.compFromTo(patBuf, patBinSize, patCompBuf)
     sys.free(patBuf)
 
     // -- 5. Compress cue sheet ------------------------------------------------
-    // Cue entry c, byte k is at MMIO address 32768 + c*32 + k,
-    // accessed as sys.peek(baseAddr − (32768 + c*32 + k)).
-    let cueSheetSize = NUM_CUES * CUE_SIZE
-    let cueBuf = sys.malloc(cueSheetSize)
-    for (let c = 0; c < NUM_CUES; c++) {
-        let cueOff = 32768 + c * CUE_SIZE
-        for (let k = 0; k < CUE_SIZE; k++)
-            sys.poke(cueBuf + c * CUE_SIZE + k,
-                sys.peek(baseAddr - (cueOff + k)) & 0xFF)
-    }
+    // Cues live in the banked memory window at 524288 (2048 cues / bank, MMIO 47);
+    // taut songs fit in bank 0. Copy bank 0 out, find the last non-empty cue (an
+    // empty cue is every Sint16 = 0x7FFF, i.e. byte pattern FF 7F), store that many
+    // 64-byte cues and record the count in the song table.
+    const savedCueBank = audio.getCueBank()
+    audio.setCueBank(0)
+    let cueScanBuf = sys.malloc(CUES_PER_BANK * CUE_SIZE)   // 128 K (bank 0)
+    sys.memcpy(memBase - CUEBIN_WINDOW_OFFSET, cueScanBuf, CUES_PER_BANK * CUE_SIZE)
+    audio.setCueBank(savedCueBank)
 
-    let cueCompBuf  = sys.malloc(cueSheetSize + 4096)
-    let cueCompSize = gzip.compFromTo(cueBuf, cueSheetSize, cueCompBuf)
-    sys.free(cueBuf)
+    let numCues
+    if (meta && meta.numCues > 0) {
+        numCues = Math.min(meta.numCues, CUES_PER_BANK)
+    } else {
+        let lastCue = -1
+        for (let c = 0; c < CUES_PER_BANK; c++) {
+            for (let k = 0; k < CUE_SIZE; k++) {
+                if ((sys.peek(cueScanBuf + c * CUE_SIZE + k) & 0xFF) !== ((k & 1) ? 0x7F : 0xFF)) { lastCue = c; break }
+            }
+        }
+        numCues = Math.max(1, lastCue + 1)
+    }
+    let cueSheetSize = numCues * CUE_SIZE
+    let cueCompBuf   = sys.malloc(cueSheetSize + 4096)
+    let cueCompSize  = gzip.compFromTo(cueScanBuf, cueSheetSize, cueCompBuf)
+    sys.free(cueScanBuf)
 
     // -- 6. Compute song offset (absolute from file start) --------------------
     // Layout: header(32) + compressed(compressedSize) + songTable(1 × TAUD_SONG_ENTRY)
@@ -454,12 +552,15 @@ function captureTrackerDataToFile(outFile, meta) {
     ].concat(sigBytes)  // 8 + 2 + 4 + 4 + 14 = 32 bytes
 
     // -- 8. Build song-table row (32 bytes) -----------------------------------
+    // Voice count comes from `meta.numVoices` when the caller supplies it; else the
+    // full 32-channel width (extra empty voices are harmless on playback).
+    let numVoicesOut = (meta && meta.numVoices) ? (meta.numVoices & 0xFF) : NUM_VOICES
     let songTable = [
         (songOffset        ) & 0xFF,
         (songOffset >>>  8) & 0xFF,
         (songOffset >>> 16) & 0xFF,
         (songOffset >>> 24) & 0xFF,
-        20,                                    // numVoices
+        numVoicesOut,                          // numVoices
         numPats & 0xFF, (numPats >>> 8) & 0xFF, // numPatterns Uint16 LE
         bpmStored & 0xFF,                      // BPM with −25 bias (low 8 bits)
         (((bpmStored >> 8) & 1) << 7) | (tickRate & 0x7F),  // bit 7 = BPM high bit; bits 0..6 = tick-rate
@@ -478,8 +579,9 @@ function captureTrackerDataToFile(outFile, meta) {
         (cueCompSize >>>  8) & 0xFF,
         (cueCompSize >>> 16) & 0xFF,
         (cueCompSize >>> 24) & 0xFF,
-        // reserved (6)
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        // num_cues (Uint16 LE — v2 cue count) + reserved (4)
+        numCues & 0xFF, (numCues >>> 8) & 0xFF,
+        0x00, 0x00, 0x00, 0x00,
     ]
 
     // -- 9. Write the file (header truncates/creates; the rest is appended) ----

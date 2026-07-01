@@ -200,6 +200,22 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         const val SAMPLE_BIN_TOTAL: Long = SAMPLE_BANK_SIZE * SAMPLE_BANK_COUNT
         const val SAMPLE_BANK_MASK: Int = SAMPLE_BANK_COUNT - 1
 
+        // Extended cue sheet (terranmon.txt §"Cue sheet", 2026-07-01). The cue sheet now
+        // lives in the banked memory-space window 524288..655359 (128 K per bank, MMIO 47
+        // selects the bank) instead of the obsolete MMIO 32768..65535 region. Each cue is
+        // 64 bytes = 32 little-endian Sint16 (one per channel); the low 15 bits hold the
+        // pattern number, the sign bit is one bit of a per-cue instruction word.
+        const val NUM_VOICES = 32                            // channels per cue / voices per playhead
+        const val NUM_CUES_PER_BANK = 2048                   // cues addressable through one 128 K window
+        const val CUE_BANK_COUNT = 4                         // MMIO 47 selects bank 0..3
+        const val NUM_CUES = NUM_CUES_PER_BANK * CUE_BANK_COUNT   // 8192 total cues
+        const val CUE_BYTES = NUM_VOICES * 2                 // 64 bytes / cue
+        const val CUE_BANK_MASK = CUE_BANK_COUNT - 1
+        // Pattern store: 15-bit pattern numbers (terranmon cue low 15 bits). Valid indices
+        // 0..32766; 0x7FFF is the "no pattern on this channel" sentinel.
+        const val NUM_PATTERNS = 0x7FFF                      // 32767 pattern slots (0..32766)
+        const val PATTERN_EMPTY = 0x7FFF
+
         // Interpolation modes (TAUD_NOTE_EFFECTS.md §1, bits 2-4 of global behaviour flags).
         //   0 = default (Fast Sinc, 16-tap windowed sinc), 1 = none (zero-order hold),
         //   2 = Amiga 500 (ZOH + A500 1-pole LPF), 3 = Amiga 1200 (ZOH + A1200 LPF — bypassed),
@@ -314,7 +330,9 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
     // Memory map (terranmon.txt:1985-1997, updated 2026-07-01):
     //   0..524287       sample bin window (512K — exposes one bank of 8 MB pool)
-    //   524288..655359  reserved (no-op on access)
+    //   524288..655359  cue sheet WINDOW (128K — 2048 cues × 64 bytes; BANKED, MMIO 47
+    //                    selects bank 0..3, so 8192 cues total. Each cue is 32 Sint16:
+    //                    low 15 bits = pattern number, sign bit = instruction bit.)
     //   655360..720895  auxiliary instrument bin WINDOW (256 inst × 256 bytes = 64K;
     //                    BANKED — MMIO 48 selects bank 0..2, exposing $100..$1FF /
     //                    $200..$2FF / $300..$3FF. NOT directly addressable by the song
@@ -334,9 +352,25 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     // exposed through the banked 655360 window (auxBank 0..2, 256 records each).
     internal val instruments = Array(1024) { TaudInst(it) }
     @Volatile var auxBank: Int = 0  // 0..2, selects which 256-record page the 655360 window exposes
-    internal val playdata = Array(4096) { Array(64) { TaudPlayData(0x0000, 0, 0, 0, 32, 0, 0, 0) } }
+    // Pattern store — up to 32767 patterns of 64 rows. Lazily allocated: a slot stays null
+    // until first written (memory-window poke or uploadPattern), so memory scales with the
+    // actual song size instead of eagerly reserving ~130 MB. Reads of a never-written pattern
+    // return the shared read-only [emptyPattern].
+    internal val playdata = arrayOfNulls<Array<TaudPlayData>>(NUM_PATTERNS)
+    private val emptyPattern = Array(64) { TaudPlayData(0x0000, 0, 0, 0, 32, 0, 0, 0) }
+    // Absorbs writes to out-of-range pattern indices (e.g. the PATTERN_EMPTY slot 32767 that
+    // the 256-bank × 128-pattern window can address) without corrupting emptyPattern.
+    private val scratchPattern = Array(64) { TaudPlayData(0x0000, 0, 0, 0, 32, 0, 0, 0) }
+    /** Read-only view of pattern [idx]; the shared empty pattern when the slot is unallocated. */
+    internal fun patternRead(idx: Int): Array<TaudPlayData> = playdata.getOrNull(idx) ?: emptyPattern
+    /** Writable pattern [idx], allocating its 64 rows on first access. */
+    internal fun patternFor(idx: Int): Array<TaudPlayData> {
+        if (idx < 0 || idx >= NUM_PATTERNS) return scratchPattern
+        return playdata[idx] ?: Array(64) { TaudPlayData(0x0000, 0, 0, 0, 32, 0, 0, 0) }.also { playdata[idx] = it }
+    }
     internal val playheads: Array<Playhead>
-    internal val cueSheet = Array(1024) { PlayCue() }
+    internal val cueSheet = Array(NUM_CUES) { PlayCue() }
+    @Volatile var cueBank: Int = 0  // 0..3, selects which 2048-cue page the 524288 window exposes (MMIO 47)
     internal val pcmBin = arrayOf(
         UnsafeHelper.allocate(65536L, this),
         UnsafeHelper.allocate(65536L, this),
@@ -508,11 +542,11 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     override fun peek(addr: Long): Byte {
         return when (val adi = addr.toInt()) {
             in 0..524287 -> sampleBin[sampleBank * SAMPLE_BANK_SIZE + addr]
-            in 524288..655359 -> 0  // reserved
+            in 524288..655359 -> (adi - 524288).let { cueSheet[cueBank * NUM_CUES_PER_BANK + it / CUE_BYTES].read(it % CUE_BYTES) }  // cue sheet (banked, MMIO 47)
             in 655360..720895 -> (adi - 655360).let { instruments[256 + auxBank * 256 + it / 256].getByte(it % 256) }  // aux bin $100..$3FF (banked, MMIO 48)
             in 720896..786431 -> (adi - 720896).let { instruments[it / 256].getByte(it % 256) }
-            in 786432..851967 -> { val off = adi - 786432; playdata[playheads[0].patBank1 * 128 + off / 512][(off % 512) / 8].getByte(off % 8) }
-            in 851968..917503 -> { val off = adi - 851968; playdata[playheads[0].patBank2 * 128 + off / 512][(off % 512) / 8].getByte(off % 8) }
+            in 786432..851967 -> { val off = adi - 786432; patternRead(playheads[0].patBank1 * 128 + off / 512)[(off % 512) / 8].getByte(off % 8) }
+            in 851968..917503 -> { val off = adi - 851968; patternRead(playheads[0].patBank2 * 128 + off / 512)[(off % 512) / 8].getByte(off % 8) }
             in 917504..983039 -> tadInputBin[addr - 917504]   // TAD input buffer (65536 bytes)
             in 983040..1048575 -> tadDecodedBin[addr - 983040]  // TAD decoded output (65536 bytes)
             else -> peek(addr % 1048576)
@@ -524,11 +558,11 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         val bi = byte.toUint()
         when (adi) {
             in 0..524287 -> { sampleBin[sampleBank * SAMPLE_BANK_SIZE + addr] = byte }
-            in 524288..655359 -> { /* reserved */ }
+            in 524288..655359 -> (adi - 524288).let { cueSheet[cueBank * NUM_CUES_PER_BANK + it / CUE_BYTES].write(it % CUE_BYTES, bi) }  // cue sheet (banked, MMIO 47)
             in 655360..720895 -> (adi - 655360).let { instruments[256 + auxBank * 256 + it / 256].setByte(it % 256, bi) }  // aux bin $100..$3FF (banked, MMIO 48)
             in 720896..786431 -> (adi - 720896).let { instruments[it / 256].setByte(it % 256, bi) }
-            in 786432..851967 -> { val off = adi - 786432; playdata[playheads[0].patBank1 * 128 + off / 512][(off % 512) / 8].setByte(off % 8, bi) }
-            in 851968..917503 -> { val off = adi - 851968; playdata[playheads[0].patBank2 * 128 + off / 512][(off % 512) / 8].setByte(off % 8, bi) }
+            in 786432..851967 -> { val off = adi - 786432; patternFor(playheads[0].patBank1 * 128 + off / 512)[(off % 512) / 8].setByte(off % 8, bi) }
+            in 851968..917503 -> { val off = adi - 851968; patternFor(playheads[0].patBank2 * 128 + off / 512)[(off % 512) / 8].setByte(off % 8, bi) }
             in 917504..983039 -> tadInputBin[addr - 917504] = byte   // TAD input buffer
             in 983040..1048575 -> tadDecodedBin[addr - 983040] = byte  // TAD decoded output
         }
@@ -548,22 +582,23 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             44 -> tadBusy.toInt().toByte()
             45 -> selectedPcmBin.toByte()
             46 -> sampleBank.toByte()
+            47 -> cueBank.toByte()   // cue-sheet bank (0..3) for the 524288 window
             48 -> auxBank.toByte()   // auxiliary instrument-bin bank (0..2) for the 655360 window
             in 64..2367 -> mediaDecodedBin[addr - 64]
             in 2368..4095 -> mediaFrameBin[addr - 2368]
             in 4096..4097 -> 0
             // Per-voice fader (0 = unity, 255 = silence): 256 bytes per playhead, only the first
-            // 20 entries map to live voice slots; the rest read 0.
+            // NUM_VOICES entries map to live voice slots; the rest read 0.
             in 4098..5121 -> {
                 val off = adi - 4098
                 val ph = off ushr 8           // playhead index 0..3
                 val v = off and 0xFF          // voice index 0..255
-                if (v < 20) (playheads[ph].trackerState?.voices?.getOrNull(v)?.fader ?: 0).toByte()
+                if (v < NUM_VOICES) (playheads[ph].trackerState?.voices?.getOrNull(v)?.fader ?: 0).toByte()
                 else 0.toByte()
             }
-            in 32768..65535 -> (adi - 32768).let {
-                cueSheet[it / 32].read(it % 32)
-            }
+            // 32768..65535 was the legacy 1024-cue MMIO cue sheet (20 voices, 12-bit patterns);
+            // obsoleted 2026-07-01 by the banked 524288 memory window. Reads return 0.
+            in 32768..65535 -> 0
             in 65536..131071 -> pcmBin[selectedPcmBin][addr - 65536]
             else -> {
                 println("[AudioAdapter] Bus mirroring on mmio_reading while trying to read address $addr")
@@ -594,22 +629,22 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             }
             45 -> selectedPcmBin = bi % 4
             46 -> sampleBank = bi and SAMPLE_BANK_MASK
+            47 -> cueBank = bi and CUE_BANK_MASK   // cue-sheet bank; 4 pages cover 8192 cues
             48 -> auxBank = bi.coerceIn(0, 2)   // aux instrument-bin bank; 3 pages cover $100..$3FF
-            // Per-voice fader writes: see mmio_read for layout. Indices 20..255 are accepted
+            // Per-voice fader writes: see mmio_read for layout. Indices NUM_VOICES..255 are accepted
             // but ignored so software can stride 256 bytes per playhead without bounds-checking.
             in 4098..5121 -> {
                 val off = adi - 4098
                 val ph = off ushr 8
                 val v = off and 0xFF
-                if (v < 20) {
+                if (v < NUM_VOICES) {
                     playheads[ph].trackerState?.voices?.getOrNull(v)?.fader = bi
                 }
             }
             in 64..2367 -> { mediaDecodedBin[addr - 64] = byte }
             in 2368..4095 -> { mediaFrameBin[addr - 2368] = byte }
-            in 32768..65535 -> { (adi - 32768).let {
-                cueSheet[it / 32].write(it % 32, bi)
-            } }
+            // 32768..65535: obsolete legacy MMIO cue sheet (see mmio_read). Writes are ignored.
+            in 32768..65535 -> { /* obsolete cue sheet — no-op */ }
             in 65536..131071 -> { pcmBin[selectedPcmBin][addr - 65536] = byte }
         }
     }
@@ -2890,11 +2925,11 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         if (!ts.patternDelayActive) ts.sexWinningChannel = -1
         ts.finePatternDelayExtra = 0
 
-        for (vi in 0..19) {
-            val patNum = cue.patterns[vi]
-            if (patNum == 0xFFF) continue
-            val patIdx = patNum.coerceIn(0, 4095)
-            val rawRow = playdata[patIdx][ts.rowIndex]
+        for (vi in 0 until NUM_VOICES) {
+            val patNum = cue.pattern(vi)
+            if (patNum == PATTERN_EMPTY) continue
+            val patIdx = patNum.coerceIn(0, NUM_PATTERNS - 1)
+            val rawRow = patternRead(patIdx)[ts.rowIndex]
             val voice = ts.voices[vi]
 
             // ── Pattern Ditto (effect 7) row-time expansion ──
@@ -2909,7 +2944,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 val length = (rawRow.effectArg ushr 8) and 0xFF
                 val repeats = rawRow.effectArg and 0xFF
                 if (length > 0 && repeats > 0 && length <= n) {
-                    val patLen = cueRowLimit(cue.instruction)
+                    val patLen = cue.rowLimit()
                     voice.dittoSourceStart = n - length
                     voice.dittoLength = length
                     voice.dittoEndRow = minOf(n + length * repeats - 1, patLen - 1)
@@ -2923,7 +2958,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 if (voice.dittoActive && n in dittoArmRow..voice.dittoEndRow) {
                     val rel = (n - voice.dittoSourceStart) % voice.dittoLength
                     val srcRow = voice.dittoSourceStart + rel
-                    val src = playdata[patIdx][srcRow]
+                    val src = patternRead(patIdx)[srcRow]
 
                     // Vol- / pan-column "no-op" sentinel is SEL_FINE (3) with value 0.
                     val volIsSet = !(rawRow.volumeEff == 3 && rawRow.volume == 0)
@@ -3222,7 +3257,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             }
             EffectOp.OP_B -> {
                 // Highest-priority B wins for the row (lowest channel index in spec); first-set wins by ascending channel scan.
-                if (ts.pendingOrderJump < 0) ts.pendingOrderJump = rawArg.coerceIn(0, 1023)
+                if (ts.pendingOrderJump < 0) ts.pendingOrderJump = rawArg.coerceIn(0, NUM_CUES - 1)
             }
             EffectOp.OP_C -> {
                 if (ts.pendingRowJump < 0) ts.pendingRowJump = rawArg.coerceIn(0, 63)
@@ -4037,21 +4072,14 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         else -> vol
     }.coerceIn(0, 0x3F)
 
-    /** Effective playable row count for a cue: LEN and "halt at x" both shorten it. */
-    private fun cueRowLimit(instr: PlayInstruction): Int = when (instr) {
-        is PlayInstPatLen -> instr.rows
-        is PlayInstHaltAt -> instr.rows
-        else -> 64
-    }
-
     private fun advanceTrackerCue(ts: TrackerState, playhead: Playhead) {
-        val instr = cueSheet[ts.cuePos].instruction
-        if (instr is PlayInstHalt || instr is PlayInstHaltAt) { playhead.isPlaying = false; return }
-        ts.cuePos = when (instr) {
+        val cue = cueSheet[ts.cuePos]
+        if (cue.isHalt()) { playhead.isPlaying = false; return }
+        ts.cuePos = when (val instr = cue.flowInstruction()) {
             is PlayInstGoBack -> (ts.cuePos - instr.arg).coerceAtLeast(0)
-            is PlayInstSkip   -> (ts.cuePos + instr.arg).coerceAtMost(1023)
-            is PlayInstJump   -> instr.arg.coerceIn(0, 1023)
-            else              -> (ts.cuePos + 1).coerceAtMost(1023)
+            is PlayInstSkip   -> (ts.cuePos + instr.arg).coerceAtMost(NUM_CUES - 1)
+            is PlayInstJump   -> instr.arg.coerceIn(0, NUM_CUES - 1)
+            else              -> (ts.cuePos + 1).coerceAtMost(NUM_CUES - 1)
         }
         playhead.position = ts.cuePos
     }
@@ -4268,7 +4296,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     internal fun jamNote(ph: Playhead, vi: Int, note: Int, inst: Int) {
         if (ph.isPcmMode) return
         val ts = ph.trackerState ?: return
-        val v = vi.coerceIn(0, 19)
+        val v = vi.coerceIn(0, NUM_VOICES - 1)
         triggerMetaOrNote(ts, ts.voices[v], v, note, inst, -1)
         ph.jamActive = true
     }
@@ -4305,7 +4333,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
         when {
             pendingB >= 0 -> {
-                ts.cuePos = pendingB.coerceAtMost(1023)
+                ts.cuePos = pendingB.coerceAtMost(NUM_CUES - 1)
                 ts.rowIndex = if (pendingC >= 0) pendingC else 0
                 playhead.position = ts.cuePos
                 resetPatternLoopState(ts)
@@ -4326,7 +4354,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 // count so the engine wraps to the next cue (or halts) early.
                 // Patterns fed by the converter are still 64 rows long; rows past
                 // `rowLimit` are silent padding that we skip here.
-                val rowLimit = cueRowLimit(cueSheet[ts.cuePos].instruction)
+                val rowLimit = cueSheet[ts.cuePos].rowLimit()
                 if (ts.rowIndex >= rowLimit) {
                     ts.rowIndex = 0
                     advanceTrackerCue(ts, playhead)
@@ -4337,30 +4365,52 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         applyTrackerRow(ts, playhead)
     }
 
-    internal data class PlayCue(
-        val patterns: IntArray = IntArray(20) { 0xFFF },
-        var instruction: PlayInstruction = PlayInstNop,
-        var instByte30: Int = 0,
-        var instByte31: Int = 0,
+    /**
+     * One cue entry — 32 channels, 64 bytes (terranmon.txt §"Cue sheet", 2026-07-01).
+     *
+     * Layout: 32 little-endian Sint16, one per channel (byte 2c/2c+1 = channel c). Each
+     * Sint16's low 15 bits are the pattern number (0..0x7FFE; 0x7FFF = "no pattern on this
+     * channel"), and its sign bit (bit 15) is one bit of a per-cue instruction word:
+     *   - sign bits of channels 0..15  form instruction WORD 0 (channel c → bit c)
+     *   - sign bits of channels 16..31 form instruction WORD 1 (channel c → bit c-16)
+     * A cue may therefore carry up to two instructions (e.g. LEN + JMP). Each 16-bit word
+     * uses the SAME encoding as the legacy byte30/byte31 pair — word = (byte30 << 8) | byte31:
+     *   00000010 00xxxxxx (LEN)    pattern length: rows = (xxxxxx) + 1, range 1..64
+     *   00000001 00000000 (HALT)   play the full pattern then stop
+     *   00000001 01xxxxxx (HALT x) play x rows then stop (x = 0 ⇒ full length)
+     *   00000000          (NOP)    default 64-row cue
+     *   1000xxxx yyyyyyyy (BAK)    go back 12-bit arg
+     *   1001xxxx yyyyyyyy (FWD)    skip forward 12-bit arg
+     *   1111xxxx yyyyyyyy (JMP)    go to absolute cue (loop back to cue arg)
+     */
+    internal class PlayCue(
+        // Full 16-bit value per channel (patternNumber | signBit<<15). 0x7FFF = empty, sign 0.
+        val raw: IntArray = IntArray(NUM_VOICES) { PATTERN_EMPTY },
     ) {
-        // Cue layout (32 bytes, 20 voices, 12-bit pattern numbers):
-        //   bytes  0-9:  packed low nybbles  (byte i => voice i*2 in hi, voice i*2+1 in lo)
-        //   bytes 10-19: packed mid nybbles  (same packing)
-        //   bytes 20-29: packed high nybbles (same packing)
-        //   byte  30:    instruction (low byte)
-        //   byte  31:    instruction arg byte (used by 2-byte forms: LEN, BAK, FWD, JMP)
-        // Decoding rules per terranmon.txt §"Cue Sheet":
-        //   00000010 00xxxxxx (LEN)    pattern length: rows = (xxxxxx) + 1, range 1..64
-        //   00000001 00000000 (HALT)   play the full pattern then stop
-        //   00000001 01xxxxxx (HALT x) play x rows then stop (x = 0 ⇒ full length)
-        //   00000000          (NOP)    default 64-row cue
-        //   1000xxxx yyyyyyyy (BAK)    go back 12-bit arg
-        //   1001xxxx yyyyyyyy (FWD)    skip forward 12-bit arg
-        //   1111xxxx yyyyyyyy (JMP)    go to absolute cue (loop back to cue arg)
-        private fun recomputeInstruction() {
-            val b30 = instByte30
-            val b31 = instByte31
-            instruction = when {
+        var inst0: PlayInstruction = PlayInstNop
+            private set
+        var inst1: PlayInstruction = PlayInstNop
+            private set
+
+        init { recomputeInstructions() }
+
+        /** Pattern number for channel [ch] (0..0x7FFE), or PATTERN_EMPTY when the slot is empty. */
+        fun pattern(ch: Int): Int = raw[ch] and 0x7FFF
+
+        private fun instWord(base: Int): Int {
+            var w = 0
+            for (k in 0 until 16) w = w or (((raw[base + k] ushr 15) and 1) shl k)
+            return w
+        }
+        private fun recomputeInstructions() {
+            inst0 = decodeInstWord(instWord(0))
+            inst1 = decodeInstWord(instWord(16))
+        }
+        private fun decodeInstWord(w: Int): PlayInstruction {
+            if (w == 0) return PlayInstNop
+            val b30 = (w ushr 8) and 0xFF
+            val b31 = w and 0xFF
+            return when {
                 b30 == 0x02 -> PlayInstPatLen((b31 and 0x3F) + 1)
                 // HALT family: arg byte 01xxxxxx ⇒ "halt at x" (play x rows; x = 0 ⇒
                 // full length, identical to a plain HALT). Any other arg ⇒ plain HALT.
@@ -4368,52 +4418,39 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                     val x = b31 and 0x3F
                     PlayInstHaltAt(if (x == 0) 64 else x)
                 } else PlayInstHalt
-                b30 == 0x00 -> PlayInstNop
-                // BAK: 1000xxxx yyyyyyyy — 12-bit arg combining b30 low nybble + b31.
                 (b30 and 0xF0) == 0x80 -> PlayInstGoBack(((b30 and 0xF) shl 8) or (b31 and 0xFF))
-                // FWD: 1001xxxx yyyyyyyy — 12-bit arg.
                 (b30 and 0xF0) == 0x90 -> PlayInstSkip(((b30 and 0xF) shl 8) or (b31 and 0xFF))
-                // JMP: 1111xxxx yyyyyyyy — go to absolute cue 0bxxxxyyyyyyyy.
                 (b30 and 0xF0) == 0xF0 -> PlayInstJump(((b30 and 0xF) shl 8) or (b31 and 0xFF))
                 else -> PlayInstNop
             }
         }
-        fun write(index: Int, byte: Int) = when (index) {
-            in 0..9 -> {
-                val b = index * 2
-                patterns[b]     = (patterns[b]     and 0xFF0) or ((byte ushr 4) and 0xF)
-                patterns[b + 1] = (patterns[b + 1] and 0xFF0) or (byte and 0xF)
-            }
-            in 10..19 -> {
-                val b = (index - 10) * 2
-                patterns[b]     = (patterns[b]     and 0xF0F) or (((byte ushr 4) and 0xF) shl 4)
-                patterns[b + 1] = (patterns[b + 1] and 0xF0F) or ((byte and 0xF) shl 4)
-            }
-            in 20..29 -> {
-                val b = (index - 20) * 2
-                patterns[b]     = (patterns[b]     and 0x0FF) or (((byte ushr 4) and 0xF) shl 8)
-                patterns[b + 1] = (patterns[b + 1] and 0x0FF) or ((byte and 0xF) shl 8)
-            }
-            30 -> { instByte30 = byte and 0xFF; recomputeInstruction() }
-            31 -> { instByte31 = byte and 0xFF; recomputeInstruction() }
-            else -> throw InternalError("Bad offset $index")
+
+        private fun rowsOf(i: PlayInstruction): Int = when (i) {
+            is PlayInstPatLen -> i.rows
+            is PlayInstHaltAt -> i.rows
+            else -> 64
         }
-        fun read(index: Int): Byte = when (index) {
-            in 0..9 -> {
-                val b = index * 2
-                (((patterns[b] and 0xF) shl 4) or (patterns[b + 1] and 0xF)).toByte()
-            }
-            in 10..19 -> {
-                val b = (index - 10) * 2
-                ((((patterns[b] ushr 4) and 0xF) shl 4) or ((patterns[b + 1] ushr 4) and 0xF)).toByte()
-            }
-            in 20..29 -> {
-                val b = (index - 20) * 2
-                ((((patterns[b] ushr 8) and 0xF) shl 4) or ((patterns[b + 1] ushr 8) and 0xF)).toByte()
-            }
-            30 -> instByte30.toByte()
-            31 -> instByte31.toByte()
-            else -> throw InternalError("Bad offset $index")
+        /** Effective playable row count: a LEN or "halt at x" in either word shortens it. */
+        fun rowLimit(): Int = minOf(rowsOf(inst0), rowsOf(inst1))
+        /** True if either instruction word halts playback (HALT / HALT-at). */
+        fun isHalt(): Boolean = inst0 is PlayInstHalt || inst0 is PlayInstHaltAt ||
+                                inst1 is PlayInstHalt || inst1 is PlayInstHaltAt
+        /** The flow instruction (BAK / FWD / JMP) carried by either word, else NOP. */
+        fun flowInstruction(): PlayInstruction {
+            if (inst0 is PlayInstGoBack || inst0 is PlayInstSkip || inst0 is PlayInstJump) return inst0
+            if (inst1 is PlayInstGoBack || inst1 is PlayInstSkip || inst1 is PlayInstJump) return inst1
+            return PlayInstNop
+        }
+
+        fun write(index: Int, byte: Int) {
+            val ch = index ushr 1
+            raw[ch] = if ((index and 1) == 0) (raw[ch] and 0xFF00) or (byte and 0xFF)
+                      else (raw[ch] and 0x00FF) or ((byte and 0xFF) shl 8)
+            recomputeInstructions()
+        }
+        fun read(index: Int): Byte {
+            val ch = index ushr 1
+            return (if ((index and 1) == 0) raw[ch] and 0xFF else (raw[ch] ushr 8) and 0xFF).toByte()
         }
     }
 
@@ -4476,8 +4513,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         var forward = true
         var instrumentId = 0
 
-        // -1 for live foreground voices held by TrackerState.voices[]; 0..19 for background
-        // (mixer-private) ghosts spawned by NNA on the matching channel index.
+        // -1 for live foreground voices held by TrackerState.voices[]; 0..NUM_VOICES-1 for
+        // background (mixer-private) ghosts spawned by NNA on the matching channel index.
         var sourceChannel = -1
 
         // ── Metainstrument layering ──
@@ -4819,7 +4856,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         var tickInRow = 0
         var samplesIntoTick = 0.0
         var firstRow = true
-        val voices = Array(20) { Voice() }
+        val voices = Array(NUM_VOICES) { Voice() }
 
         // Global mixer config (effect 1). Panning law is fixed to the equal-energy.
         // Tone-slide mode for E / F / G effects (terranmon.txt §Song Table flags byte):
@@ -4972,10 +5009,12 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         fun write(index: Int, byte: Int) {
             val byte = byte and 255
             when (index) {
-                0 -> if (!isPcmMode) { position = (position and 0xff00) or byte; trackerState?.cuePos = position } else {}
-                1 -> if (!isPcmMode) { position = (position and 0x00ff) or (byte shl 8); trackerState?.cuePos = position } else {}
-                2 -> if (isPcmMode) { pcmUploadLength = (pcmUploadLength and 0xff00) or byte } else { patBank1 = byte and 0x1F }
-                3 -> if (isPcmMode) { pcmUploadLength = (pcmUploadLength and 0x00ff) or (byte shl 8) } else { patBank2 = byte and 0x1F }
+                0 -> if (!isPcmMode) { position = (position and 0xff00) or byte; trackerState?.cuePos = position.coerceAtMost(NUM_CUES - 1) } else {}
+                1 -> if (!isPcmMode) { position = (position and 0x00ff) or (byte shl 8); trackerState?.cuePos = position.coerceAtMost(NUM_CUES - 1) } else {}
+                // Pattern bank is a full byte (0..255): 256 banks × 128 patterns cover the
+                // 32767-pattern store (terranmon.txt §"Play data"). Was 0x1F (4096-pattern era).
+                2 -> if (isPcmMode) { pcmUploadLength = (pcmUploadLength and 0xff00) or byte } else { patBank1 = byte and 0xFF }
+                3 -> if (isPcmMode) { pcmUploadLength = (pcmUploadLength and 0x00ff) or (byte shl 8) } else { patBank2 = byte and 0xFF }
                 4 -> {
                     masterVolume = byte
                     audioDevice.setVolume(masterVolume / 255f)
