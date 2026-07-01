@@ -312,12 +312,14 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         val AMIGA_LED_B2: Double = (1.0 - AMIGA_LED_B_BASE * AMIGA_LED_A_BASE + AMIGA_LED_A_BASE * AMIGA_LED_A_BASE) * AMIGA_LED_A1
     }
 
-    // Memory map (terranmon.txt:1985-1997, updated 2026-06-30):
+    // Memory map (terranmon.txt:1985-1997, updated 2026-07-01):
     //   0..524287       sample bin window (512K — exposes one bank of 8 MB pool)
     //   524288..655359  reserved (no-op on access)
-    //   655360..720895  auxiliary instrument bin (256 inst $100..$1FF × 256 bytes = 64K;
-    //                    NOT directly addressable by the song pattern — only Metainstrument
-    //                    layers may reference these. Backed by instruments[256..511].)
+    //   655360..720895  auxiliary instrument bin WINDOW (256 inst × 256 bytes = 64K;
+    //                    BANKED — MMIO 48 selects bank 0..2, exposing $100..$1FF /
+    //                    $200..$2FF / $300..$3FF. NOT directly addressable by the song
+    //                    pattern — only Metainstrument layers may reference these.
+    //                    Backed by instruments[256 + auxBank*256 .. +255].)
     //   720896..786431  instrument bin (256 inst $00..$FF × 256 bytes = 64K; backed by
     //                    instruments[0..255])
     //   786432..        play data 1 / 2 / TAD blocks (anchors unchanged)
@@ -327,9 +329,11 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     // hit `sampleBin[sampleBank * 524288 + offset]`.
     internal val sampleBin = UnsafeHelper.allocate(SAMPLE_BIN_TOTAL, this)
     @Volatile var sampleBank: Int = 0  // 0..15, controls the 0..524287 window
-    // 512 instrument slots: 0..255 = directly-addressable bin $00..$FF, 256..511 =
-    // auxiliary bin $100..$1FF (Metainstrument-layer-only; terranmon.txt:2036-2044).
-    internal val instruments = Array(512) { TaudInst(it) }
+    // 1024 instrument slots: 0..255 = directly-addressable bin $00..$FF; 256..1023 =
+    // auxiliary bin $100..$3FF (Metainstrument-layer-only; terranmon.txt:2036-2044),
+    // exposed through the banked 655360 window (auxBank 0..2, 256 records each).
+    internal val instruments = Array(1024) { TaudInst(it) }
+    @Volatile var auxBank: Int = 0  // 0..2, selects which 256-record page the 655360 window exposes
     internal val playdata = Array(4096) { Array(64) { TaudPlayData(0x0000, 0, 0, 0, 32, 0, 0, 0) } }
     internal val playheads: Array<Playhead>
     internal val cueSheet = Array(1024) { PlayCue() }
@@ -505,7 +509,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         return when (val adi = addr.toInt()) {
             in 0..524287 -> sampleBin[sampleBank * SAMPLE_BANK_SIZE + addr]
             in 524288..655359 -> 0  // reserved
-            in 655360..720895 -> (adi - 655360).let { instruments[256 + it / 256].getByte(it % 256) }  // aux bin $100..$1FF
+            in 655360..720895 -> (adi - 655360).let { instruments[256 + auxBank * 256 + it / 256].getByte(it % 256) }  // aux bin $100..$3FF (banked, MMIO 48)
             in 720896..786431 -> (adi - 720896).let { instruments[it / 256].getByte(it % 256) }
             in 786432..851967 -> { val off = adi - 786432; playdata[playheads[0].patBank1 * 128 + off / 512][(off % 512) / 8].getByte(off % 8) }
             in 851968..917503 -> { val off = adi - 851968; playdata[playheads[0].patBank2 * 128 + off / 512][(off % 512) / 8].getByte(off % 8) }
@@ -521,7 +525,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         when (adi) {
             in 0..524287 -> { sampleBin[sampleBank * SAMPLE_BANK_SIZE + addr] = byte }
             in 524288..655359 -> { /* reserved */ }
-            in 655360..720895 -> (adi - 655360).let { instruments[256 + it / 256].setByte(it % 256, bi) }  // aux bin $100..$1FF
+            in 655360..720895 -> (adi - 655360).let { instruments[256 + auxBank * 256 + it / 256].setByte(it % 256, bi) }  // aux bin $100..$3FF (banked, MMIO 48)
             in 720896..786431 -> (adi - 720896).let { instruments[it / 256].setByte(it % 256, bi) }
             in 786432..851967 -> { val off = adi - 786432; playdata[playheads[0].patBank1 * 128 + off / 512][(off % 512) / 8].setByte(off % 8, bi) }
             in 851968..917503 -> { val off = adi - 851968; playdata[playheads[0].patBank2 * 128 + off / 512][(off % 512) / 8].setByte(off % 8, bi) }
@@ -544,6 +548,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             44 -> tadBusy.toInt().toByte()
             45 -> selectedPcmBin.toByte()
             46 -> sampleBank.toByte()
+            48 -> auxBank.toByte()   // auxiliary instrument-bin bank (0..2) for the 655360 window
             in 64..2367 -> mediaDecodedBin[addr - 64]
             in 2368..4095 -> mediaFrameBin[addr - 2368]
             in 4096..4097 -> 0
@@ -589,6 +594,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             }
             45 -> selectedPcmBin = bi % 4
             46 -> sampleBank = bi and SAMPLE_BANK_MASK
+            48 -> auxBank = bi.coerceIn(0, 2)   // aux instrument-bin bank; 3 pages cover $100..$3FF
             // Per-voice fader writes: see mmio_read for layout. Indices 20..255 are accepted
             // but ignored so software can stride 256 bytes per playhead without bounds-checking.
             in 4098..5121 -> {
@@ -5475,20 +5481,20 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 var o = 4
                 repeat(count) {
                     if (o + 10 > b.size) return@repeat
-                    // 9-bit layer instrument index: low 8 bits in byte 0, bit 8 (the
-                    // auxiliary-bin $100..$1FF selector) in bit 6 of the volume-start byte
+                    // 10-bit layer instrument index: low 8 bits in byte 0, bits 8..9 (the
+                    // auxiliary-bin $100..$3FF selector) in bits 6..7 of the volume-start byte
                     // (offset +8). terranmon.txt Metainstrument layer record.
-                    val instIdx = (b[o] and 0xFF) or (((b[o + 8] ushr 6) and 1) shl 8)
+                    val instIdx = (b[o] and 0xFF) or (((b[o + 8] ushr 6) and 0x3) shl 8)
                     val mixOctet = b[o + 1] and 0xFF
                     val detRaw = (b[o + 2] and 0xFF) or ((b[o + 3] and 0xFF) shl 8)
                     val detune = if (detRaw >= 0x8000) detRaw - 0x10000 else detRaw
                     val pStart = (b[o + 4] and 0xFF) or ((b[o + 5] and 0xFF) shl 8)
                     val pEnd   = (b[o + 6] and 0xFF) or ((b[o + 7] and 0xFF) shl 8)
-                    val vStart = b[o + 8] and 0x3F     // bits 0..5 = vol low; bit 6 = idx bit 8; bit 7 reserved
+                    val vStart = b[o + 8] and 0x3F     // bits 0..5 = vol low; bits 6..7 = idx bits 8..9
                     val vEnd   = b[o + 9] and 0x3F
                     // Skip self-/zero-/out-of-range references; no recursion into metas
                     // is validated here (the trigger path also guards).
-                    if (instIdx in 1..511 && instIdx != index)
+                    if (instIdx in 1..1023 && instIdx != index)
                         layers.add(MetaLayer(instIdx, mixOctet, detune, pStart, pEnd, vStart, vEnd))
                     o += 10
                 }

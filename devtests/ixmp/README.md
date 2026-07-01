@@ -41,12 +41,14 @@ works; the bugs found and fixed were in the surrounding plumbing
   octet maps to the right gain, velocity-conditional layers gate correctly, and
   key-off propagates to the child. NB: read kotlin.collections.ArrayDeque via
   `Iterable`, not `java.util.ArrayDeque`.
-- **AuxBinMetaTest** — auxiliary instrument bin ($100..$1FF; terranmon.txt:2036-2044,
-  2026-06-30). Same shape as MetaTest, but the two layer SUBINSTRUMENTS live in the aux
-  bin (slots 0x100, 0x101 — reachable only through a Metainstrument's layer table) and
-  the meta layer records encode the 9-bit instrument index (low 8 bits in byte 0, bit 8
-  in bit 6 of the volume-start byte). Asserts the meta fans out into voices that play the
-  aux-bin instruments, with detune / mix / velocity-gate / key-off all correct.
+- **AuxBinMetaTest** — auxiliary instrument bin ($100..$3FF; terranmon.txt:2036-2048,
+  2026-07-01). Same shape as MetaTest, but the two layer SUBINSTRUMENTS live in the aux
+  bin — one in bank 0 (0x101) and one in bank 2 (0x305), reachable only through a
+  Metainstrument's layer table — and the meta layer records encode the 10-bit instrument
+  index (low 8 bits in byte 0, bits 8..9 in bits 6..7 of the volume-start byte). Asserts
+  the meta fans out into voices that play the aux-bin instruments across banks (detune /
+  mix / velocity-gate / key-off all correct), AND that the MMIO-48-banked 655360 window
+  round-trips: a poke under each bank lands in instruments[256 + bank*256].
 - **MetaFileTest** — end-to-end: loads a real `midi2taud --max-layers N` output
   (default `/tmp/m_e1m1_meta.taud`) through the `taud.mjs#uploadTaudFile` byte
   sequence, asserts ≥1 Metainstrument was parsed from the instrument bin, and

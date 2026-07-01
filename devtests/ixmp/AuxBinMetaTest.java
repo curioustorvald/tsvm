@@ -23,8 +23,8 @@ import java.util.HashMap;
  */
 public class AuxBinMetaTest {
 
-    static final int AUX0 = 0x100;   // aux-bin layer subinstrument 0
-    static final int AUX1 = 0x101;   // aux-bin layer subinstrument 1
+    static final int AUX0 = 0x101;   // aux-bin layer subinstrument 0 (bank 0: $100..$1FF)
+    static final int AUX1 = 0x305;   // aux-bin layer subinstrument 1 (bank 2: $300..$3FF)
 
     static Object getField(Object o, String name) throws Exception {
         Class<?> c = o.getClass();
@@ -66,9 +66,9 @@ public class AuxBinMetaTest {
         return inst;
     }
 
-    /** layers: rows of {instIdx (0..511), mixOctet, detune, pStart, pEnd, vStart, vEnd}.
-     *  Encodes the 9-bit instrument index: low 8 bits in byte 0, bit 8 in bit 6 of the
-     *  volume-start byte (offset +8). */
+    /** layers: rows of {instIdx (0..1023), mixOctet, detune, pStart, pEnd, vStart, vEnd}.
+     *  Encodes the 10-bit instrument index: low 8 bits in byte 0, bits 8..9 in bits 6..7 of
+     *  the volume-start byte (offset +8). */
     static int[] metaInst(int[][] layers) {
         int[] r = new int[256];
         r[0] = 0; r[1] = layers.length & 0xFF; r[2] = 0xFF; r[3] = 0xFF;
@@ -79,7 +79,7 @@ public class AuxBinMetaTest {
             r[o+2] = L[2] & 0xFF; r[o+3] = (L[2] >> 8) & 0xFF;
             r[o+4] = L[3] & 0xFF; r[o+5] = (L[3] >> 8) & 0xFF;
             r[o+6] = L[4] & 0xFF; r[o+7] = (L[4] >> 8) & 0xFF;
-            r[o+8] = (L[5] & 0x3F) | (((idx >> 8) & 1) << 6);   // vStart | idx bit 8
+            r[o+8] = (L[5] & 0x3F) | (((idx >> 8) & 0x3) << 6);   // vStart | idx bits 8..9
             r[o+9] = L[6] & 0x3F;
             o += 10;
         }
@@ -120,6 +120,24 @@ public class AuxBinMetaTest {
         Object ml3 = getField(insts[3], "metaLayers");
         System.out.println("inst3.metaLayers = " + (ml3 == null ? "null"
             : java.lang.reflect.Array.getLength(ml3)));
+
+        // Banked aux window (MMIO 48): poke a sentinel at 655360+7 under each bank and
+        // confirm it lands in instruments[256 + bank*256] (array) and reads back through
+        // the window (peek round-trips too).
+        boolean okBanking = true;
+        for (int bank = 0; bank <= 2; bank++) {
+            audio.setAuxBank(bank);
+            int sentinel = 0x40 + bank;
+            snd.poke(655360L + 7, (byte) sentinel);
+            Object inst = insts[256 + bank * 256];
+            int viaArray = ((Byte) inst.getClass().getMethod("getByte", int.class)
+                                .invoke(inst, 7)) & 0xFF;
+            int viaWindow = snd.peek(655360L + 7) & 0xFF;
+            boolean ok = (viaArray == sentinel) && (viaWindow == sentinel);
+            System.out.println("aux bank " + bank + " window poke->instruments[" + (256 + bank*256)
+                + "]: array=" + viaArray + " window=" + viaWindow + (ok ? "  PASS" : "  FAIL"));
+            if (!ok) okBanking = false;
+        }
 
         int[] pat = new int[512];
         for (int r = 0; r < 64; r++) { pat[r*8+3] = 0xC0; pat[r*8+4] = 0xC0; }
@@ -186,14 +204,14 @@ public class AuxBinMetaTest {
 
         System.out.println("fan-out (meta -> 2 aux-bin voices):     " + (okFanout ? "PASS" : "FAIL"));
         System.out.println("child pitch tracks +1oct detune:        " + (okChildPitch ? "PASS" : "FAIL"));
-        System.out.println("child plays aux $101 sample (ptr 4096): " + (okChildSample ? "PASS" : "FAIL"));
+        System.out.println("child plays aux $305 sample (ptr 4096): " + (okChildSample ? "PASS" : "FAIL"));
         System.out.println("child mix gain ~-6 dB (octet 111):      " + (okChildGain ? "PASS" : "FAIL"));
         System.out.println("velocity gate: low V -> layer absent:   " + (okLowVel ? "PASS" : "FAIL"));
         System.out.println("velocity gate: high V -> layer present: " + (okHighVel ? "PASS" : "FAIL"));
         System.out.println("key-off propagates to foreground:       " + (okKeyoffFg ? "PASS" : "FAIL"));
         System.out.println("key-off propagates to layer child:      " + (okKeyoffChild ? "PASS" : "FAIL"));
         boolean all = okFanout && okChildPitch && okChildSample && okChildGain
-                   && okLowVel && okHighVel && okKeyoffFg && okKeyoffChild;
+                   && okLowVel && okHighVel && okKeyoffFg && okKeyoffChild && okBanking;
         System.out.println(all ? "AUXBIN-META: ALL PASS" : "AUXBIN-META: FAILURES PRESENT");
         System.exit(all ? 0 : 1);
     }

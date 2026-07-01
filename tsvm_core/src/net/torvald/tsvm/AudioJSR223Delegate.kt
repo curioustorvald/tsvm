@@ -28,8 +28,9 @@ import net.torvald.tsvm.peripheral.MP2Env
  * 0x0004 = fast fade, 0x0010..0x001F = Int0..IntF (interrupt notes — produce no sound; the engine
  * latches them for the host to dispatch via pollTrackerInterrupts / taud.mjs attachIntCallback).
  * Valid playable notes are 0x0020..0xFFFF. A pattern cell addresses instrument slots
- * 0-255 (the directly-addressable bin $00..$FF). Slots 256-511 are the auxiliary bin
- * $100..$1FF, reachable only as Metainstrument layers (not from a pattern cell).
+ * 0-255 (the directly-addressable bin $00..$FF). Slots 256-1023 are the auxiliary bin
+ * $100..$3FF, reachable only as Metainstrument layers (not from a pattern cell); the
+ * 655360 memory window exposes 256 of them at a time, banked by MMIO 48 (setAuxBank).
  *
  * ## How to upload PCM audio into a playhead
  *
@@ -82,7 +83,7 @@ class AudioJSR223Delegate(private val vm: VM) {
     fun jamNote(playhead: Int, voice: Int, note: Int, inst: Int) {
         val ad = getFirstSnd() ?: return
         val ph = getPlayhead(playhead) ?: return
-        ad.jamNote(ph, voice, note and 0xFFFF, inst and 0x1FF)
+        ad.jamNote(ph, voice, note and 0xFFFF, inst and 0x3FF)
     }
 
     /** Silence any audition started by [jamNote] on this [playhead]. */
@@ -184,24 +185,24 @@ class AudioJSR223Delegate(private val vm: VM) {
     fun getVoiceActive(playhead: Int, voice: Int): Boolean =
         getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19))?.active == true
 
-    /** Active-note counts per instrument id (index 0..511; 256..511 = aux bin, where a
+    /** Active-note counts per instrument id (index 0..1023; 256..1023 = aux bin, where a
      *  Metainstrument's layer voices count): how many notes are sounding *right now* for each
      *  instrument, counting ~~BOTH~~ the live foreground voices ~~and the NNA background
      *  ghosts in the mixer-private pool~~~. Lets visualisers colour by polyphony. The ghost pool is
      *  mutated by the render thread, so it is read defensively by index and any transient
      *  inconsistency is tolerated (a single best-effort frame). */
     fun getActiveNoteCounts(playhead: Int): IntArray {
-        val counts = IntArray(512)
+        val counts = IntArray(1024)
         val ts = getPlayhead(playhead)?.trackerState ?: return counts
         for (v in ts.voices) {
-            if (v.active) counts[v.instrumentId and 0x1FF]++
+            if (v.active) counts[v.instrumentId and 0x3FF]++
         }
         // disabling NNA for now
         /*try {
             val bg = ts.backgroundVoices
             for (i in 0 until bg.size) {
                 val v = bg.getOrNull(i) ?: continue
-                if (v.active) counts[v.instrumentId and 0x1FF]++
+                if (v.active) counts[v.instrumentId and 0x3FF]++
             }
         } catch (_: Exception) { /* ghost pool mutated mid-read — counts are best-effort */ }
         */
@@ -222,7 +223,7 @@ class AudioJSR223Delegate(private val vm: VM) {
      *  empty array when the instrument has never been funk-repeated. The render thread mutates the
      *  live mask, so this returns a copy — the caller gets a stable single-frame view. */
     fun getInstrumentFunkMask(slot: Int): IntArray {
-        val mask = getFirstSnd()?.instruments?.get(slot and 0x1FF)?.funkMask ?: return IntArray(0)
+        val mask = getFirstSnd()?.instruments?.get(slot and 0x3FF)?.funkMask ?: return IntArray(0)
         return IntArray(mask.size) { mask[it].toInt() and 0xFF }
     }
 
@@ -239,7 +240,7 @@ class AudioJSR223Delegate(private val vm: VM) {
     fun getVoiceInstrument(playhead: Int, voice: Int): Int {
         val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, 19)) ?: return 0
         if (!v.active) return 0
-        return v.instrumentId and 0x1FF   // 0..511 (256..511 = aux bin); a meta layer plays an aux slot
+        return v.instrumentId and 0x3FF   // 0..1023 (256..1023 = aux bin); a meta layer plays an aux slot
     }
 
     /** Current sample-frame playback position (fractional double) of the voice. Returns -1.0
@@ -340,7 +341,7 @@ class AudioJSR223Delegate(private val vm: VM) {
      *  widened from 192 to 256 bytes on 2026-05-06; the old cap silently dropped
      *  the pan/pf SUSTAIN-word tails, DCT/DCA and the Default Note Volume byte.) */
     fun uploadInstrument(slot: Int, bytes: IntArray) {
-        getFirstSnd()?.instruments?.get(slot and 0x1FF)?.let { inst ->
+        getFirstSnd()?.instruments?.get(slot and 0x3FF)?.let { inst ->
             val rec = IntArray(256)
             for (i in 0 until minOf(256, bytes.size)) rec[i] = bytes[i] and 0xFF
             inst.loadRecord(rec)   // detects the Metainstrument sentinel; else per-byte fields
@@ -354,7 +355,7 @@ class AudioJSR223Delegate(private val vm: VM) {
      *  version byte with only the 'i' bit set is the legacy 31-byte record. Passing an
      *  empty array clears any previously-installed patches on this instrument. */
     fun uploadInstrumentPatches(slot: Int, bytes: IntArray) {
-        val inst = getFirstSnd()?.instruments?.get(slot and 0x1FF) ?: return
+        val inst = getFirstSnd()?.instruments?.get(slot and 0x3FF) ?: return
         if (bytes.size < 31) { inst.extraPatches = null; return }
         fun u8 (o: Int) = bytes[o] and 0xFF
         fun u16(o: Int) = (bytes[o] and 0xFF) or ((bytes[o + 1] and 0xFF) shl 8)
@@ -430,13 +431,13 @@ class AudioJSR223Delegate(private val vm: VM) {
 
     /** Number of Ixmp patches currently installed on instrument [slot], or 0 if none. */
     fun getInstrumentPatchCount(slot: Int): Int =
-        getFirstSnd()?.instruments?.get(slot and 0x1FF)?.extraPatches?.size ?: 0
+        getFirstSnd()?.instruments?.get(slot and 0x3FF)?.extraPatches?.size ?: 0
 
     /** Read back instrument [slot]'s Ixmp patches as a flat variable-length byte array in
      *  the upload wire format (exact inverse of [uploadInstrumentPatches]) so capture
      *  code can re-emit the Ixmp project-data section. Empty array when none. */
     fun getInstrumentPatches(slot: Int): IntArray {
-        val patches = getFirstSnd()?.instruments?.get(slot and 0x1FF)?.extraPatches
+        val patches = getFirstSnd()?.instruments?.get(slot and 0x3FF)?.extraPatches
             ?: return IntArray(0)
         val out = ArrayList<Int>(patches.size * 31)
         fun w8(v: Int)  { out.add(v and 0xFF) }
@@ -475,7 +476,7 @@ class AudioJSR223Delegate(private val vm: VM) {
 
     /** Clear any Ixmp patches previously uploaded to instrument [slot] (0-511; 256-511 = aux bin). */
     fun clearInstrumentPatches(slot: Int) {
-        getFirstSnd()?.instruments?.get(slot and 0x1FF)?.extraPatches = null
+        getFirstSnd()?.instruments?.get(slot and 0x3FF)?.extraPatches = null
     }
 
     /** Upload 512 bytes (64 rows × 8 bytes) defining pattern `slot` (0-4094). */
@@ -577,12 +578,19 @@ class AudioJSR223Delegate(private val vm: VM) {
     fun setSampleBank(bank: Int) { getFirstSnd()?.mmio_write(46L, bank.toByte()) }
     fun getSampleBank(): Int? = getFirstSnd()?.sampleBank
 
+    /** Select which 256-record page the auxiliary instrument-bin window (655360..720895)
+     *  exposes: bank 0 = $100..$1FF, 1 = $200..$2FF, 2 = $300..$3FF (MMIO 48). Only affects
+     *  peek/poke through that window — playback reads instruments[] directly and is unbanked.
+     *  Editors (taut) set this before reading/writing an aux-bin instrument record. */
+    fun setAuxBank(bank: Int) { getFirstSnd()?.mmio_write(48L, bank.toByte()) }
+    fun getAuxBank(): Int? = getFirstSnd()?.auxBank
+
     /** Decompress a Taud sample+instrument blob (gzip or zstd) directly into the
      *  audio adapter's 8 MB sample pool and instrument bins, bypassing the user
      *  memory staging buffer. The decompressed payload is 8 MB samples followed by
-     *  the instrument records: 128 K (512 records — the directly-addressable bin
-     *  $00..$FF then the auxiliary bin $100..$1FF) for current files, or 64 K (256
-     *  records, $00..$FF only) for legacy pre-2026-06-30 files, which is detected by
+     *  the instrument records: 256 K (1024 records — the directly-addressable bin
+     *  $00..$FF then the banked auxiliary bin $100..$3FF) for current files, or 128 K
+     *  (512 records) / 64 K (256 records, $00..$FF only) for older files, which is detected by
      *  the payload size. Slots not present in the blob are cleared.
      *
      *  Needed because user space is capped at 8 MB and cannot hold the full image as
@@ -598,15 +606,16 @@ class AudioJSR223Delegate(private val vm: VM) {
             null, snd.sampleBin.ptr,
             sampleSize.toLong()
         )
-        // Records carried by the blob (256 = legacy $00..$FF only; 512 = + aux bin).
-        val instCount = minOf(512, (bytes.size - sampleSize) / 256)
+        // Records carried by the blob (256 = legacy $00..$FF only; 512 = + aux $100..$1FF;
+        // 1024 = + banked aux $200..$3FF). Slots absent from an older blob are cleared.
+        val instCount = minOf(1024, (bytes.size - sampleSize) / 256)
         val rec = IntArray(256)
-        for (instIdx in 0 until 512) {
+        for (instIdx in 0 until 1024) {
             if (instIdx < instCount) {
                 val base = sampleSize + instIdx * 256
                 for (k in 0 until 256) rec[k] = bytes[base + k].toInt() and 0xFF
             } else {
-                rec.fill(0)   // clear slots absent from a legacy 256-record blob
+                rec.fill(0)   // clear slots absent from an older blob
             }
             snd.instruments[instIdx].loadRecord(rec)   // meta-aware
         }
@@ -618,15 +627,15 @@ class AudioJSR223Delegate(private val vm: VM) {
         return bytes.size
     }
 
-    /** Compress the audio adapter's full 8 MB sample pool + 128 K instrument bins
-     *  (512 records: $00..$FF then aux $100..$1FF) and write the resulting gzip/zstd
+    /** Compress the audio adapter's full 8 MB sample pool + 256 K instrument bins
+     *  (1024 records: $00..$FF then aux $100..$3FF) and write the resulting gzip/zstd
      *  blob to user-memory `dstPtr`. Returns the compressed size. The caller must
      *  ensure `dstMaxLen` is large enough; for incompressible noise the worst case is
-     *  ~8.4 MB which exceeds user space — but realistic sample data compresses easily. */
+     *  ~8.5 MB which exceeds user space — but realistic sample data compresses easily. */
     fun captureSampleInstBlob(dstPtr: Int, dstMaxLen: Int): Int {
         val snd = getFirstSnd() ?: return 0
         val sampleSize = AudioAdapter.SAMPLE_BIN_TOTAL.toInt()
-        val instSize = 512 * 256                          // 128 K: 512 records
+        val instSize = 1024 * 256                         // 256 K: 1024 records
         val raw = ByteArray(sampleSize + instSize)
         UnsafeHelper.memcpyRaw(
             null, snd.sampleBin.ptr,

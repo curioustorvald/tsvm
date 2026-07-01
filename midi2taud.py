@@ -2415,15 +2415,15 @@ def build_sample_inst_bin(sf: SF2, pool: list, layer_insts: list, meta_records: 
         o = base + 4
         for layer_slot, rect in layer_descs:
             plo, phi, vlo, vhi = rect
-            # 9-bit layer instrument index: low 8 bits in byte 0; bit 8 (the auxiliary-bin
-            # $100..$1FF selector) in bit 6 of the volume-start byte (offset +8). Layers of
-            # multi-layer presets live in the aux bin, so this bit is normally set.
+            # 10-bit layer instrument index: low 8 bits in byte 0; bits 8..9 (the
+            # auxiliary-bin $100..$3FF selector) in bits 6..7 of the volume-start byte
+            # (offset +8). Layers of multi-layer presets live in the aux bin.
             inst_bin[o]     = layer_slot & 0xFF
             inst_bin[o + 1] = META_UNITY_OCTET
             struct.pack_into('<h', inst_bin, o + 2, 0)          # sample detune (neutral)
             struct.pack_into('<H', inst_bin, o + 4, plo & 0xFFFF)
             struct.pack_into('<H', inst_bin, o + 6, phi & 0xFFFF)
-            inst_bin[o + 8] = (vlo & 0x3F) | (((layer_slot >> 8) & 1) << 6)
+            inst_bin[o + 8] = (vlo & 0x3F) | (((layer_slot >> 8) & 0x3) << 6)
             inst_bin[o + 9] = vhi & 0x3F
             o += 10
 
@@ -3370,15 +3370,16 @@ def allocate_slots(presets: dict, slot_keys: list):
 
     Two bins (terranmon.txt:2036-2044): the directly-addressable bin $01..$FF (255
     slots) holds everything a pattern cell references — single-layer presets and the
-    Metainstrument slot of a multi-layer preset; the auxiliary bin $100..$1FF (256
-    slots) holds the layer SUBINSTRUMENTS of multi-layer presets, which are reachable
-    only through their Metainstrument's layer table (never a pattern cell). So a meta
-    at e.g. $01 with 10 layers puts those layers at $100..$109 and the meta at $01.
-    Metainstruments themselves are NEVER allocated in the aux bin.
+    Metainstrument slot of a multi-layer preset; the auxiliary bin $100..$3FF (768
+    slots, exposed in-hardware through a 3-way banked window) holds the layer
+    SUBINSTRUMENTS of multi-layer presets, which are reachable only through their
+    Metainstrument's layer table (never a pattern cell). So a meta at e.g. $01 with 10
+    layers puts those layers at $100..$109 and the meta at $01. Metainstruments
+    themselves are NEVER allocated in the aux bin.
 
     Returns (layer_insts, meta_records, slot_name, note_slot)."""
     next_norm   = 1          # directly-addressable bin $01..$FF
-    next_aux    = 0x100      # auxiliary bin $100..$1FF (layer subinstruments)
+    next_aux    = 0x100      # auxiliary bin $100..$3FF (layer subinstruments)
     layer_insts = []         # all normal instruments, .slot assigned
     meta_records = []        # (meta_slot, name, [(layer_slot, bbox_rect)])
     slot_name   = {}         # slot → display name
@@ -3403,7 +3404,7 @@ def allocate_slots(presets: dict, slot_keys: list):
         else:
             # Multi-layer: the Metainstrument goes in the directly-addressable bin;
             # its layer subinstruments go in the auxiliary bin.
-            if next_norm > 255 or next_aux + len(layers) - 1 > 0x1FF:
+            if next_norm > 255 or next_aux + len(layers) - 1 > 0x3FF:
                 vprint(f"  warning: instrument budget exhausted — preset '{name}' dropped")
                 note_slot[ik] = 0
                 continue
@@ -3417,7 +3418,7 @@ def allocate_slots(presets: dict, slot_keys: list):
                                  [(ti.slot, _layer_bbox(ti)) for ti in layers]))
             slot_name[meta_slot] = name
             note_slot[ik] = meta_slot
-    vprint(f"  slots: {next_norm - 1} in $01..$FF, {next_aux - 0x100} in aux $100..$1FF — "
+    vprint(f"  slots: {next_norm - 1} in $01..$FF, {next_aux - 0x100} in aux $100..$3FF — "
            f"{len(layer_insts)} instrument(s), {len(meta_records)} Metainstrument(s)")
     return layer_insts, meta_records, slot_name, note_slot
 

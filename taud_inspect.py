@@ -239,9 +239,9 @@ def parse_meta(rec):
         o = 4 + i * 10
         if o + 10 > 256:
             break
-        # 9-bit layer instrument index: low 8 bits in byte 0, bit 8 (the aux-bin
-        # $100..$1FF selector) in bit 6 of the volume-start byte (offset +8).
-        inst_idx = rec[o] | (((rec[o + 8] >> 6) & 1) << 8)
+        # 10-bit layer instrument index: low 8 bits in byte 0, bits 8..9 (the aux-bin
+        # $100..$3FF selector) in bits 6..7 of the volume-start byte (offset +8).
+        inst_idx = rec[o] | (((rec[o + 8] >> 6) & 0x3) << 8)
         layers.append({
             'inst':       inst_idx,
             'mixvol':     rec[o + 1],
@@ -368,9 +368,9 @@ def parse_ixmp_section(payload):
     end = len(payload)
     while q + 4 <= end:
         # Header: byte0 = instId low 8, bytes1-2 = Uint16 count, byte3 = instId high
-        # (bit0 -> instId bit 8, the aux-bin $100..$1FF selector). byte3 was the old
-        # Uint24 count's top byte (always 0 for real counts), so legacy files still parse.
-        inst_id = payload[q] | ((payload[q + 3] & 0x01) << 8)
+        # (bits0..1 -> instId bits 8..9, the aux-bin $100..$3FF selector). byte3 was the
+        # old Uint24 count's top byte (always 0 for real counts), so legacy files still parse.
+        inst_id = payload[q] | ((payload[q + 3] & 0x03) << 8)
         cnt = payload[q + 1] | (payload[q + 2] << 8)
         q += 4
         patches = []
@@ -635,9 +635,10 @@ def main():
         blob = decomp(data[32:32 + comp_size])
         SAMPLE_SIZE = 8 * 1024 * 1024
         samplebin = blob[:SAMPLE_SIZE]
-        # Instrument bin: 128 K (512 records) for current files, 64 K (256) for legacy.
-        # 0..255 = directly-addressable bin $00..$FF, 256..511 = aux bin $100..$1FF.
-        instbin = blob[SAMPLE_SIZE:SAMPLE_SIZE + 131072]
+        # Instrument bin: 256 K (1024 records) for current files, 128 K (512) / 64 K (256)
+        # for older files. 0..255 = directly-addressable bin $00..$FF, 256..1023 = aux bin
+        # $100..$3FF (in-hardware a banked 64K window, but a flat array in the file).
+        instbin = blob[SAMPLE_SIZE:SAMPLE_SIZE + 262144]
 
     if instbin is not None and not args.no_instruments:
         inst_count = len(instbin) // 256

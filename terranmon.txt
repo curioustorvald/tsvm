@@ -2035,15 +2035,25 @@ Synchronisation between playheads are not guaranteed. Do not play a music across
 
 Memory Space
 
-0..524287 RW: Sample bin window (512k)
-655360..720895 RW: Auxilliary instrument bin (256 instruments $100..$1FF, 256 bytes each; not directly addressable--only for Metainstruments; 64k)
-720896..786431 RW: Instrument bin (256 instruments $00..$FF, 256 bytes each; instrument 0 does nothing; 64k)
-786432..851967 RW: Play data 1 (currently exposed bank; 64k)
-851968..917503 RW: Play data 2 (currently exposed bank; 64k)
+0..524287 RW: Sample bin (512k WINDOW; BANKED)
+524288..655359 RW: Cue sheet (128k WINDOW; BANKED)
+    TODO
+655360..720895 RW: Auxilliary instrument bin (768 instruments $100..$3FF, 256 bytes each; not directly addressable--only for Metainstruments; 64k WINDOW, BANKED -- write MMIO 48 to select bank 0..2, exposing $100..$1FF / $200..$2FF / $300..$3FF)
+720896..786431 RW: Instrument bin (256 instruments $00..$FF, 256 bytes each; instrument 0 does nothing; 64k; NOT BANKED)
+786432..851967 RW: Play data 1 (64k WINDOW; BANKED)
+851968..917503 RW: Play data 2 (64k WINDOW; BANKED)
 917504..983039 RW: TAD Input Buffer (64k)
 983040..1048575 RW: TAD Decode Output (64k)
 
 Sample bin: just raw sample data thrown in there. You need to keep track of starting point for each sample. Actual sample memory is 8 MB and are banked. Write to MMIO address 46 to switch banks.
+
+Auxiliary instrument bin: the 655360..720895 window is a 64k page over the 768-instrument
+auxiliary registry ($100..$3FF). Write MMIO address 48 to select which 256-record bank the
+window exposes: 0 = $100..$1FF, 1 = $200..$2FF, 2 = $300..$3FF. This banking affects only
+memory-window access (peek/poke); the playback engine and the sample+instrument upload path
+address instruments by absolute index and are NOT affected by the bank register. These
+instruments are not addressable by a pattern cell (8-bit instrument field) — only a
+Metainstrument's layer table (10-bit index) can reference them.
 
 Instrument bin: Registry for 256 instruments, formatted as:
 
@@ -2432,15 +2442,17 @@ instrument record). Layer records begin at byte 4.
     - 0xFFFF
 4   * Repetition of (one 10-byte record per layer):
     Uint8  Instrument index (low 8 bits) — MUST be a normal instrument, never a
-           Metainstrument. The full index is 9 bits (0..511): bits 0..7 here, bit 8
-           in bit 6 of the Volume-start byte (offset +8 below). 0..255 = directly-
-           addressable bin $00..$FF; 256..511 = auxiliary bin $100..$1FF.
+           Metainstrument. The full index is 10 bits (0..1023): bits 0..7 here, bits
+           8..9 in bits 6..7 of the Volume-start byte (offset +8 below). 0..255 =
+           directly-addressable bin $00..$FF; 256..1023 = auxiliary bin $100..$3FF
+           (exposed in-hardware through the MMIO-48-banked 655360 window, but the
+           index is absolute — the engine reads instruments[index] directly).
     Uint8  Mix volume according to "Perceptually Significant Octet to Decibel Table" (octet 159 = 0 dB / unity)
     Sint16 Sample detune (in 4096-TET unit)
     Uint16 Pitch start                 ; note-range low,  4096-TET noteVal (same scale as pattern-cell note); full range = 0x0000
     Uint16 Pitch end (inclusive)       ; note-range high; full range = 0xFFFF
     Uint8  Volume start                ; bits 0..5 = velocity/volume-range low (0..0x3F; full range = 0x00);
-                                         bit 6 = instrument index bit 8 (the auxiliary-bin selector); bit 7 reserved (0)
+                                         bits 6..7 = instrument index bits 8..9 (the auxiliary-bin selector)
     Uint8  Volume end (inclusive)      ; bits 0..5 = velocity/volume-range high (0..0x3F; full range = 0x3F); bits 6..7 reserved (0)
 
     Notes:
@@ -2469,11 +2481,11 @@ instrument record). Layer records begin at byte 4.
        coexist in one Metainstrument.
     e. Recursion is forbidden: a layer's Instrument index MUST resolve to a normal
        instrument (in either the directly-addressable bin $01..$FF or the auxiliary
-       bin $100..$1FF). The engine ignores (skips) any layer pointing at another
+       bin $100..$3FF). The engine ignores (skips) any layer pointing at another
        Metainstrument or at instrument 0. The auxiliary bin exists precisely to hold
        layer subinstruments without spending directly-addressable slots: a layer
-       reaches it via the 9-bit index above; a pattern cell cannot (its instrument
-       field is 8-bit, so $100..$1FF is unreachable except as a Metainstrument layer).
+       reaches it via the 10-bit index above; a pattern cell cannot (its instrument
+       field is 8-bit, so $100..$3FF is unreachable except as a Metainstrument layer).
     f. Voice budget: a single Metainstrument trigger costs up to `length` voices
        against the mixer pool.
     g. STRICT layering (byte 0 bit 0). A layer's rectangle (note a) is a single
@@ -2975,7 +2987,12 @@ TODO:
     [x] taut: improve checkbox visibility by using black background with padding (just like number input; wrong order = too wide by 2 px)
     [x] taut: timeline and patterns: push 'Shift+N' to toggle between notation and raw notes
     [x] taut: free scroll on everything (timeline, cues, patterns, etc.)
-    [ ] taut: see if you can have 256 more instrument slots ($100..$1FF) dedicated for Metainstrument definition
+    [x] taut: see if you can have 256 more instrument slots ($100..$1FF) dedicated for Metainstrument definition
+        * DONE 2026-07-01. Added the auxiliary instrument bin, now 768 slots $100..$3FF (a 64k
+          window at 655360 banked by MMIO 48, bank 0..2). Meta layer index + Ixmp instId widened
+          to 10 bits. midi2taud allocates layer subinstruments there ($01..$FF reserved for metas +
+          pattern-played instruments); taut's Sample and Advanced-Instrument views address it via
+          setAuxBank. See instruments[1024] in AudioAdapter.kt + devtests/ixmp/AuxBinMetaTest.
 
 TODO - list of demo songs that MUST ship with Microtone:
     * 4THSYM (rename to Fourth Symmetriad) — excellent piece for demonstrating NNAs and filter envelopes
@@ -3054,7 +3071,9 @@ Audio Adapter MMIO
 44 RW: TAD Decoder Status
     Non-zero value indicates the decoder is busy. Different value may indicate different decoder status.
 45 RW: Select PCM Bin for playhead (writing causes side effects)
-46 RW: Select current sample bank for tracker, exposed at memory space 0..524287
+46 RW: Select current sample bank for tracker, exposed at memory space 0..524287 (512k*16)
+47 RW: Select current cue sheet bank for tracker, exposed at memory space 524288..655359 (128k*4)
+48 RW: Select current aux inst bank for tracker, exposed at memory space 655360..720895 (64k*3)
 
 64..2367 RW: MP2 Decoded Samples (unsigned 8-bit stereo)
 2368..4095 RW: MP2 Frame to be decoded
@@ -3352,11 +3371,11 @@ prefixes:
     * Repetition of:
     Uint8   Instrument ID (low 8 bits)
     Uint16  Count of patches
-    Uint8   Instrument ID (high bits): bit 0 = instrument ID bit 8 (the auxiliary-bin
-            $100..$1FF selector); bits 1..7 reserved (0). This was the top byte of the
-            former Uint24 count, which was always 0 for the tiny real patch counts, so a
-            pre-2026-06-30 reader still parses legacy $00..$FF entries unchanged.
-            Together the two ID fields give a 9-bit instrument ID 0..511 (256..511 = aux bin).
+    Uint8   Instrument ID (high bits): bits 0..1 = instrument ID bits 8..9 (the
+            auxiliary-bin $100..$3FF selector); bits 2..7 reserved (0). This was the top
+            byte of the former Uint24 count, which was always 0 for the tiny real patch
+            counts, so a pre-2026-06-30 reader still parses legacy $00..$FF entries unchanged.
+            Together the two ID fields give a 10-bit instrument ID 0..1023 (256..1023 = aux bin).
         ** Repetition of:
         Bit8   Patch definition version
             Version numbers are essentially feature bit-flags, where:
