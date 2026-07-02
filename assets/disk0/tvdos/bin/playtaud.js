@@ -11,10 +11,9 @@ const TAUD_HEADER_SIZE = 32
 const TAUD_SONG_ENTRY  = 32
 const PATTERN_SIZE     = 512
 const ROWS_PER_PAT     = 64
-const NUM_CUES         = 1024
-const CUE_SIZE         = 32
-const NUM_VOICES       = 20
-const CUE_EMPTY        = 0xFFF
+const NUM_VOICES       = 32       // max voices per cue (v2 layout; v1 uses ≤20)
+const CUE_EMPTY        = 0x7FFF   // canonical empty-pattern sentinel (v1's 0xFFF is normalised to this)
+// Per-version cue stride / count live inside parseTaud (v1: 32-byte/1024, v2: 64-byte/8192).
 
 // Cue instruction bytes (cue offset 30).
 const CUE_NOP    = 0x00
@@ -143,6 +142,7 @@ function parseTaud(path, songIndex) {
         }
     }
 
+    const fmtVer   = sys.peek(ptr + 8) & 0x3F   // format version = low six bits of the version byte
     const numSongs = sys.peek(ptr + 9) & 0xFF
     const compSize = _peekU32LE(ptr, 10)
     const projOff  = _peekU32LE(ptr, 14)
@@ -179,23 +179,53 @@ function parseTaud(path, songIndex) {
     sys.free(patBinPtr)
 
     // Decompress cue sheet.  Find last non-empty cue for the order strip.
-    const cueSheetSize = NUM_CUES * CUE_SIZE
-    const cuePtr       = sys.malloc(cueSheetSize)
-    gzip.decompFromTo(ptr + songOff + patCompSize, cueCompSize, cuePtr)
+    // The cue layout changed with format v2 (terranmon.txt §"Cue sheet"):
+    //   v1: 32-byte cue, 20 voices packed as 12-bit pattern numbers (lo/mid/hi
+    //       nibble planes), 16-bit instruction in bytes 30/31, empty = 0xFFF.
+    //   v2: 64-byte cue, 32 voices as little-endian Sint16 (low 15 bits = pattern,
+    //       empty = 0x7FFF); the 16-bit instruction word rides on the sign bits of
+    //       voices 0..15 (bit ch → word bit ch; word == (byte30 << 8) | byte31).
+    // Both decode into the same canonical shape: ptns[0..NUM_VOICES-1] with
+    // CUE_EMPTY (0x7FFF) for absent voices, plus i30/i31 instruction bytes.
+    const isV2       = fmtVer >= 2
+    const cueStride  = isV2 ? 64 : 32
+    // num_cues lives in song-entry bytes 26..27 (v2 only; 0 in a legacy v1 file).
+    const numCuesFld = (sys.peek(ptr + entryOff + 26) & 0xFF) |
+                       ((sys.peek(ptr + entryOff + 27) & 0xFF) << 8)
+    const cueCap     = isV2 ? (numCuesFld > 0 ? numCuesFld : 8192) : 1024
+    const cuePtr     = sys.malloc(cueCap * cueStride)
+    const cueBinSize = gzip.decompFromTo(ptr + songOff + patCompSize, cueCompSize, cuePtr)
+    const numCues    = Math.min((cueBinSize / cueStride) | 0, cueCap)
 
-    const cues = new Array(NUM_CUES)
+    const cues = new Array(numCues)
     let lastCue = -1
-    for (let c = 0; c < NUM_CUES; c++) {
+    for (let c = 0; c < numCues; c++) {
+        const base = cuePtr + c * cueStride
         const ptns = new Array(NUM_VOICES)
-        for (let i = 0; i < 10; i++) {
-            const lo = sys.peek(cuePtr + c * CUE_SIZE +  i) & 0xFF
-            const mi = sys.peek(cuePtr + c * CUE_SIZE + 10 + i) & 0xFF
-            const hi = sys.peek(cuePtr + c * CUE_SIZE + 20 + i) & 0xFF
-            ptns[i*2]   = ((hi >> 4) << 8) | ((mi >> 4) << 4) | (lo >> 4)
-            ptns[i*2+1] = ((hi & 0xF) << 8) | ((mi & 0xF) << 4) | (lo & 0xF)
+        let i30, i31
+        if (isV2) {
+            let word0 = 0
+            for (let ch = 0; ch < NUM_VOICES; ch++) {
+                const raw = (sys.peek(base + ch*2) & 0xFF) | ((sys.peek(base + ch*2 + 1) & 0xFF) << 8)
+                ptns[ch]  = raw & 0x7FFF                              // 0x7FFF == CUE_EMPTY
+                if (ch < 16 && (raw & 0x8000)) word0 |= (1 << ch)    // instruction bit on the sign
+            }
+            i30 = (word0 >> 8) & 0xFF
+            i31 = word0 & 0xFF
+        } else {
+            for (let i = 0; i < 10; i++) {
+                const lo = sys.peek(base +  i)     & 0xFF
+                const mi = sys.peek(base + 10 + i) & 0xFF
+                const hi = sys.peek(base + 20 + i) & 0xFF
+                const a  = ((hi >> 4) << 8) | ((mi >> 4) << 4) | (lo >> 4)
+                const b  = ((hi & 0xF) << 8) | ((mi & 0xF) << 4) | (lo & 0xF)
+                ptns[i*2]   = (a === 0xFFF) ? CUE_EMPTY : a          // normalise v1 empty → 0x7FFF
+                ptns[i*2+1] = (b === 0xFFF) ? CUE_EMPTY : b
+            }
+            for (let v = 20; v < NUM_VOICES; v++) ptns[v] = CUE_EMPTY
+            i30 = sys.peek(base + 30) & 0xFF
+            i31 = sys.peek(base + 31) & 0xFF
         }
-        const i30 = sys.peek(cuePtr + c * CUE_SIZE + 30) & 0xFF
-        const i31 = sys.peek(cuePtr + c * CUE_SIZE + 31) & 0xFF
         const cue = { ptns: ptns, i30: i30, i31: i31 }
         cues[c] = cue
         let occupied = (i30 !== CUE_NOP)
@@ -647,12 +677,14 @@ function drawOrderStrip(curCue) {
         if (c < curCue) { ch = 0xB3 /*│*/; fg = COL_ORDER_PAST }
         else if (c === curCue) { ch = 0xDB /*█*/; fg = COL_ORDER_CUR }
         if (cue.i30 === CUE_HALT) {
-            ch = 0xE8 /*Ø*/   // halt marker
+            ch = 0x19 /*Ø*/   // halt marker
             fg = COL_ORDER_HALT
         } else if ((cue.i30 & 0xF0) === CUE_JMP) {
-            ch = 0xA6 /*ª*/   // jump
-        } else if ((cue.i30 & 0xF0) === CUE_BAK || (cue.i30 & 0xF0) === CUE_FWD) {
-            ch = 0xF7 /*≈ ish*/
+            ch = 0x18 /*ª*/   // jump
+        } else if ((cue.i30 & 0xF0) === CUE_BAK) {
+            ch = 0xAE /*≈ ish*/
+        } else if ((cue.i30 & 0xF0) === CUE_FWD) {
+            ch = 0xAF /*≈ ish*/
         }
         colour(fg, COL_BG)
         mvprn(ROW_ORDER, COL_INSIDE_L + i, ch)
