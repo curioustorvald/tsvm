@@ -647,10 +647,10 @@ function drawOrderStrip(curCue) {
         if (c < curCue) { ch = 0xB3 /*│*/; fg = COL_ORDER_PAST }
         else if (c === curCue) { ch = 0xDB /*█*/; fg = COL_ORDER_CUR }
         if (cue.i30 === CUE_HALT) {
-            ch = 0xD8 /*Ø*/   // halt marker
+            ch = 0xE8 /*Ø*/   // halt marker
             fg = COL_ORDER_HALT
         } else if ((cue.i30 & 0xF0) === CUE_JMP) {
-            ch = 0xAA /*ª*/   // jump
+            ch = 0xA6 /*ª*/   // jump
         } else if ((cue.i30 & 0xF0) === CUE_BAK || (cue.i30 & 0xF0) === CUE_FWD) {
             ch = 0xF7 /*≈ ish*/
         }

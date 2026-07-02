@@ -376,18 +376,19 @@ function init(HUB) {
         }
     }
 
-    function openCueCmdPopup(ci) {
-        const cur = decodeCueInstr(HUB.getCueInstr(ci) | 0)
+    function openCueCmdPopup(ci, slot) {
+        slot = slot ? 1 : 0
+        const cur = decodeCueInstr(HUB.getCueInstr(ci, slot) | 0)
         let selIdx = CUE_CMDS.findIndex(c => c.id === cur.id)
         if (selIdx < 0) selIdx = 0
         const curCmd  = CUE_CMDS[selIdx]
         const argStr  = curCmd.hasArg ? cur.arg.toString(curCmd.radix).toUpperCase() : ''
-        const cueLbl  = '$' + (ci >>> 0).toString(16).toUpperCase().padStart(3, '0')
+        const cueLbl  = '$' + (ci >>> 0).toString(16).toUpperCase().padStart(4, '0')
 
         const items = CUE_CMDS.map(c => ({ label: c.label, cmd: c }))
 
         const res = win.showDialog({
-            title: 'Cue ' + cueLbl + ' Command',
+            title: 'Cue ' + cueLbl + ' Cmd' + (slot + 1),
             drawFrame: popupDrawFrame,
             colours: popupColours,
             message: ['Args: len/fade/halt 0-63 dec, back/fwd/jmp hex'],
@@ -426,7 +427,7 @@ function init(HUB) {
                 const n = parseInt((res.values[0] || '').trim(), chosen.radix)
                 arg = isNaN(n) ? 0 : Math.max(chosen.min, Math.min(chosen.max, n))
             }
-            HUB.commitCueInstr(ci, encodeCueInstr(chosen.id, arg))
+            HUB.commitCueInstr(ci, slot, encodeCueInstr(chosen.id, arg))
         }
         HUB.drawAll()
     }

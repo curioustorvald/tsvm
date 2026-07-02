@@ -1190,8 +1190,12 @@ let COLSIZE_TIMELINE_FULL = TIMELINE_COLSIZES[0]
 let VOCSIZE_TIMELINE_FULL = Math.floor((SCRW - 3) / COLSIZE_TIMELINE_FULL)
 
 // Cue-index and pattern numbers are 4 hex digits (cues 0..0x1FFF, patterns 0..0x7FFE).
-const ORDERS_CMD_X       = 6
-const ORDERS_VOICE_X     = 13  // 1-indexed col where voice columns begin
+// A cue carries TWO instruction words (terranmon.txt §"Cue sheet"), shown as Cmd1
+// (word0 = cue.instr) and Cmd2 (word1 = cue.instr1), each a 6-char field.
+const ORDERS_CMD_X       = 6   // Cmd1 (instruction word 0)
+const ORDERS_CMD2_X      = 13  // Cmd2 (instruction word 1)
+const ORDERS_CMD_W       = 6   // width of each command field
+const ORDERS_VOICE_X     = 20  // 1-indexed col where voice columns begin
 const ORDERS_VOICE_COL_W = 5
 const VOCSIZE_ORDERS     = Math.floor((SCRW - (ORDERS_VOICE_X - 1)) / ORDERS_VOICE_COL_W)
 
@@ -1241,6 +1245,8 @@ const METER_PAN_COL = 214
 const METER_VOL_TICK_COL = 127
 const METER_PAN_TICK_COL = 198
 const METER_BAR_PAD = 0        // px gap from cell edges (each side)
+const METER_PAD_L = 2          // meter bar padding inside the voice column: 2px left, 3px right
+const METER_PAD_R = 3          // (col width 105px -> bar strip 100px, x-offset 2px)
 const METER_TRANSPARENT  = 255
 
 let separatorStyle = 0
@@ -1430,11 +1436,11 @@ function drawSeparators(style) {
         }
     }
     else {
-        // Tint each voice column's FULL width by cycling colColumnPattern, indexed by the
-        // ABSOLUTE voice number (voiceOff + c) so the bands scroll with the columns. Only
-        // cells currently holding a pattern colour are repainted, so cursor / playback
-        // highlight rows are preserved and a horizontally-salvaged column gets re-tinted to
-        // its new colour even though the memcpy carried the previous tint along.
+        // Tint the PATTERN-VIEW voice columns via text-mode cell backgrounds (cheap). The header row
+        // (PTNVIEW_OFFSET_Y-1) is intentionally excluded — it uses graphics-layer banding
+        // (paintVoiceColBgRow) so the voice-header meters can overlay it at the column's full width.
+        // Only cells currently holding a pattern colour are repainted, so cursor / playback highlight
+        // rows are preserved and a horizontally-salvaged column gets re-tinted to its new colour.
         const maxCol = (timelineRowStyle !== 1) ? (SCRW - 3) : (SCRW - 1) // keep off the right-edge row numbers
         for (let c = 0; c < VOCSIZE_TIMELINE_FULL; c++) {
             const col = colColumnPattern[(voiceOff + c) % colColumnPattern.length]
@@ -1442,8 +1448,8 @@ function drawSeparators(style) {
             for (let dx = 0; dx < COLSIZE_TIMELINE_FULL; dx++) {
                 const x = x0 + dx
                 if (x > maxCol) break
-                for (let y = 0; y < PTNVIEW_HEIGHT+1; y++) {
-                    let bgColOffset = vaddr(TEXT_BACK_OFF + (y+PTNVIEW_OFFSET_Y-2) * SCRW + (x-1))
+                for (let y = 0; y < PTNVIEW_HEIGHT; y++) {
+                    let bgColOffset = vaddr(TEXT_BACK_OFF + (y+PTNVIEW_OFFSET_Y-1) * SCRW + (x-1))
                     let oldBgCol = sys.peek(bgColOffset)
                     if (oldBgCol !== col && colColumnPattern.indexOf(oldBgCol) >= 0) {
                         sys.poke(bgColOffset, col)
@@ -1453,6 +1459,19 @@ function drawSeparators(style) {
         }
 
         con.color_pair(colSep, 255)
+    }
+}
+
+// Paint one text row's voice-column banding into the GRAPHICS layer, cycling colColumnPattern by the
+// ABSOLUTE voice number (voiceOff + c) so the bands scroll horizontally with the columns. Timeline
+// cells are drawn with a transparent (255) text-mode background, so this banding shows through beneath
+// the glyphs; pattern colour 255 is itself transparent, erasing that column's strip back to see-through.
+function paintVoiceColBgRow(yTextRow) {
+    const yPx = (yTextRow - 1) * CELL_PH
+    for (let c = 0; c < VOCSIZE_TIMELINE_FULL; c++) {
+        const col = colColumnPattern[(voiceOff + c) % colColumnPattern.length]
+        const x0  = (PTNVIEW_OFFSET_X + COLSIZE_TIMELINE_FULL * c - 1) * CELL_PW
+        graphics.plotRect(x0, yPx, COLSIZE_TIMELINE_FULL * CELL_PW, CELL_PH, col)
     }
 }
 
@@ -1484,10 +1503,11 @@ function drawVoiceHeaders() {
     }
 
     drawSeparators(separatorStyle)
-    // Voice headers were just repainted with bg=255 (transparent), so any meter pixels
-    // beneath them survived the redraw — but the cached per-slot state may still match,
-    // which would skip the redraw on the next updatePlayback. Force a redraw by clearing
-    // the cache; the next updatePlayback re-emits any active bars.
+    // Paint the header row's voice-column banding into the graphics layer; the meters (also graphics)
+    // are drawn on top of it by drawVoiceMeters.
+    if (separatorStyle === 0) paintVoiceColBgRow(PTNVIEW_OFFSET_Y - 1)
+    // The header meter strips were just repainted (banding), so force the meter cache to re-emit any
+    // active bars on the next updatePlayback.
     invalidateVoiceMeters()
 }
 
@@ -1500,13 +1520,20 @@ function invalidateVoiceMeters() {
     for (let i = 0; i < meterPrevSlot.length; i++) meterPrevSlot[i] = null
 }
 
-// Wipe the pixel strip used by the voice-header meters back to transparent (255).
-// Called when leaving the Timeline panel or when playback stops.
+// Remove the voice-header meter bars. Called when leaving the Timeline panel or when playback stops.
 function clearVoiceMeters() {
-    const yPan = (PTNVIEW_OFFSET_Y - 2) * CELL_PH
-    const yVol = (PTNVIEW_OFFSET_Y - 1) * CELL_PH - meterThickness
-    graphics.plotRect(0, yPan, SCRPW, meterThickness, METER_TRANSPARENT)
-    graphics.plotRect(0, yVol, SCRPW, meterThickness, METER_TRANSPARENT)
+    if (currentPanel === VIEW_TIMELINE) {
+        // Staying on the timeline: repaint the header-row banding, which erases any bars (they live
+        // inside that row) while keeping the column background intact.
+        paintVoiceColBgRow(PTNVIEW_OFFSET_Y - 1)
+    }
+    else {
+        // Leaving the timeline: wipe the strips back to transparent.
+        const yPan = (PTNVIEW_OFFSET_Y - 2) * CELL_PH
+        const yVol = (PTNVIEW_OFFSET_Y - 1) * CELL_PH - meterThickness
+        graphics.plotRect(0, yPan, SCRPW, meterThickness, METER_TRANSPARENT)
+        graphics.plotRect(0, yVol, SCRPW, meterThickness, METER_TRANSPARENT)
+    }
     invalidateVoiceMeters()
 }
 
@@ -1525,24 +1552,23 @@ function drawVoiceMeters() {
     if (playbackMode === PLAYMODE_NONE || currentPanel !== VIEW_TIMELINE) return
     const yPan = (PTNVIEW_OFFSET_Y - 2) * CELL_PH                  // top edge of pan strip
     const yVol = (PTNVIEW_OFFSET_Y - 1) * CELL_PH - meterThickness // top edge of vol strip
-    const slotPW = COLSIZE_TIMELINE_FULL * CELL_PW
-    // Skip the leftmost cell of every slot — it's a text-mode separator whose background
-    // colour paints on top of the framebuffer and would clip any meter pixels there.
-    const drawW  = slotPW - CELL_PW
-    const halfW  = (drawW >>> 1) - METER_BAR_PAD
-    const stripW = drawW - 2 * METER_BAR_PAD + 1
+    // Use the voice column's full width (105px): the bar occupies the middle 100px with a 2px pad on
+    // the left and 3px on the right. The graphics banding (paintVoiceColBgRow) shows around/under it.
+    const halfW  = (COLSIZE_TIMELINE_FULL * CELL_PW - METER_PAD_L - METER_PAD_R) >>> 1  // 50
+    const stripW = 2 * halfW + 1                                                         // covers the widest centred bar
 
     for (let c = 0; c < VOCSIZE_TIMELINE_FULL; c++) {
         const voice = voiceOff + c
-        const slotX0 = (PTNVIEW_OFFSET_X + COLSIZE_TIMELINE_FULL * c) * CELL_PW
-        const xCenter = slotX0 + (drawW >>> 1)
-        const xStrip = slotX0 + METER_BAR_PAD
+        const bgCol = colColumnPattern[(voiceOff + c) % colColumnPattern.length]  // banding to restore under the bars
+        const slotX0 = (PTNVIEW_OFFSET_X + COLSIZE_TIMELINE_FULL * c - 1) * CELL_PW  // aligned to the text column
+        const xStrip = slotX0 + METER_PAD_L
+        const xCenter = xStrip + halfW
         const prev = meterPrevSlot[c]
 
         if (voice >= song.numVoices) {
             if (prev !== null) {
-                graphics.plotRect(xStrip, yPan, stripW, meterThickness, METER_TRANSPARENT)
-                graphics.plotRect(xStrip, yVol, stripW, meterThickness, METER_TRANSPARENT)
+                graphics.plotRect(xStrip, yPan, stripW, meterThickness, bgCol)
+                graphics.plotRect(xStrip, yVol, stripW, meterThickness, bgCol)
                 meterPrevSlot[c] = null
             }
             continue
@@ -1558,9 +1584,9 @@ function drawVoiceMeters() {
 
         if (prev !== null && prev.voice === voice && prev.vol === volPix && prev.pan === panPix) continue
 
-        // Clear both bar strips in this slot before redrawing.
-        graphics.plotRect(xStrip, yPan, stripW, meterThickness, METER_TRANSPARENT)
-        graphics.plotRect(xStrip, yVol, stripW, meterThickness, METER_TRANSPARENT)
+        // Clear both bar strips in this slot back to the column banding before redrawing.
+        graphics.plotRect(xStrip, yPan, stripW, meterThickness, bgCol)
+        graphics.plotRect(xStrip, yVol, stripW, meterThickness, bgCol)
         // Volume bar (grows from centre out). Silent voices show no bar.
         if (volPix > 0) {
             graphics.plotRect(xCenter - volPix, yVol, 2 * volPix + 1, meterThickness, METER_VOL_COL)
@@ -2171,7 +2197,7 @@ let cursorVox        = 0
 let timelineColCursor = 0   // sub-field within cursorVox (0=note,1=inst,2=vol,3=pan,4=fxop,5=fxarg)
 let ordersCursor    = 0
 let ordersScroll    = 0
-let ordersColCursor = 0   // 0=Cmd, 1..numVoices=voice columns
+let ordersColCursor = 0   // 0=Cmd1, 1=Cmd2, 2..numVoices+1=voice columns
 let ordersVoiceOff  = 0   // horizontal scroll for voice columns
 let patternIdx        = 0
 let patternListScroll = 0
@@ -2527,10 +2553,14 @@ function drawOrdersHeader() {
     con.color_pair(colVoiceHdr, 255)
     print('     ')   // 4-digit cue index + 1 space
     con.color_pair(colVoiceHdr, ordersColCursor === 0 ? colHighlight : 255)
-    print('Comand ')
+    print('Cmd1  ')
+    con.color_pair(colVoiceHdr, 255); print(' ')
+    con.color_pair(colVoiceHdr, ordersColCursor === 1 ? colHighlight : 255)
+    print('Cmd2  ')
+    con.color_pair(colVoiceHdr, 255); print(' ')
     for (let c = 0; c < VOCSIZE_ORDERS; c++) {
         const v = ordersVoiceOff + c
-        con.color_pair(colVoiceHdr, ordersColCursor === v + 1 ? colHighlight : 255)
+        con.color_pair(colVoiceHdr, ordersColCursor === v + 2 ? colHighlight : 255)
         print(v < song.numVoices ? `V${(v+1).dec02()}  ` : '     ')
     }
 }
@@ -2557,17 +2587,22 @@ function drawOrdersRowAt(ci) {
     print(ci.hex04())
     con.color_pair(colBackPtn, back)
     print(' ')
-    // CMD column — crosshair highlight at (ordersCursor, col 0)
-    const cmdBack = (isSel && ordersColCursor === 0) ? colPlayback : back
-    con.color_pair(cue.instr ? colStatus : colSep, cmdBack)
+    // CMD columns — Cmd1 (word0) at col 0, Cmd2 (word1) at col 1
+    const cmd0Back = (isSel && ordersColCursor === 0) ? colPlayback : back
+    con.color_pair(cue.instr ? colStatus : colSep, cmd0Back)
     print(cue.instr ? cueInstToStr(cue.instr) : '------')
+    con.color_pair(colBackPtn, back)
+    print(' ')
+    const cmd1Back = (isSel && ordersColCursor === 1) ? colPlayback : back
+    con.color_pair(cue.instr1 ? colStatus : colSep, cmd1Back)
+    print(cue.instr1 ? cueInstToStr(cue.instr1) : '------')
     con.color_pair(colBackPtn, back)
     print(' ')
     // Voice columns
     for (let c = 0; c < VOCSIZE_ORDERS; c++) {
         const v     = ordersVoiceOff + c
         const ptn   = v < song.numVoices ? cue.ptns[v] : CUE_EMPTY
-        const vBack = (isSel && ordersColCursor === v + 1) ? colPlayback : back
+        const vBack = (isSel && ordersColCursor === v + 2) ? colPlayback : back
         con.color_pair(ptn === CUE_EMPTY ? colSep : colStatus, vBack)
         print(ptn === CUE_EMPTY ? '----' : ptn.hex04())
         con.color_pair(colBackPtn, back)
@@ -2604,7 +2639,7 @@ function drawOrdersVoiceColumnAt(slot) {
                             : (isCur ? colPlayback : colBackPtn)
         const cue   = song.cues[ci]
         const ptn   = v < song.numVoices ? cue.ptns[v] : CUE_EMPTY
-        const vBack = (isSel && ordersColCursor === v + 1) ? colPlayback : back
+        const vBack = (isSel && ordersColCursor === v + 2) ? colPlayback : back
 
         con.move(y, x)
         con.color_pair(ptn === CUE_EMPTY ? colSep : colStatus, vBack)
@@ -2893,19 +2928,20 @@ function ordersInput(wo, event) {
     }
 
     // ── Cue editing (stopped only) ─────────────────────────────────────────────
-    // Command column (col 0): Enter opens the command popup.
-    // Voice columns (col >= 1): hex digits accumulate the pattern index, '-' clears
+    // Command columns (col 0 = Cmd1/word0, col 1 = Cmd2/word1): Enter opens the
+    // command popup for that slot.
+    // Voice columns (col >= 2): hex digits accumulate the pattern index, '-' clears
     // it to empty (0x7FFF), Backspace drops a digit. (Enter on a voice column falls
     // through to the "go to cue" handler below.)
-    if (keyJustHit && !shiftDown && ordersColCursor === 0 && keysym === '\n') {
-        openCueCmdPopup(ordersCursor); return
+    if (keyJustHit && !shiftDown && ordersColCursor <= 1 && keysym === '\n') {
+        openCueCmdPopup(ordersCursor, ordersColCursor); return   // slot 0 = Cmd1, slot 1 = Cmd2
     }
-    if (keyJustHit && ordersColCursor >= 1) {
+    if (keyJustHit && ordersColCursor >= 2) {
         let sc = event[3]; if (sc == 59) sc = event[4]; if (sc == 60) sc = event[5]
         const isEditKey = sc && (sc === keys.MINUS || sc === keys.BACKSPACE || scToHexNibble(sc) >= 0)
         if (isEditKey) {
             const oldMax = ordersMaxRow()
-            if (editCuePtn(ordersCursor, ordersColCursor - 1, sc, shiftDown)) {
+            if (editCuePtn(ordersCursor, ordersColCursor - 2, sc, shiftDown)) {
                 if (ordersMaxRow() !== oldMax) {
                     if (ordersCursor > ordersMaxRow()) ordersCursor = ordersMaxRow()
                     scrollOrdersTo(ordersCursor)
@@ -4382,10 +4418,11 @@ function clampCue() {
 }
 
 function clampOrdersHoriz() {
+    // Columns: 0 = Cmd1, 1 = Cmd2, then 2..numVoices+1 = voices (voice = col - 2).
     if (ordersColCursor < 0) ordersColCursor = 0
-    if (ordersColCursor > song.numVoices) ordersColCursor = song.numVoices
-    if (ordersColCursor >= 1) {
-        const v = ordersColCursor - 1
+    if (ordersColCursor > song.numVoices + 1) ordersColCursor = song.numVoices + 1
+    if (ordersColCursor >= 2) {
+        const v = ordersColCursor - 2
         if (v < ordersVoiceOff) ordersVoiceOff = v
         if (v >= ordersVoiceOff + VOCSIZE_ORDERS) ordersVoiceOff = v - VOCSIZE_ORDERS + 1
         if (ordersVoiceOff < 0) ordersVoiceOff = 0
@@ -4467,10 +4504,16 @@ HUB.switchToPanel         = switchToPanel
 HUB.getSong               = () => song
 HUB.getPlaybackMode       = () => playbackMode
 HUB.markUnsaved           = () => { hasUnsavedChanges = true }
-// Cue command-column editing (taut_popups openCueCmdPopup): read the current cue
-// instruction word and commit a new one (push to the audio adapter + mark dirty).
-HUB.getCueInstr           = (ci) => song.cues[ci].instr
-HUB.commitCueInstr        = (ci, instr) => { song.cues[ci].instr = instr & 0xFFFF; commitCue(ci) }
+// Cue command-column editing (taut_popups openCueCmdPopup): read/commit one of the
+// two per-cue instruction words. slot 0 = Cmd1 (cue.instr / word0), slot 1 = Cmd2
+// (cue.instr1 / word1). A cue can carry both (e.g. LEN + JMP; terranmon.txt §"Cue sheet").
+HUB.getCueInstr           = (ci, slot) => (slot ? song.cues[ci].instr1 : song.cues[ci].instr) | 0
+HUB.commitCueInstr        = (ci, slot, instr) => {
+    if (slot) song.cues[ci].instr1 = instr & 0xFFFF
+    else      song.cues[ci].instr  = instr & 0xFFFF
+    recomputeLastActiveCue()
+    commitCue(ci)
+}
 // In-process editor modals (openSampleEdit / openAdvancedInstEdit) call this each
 // frame to keep playback + blobs alive while open — the whole point of going
 // frame to keep playback + blobs alive while open — the whole point of going
@@ -4953,20 +4996,23 @@ function registerOrdersMouse() {
     // Layout (1-indexed cells, mirrors drawOrdersRowAt):
     //   cols 1..4   = row number (4 hex digits)  (no column meaning)
     //   col  5      = gap
-    //   cols 6..11  = CMD               (ordersColCursor = 0)
+    //   cols 6..11  = Cmd1              (ordersColCursor = 0)
     //   col  12     = gap
-    //   cols 13 + s*5 .. 13 + s*5 + 4   = voice slot s on screen
-    //                                     (ordersColCursor = ordersVoiceOff + s + 1)
+    //   cols 13..18 = Cmd2              (ordersColCursor = 1)
+    //   col  19     = gap
+    //   cols 20 + s*5 .. 20 + s*5 + 4   = voice slot s on screen
+    //                                     (ordersColCursor = ordersVoiceOff + s + 2)
     //
     // Returns the ordersColCursor value for a given cx, or -1 if not on a column.
     const colAtX = (cx) => {
-        if (cx >= ORDERS_CMD_X && cx < ORDERS_CMD_X + 6) return 0
+        if (cx >= ORDERS_CMD_X  && cx < ORDERS_CMD_X  + ORDERS_CMD_W) return 0
+        if (cx >= ORDERS_CMD2_X && cx < ORDERS_CMD2_X + ORDERS_CMD_W) return 1
         if (cx >= ORDERS_VOICE_X) {
             const slot = ((cx - ORDERS_VOICE_X) / ORDERS_VOICE_COL_W) | 0
             if (slot < 0 || slot >= VOCSIZE_ORDERS) return -1
             const v = ordersVoiceOff + slot
             if (v >= song.numVoices) return -1
-            return v + 1
+            return v + 2
         }
         return -1
     }

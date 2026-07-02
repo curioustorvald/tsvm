@@ -3256,8 +3256,8 @@ def main():
                          'default each instrument/patch gets a Volume Fadeout '
                          'reproducing its SF2 release segment (the full '
                          'releaseVolEnv), played out via NNA Note Fade')
-    ap.add_argument('--max-voices', type=int, default=20,
-                    help='Voice-column budget, 1..20 (default 20). NNA '
+    ap.add_argument('--max-voices', type=int, default=32,
+                    help='Voice-column budget, 1..32 (default 32). NNA '
                          'background ghosts carry release/ring tails, so '
                          'few foreground voices are needed; songs exceeding '
                          'the budget release the oldest pedal-held or '
@@ -3307,8 +3307,8 @@ def main():
 
     if args.speed is not None and not (1 <= args.speed <= 15):
         sys.exit("error: --speed must be 1..15")
-    if not (1 <= args.max_voices <= 20):
-        sys.exit("error: --max-voices must be 1..20")
+    if not (1 <= args.max_voices <= 32):
+        sys.exit("error: --max-voices must be 1..32")
     if not (1 <= args.max_layers <= 25):
         sys.exit("error: --max-layers must be 1..25")
     if not (0 <= args.mixing_vol <= 255):

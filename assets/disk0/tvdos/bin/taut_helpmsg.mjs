@@ -141,7 +141,7 @@ Timeline has two distinct modes: view and edit mode. Two modes are toggled using
 
 let helpCues = `<c>CUES VIEW</c>
 <c>\u00B7${'\u00B8'.repeat(9)}\u00B9</c>
-The cue sheet (order list) sequences patterns into a song. Each cue row plays the listed pattern of every voice at once; the command column drives playback flow.
+The cue sheet (order list) sequences patterns into a song. Each cue row plays the listed pattern of every voice at once; the two command columns (Cmd1, Cmd2) drive playback flow — a cue may carry up to two commands (e.g. a Pattern-length plus a Jump).
 
 <b>&nbsp;NAVIGATION</b>
 <b>\u00B7${'\u00B8'.repeat(11)}\u00B9</b>
@@ -155,7 +155,7 @@ The cue sheet (order list) sequences patterns into a song. Each cue row plays th
 &bul;<b>0</b>&ddot;<b>9</b> <b>a</b>&ddot;<b>f</b> : <O>(voice column) types the pattern number</O>
 &bul;<b>-</b> : <O>(voice column) clears the cell to empty</O>
 &bul;<b>bksp</b> : <O>(voice column) deletes one digit</O>
-&bul;<b>ent</b> : <O>(command column) opens the command editor (popup)</O>
+&bul;<b>ent</b> : <O>(Cmd1 / Cmd2 column) opens the command editor for that slot (popup)</O>
 A blank row past the last cue is always available so a new cue can be appended.
 
 <b>&nbsp;COMMANDS</b>
