@@ -11,9 +11,11 @@ const TAUD_HEADER_SIZE = 32
 const TAUD_SONG_ENTRY  = 32
 const PATTERN_SIZE     = 512
 const ROWS_PER_PAT     = 64
-const NUM_VOICES       = 32       // max voices per cue (v2 layout; v1 uses ≤20)
+const NUM_VOICES       = 64       // physical capacity: 64 in 64-channel mode; 32-ch songs use ≤32, v1 ≤20
 const CUE_EMPTY        = 0x7FFF   // canonical empty-pattern sentinel (v1's 0xFFF is normalised to this)
-// Per-version cue stride / count live inside parseTaud (v1: 32-byte/1024, v2: 64-byte/8192).
+const XHDR_FLAG        = 0x20     // version byte bit 5: Project Data carries an xHDR section
+// Per-version cue stride / count live inside parseTaud (v1: 32-byte/1024, v2: 64-byte/8192,
+// v2+64ch: 128-byte/4096). 64-channel mode is signalled by the xHDR section (terranmon §xHDR).
 
 // Cue instruction bytes (cue offset 30).
 const CUE_NOP    = 0x00
@@ -142,10 +144,35 @@ function parseTaud(path, songIndex) {
         }
     }
 
-    const fmtVer   = sys.peek(ptr + 8) & 0x3F   // format version = low six bits of the version byte
+    const verByte  = sys.peek(ptr + 8) & 0xFF
+    const fmtVer   = verByte & 0x1F             // format version = low five bits of the version byte
+    const hasXHDR  = (verByte & XHDR_FLAG) !== 0 // bit 5: an xHDR section is present in Project Data
     const numSongs = sys.peek(ptr + 9) & 0xFF
     const compSize = _peekU32LE(ptr, 10)
     const projOff  = _peekU32LE(ptr, 14)
+
+    // Resolve 64-channel mode from the xHDR section BEFORE decoding cues (the cue byte
+    // stride and channel count depend on it). Scan Project Data for the 'xHDR' FourCC;
+    // its Flags1 bit 0 selects 64-channel mode. A lone xHDR without the version bit is
+    // ignored (INVALID per terranmon §xHDR), so gate the scan on hasXHDR.
+    let is64 = false
+    if (hasXHDR && projOff !== 0 && projOff + 16 <= fileSize) {
+        const pm = [0x1E,0x54,0x61,0x75,0x64,0x50,0x72,0x4A]
+        let pok = true
+        for (let i = 0; i < 8; i++) if ((sys.peek(ptr + projOff + i) & 0xFF) !== pm[i]) { pok = false; break }
+        if (pok) {
+            let sp = projOff + 16
+            while (sp + 8 <= fileSize) {
+                const fc = String.fromCharCode(sys.peek(ptr+sp)&0xFF, sys.peek(ptr+sp+1)&0xFF,
+                                               sys.peek(ptr+sp+2)&0xFF, sys.peek(ptr+sp+3)&0xFF)
+                const sl = _peekU32LE(ptr, sp + 4)
+                if (sp + 8 + sl > fileSize) break
+                if (fc === 'xHDR' && sl >= 1) { is64 = (sys.peek(ptr + sp + 8) & 0x01) !== 0; break }
+                sp += 8 + sl
+            }
+        }
+    }
+    const cueChannels = is64 ? 64 : 32   // channels stored per v2 cue
 
     if (songIndex < 0 || songIndex >= numSongs) {
         sys.free(ptr)
@@ -185,14 +212,16 @@ function parseTaud(path, songIndex) {
     //   v2: 64-byte cue, 32 voices as little-endian Sint16 (low 15 bits = pattern,
     //       empty = 0x7FFF); the 16-bit instruction word rides on the sign bits of
     //       voices 0..15 (bit ch → word bit ch; word == (byte30 << 8) | byte31).
+    //   v2 + 64-channel: 128-byte cue, 64 voices; instruction words still on the sign
+    //       bits of channels 0..31 (§xHDR).
     // Both decode into the same canonical shape: ptns[0..NUM_VOICES-1] with
     // CUE_EMPTY (0x7FFF) for absent voices, plus i30/i31 instruction bytes.
     const isV2       = fmtVer >= 2
-    const cueStride  = isV2 ? 64 : 32
+    const cueStride  = isV2 ? (is64 ? 128 : 64) : 32
     // num_cues lives in song-entry bytes 26..27 (v2 only; 0 in a legacy v1 file).
     const numCuesFld = (sys.peek(ptr + entryOff + 26) & 0xFF) |
                        ((sys.peek(ptr + entryOff + 27) & 0xFF) << 8)
-    const cueCap     = isV2 ? (numCuesFld > 0 ? numCuesFld : 8192) : 1024
+    const cueCap     = isV2 ? (numCuesFld > 0 ? numCuesFld : (is64 ? 4096 : 8192)) : 1024
     const cuePtr     = sys.malloc(cueCap * cueStride)
     const cueBinSize = gzip.decompFromTo(ptr + songOff + patCompSize, cueCompSize, cuePtr)
     const numCues    = Math.min((cueBinSize / cueStride) | 0, cueCap)
@@ -201,11 +230,11 @@ function parseTaud(path, songIndex) {
     let lastCue = -1
     for (let c = 0; c < numCues; c++) {
         const base = cuePtr + c * cueStride
-        const ptns = new Array(NUM_VOICES)
+        const ptns = new Array(NUM_VOICES).fill(CUE_EMPTY)
         let i30, i31
         if (isV2) {
             let word0 = 0
-            for (let ch = 0; ch < NUM_VOICES; ch++) {
+            for (let ch = 0; ch < cueChannels; ch++) {
                 const raw = (sys.peek(base + ch*2) & 0xFF) | ((sys.peek(base + ch*2 + 1) & 0xFF) << 8)
                 ptns[ch]  = raw & 0x7FFF                              // 0x7FFF == CUE_EMPTY
                 if (ch < 16 && (raw & 0x8000)) word0 |= (1 << ch)    // instruction bit on the sign

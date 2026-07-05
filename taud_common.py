@@ -109,10 +109,18 @@ PATTERN_BYTES    = PATTERN_ROWS * 8     # 512
 # 32767 distinct patterns. Cues are 64 bytes = 32 little-endian Sint16 (one per channel);
 # the sign bits encode two per-cue instruction words. The engine holds 8192 cues (4 banks).
 NUM_PATTERNS_MAX = 32767            # max distinct patterns (indices 0..32766)
-NUM_CUES         = 8192            # 4 banks × 2048 cues
+NUM_CUES         = 8192            # 4 banks × 2048 cues (32-channel mode)
 CUE_SIZE         = 64             # bytes per cue entry (32 × Sint16)
 NUM_VOICES       = 32
 CUE_EMPTY        = 0x7FFF          # pattern-number sentinel: no pattern on this channel
+# 64-channel mode (terranmon.txt §xHDR / :2039-2053): a cue spans two 64-byte "rows" =
+# 128 bytes / 64 channels, so a 128 K bank holds 1024 cues (4096 total). Instruction words
+# still ride the sign bits of channels 0..31 (row 0); channels 32..63 carry none. The mode
+# is signalled by an xHDR Project-Data section (Flags1 bit 0) and the version byte's bit 5.
+MAX_VOICES       = 64
+CUE_SIZE_64      = 128            # bytes per cue entry (64 × Sint16)
+NUM_CUES_64      = 4096           # 4 banks × 1024 cues (64-channel mode)
+XHDR_FLAG        = 0x20           # version byte bit 5: Project Data carries an xHDR section
 
 # Per-sample length cap. Taud instrument records carry the sample length as
 # a u16 (terranmon.txt:2001+ — bytes 4..5), so any single sample must fit in
@@ -457,67 +465,75 @@ def _inst_to_word(instruction) -> int:
     return ((b30 & 0xFF) << 8) | (b31 & 0xFF)
 
 
-def encode_cue(patterns, instruction=0, instruction1=None) -> bytearray:
-    """Encode a 64-byte cue entry for up to 32 voices (terranmon.txt §"Cue sheet").
+def encode_cue(patterns, instruction=0, instruction1=None, num_voices=NUM_VOICES) -> bytearray:
+    """Encode a cue entry for up to `num_voices` channels (terranmon.txt §"Cue sheet").
 
-    The cue is 32 little-endian Sint16, one per channel: low 15 bits = pattern
-    number (0..0x7FFE; CUE_EMPTY = 0x7FFF = no pattern on this channel), sign bit =
-    one bit of an instruction word. Sign bits of channels 0..15 form `instruction`
-    (word 0); sign bits of channels 16..31 form `instruction1` (word 1). Each word
-    uses the same layout as the legacy byte30/byte31 pair. Most callers emit a
-    single instruction (word 0) and leave word 1 as NOP.
+    The cue is `num_voices` little-endian Sint16, one per channel (64 bytes for the
+    default 32 channels; 128 bytes for 64-channel mode): low 15 bits = pattern number
+    (0..0x7FFE; CUE_EMPTY = 0x7FFF = no pattern on this channel), sign bit = one bit of
+    an instruction word. Sign bits of channels 0..15 form `instruction` (word 0);
+    16..31 form `instruction1` (word 1); channels 32..63 (64-channel mode) carry no
+    instruction bit. Each word uses the same layout as the legacy byte30/byte31 pair.
+    Most callers emit a single instruction (word 0) and leave word 1 as NOP.
     """
-    pats = list(patterns) + [CUE_EMPTY] * NUM_VOICES
-    pats = pats[:NUM_VOICES]
+    pats = list(patterns) + [CUE_EMPTY] * num_voices
+    pats = pats[:num_voices]
     word0 = _inst_to_word(instruction)
     word1 = _inst_to_word(instruction1) if instruction1 is not None else 0
-    entry = bytearray(CUE_SIZE)
-    for ch in range(NUM_VOICES):
+    entry = bytearray(num_voices * 2)
+    for ch in range(num_voices):
         val = pats[ch] & 0x7FFF
         if ch < 16:
-            if (word0 >> ch) & 1:        val |= 0x8000
-        else:
-            if (word1 >> (ch - 16)) & 1: val |= 0x8000
+            if (word0 >> ch) & 1:                    val |= 0x8000
+        elif ch < 32:
+            if (word1 >> (ch - 16)) & 1:             val |= 0x8000
         entry[ch*2]     = val & 0xFF
         entry[ch*2 + 1] = (val >> 8) & 0xFF
     return entry
 
 
-# A fully-empty cue: every channel CUE_EMPTY, both instruction words NOP.
-EMPTY_CUE = bytes(encode_cue([], 0))
+# A fully-empty cue: every channel CUE_EMPTY, both instruction words NOP. Two widths:
+# 64-byte (32-channel) and 128-byte (64-channel mode).
+EMPTY_CUE    = bytes(encode_cue([], 0))
+EMPTY_CUE_64 = bytes(encode_cue([], 0, num_voices=MAX_VOICES))
 
 
-def set_cue_instruction(sheet: bytearray, cue_idx: int, instruction, instruction1=None) -> None:
+def set_cue_instruction(sheet: bytearray, cue_idx: int, instruction, instruction1=None,
+                        num_voices=NUM_VOICES) -> None:
     """Overlay instruction words onto an already-encoded cue's channel sign bits.
 
     Replaces the legacy `sheet[cue*CUE_SIZE + 30] = ...` poke: the instruction no
     longer occupies dedicated bytes, so we set the sign bit of each affected
-    channel's Sint16 in place, leaving the pattern numbers intact.
+    channel's Sint16 in place, leaving the pattern numbers intact. Instruction bits
+    only ride channels 0..31 (both 32- and 64-channel modes).
     """
     word0 = _inst_to_word(instruction)
     word1 = _inst_to_word(instruction1) if instruction1 is not None else 0
-    base = cue_idx * CUE_SIZE
-    for ch in range(NUM_VOICES):
+    cue_size = num_voices * 2
+    base = cue_idx * cue_size
+    for ch in range(min(32, num_voices)):
         bit = ((word0 >> ch) & 1) if ch < 16 else ((word1 >> (ch - 16)) & 1)
         hi = base + ch*2 + 1
         sheet[hi] = (sheet[hi] & 0x7F) | (0x80 if bit else 0x00)
 
 
-def finalize_cue_sheet(sheet: bytearray) -> tuple:
+def finalize_cue_sheet(sheet: bytearray, num_voices=NUM_VOICES) -> tuple:
     """Trim trailing empty cues and return (trimmed_bytes, num_cues).
 
     A cue is "empty" only when every channel is CUE_EMPTY and both instruction
-    words are NOP (byte-identical to EMPTY_CUE). Only TRAILING empties are dropped
-    so interior rests survive; at least one cue is always kept. `num_cues` is the
-    kept count, to be stored in the song table (terranmon.txt §"Song Table").
+    words are NOP. Only TRAILING empties are dropped so interior rests survive; at
+    least one cue is always kept. `num_cues` is the kept count, to be stored in the
+    song table (terranmon.txt §"Song Table"). Cue width follows `num_voices`.
     """
-    n = len(sheet) // CUE_SIZE
+    cue_size = num_voices * 2
+    empty = EMPTY_CUE_64 if num_voices > NUM_VOICES else EMPTY_CUE
+    n = len(sheet) // cue_size
     last = 0
     for ci in range(n):
-        if bytes(sheet[ci*CUE_SIZE:(ci+1)*CUE_SIZE]) != EMPTY_CUE:
+        if bytes(sheet[ci*cue_size:(ci+1)*cue_size]) != empty:
             last = ci
     num_cues = last + 1
-    return bytes(sheet[:num_cues * CUE_SIZE]), num_cues
+    return bytes(sheet[:num_cues * cue_size]), num_cues
 
 
 def cue_instruction_len(rows: int) -> tuple:
@@ -983,12 +999,17 @@ def build_project_data(*, project_name: str = '',
                        instrument_names=None,
                        pattern_names=None,
                        song_metadata=None,
-                       ixmp_patches=None) -> bytes:
+                       ixmp_patches=None,
+                       is_64channel: bool = False) -> bytes:
     """Build the optional PROJECT DATA section payload.
 
     Returns the full block (8-byte magic + 8 reserved bytes + concatenated
     FourCC sections), or b'' when there's nothing to write so the caller can
     leave the header's projOff field at zero.
+
+    When `is_64channel` is set, an xHDR (Extended header) section is emitted with
+    Flags1 bit 0 (64-channel mode) — the caller MUST also set the version byte's
+    xHDR bit (0x20). This forces a non-empty block even with no other sections.
 
     `sample_names` / `instrument_names` / `pattern_names` are slot-indexed
     lists (entry 0 is typically empty since slot 0 is reserved); they are
@@ -1009,6 +1030,11 @@ def build_project_data(*, project_name: str = '',
         if not payload:
             return
         sections.append(fourcc + struct.pack('<I', len(payload)) + payload)
+
+    # xHDR (Extended header) leads when 64-channel mode is on: Flags1 bit 0 = 64ch,
+    # then 255 reserved bytes (terranmon.txt §xHDR).
+    if is_64channel:
+        add(b'xHDR', bytes([0x01]) + b'\x00' * 255)
 
     if project_name:
         add(b'PNam', project_name.encode('utf-8', 'replace'))

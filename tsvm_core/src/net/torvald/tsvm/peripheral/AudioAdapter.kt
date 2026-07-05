@@ -205,11 +205,22 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         // selects the bank) instead of the obsolete MMIO 32768..65535 region. Each cue is
         // 64 bytes = 32 little-endian Sint16 (one per channel); the low 15 bits hold the
         // pattern number, the sign bit is one bit of a per-cue instruction word.
-        const val NUM_VOICES = 32                            // channels per cue / voices per playhead
-        const val NUM_CUES_PER_BANK = 2048                   // cues addressable through one 128 K window
+        //
+        // 64-CHANNEL MODE (terranmon.txt:2039-2053, §xHDR): when the device flag
+        // [is64ChannelMode] is set, a cue spans TWO 64-byte "rows" (128 bytes / 64 channels)
+        // so a bank holds 1024 cues instead of 2048. The two-instruction limit is preserved:
+        // the sign bits of channels 0..31 (the first row) still carry instruction words 0/1;
+        // the sign bits of channels 32..63 (the second row) encode nothing. Physical voice /
+        // cue storage is always sized for the 64-channel worst case (MAX_VOICES); 32-channel
+        // playback simply leaves the upper half inactive.
+        const val NUM_VOICES = 32                            // default (32-channel) channels per cue / voices
+        const val MAX_VOICES = 64                            // physical capacity (64-channel mode)
+        const val NUM_CUES_PER_BANK = 2048                   // 32-ch: cues addressable through one 128 K window
+        const val NUM_CUES_PER_BANK_64 = 1024                // 64-ch: half as many (128-byte cues)
         const val CUE_BANK_COUNT = 4                         // MMIO 47 selects bank 0..3
-        const val NUM_CUES = NUM_CUES_PER_BANK * CUE_BANK_COUNT   // 8192 total cues
-        const val CUE_BYTES = NUM_VOICES * 2                 // 64 bytes / cue
+        const val NUM_CUES = NUM_CUES_PER_BANK * CUE_BANK_COUNT   // 8192 cue slots (array capacity; also 32-ch max)
+        const val CUE_BYTES = NUM_VOICES * 2                 // 64 bytes / cue (32-ch); 64-ch uses 128
+        const val CUE_BYTES_64 = MAX_VOICES * 2              // 128 bytes / cue (64-ch)
         const val CUE_BANK_MASK = CUE_BANK_COUNT - 1
         // Pattern store: 15-bit pattern numbers (terranmon cue low 15 bits). Valid indices
         // 0..32766; 0x7FFF is the "no pattern on this channel" sentinel.
@@ -371,6 +382,19 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     internal val playheads: Array<Playhead>
     internal val cueSheet = Array(NUM_CUES) { PlayCue() }
     @Volatile var cueBank: Int = 0  // 0..3, selects which 2048-cue page the 524288 window exposes (MMIO 47)
+
+    // 64-channel mode (terranmon.txt §xHDR / :2039-2053). Device-global because the cue sheet
+    // and its 128 K memory window are shared across playheads (a song is never split across
+    // playheads). Set by the loader (AudioJSR223Delegate.set64ChannelMode, driven from the
+    // file's xHDR flag) or MMIO 49 bit 0. Governs the active channel count, the cue byte stride
+    // and cues-per-bank of the memory window — the physical storage stays sized for 64 either way.
+    @Volatile var is64ChannelMode: Boolean = false
+    /** Active channel/voice count for playback: 64 in 64-channel mode, else 32. */
+    fun channelCount(): Int = if (is64ChannelMode) MAX_VOICES else NUM_VOICES
+    /** Bytes per cue in the memory window / file image: 128 in 64-channel mode, else 64. */
+    fun cueByteStride(): Int = if (is64ChannelMode) CUE_BYTES_64 else CUE_BYTES
+    /** Cues addressable through one 128 K bank window: 1024 in 64-channel mode, else 2048. */
+    fun cuesPerBank(): Int = if (is64ChannelMode) NUM_CUES_PER_BANK_64 else NUM_CUES_PER_BANK
     internal val pcmBin = arrayOf(
         UnsafeHelper.allocate(65536L, this),
         UnsafeHelper.allocate(65536L, this),
@@ -542,7 +566,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     override fun peek(addr: Long): Byte {
         return when (val adi = addr.toInt()) {
             in 0..524287 -> sampleBin[sampleBank * SAMPLE_BANK_SIZE + addr]
-            in 524288..655359 -> (adi - 524288).let { cueSheet[cueBank * NUM_CUES_PER_BANK + it / CUE_BYTES].read(it % CUE_BYTES) }  // cue sheet (banked, MMIO 47)
+            in 524288..655359 -> (adi - 524288).let { val cb = cueByteStride(); cueSheet[cueBank * cuesPerBank() + it / cb].read(it % cb) }  // cue sheet (banked, MMIO 47)
             in 655360..720895 -> (adi - 655360).let { instruments[256 + auxBank * 256 + it / 256].getByte(it % 256) }  // aux bin $100..$3FF (banked, MMIO 48)
             in 720896..786431 -> (adi - 720896).let { instruments[it / 256].getByte(it % 256) }
             in 786432..851967 -> { val off = adi - 786432; patternRead(playheads[0].patBank1 * 128 + off / 512)[(off % 512) / 8].getByte(off % 8) }
@@ -558,7 +582,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         val bi = byte.toUint()
         when (adi) {
             in 0..524287 -> { sampleBin[sampleBank * SAMPLE_BANK_SIZE + addr] = byte }
-            in 524288..655359 -> (adi - 524288).let { cueSheet[cueBank * NUM_CUES_PER_BANK + it / CUE_BYTES].write(it % CUE_BYTES, bi) }  // cue sheet (banked, MMIO 47)
+            in 524288..655359 -> (adi - 524288).let { val cb = cueByteStride(); cueSheet[cueBank * cuesPerBank() + it / cb].write(it % cb, bi) }  // cue sheet (banked, MMIO 47)
             in 655360..720895 -> (adi - 655360).let { instruments[256 + auxBank * 256 + it / 256].setByte(it % 256, bi) }  // aux bin $100..$3FF (banked, MMIO 48)
             in 720896..786431 -> (adi - 720896).let { instruments[it / 256].setByte(it % 256, bi) }
             in 786432..851967 -> { val off = adi - 786432; patternFor(playheads[0].patBank1 * 128 + off / 512)[(off % 512) / 8].setByte(off % 8, bi) }
@@ -584,16 +608,17 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             46 -> sampleBank.toByte()
             47 -> cueBank.toByte()   // cue-sheet bank (0..3) for the 524288 window
             48 -> auxBank.toByte()   // auxiliary instrument-bin bank (0..2) for the 655360 window
+            49 -> (if (is64ChannelMode) 1 else 0).toByte()   // channel mode: bit 0 = 64-channel
             in 64..2367 -> mediaDecodedBin[addr - 64]
             in 2368..4095 -> mediaFrameBin[addr - 2368]
             in 4096..4097 -> 0
             // Per-voice fader (0 = unity, 255 = silence): 256 bytes per playhead, only the first
-            // NUM_VOICES entries map to live voice slots; the rest read 0.
+            // MAX_VOICES entries map to live voice slots; the rest read 0.
             in 4098..5121 -> {
                 val off = adi - 4098
                 val ph = off ushr 8           // playhead index 0..3
                 val v = off and 0xFF          // voice index 0..255
-                if (v < NUM_VOICES) (playheads[ph].trackerState?.voices?.getOrNull(v)?.fader ?: 0).toByte()
+                if (v < MAX_VOICES) (playheads[ph].trackerState?.voices?.getOrNull(v)?.fader ?: 0).toByte()
                 else 0.toByte()
             }
             // 32768..65535 was the legacy 1024-cue MMIO cue sheet (20 voices, 12-bit patterns);
@@ -631,13 +656,14 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             46 -> sampleBank = bi and SAMPLE_BANK_MASK
             47 -> cueBank = bi and CUE_BANK_MASK   // cue-sheet bank; 4 pages cover 8192 cues
             48 -> auxBank = bi.coerceIn(0, 2)   // aux instrument-bin bank; 3 pages cover $100..$3FF
-            // Per-voice fader writes: see mmio_read for layout. Indices NUM_VOICES..255 are accepted
+            49 -> is64ChannelMode = (bi and 1) != 0   // channel mode: bit 0 = 64-channel (terranmon §xHDR)
+            // Per-voice fader writes: see mmio_read for layout. Indices MAX_VOICES..255 are accepted
             // but ignored so software can stride 256 bytes per playhead without bounds-checking.
             in 4098..5121 -> {
                 val off = adi - 4098
                 val ph = off ushr 8
                 val v = off and 0xFF
-                if (v < NUM_VOICES) {
+                if (v < MAX_VOICES) {
                     playheads[ph].trackerState?.voices?.getOrNull(v)?.fader = bi
                 }
             }
@@ -2925,7 +2951,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         if (!ts.patternDelayActive) ts.sexWinningChannel = -1
         ts.finePatternDelayExtra = 0
 
-        for (vi in 0 until NUM_VOICES) {
+        for (vi in 0 until channelCount()) {
             val patNum = cue.pattern(vi)
             if (patNum == PATTERN_EMPTY) continue
             val patIdx = patNum.coerceIn(0, NUM_PATTERNS - 1)
@@ -4296,7 +4322,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     internal fun jamNote(ph: Playhead, vi: Int, note: Int, inst: Int) {
         if (ph.isPcmMode) return
         val ts = ph.trackerState ?: return
-        val v = vi.coerceIn(0, NUM_VOICES - 1)
+        val v = vi.coerceIn(0, MAX_VOICES - 1)
         triggerMetaOrNote(ts, ts.voices[v], v, note, inst, -1)
         ph.jamActive = true
     }
@@ -4385,7 +4411,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
      */
     internal class PlayCue(
         // Full 16-bit value per channel (patternNumber | signBit<<15). 0x7FFF = empty, sign 0.
-        val raw: IntArray = IntArray(NUM_VOICES) { PATTERN_EMPTY },
+        // Always sized for MAX_VOICES (64); 32-channel songs leave channels 32..63 empty.
+        val raw: IntArray = IntArray(MAX_VOICES) { PATTERN_EMPTY },
     ) {
         var inst0: PlayInstruction = PlayInstNop
             private set
@@ -4856,7 +4883,9 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         var tickInRow = 0
         var samplesIntoTick = 0.0
         var firstRow = true
-        val voices = Array(NUM_VOICES) { Voice() }
+        // Always MAX_VOICES (64) so 64-channel mode has slots for every channel; 32-channel
+        // playback only ever triggers voices 0..31 (channelCount()) and leaves the rest idle.
+        val voices = Array(MAX_VOICES) { Voice() }
 
         // Global mixer config (effect 1). Panning law is fixed to the equal-energy.
         // Tone-slide mode for E / F / G effects (terranmon.txt §Song Table flags byte):

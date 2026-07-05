@@ -486,17 +486,24 @@ class AudioJSR223Delegate(private val vm: VM) {
         for (i in 0 until minOf(512, bytes.size)) pat[i / 8].setByte(i % 8, bytes[i] and 0xFF)
     }
 
-    /** Upload 64 bytes defining cue entry `idx` (0..8191): 32 little-endian Sint16, one per
-     *  channel — low 15 bits = pattern number, sign bit = instruction bit (terranmon.txt §"Cue sheet"). */
+    /** Upload one cue entry `idx` (0..8191): little-endian Sint16 per channel — low 15 bits =
+     *  pattern number, sign bit = instruction bit (terranmon.txt §"Cue sheet"). Consumes 64 bytes
+     *  (32 channels) normally, or 128 bytes (64 channels) in 64-channel mode. */
     fun uploadCue(idx: Int, bytes: IntArray) {
-        getFirstSnd()?.cueSheet?.get(idx and (AudioAdapter.NUM_CUES - 1))?.let { cue ->
-            for (i in 0 until minOf(AudioAdapter.CUE_BYTES, bytes.size)) cue.write(i, bytes[i] and 0xFF)
+        val ad = getFirstSnd() ?: return
+        ad.cueSheet.get(idx and (AudioAdapter.NUM_CUES - 1)).let { cue ->
+            for (i in 0 until minOf(ad.cueByteStride(), bytes.size)) cue.write(i, bytes[i] and 0xFF)
         }
     }
 
     /** Cue-sheet bank exposed by the 524288 memory window (0..3); mirrors MMIO 47. */
     fun setCueBank(bank: Int) { getFirstSnd()?.cueBank = bank and (AudioAdapter.CUE_BANK_COUNT - 1) }
     fun getCueBank(): Int = getFirstSnd()?.cueBank ?: 0
+
+    /** 64-channel mode (terranmon.txt §xHDR): when enabled, cues span 64 channels / 128 bytes
+     *  and playheads run 64 voices. Driven by the loader from the file's xHDR flag; mirrors MMIO 49. */
+    fun set64ChannelMode(enabled: Boolean) { getFirstSnd()?.is64ChannelMode = enabled }
+    fun is64ChannelMode(): Boolean = getFirstSnd()?.is64ChannelMode ?: false
 
     fun setTrackerMixerFlags(playhead: Int, flags: Int) {
         getFirstSnd()?.playheads?.get(playhead)?.let { ph ->

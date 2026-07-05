@@ -2050,7 +2050,7 @@ Memory Space
                         A cue may therefore carry up to two instructions (e.g. LEN + JMP).
                         BAK / FWD / JMP arguments stay 12-bit (0..4095) even though the
                         sheet holds 8192 cues.
-                        In 64-channel mode, two "rows" encode one cue, the two-instruction limit is maintained (sign bits of every even row don't encode anything). 64-channel mode is RESERVED and not implemented by the current engine.
+                        In 64-channel mode, two "rows" encode one cue (128 bytes / 64 channels), the two-instruction limit is maintained (sign bits of every second row -- channels 32..63 -- don't encode anything). A 128k bank therefore holds 1024 cues (4096 total). 64-channel mode is selected by the xHDR section's Flags1 bit 0 (see Project Data) and is implemented by the engine (device flag / MMIO 49 bit 0), Taut editor and Playtaud as of 2026-07-03.
 
     ## Instruction (16-bit word; byte30 = word>>8, byte31 = word&0xFF)
         1000xxxx yyyyyyyy (BAK) - Go back 0bxxxxyyyyyyyy cues
@@ -3096,6 +3096,7 @@ Audio Adapter MMIO
 46 RW: Select current sample bank for tracker, exposed at memory space 0..524287 (512k*16)
 47 RW: Select current cue sheet bank for tracker, exposed at memory space 524288..655359 (128k*4)
 48 RW: Select current aux inst bank for tracker, exposed at memory space 655360..720895 (64k*3)
+49 RW: Channel mode. Bit 0: 0 = 32-channel (default), 1 = 64-channel (cues span two rows / 128 bytes, 64 voices per playhead). Set by the loader from the file's xHDR flag. Other bits RESERVED.
 
 64..2367 RW: MP2 Decoded Samples (unsigned 8-bit stereo)
 2368..4095 RW: MP2 Frame to be decoded
@@ -3268,15 +3269,19 @@ Endianness: Little
 
 ## Header
     Byte[8] Magic
-    Uint8   Format version (low six bits; top two bits = container kind, see .tsii/.tpif)
-                1 = legacy cue sheet (20 voices, 12-bit pattern numbers, 32-byte cues)
-                2 = extended cue sheet (2026-07-01): 32 voices, 15-bit pattern numbers,
+    Uint8   Format version (low five bits; top two bits = container kind, see .tsii/.tpif)
+            0b kk x vvvvv
+                v=1: legacy cue sheet (20 voices, 12-bit pattern numbers, 32-byte cues)
+                v=2: extended cue sheet (2026-07-01): 32 voices, 15-bit pattern numbers,
                     64-byte cues with sign-bit instructions (see "Cue sheet" above and
                     "Pattern Bin and Cue Sheet" below). Loaders translate a v1 cue image
                     into the v2 engine layout on load.
+                x set: has xHDR section on the Project Data. The application must also read this block.
+                       If this flag is unset but xHDR section is found, it's considered INVALID.
+                kk: container kind
     Uint8   Number of songs in SONG TABLE
     Uint32  Compressed size of SAMPLE+INST section (used to calculate offset to SONG TABLE)
-    Uint32  Offset to Project Data. Zero if Project Data is nonexistent
+    Uint32  Offset to Project Data. Zero if Project Data is nonexistent. If any Project Data exists but this field is zero, it's considered INVALID.
     Byte[14]Tracker/Converter signature
 
 ## Sample and Instrument bin image
@@ -3345,6 +3350,13 @@ prefixes:
 - p: Pattern
 - S: Sample
 - s: Song
+
+* xHDR. Extended header.
+    Only the format version 2 and later Taud files can have this section. Otherwise it's considered INVALID.
+    Uint8      Flags1
+        0b 0000 000 c
+            c: is 64 channel mode
+    Byte[255] Reserved
 
 * PCom. Project author. Encoding: UTF-8
 * PCpr. Project copyright string. Encoding: UTF-8

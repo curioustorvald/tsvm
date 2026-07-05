@@ -864,16 +864,21 @@ function drawCellAtStyled(y, x, cell, back, style) {
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
 const TAUD_MAGIC       = [0x1F,0x54,0x53,0x56,0x4D,0x61,0x75,0x64]
-const TAUD_VERSION_MASK = 0x3F   // low six bits of the version byte hold the format version
+const TAUD_VERSION_MASK = 0x1F   // low five bits of the version byte hold the format version
+const XHDR_FLAG        = 0x20    // version bit 5: Project Data carries an xHDR section (§xHDR)
 const TAUD_HEADER_SIZE = 32
 const TAUD_SONG_ENTRY  = 32
 const PATTERN_SIZE     = 512
 const ROWS_PER_PAT     = 64
 // Extended cue sheet (v2): 32 voices, 15-bit pattern numbers, 64-byte cues with
-// sign-bit instructions (terranmon.txt §"Cue sheet").
+// sign-bit instructions (terranmon.txt §"Cue sheet"). 64-channel mode (§xHDR) doubles
+// the cue to 128 bytes / 64 channels; cue.ptns arrays are always MAX_VOICES-wide and
+// the active count comes from song.numVoices (32 or 64).
 const NUM_CUES         = 8192
-const CUE_SIZE         = 64
-const NUM_VOICES       = 32
+const CUE_SIZE         = 64      // bytes per cue (32 channels); 64-channel mode uses CUE_SIZE_64
+const CUE_SIZE_64      = 128     // bytes per cue (64 channels)
+const NUM_VOICES       = 32      // default (32-channel) channel count for new projects
+const MAX_VOICES       = 64      // physical capacity — cue.ptns / per-voice arrays are this wide
 const CUE_EMPTY        = 0x7FFF
 // Legacy v1 cue sheet (for loading pre-2026-07-01 files).
 const NUM_CUES_V1      = 1024
@@ -881,11 +886,37 @@ const CUE_SIZE_V1      = 32
 const NUM_VOICES_V1    = 20
 const CUE_EMPTY_V1     = 0xFFF
 
+// True while the current project is a 64-channel song. Set from the loaded file's xHDR
+// flag (loadTaud), from buildEmptySong for a new project, and mirrored to the engine via
+// audio.set64ChannelMode. Drives the cue byte stride and channel-scan bounds.
+let is64Channel = false
+// Bytes in one cue for the current mode (64 or 128).
+function curCueBytes() { return is64Channel ? CUE_SIZE_64 : CUE_SIZE }
+
 function _peekU32LE(ptr, off) {
     return ((sys.peek(ptr+off)   & 0xFF)       ) |
            ((sys.peek(ptr+off+1) & 0xFF) <<  8 ) |
            ((sys.peek(ptr+off+2) & 0xFF) << 16 ) |
            ((sys.peek(ptr+off+3) & 0xFF) * 0x1000000)
+}
+
+// Scan Project Data for the xHDR (Extended header) section's 64-channel flag. Only
+// meaningful when the version byte's xHDR bit is set (a lone xHDR without it is INVALID
+// per terranmon §xHDR). Returns true when Flags1 bit 0 is set. (§xHDR)
+function _readXHDR64Flag(ptr, projOff, fileSize) {
+    if (!projOff || projOff + 16 > fileSize) return false
+    const pm = [0x1E,0x54,0x61,0x75,0x64,0x50,0x72,0x4A]  // \x1ETaudPrJ
+    for (let i = 0; i < 8; i++) if ((sys.peek(ptr + projOff + i) & 0xFF) !== pm[i]) return false
+    let p = projOff + 16
+    while (p + 8 <= fileSize) {
+        const fc = String.fromCharCode(sys.peek(ptr+p)&0xFF, sys.peek(ptr+p+1)&0xFF,
+                                       sys.peek(ptr+p+2)&0xFF, sys.peek(ptr+p+3)&0xFF)
+        const sl = _peekU32LE(ptr, p + 4)
+        if (p + 8 + sl > fileSize) break
+        if (fc === 'xHDR' && sl >= 1) return (sys.peek(ptr + p + 8) & 0x01) !== 0
+        p += 8 + sl
+    }
+    return false
 }
 
 function loadTaud(filePath, songIndex) {
@@ -912,6 +943,12 @@ function loadTaud(filePath, songIndex) {
     const version  = sys.peek(ptr + 8) & 0xFF
     const numSongs = sys.peek(ptr + 9) & 0xFF
     const compSize = _peekU32LE(ptr, 10)
+    const projOff  = _peekU32LE(ptr, 14)
+
+    // 64-channel mode: the version byte's xHDR bit (0x20) points at an Extended header
+    // in Project Data whose Flags1 bit 0 selects it. Governs the cue byte stride below.
+    const is64File = ((version & XHDR_FLAG) !== 0) && _readXHDR64Flag(ptr, projOff, fileSize)
+    const cueChannels = is64File ? MAX_VOICES : NUM_VOICES
 
     if (songIndex < 0 || songIndex >= numSongs) {
         sys.free(ptr)
@@ -955,14 +992,15 @@ function loadTaud(filePath, songIndex) {
     sys.free(patBinPtr)
 
     // Decompress cue sheet. Format v2 = 64-byte cues (32 Sint16, low 15 bits = pattern,
-    // sign bit = instruction-word bit); legacy v1 = 32-byte cues (20×12-bit + byte30/31).
-    // The v2 cue count is in the song-table num_cues field (bytes 26..27); fall back to
-    // deriving it from the decompressed size.
+    // sign bit = instruction-word bit), or 128-byte cues (64 channels) in 64-channel mode;
+    // legacy v1 = 32-byte cues (20×12-bit + byte30/31). The v2 cue count is in the
+    // song-table num_cues field (bytes 26..27); fall back to deriving from decompressed size.
     const fmtVer     = version & TAUD_VERSION_MASK
     const isV2       = fmtVer >= 2
-    const cueStride  = isV2 ? CUE_SIZE : CUE_SIZE_V1
+    const v2CueBytes = is64File ? CUE_SIZE_64 : CUE_SIZE
+    const cueStride  = isV2 ? v2CueBytes : CUE_SIZE_V1
     const numCuesFld = (sys.peek(ptr + entryOff + 26) & 0xFF) | ((sys.peek(ptr + entryOff + 27) & 0xFF) << 8)
-    const cueBufSize = isV2 ? ((numCuesFld > 0 ? numCuesFld : NUM_CUES) * CUE_SIZE) : (NUM_CUES_V1 * CUE_SIZE_V1)
+    const cueBufSize = isV2 ? ((numCuesFld > 0 ? numCuesFld : NUM_CUES) * v2CueBytes) : (NUM_CUES_V1 * CUE_SIZE_V1)
     const cueSheetPtr = sys.malloc(cueBufSize)
     const cueBinSize  = gzip.decompFromTo(ptr + songOff + patBinCompSize, cueSheetCompSize, cueSheetPtr)
     const numCuesFile = Math.min((cueBinSize / cueStride) | 0, NUM_CUES)
@@ -970,16 +1008,17 @@ function loadTaud(filePath, songIndex) {
     const cues = new Array(NUM_CUES)
     let lastActiveCue = -1
     for (let c = 0; c < NUM_CUES; c++) {
-        const ptns = new Array(NUM_VOICES).fill(CUE_EMPTY)
+        const ptns = new Array(MAX_VOICES).fill(CUE_EMPTY)
         let instr = 0, instr1 = 0
         if (c < numCuesFile) {
             if (isV2) {
-                const raw = new Array(NUM_VOICES)
-                for (let ch = 0; ch < NUM_VOICES; ch++) {
-                    raw[ch] = (sys.peek(cueSheetPtr + c * CUE_SIZE + ch*2)     & 0xFF) |
-                             ((sys.peek(cueSheetPtr + c * CUE_SIZE + ch*2 + 1) & 0xFF) << 8)
+                const raw = new Array(cueChannels)
+                for (let ch = 0; ch < cueChannels; ch++) {
+                    raw[ch] = (sys.peek(cueSheetPtr + c * v2CueBytes + ch*2)     & 0xFF) |
+                             ((sys.peek(cueSheetPtr + c * v2CueBytes + ch*2 + 1) & 0xFF) << 8)
                     ptns[ch] = raw[ch] & 0x7FFF
                 }
+                // Instruction words ride the sign bits of channels 0..31 only (both modes).
                 for (let k = 0; k < 16; k++) {
                     instr  |= ((raw[k]      >> 15) & 1) << k
                     instr1 |= ((raw[k + 16] >> 15) & 1) << k
@@ -999,7 +1038,7 @@ function loadTaud(filePath, songIndex) {
         }
         cues[c] = { ptns, instr, instr1 }
 
-        for (let v = 0; v < NUM_VOICES; v++) {
+        for (let v = 0; v < MAX_VOICES; v++) {
             if (ptns[v] !== CUE_EMPTY) { lastActiveCue = c; break }
         }
         if ((instr || instr1) && c < numCuesFile && c > lastActiveCue) lastActiveCue = c
@@ -1011,7 +1050,7 @@ function loadTaud(filePath, songIndex) {
     return {
         filePath, songIndex, version, numSongs, numVoices, numPats,
         bpm: bpmStored + 25, tickRate,
-        patterns, cues, lastActiveCue
+        patterns, cues, lastActiveCue, is64Channel: is64File
     }
 }
 
@@ -2310,6 +2349,9 @@ if (newProjectSettings) {
 } else {
     song = loadTaud(fullPathObj.full, currentSongIndex)
 }
+// Editor channel mode follows the song; the engine is synced at upload time below
+// (uploadEmptyDeviceState for a new project, taud.uploadTaudFile for a load).
+is64Channel = !!(song && song.is64Channel)
 // The mutable "current file" pointer the File tab reads/writes. Starts at the
 // file taut was launched with; Open / Save As repoint it, New clears it to null
 // (an unsaved in-memory project). switchSong reloads from this, NOT fullPathObj
@@ -2318,7 +2360,7 @@ let currentFilePath = fullPathObj.full
 applySongPitchPreset(songsMeta.songs[currentSongIndex])
 applySongBeatDiv(songsMeta.songs[currentSongIndex])
 
-const voiceMutes = new Array(NUM_VOICES).fill(false)
+const voiceMutes = new Array(MAX_VOICES).fill(false)   // room for all channels (64-channel mode)
 let timelineMuteSnapshot = null
 
 function resetAudioDevice() {
@@ -2349,6 +2391,12 @@ function applyMuteTransition(toPanel) {
 // per-song UI cursors / scroll / mutes / playback positions. The caller is
 // responsible for having uploaded the new song to the device first.
 function finishLoadCommon() {
+    // Sync the editor + engine channel mode from the freshly loaded/created song. For a
+    // file load, taud.uploadTaudFile already set the engine mode from the xHDR flag; this
+    // keeps the editor global (curCueBytes / encodeCue) and the engine in agreement, and
+    // covers the new-project / preview paths that don't go through uploadTaudFile.
+    is64Channel = !!(song && song.is64Channel)
+    audio.set64ChannelMode(is64Channel)
     refreshSamplesCache()
     invalidateMetaLayerFlags()
     patternsOutOfSync = false
@@ -2366,7 +2414,7 @@ function finishLoadCommon() {
     patternGridRow = 0; patternGridScroll = 0; patternGridCol = 0
     simState = null; simStateKey = ''
 
-    for (let i = 0; i < NUM_VOICES; i++) {
+    for (let i = 0; i < MAX_VOICES; i++) {
         voiceMutes[i] = false
         audio.setVoiceMute(PLAYHEAD, i, false)
     }
@@ -2434,6 +2482,7 @@ function saveProjectToFile(path) {
         numVoices: song.numVoices,
         numPats:   song.numPats,
         numCues:   Math.max(1, song.lastActiveCue + 1),
+        is64Channel: is64Channel,
     })   // throws on I/O error
     hasUnsavedChanges = false
 }
@@ -2442,32 +2491,37 @@ function saveProjectToFile(path) {
 // instruments. currentFilePath becomes null (nothing on disk yet).
 const NUM_PATTERNS_MAX = 256
 function buildEmptyCueBytes() {
-    // 32 Sint16 = 0x7FFF (every channel empty, no instruction): bytes FF 7F × 32.
-    const b = new Array(CUE_SIZE).fill(0)
-    for (let ch = 0; ch < NUM_VOICES; ch++) { b[ch*2] = 0xFF; b[ch*2+1] = 0x7F }
+    // Every channel empty, no instruction: Sint16 0x7FFF = bytes FF 7F. Cue width follows
+    // the current mode (32 or 64 channels → 64 or 128 bytes).
+    const bytes = curCueBytes()
+    const b = new Array(bytes).fill(0)
+    for (let i = 0; i < bytes; i += 2) { b[i] = 0xFF; b[i+1] = 0x7F }
     return b
 }
-// `settings` (optional) is the new-project dialog's result; when present it seeds
-// the tempo. The File-tab "New" path calls these with no args → tracker defaults.
+// `settings` (optional) is the new-project dialog's result; when present it seeds the
+// tempo and channel count. The File-tab "New" path calls these with no args → defaults.
+function settingsChannels(settings) { return (settings && settings.channels === 64) ? MAX_VOICES : NUM_VOICES }
 function buildEmptySong(settings) {
+    const channels = settingsChannels(settings)
     const patterns = [ new Uint8Array(PATTERN_SIZE) ]
     const cues = new Array(NUM_CUES)
     for (let c = 0; c < NUM_CUES; c++) {
-        cues[c] = { ptns: new Array(NUM_VOICES).fill(CUE_EMPTY), instr: 0, instr1: 0 }
+        cues[c] = { ptns: new Array(MAX_VOICES).fill(CUE_EMPTY), instr: 0, instr1: 0 }
     }
     return {
         filePath: null, songIndex: 0, version: 1, numSongs: 1,
-        numVoices: NUM_VOICES, numPats: 1,
+        numVoices: channels, numPats: 1,
         bpm: (settings && settings.bpm) || 125,
         tickRate: (settings && settings.tickRate) || 6,
         patterns, cues, lastActiveCue: -1,
+        is64Channel: channels === MAX_VOICES,
     }
 }
 function buildEmptyMeta(settings) {
     return {
         numSongs: 1, projectName: (settings && settings.name) || '',
         songs: [{
-            index: 0, numVoices: NUM_VOICES, numPats: 1,
+            index: 0, numVoices: settingsChannels(settings), numPats: 1,
             bpm: (settings && settings.bpm) || 125,
             tickRate: (settings && settings.tickRate) || 6,
             mixerflags: 0, songGlobalVolume: 0x80, songMixingVolume: 0x80,
@@ -2491,6 +2545,7 @@ function newProjectMeta(s) {
         numVoices: song.numVoices,
         numPats:   song.numPats,
         numCues:   Math.max(1, song.lastActiveCue + 1),
+        is64Channel: !!song.is64Channel,
         projectName: s.name,
         sMet: {
             notation:  s.notation,
@@ -2503,6 +2558,9 @@ function newProjectMeta(s) {
     }
 }
 function uploadEmptyDeviceState() {
+    // Match the engine's channel mode to the editor's before uploading empty cues, so
+    // uploadCue writes the right byte stride (buildEmptyCueBytes uses the same mode).
+    audio.set64ChannelMode(is64Channel)
     const zerosPat  = new Array(PATTERN_SIZE).fill(0)
     const emptyCue  = buildEmptyCueBytes()
     const zerosInst = new Array(256).fill(0)
@@ -2519,6 +2577,7 @@ function uploadEmptyDeviceState() {
 function newProject() {
     stopPlayback()
     resetAudioDevice()
+    is64Channel = false   // File-tab "New" creates a 32-channel project
     uploadEmptyDeviceState()
     replaceSongsMeta(buildEmptyMeta())
     currentFilePath = null
@@ -2727,7 +2786,7 @@ function recomputeLastActiveCue() {
         const cue = song.cues[c]
         if (cue.instr || cue.instr1) { last = c; continue }
         const ptns = cue.ptns
-        for (let v = 0; v < NUM_VOICES; v++) {
+        for (let v = 0; v < MAX_VOICES; v++) {
             if (ptns[v] !== CUE_EMPTY) { last = c; break }
         }
     }
@@ -4130,16 +4189,19 @@ let pbCue = 0
 let pbRow = 0
 let previewActive = false  // true while a pattern-only preview is loaded in PREVIEW_CUE_IDX
 
-// Encode a cue object (from song.cues[]) back to its 32-byte wire format
-// 64-byte cue: 32 Sint16 (low 15 bits = pattern, sign bit = instruction-word bit).
-// Sign bits of channels 0..15 form instr (word0); 16..31 form instr1 (word1).
+// Encode a cue object (from song.cues[]) back to its wire format: 32 Sint16 / 64 bytes,
+// or 64 Sint16 / 128 bytes in 64-channel mode (low 15 bits = pattern, sign bit =
+// instruction-word bit). Sign bits of channels 0..15 form instr (word0); 16..31 form
+// instr1 (word1); channels 32..63 (64-channel mode) carry no instruction bit.
 function encodeCue(cue) {
-    const bin = new Uint8Array(CUE_SIZE)
+    const bytes = curCueBytes()
+    const chans = bytes >> 1
+    const bin = new Uint8Array(bytes)
     const w0 = (cue.instr  || 0) & 0xFFFF
     const w1 = (cue.instr1 || 0) & 0xFFFF
-    for (let ch = 0; ch < NUM_VOICES; ch++) {
+    for (let ch = 0; ch < chans; ch++) {
         let val = (cue.ptns[ch] & 0x7FFF)
-        const bit = (ch < 16) ? ((w0 >> ch) & 1) : ((w1 >> (ch - 16)) & 1)
+        const bit = (ch < 16) ? ((w0 >> ch) & 1) : (ch < 32) ? ((w1 >> (ch - 16)) & 1) : 0
         if (bit) val |= 0x8000
         bin[ch*2]     = val & 0xFF
         bin[ch*2 + 1] = (val >>> 8) & 0xFF
@@ -4149,8 +4211,9 @@ function encodeCue(cue) {
 
 // Build a preview cue with voice 0 = pidx, all other voices = CUE_EMPTY, no instruction.
 function buildPreviewCue(pidx) {
-    const bin = new Uint8Array(CUE_SIZE)
-    for (let ch = 0; ch < NUM_VOICES; ch++) { bin[ch*2] = 0xFF; bin[ch*2+1] = 0x7F }
+    const bytes = curCueBytes()
+    const bin = new Uint8Array(bytes)
+    for (let i = 0; i < bytes; i += 2) { bin[i] = 0xFF; bin[i+1] = 0x7F }
     bin[0] = pidx & 0xFF
     bin[1] = (pidx >>> 8) & 0x7F
     return bin

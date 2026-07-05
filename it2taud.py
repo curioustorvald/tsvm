@@ -44,6 +44,7 @@ from taud_common import (
     TAUD_MAGIC, TAUD_VERSION, TAUD_HEADER_SIZE, TAUD_SONG_ENTRY,
     SAMPLEBIN_SIZE, INSTBIN_SIZE, SAMPLEINST_SIZE, SAMPLE_LEN_LIMIT,
     PATTERN_ROWS, PATTERN_BYTES, NUM_PATTERNS_MAX, NUM_CUES, CUE_SIZE, NUM_VOICES,
+    MAX_VOICES, CUE_SIZE_64, NUM_CUES_64, XHDR_FLAG,
     NOTE_NOP, NOTE_KEYOFF, NOTE_CUT, NOTE_NOTEFADE, TAUD_C4,
     TOP_NONE, TOP_A, TOP_B, TOP_C, TOP_D, TOP_E, TOP_F, TOP_G, TOP_H, TOP_I,
     TOP_J, TOP_K, TOP_L, TOP_M, TOP_N, TOP_O, TOP_P, TOP_Q, TOP_R, TOP_S, TOP_T, TOP_U, TOP_V, TOP_W, TOP_Y,
@@ -1745,7 +1746,11 @@ def find_initial_bpm_speed(patterns_rows: list, order_list: list,
     return speed, tempo
 
 def _active_channels(h: ITHeader, patterns_rows: list) -> list:
-    """Return up to 20 non-muted, in-use channel indices."""
+    """Return the non-muted, in-use channel indices (up to MAX_VOICES = 64).
+
+    A song using 33..64 channels triggers 64-channel Taud mode (see assemble_taud);
+    32 or fewer stays in the default 32-channel layout. Only a song exceeding 64
+    active channels is capped."""
     # Muted = bit 7 of chnl_pan set, or == 0xC0
     muted = set()
     for i, p in enumerate(h.chnl_pan):
@@ -1763,9 +1768,9 @@ def _active_channels(h: ITHeader, patterns_rows: list) -> list:
                     break
 
     active = [i for i in range(64) if i in in_use and i not in muted]
-    if len(active) > NUM_VOICES:
-        vprint(f"  warning: {len(active)} active channels; capping at {NUM_VOICES}")
-        active = active[:NUM_VOICES]
+    if len(active) > MAX_VOICES:
+        vprint(f"  warning: {len(active)} active channels; capping at {MAX_VOICES}")
+        active = active[:MAX_VOICES]
     return active
 
 def _per_pattern_bxx_it(patterns_rows: list):
@@ -1821,6 +1826,12 @@ def _build_song_payload(h: ITHeader, patterns_rows_template: list,
 
     C = len(active_channels)
 
+    # 64-channel Taud mode when the song uses 33+ channels (terranmon.txt §xHDR).
+    # Cue width follows: 128 bytes / 64 channels vs the default 64 bytes / 32 channels.
+    cue_voices = MAX_VOICES if C > NUM_VOICES else NUM_VOICES
+    cue_size   = cue_voices * 2
+    cue_cap    = NUM_CUES_64 if cue_voices > NUM_VOICES else NUM_CUES
+
     # Cue list = expand each subsong position into chunk indices for its pattern.
     # pos_to_cue maps the original order-list position → first cue in this song.
     cue_list = []
@@ -1870,11 +1881,12 @@ def _build_song_payload(h: ITHeader, patterns_rows_template: list,
     vprint(f"  [{song_label}] patterns: {orig_count} → {num_taud_pats} unique "
            f"({orig_count - num_taud_pats} deduplicated)")
 
-    sheet = bytearray(NUM_CUES * CUE_SIZE)
-    for c in range(NUM_CUES):
-        sheet[c*CUE_SIZE:c*CUE_SIZE+CUE_SIZE] = encode_cue([], 0)
+    empty_cue = encode_cue([], 0, num_voices=cue_voices)
+    sheet = bytearray(cue_cap * cue_size)
+    for c in range(cue_cap):
+        sheet[c*cue_size:(c+1)*cue_size] = empty_cue
 
-    n_emit = min(len(cue_list), NUM_CUES)
+    n_emit = min(len(cue_list), cue_cap)
     len_cue_count = 0
     for cue_idx in range(n_emit):
         ci = cue_list[cue_idx]
@@ -1891,15 +1903,15 @@ def _build_song_payload(h: ITHeader, patterns_rows_template: list,
             len_cue_count += 1
         else:
             instr = CUE_INST_NOP
-        sheet[cue_idx*CUE_SIZE:(cue_idx+1)*CUE_SIZE] = encode_cue(pat_idx_list, instr)
+        sheet[cue_idx*cue_size:(cue_idx+1)*cue_size] = encode_cue(pat_idx_list, instr, num_voices=cue_voices)
 
     if n_emit == 0:
-        set_cue_instruction(sheet, 0, CUE_INST_HALT)
+        set_cue_instruction(sheet, 0, CUE_INST_HALT, num_voices=cue_voices)
     if len_cue_count:
         vprint(f"  [{song_label}] emitted {len_cue_count} LEN cue instruction(s) "
                f"for partial-length patterns")
 
-    cue_bytes, num_cues = finalize_cue_sheet(sheet)
+    cue_bytes, num_cues = finalize_cue_sheet(sheet, num_voices=cue_voices)
     pat_comp = compress_blob(bytes(pat_bin), f"[{song_label}] pattern bin")
     cue_comp = compress_blob(cue_bytes,      f"[{song_label}] cue sheet")
 
@@ -1932,6 +1944,10 @@ def assemble_taud(h: ITHeader, samples: list, instruments: list,
     C = len(active_channels)
     if C == 0:
         sys.exit("error: no active channels found")
+    # 64-channel Taud mode when the song uses 33+ channels (terranmon.txt §xHDR).
+    is_64ch = C > NUM_VOICES
+    if is_64ch:
+        vprint(f"  64-channel mode: {C} active channels (>32)")
 
     # ── SBx chunk-crossing warning (informational only; pattern data is read,
     #    not modified, so this is safe to do once over the shared template) ──
@@ -2159,49 +2175,56 @@ def assemble_taud(h: ITHeader, samples: list, instruments: list,
     # empty slot-0 entry.
     proj_data = b''
     proj_off  = 0
-    if with_project_data:
-        inst_names = [''] + [(inst.name if inst is not None else '')
-                             for inst in instruments[:255]]
-        # SNam mirrors the deduplicated sample pool: one entry per distinct
-        # sample, in pool order, named after the sample itself. taut.js dedupes
-        # instrument records by (ptr,len), sorts ascending by ptr, and matches
-        # SNam[i+1] positionally to that list, so this ordering labels every
-        # sample correctly and a shared sample (e.g. "ChipBass.looped") appears
-        # exactly once instead of once per referencing instrument slot.
-        smp_names  = [''] + [(getattr(s, 'name', '') or '')
-                             for s in pool_order[:255]]
+    # 64-channel mode REQUIRES an xHDR section (else the version bit-5 file is invalid),
+    # so emit project data even when --no-project-data would otherwise skip it — in that
+    # case only the xHDR block is written, no names/Ixmp.
+    if with_project_data or is_64ch:
+        pd_kwargs = dict(is_64channel=is_64ch)
+        if with_project_data:
+            inst_names = [''] + [(inst.name if inst is not None else '')
+                                 for inst in instruments[:255]]
+            # SNam mirrors the deduplicated sample pool: one entry per distinct
+            # sample, in pool order, named after the sample itself. taut.js dedupes
+            # instrument records by (ptr,len), sorts ascending by ptr, and matches
+            # SNam[i+1] positionally to that list, so this ordering labels every
+            # sample correctly and a shared sample (e.g. "ChipBass.looped") appears
+            # exactly once instead of once per referencing instrument slot.
+            smp_names  = [''] + [(getattr(s, 'name', '') or '')
+                                 for s in pool_order[:255]]
 
-        # Ixmp patches — only the use_instruments branch maps IT notes to multiple
-        # samples; the sample-mode branch has nothing to emit because there's no
-        # keyboard table on a raw IT sample.
-        ixmp_patches = {}
-        if h.use_instruments and extras_offsets:
-            for ii, inst in enumerate(instruments):
-                if inst is None: continue
-                taud_slot = ii + 1
-                if taud_slot >= 256: continue
-                patches = _build_it_ixmp_patches(inst, samples, extras_offsets)
-                if patches:
-                    ixmp_patches[taud_slot] = patches
-            if ixmp_patches:
-                vprint(f"  ixmp: {sum(len(p) for p in ixmp_patches.values())} "
-                       f"patches across {len(ixmp_patches)} instruments")
+            # Ixmp patches — only the use_instruments branch maps IT notes to multiple
+            # samples; the sample-mode branch has nothing to emit because there's no
+            # keyboard table on a raw IT sample.
+            ixmp_patches = {}
+            if h.use_instruments and extras_offsets:
+                for ii, inst in enumerate(instruments):
+                    if inst is None: continue
+                    taud_slot = ii + 1
+                    if taud_slot >= 256: continue
+                    patches = _build_it_ixmp_patches(inst, samples, extras_offsets)
+                    if patches:
+                        ixmp_patches[taud_slot] = patches
+                if ixmp_patches:
+                    vprint(f"  ixmp: {sum(len(p) for p in ixmp_patches.values())} "
+                           f"patches across {len(ixmp_patches)} instruments")
 
-        proj_data = build_project_data(
-            project_name=h.title,
-            instrument_names=inst_names,
-            sample_names=smp_names,
-            ixmp_patches=ixmp_patches or None,
-        )
+            pd_kwargs.update(project_name=h.title,
+                             instrument_names=inst_names,
+                             sample_names=smp_names,
+                             ixmp_patches=ixmp_patches or None)
+
+        proj_data = build_project_data(**pd_kwargs)
         if proj_data:
             proj_off = cur_off
             vprint(f"  project data: {len(proj_data)} bytes @ offset {proj_off}")
 
     # ── Header ───────────────────────────────────────────────────────────────
+    # Version byte carries the xHDR bit (0x20) in 64-channel mode (terranmon.txt §xHDR).
     sig = (SIGNATURE + b' ' * 14)[:14]
+    version_byte = TAUD_VERSION | (XHDR_FLAG if is_64ch else 0)
     header = (
         TAUD_MAGIC +
-        bytes([TAUD_VERSION, n_songs & 0xFF]) +
+        bytes([version_byte, n_songs & 0xFF]) +
         struct.pack('<I', comp_size) +
         struct.pack('<I', proj_off) +
         sig

@@ -7,13 +7,19 @@
 // ── Format constants ────────────────────────────────────────────────────────
 
 const TAUD_MAGIC        = [0x1F,0x54,0x53,0x56,0x4D,0x61,0x75,0x64]  // \x1F TSVMaud
-// Format version in the LOW SIX bits of the version byte (top two = kind).
-//   1 → legacy cue sheet (20 voices, 12-bit patterns, 32-byte cues).
-//   2 → extended cue sheet (2026-07-01): 32 voices, 15-bit patterns, 64-byte cues
-//       with sign-bit instructions (terranmon.txt §"Cue sheet"). Loaders translate
-//       a v1 cue image into the v2 engine format on the fly; new files save as v2.
+// Version byte layout (terranmon.txt:3269-3284): 0b kk x vvvvv
+//   vvvvv (bits 0..4, mask 0x1F): format version number
+//     1 → legacy cue sheet (20 voices, 12-bit patterns, 32-byte cues).
+//     2 → extended cue sheet (2026-07-01): 32 voices, 15-bit patterns, 64-byte cues
+//         with sign-bit instructions (terranmon.txt §"Cue sheet"). Loaders translate
+//         a v1 cue image into the v2 engine format on the fly; new files save as v2.
+//   x (bit 5, mask 0x20): an xHDR (Extended header) section is present in Project Data.
+//     Carries the 64-channel-mode flag (§xHDR). MUST be read when set; a lone xHDR
+//     section without this bit is INVALID.
+//   kk (bits 6..7, mask 0xC0): container kind (see below).
 const TAUD_VERSION      = 2
-const TAUD_VERSION_MASK = 0x3F
+const TAUD_VERSION_MASK = 0x1F
+const TAUD_XHDR_FLAG    = 0x20   // version bit 5: Project Data carries an xHDR section
 const TAUD_HEADER_SIZE  = 32     // magic(8) + version(1) + numSongs(1) + compSize(4) + projOff(4) + sig(14)
 // Container kind = top two bits of the version byte (terranmon.txt:3342-3401).
 //   00 → full .taud  (sample+inst image + song table + patterns)
@@ -43,11 +49,18 @@ const NUM_PATTERNS_MAX  = 0x7FFF // 32767 pattern slots (0..32766; 0x7FFF = empt
 // Extended cue sheet (v2). Cues live in the banked memory window at 524288 (MMIO 47
 // selects the bank); each cue is 32 little-endian Sint16 = 64 bytes.
 const NUM_VOICES        = 32
-const NUM_CUES          = 8192   // 4 banks × 2048 cues
+const NUM_CUES          = 8192   // 4 banks × 2048 cues (32-channel mode)
 const CUE_SIZE          = 64     // bytes per cue entry (32 × Sint16)
 const CUE_EMPTY         = 0x7FFF // pattern-number sentinel: no pattern on this channel
 const CUEBIN_WINDOW_OFFSET = 524288   // peripheral memory offset of the cue-sheet window (banked, MMIO 47)
 const CUES_PER_BANK     = 2048        // cues addressable through one 128 K window
+// 64-channel mode (terranmon.txt §xHDR / :2039-2053): a cue spans two 64-byte "rows"
+// = 128 bytes / 64 channels, so a 128 K bank holds 1024 cues (4096 total). Instruction
+// words still ride the sign bits of channels 0..31 (row 0); channels 32..63 carry none.
+const MAX_VOICES        = 64
+const NUM_CUES_64       = 4096   // 4 banks × 1024 cues (64-channel mode)
+const CUE_SIZE_64       = 128    // bytes per cue entry (64 × Sint16)
+const CUES_PER_BANK_64  = 1024   // cues addressable through one 128 K window (64-channel)
 // Legacy v1 cue sheet (for loading pre-2026-07-01 files).
 const NUM_CUES_V1       = 1024
 const CUE_SIZE_V1       = 32
@@ -75,6 +88,30 @@ function _pokeU32LE(ptr, off, v) {
 
 function _peekU16LE(ptr, off) {
     return ((sys.peek(ptr+off) & 0xFF)) | ((sys.peek(ptr+off+1) & 0xFF) << 8)
+}
+
+// Scan Project Data for the xHDR (Extended header) section and return its 64-channel
+// flag. Only called when the version byte's xHDR bit (0x20) is set (a lone xHDR section
+// without that bit is INVALID per terranmon.txt:3278-3279, so we ignore it there).
+// Project Data: magic(8 \x1ETaudPrJ) + reserved(8), then FourCC + Uint32 len + payload.
+// xHDR payload: Uint8 Flags1 (bit 0 = 64-channel mode) + 255 reserved bytes.
+function _readXHDR64(filePtr, projOff, fileSize) {
+    if (!projOff || projOff + 16 > fileSize) return false
+    const projMagic = [0x1E,0x54,0x61,0x75,0x64,0x50,0x72,0x4A]  // \x1ETaudPrJ
+    for (let i = 0; i < 8; i++)
+        if ((sys.peek(filePtr + projOff + i) & 0xFF) !== projMagic[i]) return false
+    let p = projOff + 16  // skip magic(8) + reserved(8)
+    while (p + 8 <= fileSize) {
+        const fc = String.fromCharCode(
+            sys.peek(filePtr + p)     & 0xFF, sys.peek(filePtr + p + 1) & 0xFF,
+            sys.peek(filePtr + p + 2) & 0xFF, sys.peek(filePtr + p + 3) & 0xFF)
+        const secLen  = _peekU32LE(filePtr, p + 4)
+        const payload = p + 8
+        if (payload + secLen > fileSize) break
+        if (fc === 'xHDR' && secLen >= 1) return (sys.peek(filePtr + payload) & 0x01) !== 0
+        p = payload + secLen
+    }
+    return false
 }
 
 // Translate a 32-byte legacy (v1) cue image at `srcPtr + c*32` into the 64-byte
@@ -183,6 +220,15 @@ function uploadTaudFile(inFile, songIndex, playhead) {
     const isSampleInst = (kind === TAUD_KIND_SAMPLEINST)   // .tsii: instruments only
     const isPattern    = (kind === TAUD_KIND_PATTERN)      // .tpif: patterns only
 
+    // -- 3b. Channel mode from the xHDR section (terranmon.txt §xHDR) ----------
+    // The version byte's xHDR bit (0x20) says Project Data carries an Extended header
+    // whose Flags1 bit 0 selects 64-channel mode. Resolve it BEFORE uploading cues,
+    // because the cue byte stride (128 vs 64) and the engine's per-cue channel layout
+    // both depend on it. Files without the flag are plain 32-channel.
+    const is64 = ((version & TAUD_XHDR_FLAG) !== 0) && _readXHDR64(filePtr, projOff, fileSize)
+    audio.set64ChannelMode(is64)
+    const cueChannels = is64 ? MAX_VOICES : NUM_VOICES
+
     // -- 4. Decompress and upload sample+instrument bin -----------------------
     // The decompressed image is 8448 kB (8 MB samples bank-major + 256 K instruments)
     // which exceeds the 8 MB user-space cap, so we route through a hardware helper
@@ -237,25 +283,28 @@ function uploadTaudFile(inFile, songIndex, playhead) {
     sys.free(patBinPtr)
 
     // -- 7. Decompress + upload cue sheet -------------------------------------
-    // Format v2 stores 64-byte cues (uploaded verbatim); a legacy v1 file stores
-    // 32-byte cues that we translate to the v2 engine layout on the fly. The v2
-    // cue count is carried in the song-table's num_cues field (bytes 26..27); we
-    // fall back to deriving it from the decompressed size when it is absent.
+    // Format v2 stores the cue sheet as a RAM image: 64-byte cues (32 channels), or
+    // 128-byte cues (64 channels) when 64-channel mode is set — uploaded verbatim.
+    // A legacy v1 file stores 32-byte cues that we translate to the v2 engine layout
+    // on the fly. The v2 cue count is carried in the song-table's num_cues field
+    // (bytes 26..27); we fall back to deriving it from the decompressed size.
     let fmtVer      = version & TAUD_VERSION_MASK
-    let cueStride   = (fmtVer >= 2) ? CUE_SIZE : CUE_SIZE_V1
+    let v2CueSize   = is64 ? CUE_SIZE_64 : CUE_SIZE
+    let cueStride   = (fmtVer >= 2) ? v2CueSize : CUE_SIZE_V1
+    let cueMaxCount = is64 ? NUM_CUES_64 : NUM_CUES
     let numCuesFld  = _peekU16LE(filePtr, entryOff + 26)
     let cueBufSize  = (fmtVer >= 2)
-        ? ((numCuesFld > 0 ? numCuesFld : NUM_CUES) * CUE_SIZE)
+        ? ((numCuesFld > 0 ? numCuesFld : cueMaxCount) * v2CueSize)
         : (NUM_CUES_V1 * CUE_SIZE_V1)
     let cueSheetPtr = sys.malloc(cueBufSize)
     let cueBinSize  = gzip.decompFromTo(filePtr + songOffset + patBinCompSize, cueSheetCompSize, cueSheetPtr)
-    let numCues     = Math.min((cueBinSize / cueStride) | 0, NUM_CUES)
+    let numCues     = Math.min((cueBinSize / cueStride) | 0, cueMaxCount)
 
     if (fmtVer >= 2) {
-        let cueBytes = new Array(CUE_SIZE)
+        let cueBytes = new Array(v2CueSize)
         for (let c = 0; c < numCues; c++) {
-            for (let k = 0; k < CUE_SIZE; k++)
-                cueBytes[k] = sys.peek(cueSheetPtr + c * CUE_SIZE + k) & 0xFF
+            for (let k = 0; k < v2CueSize; k++)
+                cueBytes[k] = sys.peek(cueSheetPtr + c * v2CueSize + k) & 0xFF
             audio.uploadCue(c, cueBytes)
         }
     } else {
@@ -357,6 +406,9 @@ function uploadTaudFile(inFile, songIndex, playhead) {
  *                  projectName project name → PNam section
  *                  sMet        { notation, beatPri, beatSec, name, composer,
  *                                copyright } → sMet section for song 0
+ *                  is64Channel true → emit the 64-channel xHDR section, 128-byte
+ *                                cues and version bit 5. Defaults to the live device
+ *                                state (audio.is64ChannelMode()) when omitted.
  *                The new-project flow (taut "create on missing file") passes this
  *                so the chosen notation / beat divisions / tuning persist.
  */
@@ -366,6 +418,16 @@ function captureTrackerDataToFile(outFile, meta) {
 
     const memBase  = audio.getMemAddr()
     const baseAddr = audio.getBaseAddr()
+
+    // 64-channel mode (terranmon.txt §xHDR): drives the cue byte stride (128 vs 64),
+    // cues-per-bank of the scanned window, the default voice count and the emitted
+    // xHDR section + version bit 5. Prefer the caller's explicit flag, else read the
+    // live device state (taut sets it while editing a 64-channel project).
+    const is64 = (meta && meta.is64Channel != null)
+        ? !!meta.is64Channel
+        : ((typeof audio.is64ChannelMode === 'function') ? audio.is64ChannelMode() : false)
+    const capCueSize   = is64 ? CUE_SIZE_64 : CUE_SIZE
+    const capCuesBank  = is64 ? CUES_PER_BANK_64 : CUES_PER_BANK
 
     // -- 1. Compress sample+instrument bin ------------------------------------
     // The 8448 kB raw image (8 MB samples + 256 K instruments) cannot fit in the
@@ -441,29 +503,32 @@ function captureTrackerDataToFile(outFile, meta) {
     sys.free(patBuf)
 
     // -- 5. Compress cue sheet ------------------------------------------------
-    // Cues live in the banked memory window at 524288 (2048 cues / bank, MMIO 47);
-    // taut songs fit in bank 0. Copy bank 0 out, find the last non-empty cue (an
-    // empty cue is every Sint16 = 0x7FFF, i.e. byte pattern FF 7F), store that many
-    // 64-byte cues and record the count in the song table.
+    // Cues live in the banked memory window at 524288 (MMIO 47); taut songs fit in
+    // bank 0. Copy bank 0 out, find the last non-empty cue (an empty cue is every
+    // Sint16 = 0x7FFF, i.e. byte pattern FF 7F), store that many cues and record the
+    // count in the song table. Cue stride is 64 bytes (32 channels) normally, or 128
+    // bytes (64 channels) in 64-channel mode — but the 128 K bank window is the same
+    // size either way (2048×64 == 1024×128 == 131072).
+    const CUE_WINDOW_BYTES = CUES_PER_BANK * CUE_SIZE   // 131072 (one bank, mode-independent)
     const savedCueBank = audio.getCueBank()
     audio.setCueBank(0)
-    let cueScanBuf = sys.malloc(CUES_PER_BANK * CUE_SIZE)   // 128 K (bank 0)
-    sys.memcpy(memBase - CUEBIN_WINDOW_OFFSET, cueScanBuf, CUES_PER_BANK * CUE_SIZE)
+    let cueScanBuf = sys.malloc(CUE_WINDOW_BYTES)   // 128 K (bank 0)
+    sys.memcpy(memBase - CUEBIN_WINDOW_OFFSET, cueScanBuf, CUE_WINDOW_BYTES)
     audio.setCueBank(savedCueBank)
 
     let numCues
     if (meta && meta.numCues > 0) {
-        numCues = Math.min(meta.numCues, CUES_PER_BANK)
+        numCues = Math.min(meta.numCues, capCuesBank)
     } else {
         let lastCue = -1
-        for (let c = 0; c < CUES_PER_BANK; c++) {
-            for (let k = 0; k < CUE_SIZE; k++) {
-                if ((sys.peek(cueScanBuf + c * CUE_SIZE + k) & 0xFF) !== ((k & 1) ? 0x7F : 0xFF)) { lastCue = c; break }
+        for (let c = 0; c < capCuesBank; c++) {
+            for (let k = 0; k < capCueSize; k++) {
+                if ((sys.peek(cueScanBuf + c * capCueSize + k) & 0xFF) !== ((k & 1) ? 0x7F : 0xFF)) { lastCue = c; break }
             }
         }
         numCues = Math.max(1, lastCue + 1)
     }
-    let cueSheetSize = numCues * CUE_SIZE
+    let cueSheetSize = numCues * capCueSize
     let cueCompBuf   = sys.malloc(cueSheetSize + 4096)
     let cueCompSize  = gzip.compFromTo(cueScanBuf, cueSheetSize, cueCompBuf)
     sys.free(cueScanBuf)
@@ -504,11 +569,22 @@ function captureTrackerDataToFile(outFile, meta) {
             .concat(sub)
     }
 
-    // Assemble the Project Data sections. Ixmp (multi-sample instruments) is
-    // emitted when present; sMet / PNam only when `meta` supplies them. The block
-    // header (magic + reserved) is written only when at least one section exists,
-    // so a legacy capture with no Ixmp/meta still produces projOff = 0.
+    // Extended header (xHDR): emitted ONLY for a 64-channel project. Flags1 bit 0 = 64ch,
+    // followed by 255 reserved bytes (terranmon.txt §xHDR). Its presence also sets the
+    // version byte's xHDR bit (0x20) below; a 32-channel file omits it entirely and stays
+    // byte-compatible with pre-xHDR loaders.
+    let xhdrPayload = null
+    if (is64) {
+        xhdrPayload = new Array(256).fill(0)
+        xhdrPayload[0] = 0x01   // Flags1 bit 0 = 64-channel mode
+    }
+
+    // Assemble the Project Data sections. xHDR (channel mode) leads when present; Ixmp
+    // (multi-sample instruments) when present; sMet / PNam only when `meta` supplies them.
+    // The block header (magic + reserved) is written only when at least one section
+    // exists, so a legacy capture with no xHDR/Ixmp/meta still produces projOff = 0.
     const _sections = []
+    if (xhdrPayload)               _sections.push({ fourcc: [0x78,0x48,0x44,0x52], payload: xhdrPayload })   // 'xHDR'
     if (ixmpPayload.length > 0)    _sections.push({ fourcc: [0x49,0x78,0x6D,0x70], payload: ixmpPayload })  // 'Ixmp'
     if (smetPayload)               _sections.push({ fourcc: [0x73,0x4D,0x65,0x74], payload: smetPayload })  // 'sMet'
     if (meta && meta.projectName)  _sections.push({ fourcc: [0x50,0x4E,0x61,0x6D], payload: _strBytesNul(meta.projectName) })  // 'PNam'
@@ -537,8 +613,8 @@ function captureTrackerDataToFile(outFile, meta) {
     let header = [
         // Magic (8)
         0x1F, 0x54, 0x53, 0x56, 0x4D, 0x61, 0x75, 0x64,
-        // version, numSongs
-        TAUD_VERSION, 1,
+        // version (bit 5 set when an xHDR section is present), numSongs
+        TAUD_VERSION | (xhdrPayload ? TAUD_XHDR_FLAG : 0), 1,
         // compressedSize uint32 LE (4) -- sample+inst bin
         (compressedSize        ) & 0xFF,
         (compressedSize >>>  8) & 0xFF,
@@ -553,8 +629,8 @@ function captureTrackerDataToFile(outFile, meta) {
 
     // -- 8. Build song-table row (32 bytes) -----------------------------------
     // Voice count comes from `meta.numVoices` when the caller supplies it; else the
-    // full 32-channel width (extra empty voices are harmless on playback).
-    let numVoicesOut = (meta && meta.numVoices) ? (meta.numVoices & 0xFF) : NUM_VOICES
+    // full channel width for the mode (extra empty voices are harmless on playback).
+    let numVoicesOut = (meta && meta.numVoices) ? (meta.numVoices & 0xFF) : (is64 ? MAX_VOICES : NUM_VOICES)
     let songTable = [
         (songOffset        ) & 0xFF,
         (songOffset >>>  8) & 0xFF,

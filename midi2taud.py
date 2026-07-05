@@ -123,6 +123,7 @@ from taud_common import (
     TAUD_KIND_FULL, TAUD_KIND_SAMPLEINST, TAUD_KIND_PATTERN,
     SAMPLEBIN_SIZE, INSTBIN_SIZE, SAMPLEINST_SIZE, SAMPLE_LEN_LIMIT,
     PATTERN_ROWS, PATTERN_BYTES, NUM_PATTERNS_MAX, NUM_CUES, CUE_SIZE, NUM_VOICES,
+    MAX_VOICES, CUE_SIZE_64, NUM_CUES_64, XHDR_FLAG, EMPTY_CUE_64,
     CUE_EMPTY, EMPTY_CUE, finalize_cue_sheet, set_cue_instruction,
     NOTE_NOP, NOTE_KEYOFF, NOTE_FASTFADE, TAUD_C4,
     TOP_B, TOP_C, TOP_G, TOP_M, TOP_S, TOP_T,
@@ -2455,7 +2456,7 @@ def allocate_voices(notes: list, speed: int, max_voices: int) -> int:
 
     Mutates note.voice (and truncates stolen notes' end_ft). Returns the
     number of voices used."""
-    cap = max(1, min(max_voices, NUM_VOICES))
+    cap = max(1, min(max_voices, MAX_VOICES))
     v_end  = []     # voice → first row at which it is free again
     v_slot = []     # voice → last instrument slot (affinity only)
     v_note = []     # voice → currently scheduled note
@@ -3010,7 +3011,17 @@ def build_song_section(song: Song, speed: int, rpb: int, src_path: str,
            f"{n_cues} cue(s), {n_voices} voice(s), {total_rows} rows"
            + (f"; {n_breaks} time-signature break(s)" if n_breaks > 0 else ""))
 
-    sheet = bytearray(EMPTY_CUE * n_cues)
+    # 64-channel Taud mode kicks in only when the song ACTUALLY allocates 33+ voices
+    # (which requires the user to raise --max-voices above 32). Cue width follows: 128
+    # bytes / 64 channels vs the default 64 bytes / 32 channels (terranmon.txt §xHDR).
+    is_64ch    = n_voices > NUM_VOICES
+    cue_voices = MAX_VOICES if is_64ch else NUM_VOICES
+    cue_size   = cue_voices * 2
+    empty_cue  = EMPTY_CUE_64 if is_64ch else EMPTY_CUE
+    if is_64ch:
+        vprint(f"  64-channel mode: {n_voices} voices allocated (>32)")
+
+    sheet = bytearray(empty_cue * n_cues)
     for ci in range(n_cues):
         pats = [remap[ci * n_voices + v] for v in range(n_voices)]
         if ci == n_cues - 1:
@@ -3023,7 +3034,7 @@ def build_song_section(song: Song, speed: int, rpb: int, src_path: str,
             instr = cue_instruction_len(cue_lens[ci])
         else:
             instr = CUE_INST_NOP
-        sheet[ci*CUE_SIZE:(ci+1)*CUE_SIZE] = encode_cue(pats, instr)
+        sheet[ci*cue_size:(ci+1)*cue_size] = encode_cue(pats, instr, num_voices=cue_voices)
 
     # sMet beat divisions drive the tracker's row highlighting: primary = rows per
     # NOTATED beat (the time-sig denominator), secondary = rows per bar. Using the
@@ -3035,13 +3046,14 @@ def build_song_section(song: Song, speed: int, rpb: int, src_path: str,
     beat_pri = max(1, round(rpb * 4 / (2 ** init_dpow)))
     title = song.title or os.path.splitext(os.path.basename(src_path))[0]
 
-    cue_bytes, n_cues_stored = finalize_cue_sheet(sheet)
+    cue_bytes, n_cues_stored = finalize_cue_sheet(sheet, num_voices=cue_voices)
 
     return {
         'pat_comp':  compress_blob(pat_bin,      "pattern bin"),
         'cue_comp':  compress_blob(cue_bytes,    "cue sheet"),
         'n_cues':    n_cues_stored,
         'n_voices':  n_voices,
+        'is_64ch':   is_64ch,
         'n_unique':  n_unique,
         'bpm0':      bpm0,
         'speed':     speed,
@@ -3125,12 +3137,15 @@ def build_ixmp(layer_insts: list, bpm0: int, args) -> dict:
     return ixmp
 
 
-def taud_header(kind: int, num_songs: int, comp_size: int) -> bytes:
+def taud_header(kind: int, num_songs: int, comp_size: int,
+                is_64channel: bool = False) -> bytes:
     """32-byte container header with projOff left at zero (patched by
     finish_container when project data is present). `kind` is one of the
-    TAUD_KIND_* constants; the version byte is `kind | TAUD_VERSION`."""
+    TAUD_KIND_* constants; the version byte is `kind | TAUD_VERSION`, plus the
+    xHDR bit (0x20) in 64-channel mode (terranmon.txt §xHDR)."""
+    version_byte = (kind & 0xC0) | TAUD_VERSION | (XHDR_FLAG if is_64channel else 0)
     header = (TAUD_MAGIC
-              + bytes([(kind & 0xC0) | TAUD_VERSION, num_songs & 0xFF])
+              + bytes([version_byte, num_songs & 0xFF])
               + struct.pack('<I', comp_size)
               + struct.pack('<I', 0)              # projOff, patched in finish_container
               + (SIGNATURE + b' ' * 14)[:14])
@@ -3139,9 +3154,10 @@ def taud_header(kind: int, num_songs: int, comp_size: int) -> bytes:
 
 
 def finish_container(kind: int, num_songs: int, comp_size: int,
-                     body_parts: list, proj_data: bytes) -> bytes:
+                     body_parts: list, proj_data: bytes,
+                     is_64channel: bool = False) -> bytes:
     """Concatenate header + body parts + optional project data, patching projOff."""
-    out = bytearray(taud_header(kind, num_songs, comp_size))
+    out = bytearray(taud_header(kind, num_songs, comp_size, is_64channel))
     for part in body_parts:
         out += part
     if proj_data:
@@ -3162,8 +3178,11 @@ def assemble_taud(sf: SF2, song: Song, layer_insts: list, meta_records: list,
 
     song_off = TAUD_HEADER_SIZE + comp_size + TAUD_SONG_ENTRY
     entry    = make_song_entry(section, song_off, args)
+    is_64ch  = section['is_64ch']
 
     # ── Project data: names + Ixmp (I/S) + song metadata (s) + project name (P) ──
+    # 64-channel mode REQUIRES an xHDR section, so emit project data (at least xHDR)
+    # even under --no-project-data.
     proj_data = b''
     if not args.no_project_data:
         inst_names, smp_names = build_inst_names(slot_name, pool)
@@ -3174,11 +3193,14 @@ def assemble_taud(sf: SF2, song: Song, layer_insts: list, meta_records: list,
             sample_names=smp_names,
             song_metadata=[make_song_meta(section, 0)],
             ixmp_patches=ixmp or None,
+            is_64channel=is_64ch,
         )
+    elif is_64ch:
+        proj_data = build_project_data(is_64channel=True)
 
     return finish_container(TAUD_KIND_FULL, 1, comp_size,
                             [compressed, entry, section['pat_comp'],
-                             section['cue_comp']], proj_data)
+                             section['cue_comp']], proj_data, is_64channel=is_64ch)
 
 
 def assemble_tsii(sf: SF2, pool: list, layer_insts: list, meta_records: list,
@@ -3219,13 +3241,20 @@ def assemble_tpif(sections: list, args) -> bytes:
         blobs += sec['cue_comp']
         cursor += len(sec['pat_comp']) + len(sec['cue_comp'])
 
+    # A .tpif is always built from a single section (directory mode → one per MIDI),
+    # so its channel mode is that section's. `any` guards the general case; mixed-mode
+    # sections in one file are not produced (their cue widths would already disagree).
+    is_64ch = any(sec.get('is_64ch') for sec in sections)
+
     proj_data = b''
     if not args.no_project_data:
         metas = [make_song_meta(sec, i) for i, sec in enumerate(sections)]
-        proj_data = build_project_data(song_metadata=metas)
+        proj_data = build_project_data(song_metadata=metas, is_64channel=is_64ch)
+    elif is_64ch:
+        proj_data = build_project_data(is_64channel=True)
 
     return finish_container(TAUD_KIND_PATTERN, n, 0,
-                            [bytes(table), bytes(blobs)], proj_data)
+                            [bytes(table), bytes(blobs)], proj_data, is_64channel=is_64ch)
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -3257,11 +3286,13 @@ def main():
                          'reproducing its SF2 release segment (the full '
                          'releaseVolEnv), played out via NNA Note Fade')
     ap.add_argument('--max-voices', type=int, default=32,
-                    help='Voice-column budget, 1..32 (default 32). NNA '
+                    help='Voice-column budget, 1..64 (default 32). NNA '
                          'background ghosts carry release/ring tails, so '
                          'few foreground voices are needed; songs exceeding '
                          'the budget release the oldest pedal-held or '
-                         'soonest-ending note early')
+                         'soonest-ending note early. Setting >32 opts in to '
+                         '64-channel Taud mode, but only takes effect when the '
+                         'song ACTUALLY allocates 33+ voices')
     ap.add_argument('--max-layers', type=int, default=25,
                     help='Max simultaneous layers per note (default 25). Each SF2 '
                          'preset is split into this many disjoint layers; presets '
@@ -3307,8 +3338,8 @@ def main():
 
     if args.speed is not None and not (1 <= args.speed <= 15):
         sys.exit("error: --speed must be 1..15")
-    if not (1 <= args.max_voices <= 32):
-        sys.exit("error: --max-voices must be 1..32")
+    if not (1 <= args.max_voices <= MAX_VOICES):
+        sys.exit("error: --max-voices must be 1..64")
     if not (1 <= args.max_layers <= 25):
         sys.exit("error: --max-layers must be 1..25")
     if not (0 <= args.mixing_vol <= 255):
