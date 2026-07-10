@@ -3321,13 +3321,16 @@ def main():
                     help='With --loop: loop precisely at End-of-Track instead of '
                          'rounding the loop-end up to a full bar (no effect without '
                          '--loop, or when the MIDI has its own loop markers)')
-    ap.add_argument('--force-synth-loop', action='store_true',
-                    help='For looped samples whose loop sits past the 65535-frame '
+    ap.add_argument('--no-force-synth-loop', action='store_false',
+                    dest='force_synth_loop', default=True,
+                    help='Disable the default synth-loop behaviour. By default, '
+                         'looped samples whose loop sits past the 65535-frame '
                          'cap even at 32 kHz (multi-second far-loop instruments, '
-                         'e.g. Timbres of Heaven): replace the real loop with a '
-                         'synthesized one at 32 kHz + a 10 s decay, instead of '
-                         'muffling the whole sample down to fit. Trades the genuine '
-                         'sustain loop for full bandwidth')
+                         'e.g. Timbres of Heaven) have their real loop replaced '
+                         'with a synthesized one at 32 kHz + a 10 s decay, instead '
+                         'of muffling the whole sample down to fit — trading the '
+                         'genuine sustain loop for full bandwidth. Pass this flag '
+                         'to keep the genuine loop (and accept the muffling)')
     ap.add_argument('--no-project-data', action='store_true',
                     help='Omit the Project Data section — NOTE: this also '
                          'omits Ixmp, collapsing every instrument to its '
