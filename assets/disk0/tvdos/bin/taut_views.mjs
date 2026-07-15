@@ -249,9 +249,9 @@ function buildSampleIndex() {
     const list = Array.from(byPtr.values()).sort((a, b) => a.ptr - b.ptr)
     const names = (songsMeta && songsMeta.sampleNames) || []
     for (let i = 0; i < list.length; i++) {
-        // SNam is slot-indexed (entry 0 unused); converters keep sample order
-        // identical to pool order, so list[i] corresponds to names[i+1].
-        const n = names[i + 1]
+        // SNam is pool-ordered and 0-based; converters keep sample order
+        // identical to pool order, so list[i] corresponds to names[i].
+        const n = names[i]
         list[i].name = (n != null) ? n : ''
     }
     return list
@@ -1532,7 +1532,7 @@ function drawInstTabGeneral1(e) {
             }
         }
         if (smpIdx >= 0) {
-            const sn = sampleNames[smpIdx + 1] || ''
+            const sn = sampleNames[smpIdx] || ''      // SNam is pool-ordered, 0-based
             sampleLabel = '$' + _hex(smpIdx + 1, 2) + (sn.length ? '  ' + sn : '  (unnamed)')
         } else {
             sampleLabel = '@$' + _hex(d.samplePtr, 6)
