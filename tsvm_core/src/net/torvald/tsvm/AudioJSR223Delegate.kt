@@ -227,20 +227,23 @@ class AudioJSR223Delegate(private val vm: VM) {
         return IntArray(mask.size) { mask[it].toInt() and 0xFF }
     }
 
-    /** Live noteVal (0..65535, 4096-TET) of the foreground voice — the value the mixer is using
-     *  *right now* including any in-flight vibrato / arpeggio / portamento delta. Returns 0 for
-     *  inactive voices. */
+    /** Live pitch (0..65535, 4096-TET) of the foreground voice — the per-tick FINAL pitch the
+     *  mixer is using *right now* including any in-flight vibrato / arpeggio / portamento /
+     *  auto-vibrato / pitch-envelope delta (Voice.renderPitch, item 23; falls back to noteVal
+     *  before the first tick has run). Returns 0 for inactive voices. */
     fun getVoiceNote(playhead: Int, voice: Int): Int {
         val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, AudioAdapter.NUM_VOICES - 1)) ?: return 0
         if (!v.active) return 0
-        return v.noteVal and 0xFFFF
+        return (if (v.renderPitch != 0) v.renderPitch else v.noteVal) and 0xFFFF
     }
 
-    /** Instrument id (0..255) currently bound to the voice slot, or 0 if the voice is inactive. */
+    /** Instrument id currently bound to the voice slot, or 0 if the voice is inactive. Reports
+     *  the PATTERN-LEVEL instrument (Voice.displayInst — a Metainstrument's slot, not the layer
+     *  child the trigger resolved it to), so the UI shows the number the pattern shows. */
     fun getVoiceInstrument(playhead: Int, voice: Int): Int {
         val v = getPlayhead(playhead)?.trackerState?.voices?.getOrNull(voice.coerceIn(0, AudioAdapter.NUM_VOICES - 1)) ?: return 0
         if (!v.active) return 0
-        return v.instrumentId and 0x3FF   // 0..1023 (256..1023 = aux bin); a meta layer plays an aux slot
+        return (if (v.displayInst != 0) v.displayInst else v.instrumentId) and 0x3FF   // 0..1023 (256..1023 = aux bin)
     }
 
     /** Current sample-frame playback position (fractional double) of the voice. Returns -1.0
@@ -324,7 +327,16 @@ class AudioJSR223Delegate(private val vm: VM) {
         return v.envFilterTimeSec
     }
 
-    /** Set the starting row for the next play call, resetting per-row timing and silencing active voices. */
+    /** Set the starting row for the next play call, resetting per-row timing and silencing active
+     *  voices. This is the common pre-play reset point (play / play-from-row / pattern preview),
+     *  so it also clears the transient per-play state that would otherwise bleed a prior playback
+     *  into a fresh start — notably the NNA background ghosts, which stop() leaves active and a
+     *  replay would resume (the "mysteriously lingering notes" bug), and the per-voice S$Bx
+     *  pattern-loop + Ditto (effect 7) memory that resetPatternLoopState only clears on cue
+     *  ADVANCES, never at play start. Tempo/volume are deliberately NOT touched (a replay keeps
+     *  the song's tempo — that's why this is not a full resetParams). Backported from the web
+     *  engine's setTrackerRow (items 25 + 44); the ghosts are deactivated rather than removed —
+     *  the render thread's per-tick sweep culls inactive entries, same as jamStop. */
     fun setTrackerRow(playhead: Int, row: Int) {
         getPlayhead(playhead)?.trackerState?.let { ts ->
             ts.rowIndex = row.coerceIn(0, 63)
@@ -333,7 +345,22 @@ class AudioJSR223Delegate(private val vm: VM) {
             ts.firstRow = true
             ts.pendingOrderJump = -1
             ts.pendingRowJump = -1
-            ts.voices.forEach { it.active = false }
+            ts.pendingRowJumpLocal = false
+            ts.patternDelayRemaining = 0
+            ts.patternDelayActive = false
+            ts.sexWinningChannel = -1
+            ts.finePatternDelayExtra = 0
+            ts.pendingInterrupts.set(0)
+            ts.voices.forEach {
+                it.active = false
+                it.loopStartRow = 0
+                it.loopCount = 0
+                it.dittoActive = false
+                it.dittoSourceStart = 0
+                it.dittoLength = 0
+                it.dittoEndRow = 0
+            }
+            ts.backgroundVoices.forEach { it.active = false }
         }
     }
 

@@ -87,6 +87,9 @@ let helpCommon = `<c>COMMON CONTROLS</c>
 &bul;<b>U</b> : <O>plays the current cue then stop</O>
 &bul;<b>I</b> : <O>plays the current row</O>
 &bul;<b>O</b> : <O>stops the playback</O>
+&bul;<b>ent</b> : <O>(Timeline/Patterns) plays from the cursor row; while playing, stops</O>
+&bul;<b>ENT</b> : <O>(Timeline) plays the song from the very beginning; (Patterns) previews the pattern from the top</O>
+&bul;<b>^ent</b> : <O>(Timeline) plays from the current cue</O>
 &bul;<b>tab</b> : <O>switchs forward a tab</O>
 &bul;<b>TAB</b> : <O>switchs backward a tab</O>
 &bul;<b>q</b> : <O>closes &microtone;</O>
@@ -107,18 +110,20 @@ Timeline has two distinct modes: view and edit mode. Two modes are toggled using
 &bul;<b>N</b> : <O>toggles the note column between notation and raw hex (also in Patterns)</O>
 &bul;<b>n</b> : <O>toggles soloing of the selected voice</O>
 &bul;<b>m</b> : <O>toggles muting of the selected voice</O>
-&bul;<b>[</b>&mdot;<b>]</b> : <O>changes tick rate of playhead</O>
+&bul;<b>[</b>&mdot;<b>]</b> : <O>changes the jam octave (while playing: changes tick rate of playhead)</O>
+&bul;<b>{</b>&mdot;<b>}</b> : <O>changes the current instrument</O>
 
 <b>&nbsp;EDIT MODE</b>
 <b>\u00B7${'\u00B8'.repeat(9)}\u00B9</b>
 &bul;Note jamming : <O>(note column) inserts the note</O>
-&bul;<b>[</b>&mdot;<b>]</b> : <O>(note column) lowers/raises a note by one octave (or period)</O>
-&bul;<b>{</b>&mdot;<b>}</b> : <O>(note column) lowers/raises a note by one unit</O>
-&bul;<b>z</b> : <O>(note column) inserts a key-off &keyoffsym;</O>
+&bul;<b>[</b>&mdot;<b>]</b> : <O>(note column) lowers/raises a note by one octave (or period); (inst column) previous/next instrument; (vol/pan column) nudges the value</O>
+&bul;<b>{</b>&mdot;<b>}</b> : <O>(note column) lowers/raises a note by one unit; (vol/pan column) fine-slide nudge</O>
+&bul;<b>z</b>&mdot;<b>\`</b> : <O>(note column) inserts a key-off &keyoffsym;</O>
 &bul;<b>x</b> : <O>(note column) inserts a note-cut &notecutsym;</O>
 &bul;<b>c</b> : <O>(note column) inserts a note fade &notefadesym;</O>
 &bul;<b>v</b> : <O>(note column) inserts a fast fade &notefastfadesym;</O>
 &bul;<b>b</b> : <O>(note column) inserts a note by raw hexadecimal (popup)</O>
+&bul;<b>0</b>&ddot;<b>9</b> <b>a</b>&ddot;<b>f</b> : <O>(note column, raw-hex display) types the note word digit by digit</O>
 &bul;<b>.</b> : <O>clears fields</O>
 &bul;<b>bksp</b> : <O>deletes one character on the selected column</O>
 &bul;<b>0</b>&ddot;<b>9</b> <b>a</b>&ddot;<b>f</b> : <O>inserts a (hexa)decimal number</O>
@@ -169,6 +174,23 @@ A blank row past the last cue is always available so a new cue can be appended.
 &bul;<b>Jump to cue</b> : <O>jump to absolute cue N (loop)</O>
 `
 
+let helpPatterns = `<c>PATTERNS VIEW</c>
+<c>\u00B7${'\u00B8'.repeat(13)}\u00B9</c>
+Single-pattern editor. View/Edit modes and the cell editing keys are the same as the Timeline (see its help on the Timeline tab); <b>pg&updn;</b> walks the pattern list instead of cues.
+
+<b>&nbsp;PATTERN TOOLS (P)</b>
+<b>\u00B7${'\u00B8'.repeat(17)}\u00B9</b>
+&bul;<b>Duplicate pattern</b> : <O>appends a copy of this pattern after the last one</O>
+&bul;<b>Transpose</b> : <O>moves every note by N degree steps of the active notation plus M whole periods; percussion and special notes are skipped</O>
+&bul;<b>Lengthen xN</b> : <O>row r moves to row rxN with blank rows between (IT Alt-F, any factor)</O>
+&bul;<b>Shorten /N</b> : <O>row rxN moves to row r, the rows between are dropped (IT Alt-G, any factor)</O>
+&bul;<b>Volume scale</b> : <O>v = vxmult%+add on every non-empty volume, selector kept</O>
+&bul;<b>Pan transform</b> : <O>widens/narrows pans about centre by mult% (negative swaps L/R), then shifts; empty cells stay empty</O>
+&bul;<b>Change instrument</b> : <O>remaps the instrument column (blank From = every non-empty cell)</O>
+`
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 let helpProjectFlags = `<c>MIXER FLAGS</c>
 <c>\u00B7${'\u00B8'.repeat(11)}\u00B9</c>
 Mixer flags define how should the mixer behave.
@@ -206,7 +228,7 @@ function init(HUB) {
     let helpMessages = [ // index: taut.js PANEL_NAMES
     /* Timeline */[helpJam, helpTimeline, helpCommon, helpNotation].join(HRULE),
     /* Cues */[helpCues, helpCommon, helpNotation].join(HRULE),
-    /* Patterns */[helpCommon, helpNotation].join(HRULE), // placeholder
+    /* Patterns */[helpJam, helpPatterns, helpCommon, helpNotation].join(HRULE),
     /* Samples */[helpCommon, helpNotation].join(HRULE), // placeholder
     /* Instruments */[helpCommon, helpNotation].join(HRULE), // placeholder
     /* Project */[helpProjectFlags, helpCommon, helpNotation].join(HRULE), // placeholder

@@ -643,6 +643,10 @@ function retuneAllPatterns(newIdx, method) {
     }
     PITCH_PRESET_IDX = newIdx
     rebuildPitchLut()
+    // Keep the song metadata in sync so the new notation survives a song switch
+    // and lands in the sMet section on the next save.
+    const sm = songsMeta.songs && songsMeta.songs[currentSongIndex]
+    if (sm) sm.pitchPresetIdx = newIdx
 }
 
 Number.prototype.hex02 = function() {
@@ -1084,6 +1088,16 @@ function loadTaudSongList(filePath) {
     const projOff  = _peekU32LE(ptr, 14)
     const songTableOff = TAUD_HEADER_SIZE + compSize
 
+    // Song-table tuning fields (basenote u16 @9, basefreq f32 @11): read so a
+    // re-save can carry them through captureTrackerDataToFile instead of
+    // resetting an opened project to the tracker default (0xA000 / 8363 Hz).
+    const _f32buf = new Uint8Array(4)
+    const _f32view = new Float32Array(_f32buf.buffer)
+    const peekF32LE = (off) => {
+        for (let k = 0; k < 4; k++) _f32buf[k] = sys.peek(ptr + off + k) & 0xFF
+        return _f32view[0]
+    }
+
     const songs = new Array(numSongs)
     for (let i = 0; i < numSongs; i++) {
         const entryOff = songTableOff + i * TAUD_SONG_ENTRY
@@ -1094,6 +1108,8 @@ function loadTaudSongList(filePath) {
                               ((sys.peek(ptr + entryOff + 6) & 0xFF) << 8),
             bpm:              ((sys.peek(ptr + entryOff + 7) & 0xFF) + 25 + ((sys.peek(ptr + entryOff + 8) & 0x80) << 1)),  // bit 7 of byte 8 = BPM high bit
             tickRate:         sys.peek(ptr + entryOff + 8) & 0x7F,
+            baseNote:         (sys.peek(ptr + entryOff + 9) & 0xFF) | ((sys.peek(ptr + entryOff + 10) & 0xFF) << 8),
+            baseFreq:         peekF32LE(entryOff + 11),
             mixerflags:       sys.peek(ptr + entryOff + 15) & 0xFF,
             songGlobalVolume: sys.peek(ptr + entryOff + 16) & 0xFF,
             songMixingVolume: sys.peek(ptr + entryOff + 17) & 0xFF,
@@ -1332,7 +1348,7 @@ function drawStatusBar() {
     const vHi = Math.min(voiceOff + VOCSIZE_TIMELINE_FULL, song.numVoices).dec02()
     const vLow = (voiceOff+1).dec02()
     const songPath = song.filePath
-    const sRow = cursorRow.dec02()
+    const sRow = cursorRow.hex02()   // rows are hex everywhere (web item 35)
     const sBPM = ''+audio.getBPM(PLAYHEAD)
     const sSpd = ''+audio.getTickRate(PLAYHEAD)
 
@@ -1661,7 +1677,7 @@ function drawPatternRowAt(viewRow, style = timelineRowStyle) {
 
         if (actualRowForBeatCalc % beatDivPrimary == 0) {con.color_pair(colRowNumEmph1, back)}
         if (actualRowForBeatCalc % beatDivSecondary == 0) {con.color_pair(colRowNumEmph2, back)}
-        let rowstr = actualRow.dec02()
+        let rowstr = actualRow.hex02()   // rows are hex everywhere (web item 35)
         con.move(y, 1); con.prnch(rowstr.charCodeAt(0)); con.move(y, 2); con.prnch(rowstr.charCodeAt(1))
 
         if (timelineRowStyle != 1) {
@@ -1741,6 +1757,11 @@ function drawControlHint() {
     ['sep'],
         ['sp','Edit'],
     ['sep'],
+        ['[]','Oct'],
+        ['{}','Inst'],
+    ['sep'],
+        ['P','Tools'],
+    ['sep'],
         ['tab','Panel'],
     ['sep'],
         ['!','Help'],
@@ -1753,14 +1774,12 @@ function drawControlHint() {
         [`pg\u008418u`,'Cue'],
     ['sep'],
         [`A${sym.doubledot}G`,'Note'],
-        [`0${sym.doubledot}9`,'Oct'],
-        ['[]',`Tone\u008418u`],
-    ['sep'],
-        ['#',sym.sharp],
-        ['@','Acc'],
+        ['[]',`Oct\u008418u`],
+        ['{}',`Tone\u008418u`],
     ['sep'],
         ['z','KOff'],
         ['x','KCut'],
+        ['c','Fade'],
     ['sep'],
         ['!','Help'],
 //    ['sep'],
@@ -1771,6 +1790,7 @@ function drawControlHint() {
         [`pg\u008418u`,'Cue'],
     ['sep'],
         [`0${sym.doubledot}9 A${sym.doubledot}F`,'Instrument'],
+        ['[]',`Step\u008418u`],
     ['sep'],
         ['!','Help'],
     // ['sep'],
@@ -2477,12 +2497,30 @@ function openProject(path) {
 }
 
 // Overwrite `path` with the current device state (single-song capture).
+// The project-data metadata the loader understands (sMet notation / beat
+// divisions / name strings, INam / SNam name tables, PNam, song-table tuning)
+// is carried through the capture, so re-saving an opened project no longer
+// drops it (parity with the web app's save path).
 function saveProjectToFile(path) {
+    const sm = (songsMeta.songs && songsMeta.songs[currentSongIndex]) || {}
     taud.captureTrackerDataToFile(path, {
         numVoices: song.numVoices,
         numPats:   song.numPats,
         numCues:   Math.max(1, song.lastActiveCue + 1),
         is64Channel: is64Channel,
+        baseNote:  sm.baseNote || 0,
+        baseFreq:  sm.baseFreq || 0,
+        projectName: songsMeta.projectName || '',
+        instNames:   songsMeta.instNames   || [],
+        sampleNames: songsMeta.sampleNames || [],
+        sMet: {
+            notation:  PITCH_PRESET_IDX,
+            beatPri:   beatDivPrimary,
+            beatSec:   beatDivSecondary,
+            name:      sm.name || '',
+            composer:  sm.composer || '',
+            copyright: sm.copyright || '',
+        },
     })   // throws on I/O error
     hasUnsavedChanges = false
 }
@@ -2531,6 +2569,8 @@ function buildEmptyMeta(settings) {
             pitchPresetIdx:   settings ? settings.notation : null,
             beatDivPrimary:   settings ? settings.beatPri  : null,
             beatDivSecondary: settings ? settings.beatSec  : null,
+            baseNote:         settings ? settings.baseNote : 0,
+            baseFreq:         settings ? settings.baseFreq : 0,
         }],
         instNames: [], sampleNames: [],
     }
@@ -2838,15 +2878,14 @@ function timelineInput(wo, event) {
     if (keyJustHit && shiftDown && event.includes(keys.R)) { setTimelineRowStyle(2); return }
     if (keyJustHit && shiftDown && event.includes(keys.N)) { toggleNoteDisplay(); return }
 
-    // [ / ] nudges the tick rate, EXCEPT in edit mode on the note column where they
-    // lower/raise the note by one unit (handled by the cell editor below).
-    if (keyJustHit && !shiftDown && (sc === keys.LEFT_BRACKET || sc === keys.RIGHT_BRACKET) &&
-        !(patternEditMode && playbackMode === PLAYMODE_NONE && timelineColCursor === 0)) {
-        nudgeTickRate(sc === keys.LEFT_BRACKET ? -1 : 1); return
-    }
-
     if (playbackMode !== PLAYMODE_NONE) {
-        if (keyJustHit && shiftDown && event.includes(keys.Y) || keysym === " ") { stopPlayback(); redrawPanel(); drawAlwaysOnElems() }
+        // During playback [ / ] keeps its live tick-rate nudge (the stopped-state
+        // brackets are the octave / instrument steppers below — web item 47.2).
+        if (keyJustHit && !shiftDown && (sc === keys.LEFT_BRACKET || sc === keys.RIGHT_BRACKET)) {
+            nudgeTickRate(sc === keys.LEFT_BRACKET ? -1 : 1); return
+        }
+        if (keyJustHit && shiftDown && event.includes(keys.Y) || keysym === " " ||
+            (keyJustHit && keysym === "\n")) { stopPlayback(); redrawPanel(); drawAlwaysOnElems() }
         else if (keysym === "<LEFT>" || keysym === "<RIGHT>") {
             const dir = (keysym === "<LEFT>") ? -1 : 1
             const oldVoiceOff = voiceOff
@@ -2866,6 +2905,16 @@ function timelineInput(wo, event) {
     if (keyJustHit && shiftDown && event.includes(keys.U)) { startPlayCue();  redrawPanel(); return }
     if (              shiftDown && event.includes(keys.I)) { startPlayRow();  drawPatternRowAt(cursorRow - scrollRow); return }
     if (keyJustHit && shiftDown && event.includes(keys.O)) { stopPlayback(); drawAlwaysOnElems(); return }
+    // Enter transport (web item 47): Enter = play from the cursor row,
+    // Shift+Enter = play the song from the very beginning, Ctrl+Enter = play
+    // from the current cue. (While playing, Enter stops — handled above.)
+    if (keyJustHit && keysym === "\n") {
+        const ctrlDown = event.includes(keys.CONTROL_LEFT) || event.includes(keys.CONTROL_RIGHT)
+        if (shiftDown)     { cueIdx = 0; clampCue(); startPlaySong() }
+        else if (ctrlDown) { startPlaySong() }
+        else               { startPlaySongFromRow(cursorRow) }
+        redrawPanel(); drawAlwaysOnElems(); return
+    }
     // Space toggles View/Edit while stopped (the playing branch above already stops on space).
     if (keysym === " ") { if (keyJustHit) toggleEditMode(); return }
 
@@ -2902,6 +2951,11 @@ function timelineInput(wo, event) {
         if (n !== null && typeof audio.jamNote === 'function') audio.jamNote(PLAYHEAD, cursorVox, n, currentInstrument)
         return
     }
+
+    // Bracket scheme while stopped (web item 47.2): [ ] steps the jam octave,
+    // { } steps the current instrument — unless the cell editor above already
+    // consumed the key (note/inst/vol/pan column edits in edit mode).
+    if (keyJustHit && handleBracketGlobal(event, shiftDown)) return
 
     const oldCursor = cursorRow
     const oldScroll = scrollRow
@@ -2981,6 +3035,11 @@ function ordersInput(wo, event) {
 
     if (keyJustHit && shiftDown && event.includes(keys.U)) {
         cueIdx = ordersCursor; clampCue(); startPlayCue(); drawAlwaysOnElems(); return
+    }
+    // Shift+Y: play the song from the SELECTED cue (web item 39 — playback from
+    // the Cues panel follows the Cues cursor).
+    if (keyJustHit && shiftDown && event.includes(keys.Y)) {
+        cueIdx = ordersCursor; clampCue(); startPlaySong(); drawAlwaysOnElems(); return
     }
     if ((keyJustHit && shiftDown && event.includes(keys.O)) || keysym === " ") {
         stopPlayback(); drawAlwaysOnElems(); return
@@ -3181,6 +3240,18 @@ function editVolPanByte(byte, sc, shiftDown, isPan) {
         if (m === 0) return 0xC0
         return ((sel & 3) << 6) | (arg & 0x20) | (m & 0x1F)
     }
+    // '[' / ']' value nudge, '{' / '}' fine-selector nudge (web item 47.2):
+    // vol: [ quieter / ] louder · pan: [ toward L / ] toward R. An empty cell
+    // plainly bracketed becomes a default SET (0x20); shifted it becomes a FINE
+    // command around the default value.
+    if (sc === keys.LEFT_BRACKET || sc === keys.RIGHT_BRACKET) {
+        const dir = (sc === keys.RIGHT_BRACKET) ? 1 : -1
+        const clamp6 = (v) => v < 0 ? 0 : v > 0x3F ? 0x3F : v
+        if (shiftDown) return (SEL_FINE << 6) | clamp6((empty ? 0x20 : arg) + dir)
+        if (empty) return 0x20                        // default SET volume / centre pan
+        return (sel << 6) | clamp6(arg + dir)
+    }
+
     // selector keys (checked before SET digits so Shift+6 is '^', not the digit 6)
     const lowArg = arg & 0x0F
     if (!isPan && shiftDown && sc === keys.NUM_6)  return (SEL_UP   << 6) | lowArg   // ^
@@ -3214,15 +3285,34 @@ function editPatternCell(ptnDat, row, col, ev, popupPos) {
     let changed = false, advance = false, audition = -1, octave = false
 
     if (col === 0) {                                   // \u2500\u2500 note \u2500\u2500
-        const semi = (!shiftDown) ? jamScancodeToSemitone(sc) : null
-        if (semi !== null) {
+        // Raw-hex note entry (web parity): whenever the note column shows raw hex
+        // words \u2014 the Shift+N raw view is on, or the notation preset is Raw (no
+        // degree table) \u2014 hex digits shift into the 16-bit note word, OVERRIDING
+        // the piano jam, the sentinel keys and the 'b' popup (all swallowed so
+        // nothing jams). '.'/Backspace still clear; [ ] { } keep their nudges.
+        const rawEntry = rawNoteView || pitchTablePresets[PITCH_PRESET_IDX].table.length === 0
+        const isBracket = (sc === keys.LEFT_BRACKET || sc === keys.RIGHT_BRACKET)
+        const semi = (!rawEntry && !shiftDown) ? jamScancodeToSemitone(sc) : null
+        if (rawEntry && !isBracket) {
+            if (!shiftDown) {
+                const nib = scToHexNibble(sc)
+                if (nib >= 0) {
+                    writeNote(ptnDat, row, ((cellNote(ptnDat, row) << 4) | nib) & 0xFFFF)
+                    changed = true
+                }
+                else if (isClear || isBack) { writeNote(ptnDat, row, 0); changed = true }
+            }
+            // every other note-column key is swallowed here (no jam, no sentinel)
+        }
+        else if (semi !== null) {
             const n = semitoneToNote(semi, editOctave)
             if (n !== null) { writeNote(ptnDat, row, n); writeInst(ptnDat, row, currentInstrument)
                               changed = true; advance = true; audition = n }
         }
         // Special notes (key-off / cut / fade / fast-fade) are inserted but not auditioned
         // (jamming a key-off through the trigger path would resolve a bogus sample).
-        else if (!shiftDown && sc === keys.Z) { writeNote(ptnDat, row, 0x0001); changed = true; advance = true }
+        // '`' doubles as key-off (web parity \u2014 other trackers use it for key-off).
+        else if (!shiftDown && (sc === keys.Z || sc === keys.GRAVE)) { writeNote(ptnDat, row, 0x0001); changed = true; advance = true }
         else if (!shiftDown && sc === keys.X) { writeNote(ptnDat, row, 0x0002); changed = true; advance = true }
         else if (!shiftDown && sc === keys.C) { writeNote(ptnDat, row, 0x0003); changed = true; advance = true }
         else if (!shiftDown && sc === keys.V) { writeNote(ptnDat, row, 0x0004); changed = true; advance = true }
@@ -3250,6 +3340,26 @@ function editPatternCell(ptnDat, row, col, ev, popupPos) {
         if (nib >= 0) {
             const v = ((cellInst(ptnDat, row) << 4) | nib) & 0xFF
             writeInst(ptnDat, row, v); currentInstrument = v; changed = true
+        }
+        // '[' = previous / ']' = next selectable instrument for the CELL (web
+        // item 47.2; '{' '}' behave the same). Meta layer children are skipped.
+        else if (sc === keys.LEFT_BRACKET || sc === keys.RIGHT_BRACKET) {
+            const slots = (HUB.views && HUB.views.selectableInstrumentSlots)
+                ? HUB.views.selectableInstrumentSlots() : null
+            if (slots && slots.length > 0) {
+                const dir = (sc === keys.RIGHT_BRACKET) ? 1 : -1
+                const cur = cellInst(ptnDat, row)
+                let i = slots.indexOf(cur)
+                if (i < 0) {
+                    if (dir > 0) { i = 0; while (i < slots.length - 1 && slots[i] <= cur) i++ }
+                    else         { i = slots.length - 1; while (i > 0 && slots[i] >= cur) i-- }
+                } else {
+                    i = Math.max(0, Math.min(slots.length - 1, i + dir))
+                }
+                if (slots[i] !== cur) {
+                    writeInst(ptnDat, row, slots[i]); currentInstrument = slots[i]; changed = true
+                }
+            }
         }
         else if (isBack)  { writeInst(ptnDat, row, cellInst(ptnDat, row) >>> 4); changed = true }
         else if (isClear) { writeInst(ptnDat, row, 0); changed = true }
@@ -3283,6 +3393,42 @@ function editPatternCell(ptnDat, row, col, ev, popupPos) {
 function adoptInstrumentFromCell(ptnDat, row) {
     const inst = cellInst(ptnDat, row)
     if (inst !== 0) currentInstrument = inst
+}
+
+// ── Bracket steppers (web item 47.2) ────────────────────────────────────────
+// While stopped, '[' / ']' step the jam octave and '{' / '}' step the current
+// instrument through the selectable slots (meta layer children skipped, item
+// 59). The record-mode per-column edits live in editPatternCell /
+// editVolPanByte; this is the global fallback shared by the pattern panels
+// (and, via HUB, the Samples / Instruments views' jam keyboards).
+function stepJamOctave(dir) {
+    editOctave = Math.max(1, Math.min(14, editOctave + dir))
+    drawAlwaysOnElems()
+}
+function stepCurrentInstrument(dir) {
+    const slots = (HUB.views && HUB.views.selectableInstrumentSlots)
+        ? HUB.views.selectableInstrumentSlots() : null
+    if (!slots || slots.length === 0) return
+    const cur = currentInstrument & 0xFF
+    let i = slots.indexOf(cur)
+    if (i < 0) {
+        // off-list: land on the nearest slot in the step direction
+        if (dir > 0) { i = 0; while (i < slots.length - 1 && slots[i] <= cur) i++ }
+        else         { i = slots.length - 1; while (i > 0 && slots[i] >= cur) i-- }
+    } else {
+        i = Math.max(0, Math.min(slots.length - 1, i + dir))
+    }
+    currentInstrument = slots[i]
+    drawAlwaysOnElems()
+}
+// Returns true when the event was a bracket key (handled here).
+function handleBracketGlobal(event, shiftDown) {
+    let sc = event[3]; if (sc == 59) sc = event[4]; if (sc == 60) sc = event[5]
+    if (sc !== keys.LEFT_BRACKET && sc !== keys.RIGHT_BRACKET) return false
+    const dir = (sc === keys.RIGHT_BRACKET) ? 1 : -1
+    if (shiftDown) stepCurrentInstrument(dir)
+    else           stepJamOctave(dir)
+    return true
 }
 
 // Resolve the cell currently under the edit cursor for whichever pattern panel is active.
@@ -3323,14 +3469,283 @@ function toggleEditMode() {
         // it is pattern-addressable ($01..$FF). An aux-bin slot ($100..$1FF) is a
         // Metainstrument layer that a pattern cell cannot reference, so keep the
         // existing currentInstrument instead of letting it wrap to (slot & 0xFF).
+        // A directly-addressable META LAYER CHILD is likewise not adopted (web item
+        // 59 — patterns should reference the Metainstrument, not its children).
         const sel = (HUB.views && HUB.views.getSelectedInstrumentSlot && HUB.views.getSelectedInstrumentSlot()) || 0
-        const seed = (sel >= 1 && sel <= 255) ? sel : currentInstrument
+        if (metaLayerFlags === null && HUB.views && HUB.views.buildMetaLayerChildSlots)
+            metaLayerFlags = HUB.views.buildMetaLayerChildSlots()
+        const selIsChild = !!(metaLayerFlags && metaLayerFlags[sel])
+        const seed = (sel >= 1 && sel <= 255 && !selIsChild) ? sel : currentInstrument
         currentInstrument = seed || 1
         const c = currentEditCell(); if (c) adoptInstrumentFromCell(c.ptnDat, c.row)
     } else if (typeof audio.jamStop === 'function') {
         audio.jamStop(PLAYHEAD)
     }
     redrawPanel(); drawAlwaysOnElems()
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// PATTERN TOOLS (backported from the web app — items 15 / 22 / 33)
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Byte-level transforms over one 512-byte pattern. "Empty" vol/pan bytes follow
+// the converter convention: 0xC0 (SEL_FINE-0 no-ops) — all-zero vol/pan bytes
+// would be real "set volume 0" commands, not blanks.
+
+function emptyPatternBytes() {
+    const bytes = new Uint8Array(PATTERN_SIZE)
+    for (let r = 0; r < ROWS_PER_PAT; r++) { bytes[r*8 + 3] = 0xC0; bytes[r*8 + 4] = 0xC0 }
+    return bytes
+}
+
+// Lengthen ×n: row r → row n·r with blanks between, rows past the end pushed
+// out (the Impulse Tracker Alt-F behaviour, generalised to any factor).
+function expandPatternBytes(src, factor) {
+    const n = Math.max(1, factor | 0)
+    const out = emptyPatternBytes()
+    for (let r = 0; r * n <= ROWS_PER_PAT - 1; r++) out.set(src.subarray(r * 8, r * 8 + 8), r * n * 8)
+    return out
+}
+
+// Shorten ÷n: row n·r → row r, the rows between dropped, the tail left blank
+// (the Impulse Tracker Alt-G behaviour, generalised).
+function shrinkPatternBytes(src, factor) {
+    const n = Math.max(1, factor | 0)
+    const out = emptyPatternBytes()
+    for (let r = 0; r * n <= ROWS_PER_PAT - 1; r++) out.set(src.subarray(r * n * 8, r * n * 8 + 8), r * 8)
+    return out
+}
+
+function _clampInt(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v }
+
+// Scale/offset every volume value: v → clamp(round(v·mult + add), 0..63),
+// keeping the effect selector. The no-op sentinel (0xC0) and thus every empty
+// cell are skipped — this amplifies existing volumes, it does not stamp volume
+// onto cells that carry none.
+function scaleVolumeBytes(ptn, mult, add) {
+    for (let r = 0; r < ROWS_PER_PAT; r++) {
+        const o = r * 8 + 3
+        const b = ptn[o], eff = (b >>> 6) & 3, val = b & 63
+        if (eff === 3 && val === 0) continue
+        ptn[o] = ((eff << 6) | _clampInt(Math.round(val * mult + add), 0, 63)) & 0xFF
+    }
+}
+
+// Pan transform: widen/narrow by signed `mult` about centre 0x20, then shift
+// by `add`. mult>1 widens, 0<mult<1 narrows, mult<0 swaps L/R. Skips the pan
+// no-op sentinel.
+function transformPanBytes(ptn, mult, add) {
+    const CENTRE = 32
+    for (let r = 0; r < ROWS_PER_PAT; r++) {
+        const o = r * 8 + 4
+        const b = ptn[o], eff = (b >>> 6) & 3, val = b & 63
+        if (eff === 3 && val === 0) continue
+        ptn[o] = ((eff << 6) | _clampInt(Math.round(CENTRE + (val - CENTRE) * mult + add), 0, 63)) & 0xFF
+    }
+}
+
+// Remap the instrument byte: from === null → change every non-empty inst to
+// `to`; otherwise only cells whose inst === from.
+function changeInstrumentBytes(ptn, from, to) {
+    for (let r = 0; r < ROWS_PER_PAT; r++) {
+        const o = r * 8 + 2, cur = ptn[o]
+        if (from === null ? cur !== 0 : cur === (from & 0xFF)) ptn[o] = to & 0xFF
+    }
+}
+
+// Transpose every note, notation-aware (web transposePatternNotes): snap to the
+// nearest degree of the active table, move `fine` degree steps (wrapping across
+// periods) plus `coarse` whole periods; the Raw preset moves `fine` raw
+// 4096-TET units. Sentinels/interrupts (< 0x20) and percussion instruments are
+// skipped, with the same running-instrument inheritance as retuneAllPatterns.
+function transposePatternBytes(ptn, fine, coarse) {
+    const preset = pitchTablePresets[PITCH_PRESET_IDX]
+    const useTable = preset && preset.table.length > 0
+    const interval = (preset && preset.interval) || 0x1000
+    const percSlots = (HUB.views && HUB.views.buildPercussionSlots)
+        ? HUB.views.buildPercussionSlots() : null
+    let runningInst = 0
+    for (let row = 0; row < ROWS_PER_PAT; row++) {
+        const off = 8 * row
+        if (ptn[off+2] !== 0) runningInst = ptn[off+2]
+        const note = ptn[off] | (ptn[off+1] << 8)
+        if (note >= 0x0000 && note <= 0x001F) continue
+        const eInst = ptn[off+2] !== 0 ? ptn[off+2] : runningInst
+        if (percSlots && eInst >= 1 && percSlots[eInst] !== 0) continue
+        let out
+        if (!useTable) {
+            out = note + fine + coarse * interval
+        } else {
+            const table = preset.table
+            const rel = note - ANCHOR_NOTE
+            let k = Math.floor(rel / interval)
+            const inPeriod = rel - k * interval
+            let best = 0, bestD = Infinity
+            for (let i = 0; i < table.length; i++) {
+                const d = Math.abs(table[i] - inPeriod)
+                if (d < bestD) { bestD = d; best = i }
+            }
+            // the next period's root may be nearer than the top table entry
+            if (interval - inPeriod < bestD) { k += 1; best = 0 }
+            let idx = best + fine
+            k += Math.floor(idx / table.length) + coarse
+            idx = ((idx % table.length) + table.length) % table.length
+            out = ANCHOR_NOTE + k * interval + table[idx]
+        }
+        out = Math.min(Math.max(Math.round(out), 0x20), 0xFFFF)
+        ptn[off]   = out & 0xFF
+        ptn[off+1] = (out >>> 8) & 0xFF
+    }
+}
+
+// Duplicate pattern `pidx`: append a copy after the last pattern. Returns the
+// new index, or -1 when the pattern space (0x0000..0x7FFE) is exhausted.
+function duplicatePattern(pidx) {
+    if (song.numPats >= 0x7FFF) return -1
+    song.patterns.push(new Uint8Array(song.patterns[pidx]))
+    song.numPats++
+    return song.numPats - 1
+}
+
+// The Patterns-panel tools popup (Shift+P): tool list, then a per-tool argument
+// dialog. Every edit marks the pattern bin device-stale + the project unsaved.
+function openPatternToolsPopup() {
+    if (song.numPats === 0) return
+    const chrome = {
+        drawFrame: HUB.popups.popupDrawFrame,
+        colours:   HUB.popups.popupColours,
+    }
+    const TOOLS = [
+        { id: 'dup',   label: 'Duplicate pattern' },
+        { id: 'trans', label: 'Transpose...' },
+        { id: 'len',   label: 'Lengthen xN...' },
+        { id: 'shr',   label: 'Shorten /N...' },
+        { id: 'vol',   label: 'Volume scale...' },
+        { id: 'pan',   label: 'Pan transform...' },
+        { id: 'inst',  label: 'Change instrument...' },
+    ]
+    const pick = win.showDialog(Object.assign({
+        title: `Pattern ${patternIdx.hex04()} Tools`,
+        list: {
+            items: TOOLS.map(t => ({ label: ' ' + t.label, tool: t })),
+            height: TOOLS.length, width: 24, drawWell: false, showScrollbar: false,
+            scrollbarChars: HUB.popups.popupScrollbarChars,
+        },
+        buttons: [
+            { label: 'OK',     action: 'ok' },
+            { label: 'Cancel', action: 'cancel' },
+        ],
+    }, chrome))
+    if (pick.action !== 'ok' || !pick.listItem) { drawAll(); return }
+
+    const ptn = song.patterns[patternIdx]
+    const num = (res, i, dflt, radix) => {
+        const n = parseInt(('' + (res.values[i] == null ? '' : res.values[i])).trim(), radix || 10)
+        return isNaN(n) ? dflt : n
+    }
+    let changed = false
+
+    switch (pick.listItem.tool.id) {
+    case 'dup': {
+        const ni = duplicatePattern(patternIdx)
+        if (ni >= 0) { patternIdx = ni; clampPatternIdx(); changed = true }
+        break
+    }
+    case 'trans': {
+        const preset  = pitchTablePresets[PITCH_PRESET_IDX]
+        const stepLbl = (preset && preset.table.length > 0) ? 'Steps (+/-):' : 'Units (+/-):'
+        const res = win.showDialog(Object.assign({
+            title: 'Transpose',
+            message: ['Percussion and special notes are skipped.'],
+            fields: [
+                { label: stepLbl,          width: 6, maxLength: 5, initial: '0' },
+                { label: 'Periods (+/-):', width: 6, maxLength: 4, initial: '0' },
+            ],
+            buttons: [{ label: 'OK', action: 'ok' }, { label: 'Cancel', action: 'cancel' }],
+        }, chrome))
+        if (res.action === 'ok') {
+            const fine = num(res, 0, 0), coarse = num(res, 1, 0)
+            if (fine !== 0 || coarse !== 0) { transposePatternBytes(ptn, fine, coarse); changed = true }
+        }
+        break
+    }
+    case 'len': case 'shr': {
+        const isLen = (pick.listItem.tool.id === 'len')
+        const res = win.showDialog(Object.assign({
+            title: isLen ? 'Lengthen pattern' : 'Shorten pattern',
+            message: [isLen ? 'Row r moves to row rxN, blanks between.'
+                            : 'Row rxN moves to row r, rest dropped.'],
+            fields: [{ label: 'Factor (2-63):', width: 4, maxLength: 2, initial: '2' }],
+            buttons: [{ label: 'OK', action: 'ok' }, { label: 'Cancel', action: 'cancel' }],
+        }, chrome))
+        if (res.action === 'ok') {
+            const f = _clampInt(num(res, 0, 2), 2, 63)
+            const out = isLen ? expandPatternBytes(ptn, f) : shrinkPatternBytes(ptn, f)
+            ptn.set(out)
+            changed = true
+        }
+        break
+    }
+    case 'vol': {
+        const res = win.showDialog(Object.assign({
+            title: 'Volume scale',
+            message: ['v -> v x mult% + add. Empty cells stay empty.'],
+            fields: [
+                { label: 'Multiply (%):',  width: 6, maxLength: 4, initial: '100' },
+                { label: 'Add (-63..63):',   width: 5, maxLength: 3, initial: '0' },
+            ],
+            buttons: [{ label: 'OK', action: 'ok' }, { label: 'Cancel', action: 'cancel' }],
+        }, chrome))
+        if (res.action === 'ok') {
+            const m = num(res, 0, 100) / 100, a = num(res, 1, 0)
+            if (m !== 1 || a !== 0) { scaleVolumeBytes(ptn, m, a); changed = true }
+        }
+        break
+    }
+    case 'pan': {
+        const res = win.showDialog(Object.assign({
+            title: 'Pan transform',
+            message: ['Widen/narrow about centre by mult% (negative', 'swaps L/R), then shift. Empty cells stay empty.'],
+            fields: [
+                { label: 'Multiply (+/-%):', width: 6, maxLength: 4, initial: '100' },
+                { label: 'Shift (-63..63):',   width: 5, maxLength: 3, initial: '0' },
+            ],
+            buttons: [{ label: 'OK', action: 'ok' }, { label: 'Cancel', action: 'cancel' }],
+        }, chrome))
+        if (res.action === 'ok') {
+            const m = num(res, 0, 100) / 100, a = num(res, 1, 0)
+            if (m !== 1 || a !== 0) { transformPanBytes(ptn, m, a); changed = true }
+        }
+        break
+    }
+    case 'inst': {
+        const res = win.showDialog(Object.assign({
+            title: 'Change instrument',
+            message: ['Hex slot numbers. Blank From = every', 'non-empty instrument. Empty cells stay empty.'],
+            fields: [
+                { label: 'From $ (hex):', width: 4, maxLength: 2, initial: '' },
+                { label: 'To $ (hex):',   width: 4, maxLength: 2, initial: currentInstrument.hex02() },
+            ],
+            buttons: [{ label: 'OK', action: 'ok' }, { label: 'Cancel', action: 'cancel' }],
+        }, chrome))
+        if (res.action === 'ok') {
+            const fromStr = ('' + (res.values[0] == null ? '' : res.values[0])).trim()
+            const from = fromStr === '' ? null : num(res, 0, null, 16)
+            const to   = num(res, 1, -1, 16)
+            if (to >= 0 && to <= 255 && (from === null || (from >= 0 && from <= 255))) {
+                changeInstrumentBytes(ptn, from, to)
+                changed = true
+            }
+        }
+        break
+    }
+    }
+
+    if (changed) {
+        patternsOutOfSync = true
+        hasUnsavedChanges = true
+        simStateKey = ''
+    }
+    drawAll()
 }
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -3362,6 +3777,20 @@ function centerScroll(sel, scroll, vis, total) {
     return scroll
 }
 
+// Lookahead scroll (web item 42): the cursor moves freely inside the central
+// band of the viewport; the view scrolls only when the cursor enters the 18%
+// edge band, and just enough to push it back to that band's boundary. Cursor
+// moves use this; playback follow keeps the centre-anchored centerScroll.
+function lookaheadScroll(pos, scroll, vis, total) {
+    const maxScroll = Math.max(0, total - vis)
+    const clampS = (v) => Math.min(Math.max(v, 0), maxScroll)
+    if (vis <= 0) return clampS(scroll)
+    const edge = Math.max(1, Math.floor(vis * 0.18))
+    if (pos < scroll + edge) return clampS(pos - edge)
+    if (pos > scroll + vis - 1 - edge) return clampS(pos - (vis - 1 - edge))
+    return clampS(scroll)   // cursor already inside the central band
+}
+
 function clampPatternIdx() {
     if (song.numPats === 0) { patternIdx = 0; patternListScroll = 0; return }
     if (patternIdx < 0) patternIdx = 0
@@ -3370,12 +3799,17 @@ function clampPatternIdx() {
 }
 
 function scrollPatternGridTo(row) {
-    patternGridScroll = centerScroll(row, patternGridScroll, PTNVIEW_HEIGHT, ROWS_PER_PAT)
+    // Cursor moves use the lookahead band (web item 42); playback follow centres.
+    patternGridScroll = (playbackMode !== PLAYMODE_NONE)
+        ? centerScroll(row, patternGridScroll, PTNVIEW_HEIGHT, ROWS_PER_PAT)
+        : lookaheadScroll(row, patternGridScroll, PTNVIEW_HEIGHT, ROWS_PER_PAT)
 }
 
 function scrollOrdersTo(ci) {
     const maxCue = ordersMaxRow()
-    ordersScroll = centerScroll(ci, ordersScroll, PTNVIEW_HEIGHT, maxCue + 1)
+    ordersScroll = (playbackMode !== PLAYMODE_NONE)
+        ? centerScroll(ci, ordersScroll, PTNVIEW_HEIGHT, maxCue + 1)
+        : lookaheadScroll(ci, ordersScroll, PTNVIEW_HEIGHT, maxCue + 1)
 }
 
 function clampPatternGrid() {
@@ -3730,7 +4164,7 @@ function drawPatternGridRowAt(viewRow) {
     if (beatRow % beatDivPrimary == 0)   rowNumFore = colRowNumEmph1
     if (beatRow % beatDivSecondary == 0) rowNumFore = colRowNumEmph2
     con.color_pair(rowNumFore, rowNumBack)
-    const rowstr = actualRow.dec02()
+    const rowstr = actualRow.hex02()   // rows are hex everywhere (web item 35)
     con.move(y, PATEDITOR_GRID_X);   con.prnch(rowstr.charCodeAt(0))
     con.move(y, PATEDITOR_GRID_X+1); con.prnch(rowstr.charCodeAt(1))
     con.move(y, PATEDITOR_GRID_X+2)
@@ -3770,7 +4204,7 @@ function drawPatternsHeader() {
     print('Ptn  ')
     con.move(PTNVIEW_OFFSET_Y - 1, PATEDITOR_GRID_X)
     if (song.numPats > 0)
-        print(`Pattern ${patternIdx.hex04()}  Row ${patternGridRow.dec02()}`)
+        print(`Pattern ${patternIdx.hex04()}  Row ${patternGridRow.hex02()}`)
 }
 
 function drawPatternsContents(wo) {
@@ -3810,14 +4244,14 @@ function patternsInput(wo, event) {
 
     if (keyJustHit && shiftDown && event.includes(keys.N)) { toggleNoteDisplay(); return }
 
-    // [ / ] nudges tick rate, except in edit mode on the note column (unit nudge below).
-    if (keyJustHit && !shiftDown && (sc === keys.LEFT_BRACKET || sc === keys.RIGHT_BRACKET) &&
-        !(patternEditMode && playbackMode === PLAYMODE_NONE && patternGridCol === 0)) {
-        nudgeTickRate(sc === keys.LEFT_BRACKET ? -1 : 1); return
-    }
-
     if (playbackMode !== PLAYMODE_NONE) {
-        if ((keyJustHit && shiftDown && event.includes(keys.Y)) || keysym === " ") {
+        // During playback [ / ] keeps its live tick-rate nudge (the stopped-state
+        // brackets are the octave / instrument steppers below — web item 47.2).
+        if (keyJustHit && !shiftDown && (sc === keys.LEFT_BRACKET || sc === keys.RIGHT_BRACKET)) {
+            nudgeTickRate(sc === keys.LEFT_BRACKET ? -1 : 1); return
+        }
+        if ((keyJustHit && shiftDown && event.includes(keys.Y)) || keysym === " " ||
+            (keyJustHit && keysym === "\n")) {
             stopPlayback(); simStateKey = ''; drawPatternsContents(wo); drawAlwaysOnElems()
         }
         return
@@ -3826,10 +4260,23 @@ function patternsInput(wo, event) {
     if (keyJustHit && shiftDown && event.includes(keys.U)) { startPlayPattern(); drawPatternsContents(wo); return }
     if (              shiftDown && event.includes(keys.I)) { startPlayPatternRow(); drawPatternGrid(); return }
     if (keyJustHit && shiftDown && event.includes(keys.O)) { stopPlayback(); drawAlwaysOnElems(); return }
+    // Enter transport (web item 47): Enter previews the pattern from the cursor
+    // row; Shift+/Ctrl+Enter previews it from the top. (While playing, Enter
+    // stops — handled above.)
+    if (keyJustHit && keysym === "\n") {
+        const ctrlDown = event.includes(keys.CONTROL_LEFT) || event.includes(keys.CONTROL_RIGHT)
+        if (shiftDown || ctrlDown) startPlayPattern()
+        else                       startPlayPatternFrom(patternGridRow)
+        drawPatternsContents(wo); return
+    }
     // Space toggles View/Edit while stopped.
     if (keysym === " ") { if (keyJustHit) toggleEditMode(); return }
 
     if (song.numPats === 0) return
+
+    // Shift+P: pattern tools popup (duplicate / transpose / lengthen / shorten /
+    // volume / pan / instrument — backported from the web app's Patterns toolbar).
+    if (keyJustHit && shiftDown && event.includes(keys.P)) { openPatternToolsPopup(); return }
 
     // ── Edit mode: insert/jam into the current cell (discrete); View mode: audition. ──
     if (patternEditMode && keyJustHit) {
@@ -3850,6 +4297,10 @@ function patternsInput(wo, event) {
         if (n !== null && typeof audio.jamNote === 'function') audio.jamNote(PLAYHEAD, 0, n, currentInstrument)
         return
     }
+
+    // Bracket scheme while stopped (web item 47.2): [ ] jam octave, { } current
+    // instrument — unless the cell editor above consumed the key.
+    if (keyJustHit && handleBracketGlobal(event, shiftDown)) return
 
     if (keysym === '<UP>' || keysym === '<DOWN>') {
         patternGridRow += (keysym === '<UP>') ? -moveDelta : moveDelta
@@ -4308,7 +4759,25 @@ function startPlayRow(fromRow, fromCue) {
     audio.play(PLAYHEAD)
 }
 
-function startPlayPattern() {
+// Enter transport (web item 47): ordinary song playback that starts at the
+// CURSOR row of the current cue — unlike startPlayRow, which loops one row.
+function startPlaySongFromRow(fromRow) {
+    restoreFullSongParams()
+    reuploadPatternsIfNeeded()
+    audio.stop(PLAYHEAD)
+    clearFunkState()
+    audio.setCuePosition(PLAYHEAD, cueIdx)
+    audio.setTrackerRow(PLAYHEAD, fromRow)
+    pbCue = cueIdx
+    pbRow = fromRow
+    playbackMode = PLAYMODE_SONG
+    audio.play(PLAYHEAD)
+}
+
+function startPlayPattern() { startPlayPatternFrom(0) }
+
+// Pattern-only preview starting at `fromRow` (Enter on the Patterns panel).
+function startPlayPatternFrom(fromRow) {
     if (song.numPats === 0) return
     reuploadPatternsIfNeeded()
     audio.stop(PLAYHEAD)
@@ -4316,10 +4785,10 @@ function startPlayPattern() {
     audio.uploadCue(PREVIEW_CUE_IDX, buildPreviewCue(patternIdx))
     clearFunkState()
     audio.setCuePosition(PLAYHEAD, PREVIEW_CUE_IDX)
-    audio.setTrackerRow(PLAYHEAD, 0)
+    audio.setTrackerRow(PLAYHEAD, fromRow)
     playStartCue = PREVIEW_CUE_IDX
     pbCue = PREVIEW_CUE_IDX
-    pbRow = 0
+    pbRow = fromRow
     playbackMode = PLAYMODE_CUE
     previewActive = true
     audio.play(PLAYHEAD)
@@ -4459,19 +4928,17 @@ function updatePlayback() {
 function clampCursor() {
     if (cursorRow < 0) cursorRow = 0
     if (cursorRow >= ROWS_PER_PAT) cursorRow = ROWS_PER_PAT - 1
-    scrollRow = centerScroll(cursorRow, scrollRow, PTNVIEW_HEIGHT, ROWS_PER_PAT)
+    // Cursor moves use the lookahead band (web item 42); playback follow centres.
+    scrollRow = (playbackMode !== PLAYMODE_NONE)
+        ? centerScroll(cursorRow, scrollRow, PTNVIEW_HEIGHT, ROWS_PER_PAT)
+        : lookaheadScroll(cursorRow, scrollRow, PTNVIEW_HEIGHT, ROWS_PER_PAT)
 }
 
 function clampVoice() {
     if (cursorVox < 0) cursorVox = 0
     if (cursorVox >= song.numVoices) cursorVox = song.numVoices - 1
-    if (cursorVox < voiceOff) voiceOff = cursorVox
-    // keep cursor centred until view reaches an edge (mirrors clampCursor logic)
-    if (cursorVox < voiceOff + (VOCSIZE_TIMELINE_FULL>>>1) && voiceOff > 0) voiceOff = cursorVox - (VOCSIZE_TIMELINE_FULL>>>1)
-    if (cursorVox >= voiceOff + ((VOCSIZE_TIMELINE_FULL+1)>>>1)) voiceOff = cursorVox - ((VOCSIZE_TIMELINE_FULL+1)>>>1) + 1
-    const maxOff = Math.max(0, song.numVoices - VOCSIZE_TIMELINE_FULL)
-    if (voiceOff < 0) voiceOff = 0
-    if (voiceOff > maxOff) voiceOff = maxOff
+    // Horizontal voice follow uses the same lookahead band (web item 42).
+    voiceOff = lookaheadScroll(cursorVox, voiceOff, VOCSIZE_TIMELINE_FULL, song.numVoices)
 }
 
 function clampCue() {
@@ -4595,10 +5062,25 @@ HUB.tryJamFromEvent = function(event, instSlot) {
     const semi = jamScancodeToSemitone(sc)
     if (semi === null) return false
     const n = semitoneToNote(semi, editOctave)
-    if (n !== null && (instSlot | 0) >= 1 && typeof audio.jamNote === 'function')
-        audio.jamNote(PLAYHEAD, 0, n, instSlot | 0)
+    if (n !== null && (instSlot | 0) >= 1 && typeof audio.jamNote === 'function') {
+        // Strict-meta audition sweep (web item 51): a strict Metainstrument only
+        // sounds where its Ixmp zones place a sample, so when the exact pitch
+        // would be silent, audition the nearest note that actually sounds.
+        // Note ENTRY on the pattern panels keeps the exact pitch.
+        let play = n
+        if (HUB.views && HUB.views.auditionNoteFor) {
+            const alt = HUB.views.auditionNoteFor(instSlot | 0, n)
+            if (alt >= 0) play = alt
+        }
+        audio.jamNote(PLAYHEAD, 0, play, instSlot | 0)
+    }
     return true
 }
+
+// Global bracket steppers for the non-grid views (web item 47.2): [ ] steps the
+// jam octave, { } the current pattern instrument.
+HUB.stepJamOctave         = (dir) => stepJamOctave(dir)
+HUB.stepCurrentInstrument = (dir) => stepCurrentInstrument(dir)
 
 HUB.views = requireTaut("taut_views").init(HUB)
 const {
@@ -4979,6 +5461,9 @@ function registerTransportRegions() {
                     else           startPlayPattern()
                     drawPatternsContents(panelPatterns)
                 } else {
+                    // On the Cues panel the play-cue / play-song buttons follow the
+                    // CUES cursor, not the Timeline's last cue (web item 39).
+                    if (currentPanel === VIEW_CUES && idx >= 2) { cueIdx = ordersCursor; clampCue() }
                     if (idx === 1)      startPlayRow()
                     else if (idx === 2) startPlayCue()
                     else                startPlaySong()

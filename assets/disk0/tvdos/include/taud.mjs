@@ -404,6 +404,10 @@ function uploadTaudFile(inFile, songIndex, playhead) {
  *                  baseNote    Uint16 tuning base note (default 0xA000 / C9)
  *                  baseFreq    Float32 frequency at baseNote (default 8363.0)
  *                  projectName project name → PNam section
+ *                  instNames   array of instrument names → INam section
+ *                              (0x1E-separated, slot-indexed; entry 0 reserved)
+ *                  sampleNames array of sample names → SNam section
+ *                              (0x1E-separated, pool-ordered, 0-based)
  *                  sMet        { notation, beatPri, beatSec, name, composer,
  *                                copyright } → sMet section for song 0
  *                  is64Channel true → emit the 64-channel xHDR section, 128-byte
@@ -569,6 +573,22 @@ function captureTrackerDataToFile(outFile, meta) {
             .concat(sub)
     }
 
+    // Name tables (INam / SNam): 0x1E-separated byte strings, the exact inverse of
+    // loadTaudSongList's parseNameTable (split on 0x1E, keep every entry incl. the
+    // empties). Emitted when the caller passes a non-empty array, so re-saving an
+    // opened project keeps its instrument / sample names instead of dropping them.
+    const _nameTableBytes = (names) => {
+        const out = []
+        for (let i = 0; i < names.length; i++) {
+            if (i > 0) out.push(0x1E)
+            const s = '' + (names[i] == null ? '' : names[i])
+            for (let k = 0; k < s.length; k++) out.push(s.charCodeAt(k) & 0xFF)
+        }
+        return out
+    }
+    let inamPayload = (meta && meta.instNames   && meta.instNames.length   > 0) ? _nameTableBytes(meta.instNames)   : null
+    let snamPayload = (meta && meta.sampleNames && meta.sampleNames.length > 0) ? _nameTableBytes(meta.sampleNames) : null
+
     // Extended header (xHDR): emitted ONLY for a 64-channel project. Flags1 bit 0 = 64ch,
     // followed by 255 reserved bytes (terranmon.txt §xHDR). Its presence also sets the
     // version byte's xHDR bit (0x20) below; a 32-channel file omits it entirely and stays
@@ -587,6 +607,8 @@ function captureTrackerDataToFile(outFile, meta) {
     if (xhdrPayload)               _sections.push({ fourcc: [0x78,0x48,0x44,0x52], payload: xhdrPayload })   // 'xHDR'
     if (ixmpPayload.length > 0)    _sections.push({ fourcc: [0x49,0x78,0x6D,0x70], payload: ixmpPayload })  // 'Ixmp'
     if (smetPayload)               _sections.push({ fourcc: [0x73,0x4D,0x65,0x74], payload: smetPayload })  // 'sMet'
+    if (inamPayload)               _sections.push({ fourcc: [0x49,0x4E,0x61,0x6D], payload: inamPayload })  // 'INam'
+    if (snamPayload)               _sections.push({ fourcc: [0x53,0x4E,0x61,0x6D], payload: snamPayload })  // 'SNam'
     if (meta && meta.projectName)  _sections.push({ fourcc: [0x50,0x4E,0x61,0x6D], payload: _strBytesNul(meta.projectName) })  // 'PNam'
 
     let projData = []

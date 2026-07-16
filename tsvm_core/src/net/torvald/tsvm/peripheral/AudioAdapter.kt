@@ -2468,6 +2468,11 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
      */
     private fun triggerMetaOrNote(ts: TrackerState, voice: Voice, vi: Int,
                                   noteVal: Int, instId: Int, rowVolOverride: Int) {
+        // Remember the pattern-level instrument for the host UI's voice header (a meta's
+        // slot, not the layer child triggerNote resolves it to). A note with no instrument
+        // byte keeps the last one, matching what the pattern shows. Display-only tap
+        // (read by getVoiceInstrument) — the DSP never reads it. Backported from the web.
+        if (instId != 0) voice.displayInst = instId
         releaseLayerChildren(ts, vi)
         val inst = if (instId != 0) instruments[instId] else instruments[voice.instrumentId]
         if (!inst.isMeta) {
@@ -2627,6 +2632,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         voice.filterResonanceCached = -1
         voice.noteVal = noteVal
         voice.basePitch = noteVal
+        voice.renderPitch = noteVal   // display tap: seed before the first tick runs (item 23)
         voice.amigaPeriod = -1.0   // fresh trigger: period state must reseed from the new noteVal
         voice.linearFreq  = -1.0   // ditto for linear-freq mode (toneMode == 2)
         voice.playbackRate = computePlaybackRate(voice, noteVal)
@@ -3060,7 +3066,19 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 // silences after the first row because the slide saturates at 0 and there's
                 // nothing to lift the volume back up before the next slide starts.
                 0x0000 -> {
-                    if (row.instrment != 0 && !instruments[row.instrment].isMeta) {
+                    val pitchFx = (row.effect == EffectOp.OP_E || row.effect == EffectOp.OP_F ||
+                                   row.effect == EffectOp.OP_G)
+                    if (row.instrment != 0 && pitchFx && voice.noteVal >= 0x20) {
+                        // Note 0 + instrument + a pitch effect (E porta-down / F porta-up /
+                        // G tone-porta) TRIGGERS the note at the voice's current pitch, so the
+                        // slide has a sounding note to move — previously this only latched the
+                        // instrument and stayed silent (item 43; backported from the web engine's
+                        // row.js note===0 branch).
+                        applyDuplicateCheck(ts, vi, row.instrment, voice.noteVal)
+                        maybeSpawnBackgroundForNNA(ts, voice, vi)
+                        val trigVol = if (row.volumeEff == 0) row.volume else -1
+                        triggerMetaOrNote(ts, voice, vi, voice.noteVal, row.instrment, trigVol)
+                    } else if (row.instrment != 0 && !instruments[row.instrment].isMeta) {
                         voice.instrumentId = row.instrment
                         // Re-resolve the patch on the new instrument against the voice's
                         // current note so multi-sample IT/XM instruments pick up the right
@@ -3914,6 +3932,10 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 
             val finalPitch = (pitchToMixer + autoVibDelta + pitchEnvDelta).coerceIn(0x20, 0xFFFF)
             voice.playbackRate = computePlaybackRate(voice, finalPitch)
+            // Display tap (item 23, backported from the web): the per-tick sounding pitch —
+            // after slides/arp/vibrato/auto-vib/pitch-env — for the host UI's voice header.
+            // Write-only for the DSP; getVoiceNote reads it.
+            voice.renderPitch = finalPitch
 
             // Filter envelope: scale baseCut by envValue (0..1, 0.5 = unity).
             // Schism filters.c:80-86 computes `cutoff_used = chan->cutoff * (flt_modifier+256)/256`
@@ -4066,6 +4088,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             else 0
             val finalPitch = (bg.noteVal + autoVibDelta + pitchEnvDelta).coerceIn(0x20, 0xFFFF)
             bg.playbackRate = computePlaybackRate(bg, finalPitch)
+            bg.renderPitch = finalPitch   // display tap (item 23) — write-only for the DSP
             // Filter envelope: same scaling rule as foreground, using the active cutoff.
             // Must branch on SF mode too — an SF-mode ghost's cutoff is in cents (0..0xFFFF),
             // so the IT 0..254 clamp would otherwise collapse it to ~9 Hz (total muffling).
@@ -4227,7 +4250,14 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             // Background (NNA-ghost) voices — same per-sample mixing path as foreground, but
             // they live in a mixer-private pool that no row event can address.
             for (bg in ts.backgroundVoices) {
-                if (!bg.active || bg.fader == 255) continue
+                // Muting a channel must also silence the NNA ghosts and metainstrument layer
+                // children it spawned (item 45, backported from the web engine's mixer): fold
+                // the SOURCE channel's live fader into the ghost's own snapshotted one, so a
+                // channel mute/solo covers everything that came from it. No-op when nothing
+                // is muted (both faders 0).
+                val srcVoice = ts.voices.getOrNull(bg.sourceChannel)
+                val bgFader = if (srcVoice != null && srcVoice.fader > bg.fader) srcVoice.fader else bg.fader
+                if (!bg.active || bgFader == 255) continue
                 val bgInst = instruments[bg.instrumentId]
                 val s = applyTaudVoiceFx(bg, applyVoiceFilter(bg, fetchTrackerSample(bg, bgInst, ts.interpolationMode)))
                 val instGv = bgInst.instGlobalVolume / 255.0
@@ -4238,9 +4268,9 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 // can leave currentMixVolume mid-ramp from the foreground's last change —
                 // keep advancing so the inherited ramp completes cleanly.
                 advanceVolumeRamp(bg)
-                // External fader snapshotted at ghost time (see ghostVoice). Subsequent host
-                // changes to the source slot's fader don't affect already-ghosted voices.
-                val faderGain = (255 - bg.fader) / 255.0
+                // External fader snapshotted at ghost time (see ghostVoice), with the source
+                // channel's LIVE fader folded in above (item 45).
+                val faderGain = (255 - bgFader) / 255.0
                 val vol = effEnvVol * bg.fadeoutVolume * bg.currentMixVolume *
                           swingScale * gvol * mvol * instGv * faderGain * bg.layerMixGain * bg.activeAttenGain * playhead.masterVolume / 255.0
                 val pan = if (bg.hasPanEnv && bg.panEnvOn) {
@@ -4753,6 +4783,14 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         // Pitch state (4096-TET units, signed when slid).
         var noteVal = 0x0000               // The currently sounding base note (no per-row vibrato/arp added); 0 = none yet
         var basePitch = 0x4000             // Saved pre-effect pitch for vibrato/arp/glissando overlay
+        // ── Display-only taps (backported from the web engine; the DSP never reads them) ──
+        // renderPitch: the per-tick FINAL pitch (after slides/arp/vibrato/auto-vib/pitch-env),
+        // written in applyTrackerTick and seeded to noteVal at trigger, so getVoiceNote follows
+        // the actual sounding pitch tick by tick (item 23). displayInst: the pattern-level
+        // instrument id from triggerMetaOrNote (a Metainstrument's slot, not the layer child it
+        // resolves to), so getVoiceInstrument shows the number the pattern shows.
+        var renderPitch = 0
+        var displayInst = 0
         // Amiga-mode period state, persisted across ticks so multi-tick E/F slides don't lose
         // sub-noteVal precision through repeated round-trip rounding (see amigaSlideTick).
         // -1.0 means "needs reseed from current noteVal".

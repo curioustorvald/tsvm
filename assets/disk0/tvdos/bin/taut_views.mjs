@@ -937,6 +937,87 @@ function buildInstrumentIndex() {
 
 function refreshInstrumentsCache() { instrumentsCache = buildInstrumentIndex() }
 
+// Ascending pattern-addressable instrument slots ($01..$FF) the editor's
+// instrument steppers may land on: present in the instrument census and NOT a
+// meta layer child (item 59 — a layer child must be referenced through its
+// Metainstrument, so the '{' '}' steppers and the edit-mode seed skip it).
+function selectableInstrumentSlots() {
+    if (!instrumentsCache) refreshInstrumentsCache()
+    const childFlags = buildMetaLayerChildSlots()
+    const out = []
+    for (let i = 0; i < instrumentsCache.length; i++) {
+        const slot = instrumentsCache[i].slot
+        if (slot > 255) break                        // aux bin: not pattern-addressable
+        if (childFlags[slot]) continue
+        out.push(slot)
+    }
+    return out
+}
+
+// ── Metainstrument audition helpers (web item 51) ───────────────────────────
+// A STRICT metainstrument only sounds where its Ixmp zones actually place a
+// sample, so an arbitrary jammed pitch is often silent. auditionNoteFor(slot,
+// note) returns the nearest note (within the meta's layer bboxes) that will
+// actually sound, or -1 when no retry is needed (not a meta / already sounds
+// at `note`) or none exists. Mirrors the web engine's _metaSoundsAt /
+// _auditionNoteFor; note ENTRY keeps the exact pitch — only jam auditions use
+// this.
+function _layerChildSoundsAt(patchCache, instIdx, note, vol) {
+    // Strict gating follows the engine: the child sounds only where one of its
+    // patches covers the trigger; a child with NO patches never sounds strictly.
+    if (!hasIxmpAPI) return true                  // can't introspect: don't gate
+    let patches = patchCache[instIdx]
+    if (patches === undefined) patches = patchCache[instIdx] = decodeIxmpPatches(instIdx)
+    if (patches === null) return true
+    for (let i = 0; i < patches.length; i++) {
+        const p = patches[i]
+        if (note >= p.pitchStart && note <= p.pitchEnd &&
+            vol  >= p.volStart   && vol  <= p.volEnd) return true
+    }
+    return false
+}
+
+function _metaSoundsAt(meta, strict, patchCache, note, vol) {
+    for (let i = 0; i < meta.layers.length; i++) {
+        const L = meta.layers[i]
+        if (note < L.pitchStart || note > L.pitchEnd) continue
+        if (vol  < L.volStart   || vol  > L.volEnd)   continue
+        if (!strict) return true
+        let n = note + L.detune
+        if (n < 0x20) n = 0x20; else if (n > 0xFFFF) n = 0xFFFF
+        if (_layerChildSoundsAt(patchCache, L.instIdx, n, vol)) return true
+    }
+    return false
+}
+
+function auditionNoteFor(slot, note) {
+    if (slot < 1 || slot >= TAUT_INST_TOTAL) return -1
+    const rec = readInstRecord(slot)
+    if (!recordIsMeta(rec)) return -1
+    const meta   = decodeMetaRecord(rec)
+    const strict = (meta.metaType & 0x01) !== 0
+    const vol    = 0x3F                            // jam triggers at full note volume
+    const patchCache = {}
+    if (_metaSoundsAt(meta, strict, patchCache, note, vol)) return -1
+    let lo = 0xFFFF, hi = 0x20
+    for (let i = 0; i < meta.layers.length; i++) {
+        const L = meta.layers[i]
+        if (L.pitchStart < lo) lo = L.pitchStart
+        if (L.pitchEnd   > hi) hi = L.pitchEnd
+    }
+    if (lo < 0x20) lo = 0x20
+    if (hi < lo) return -1
+    // Sweep outward from the requested note at a fine step, clamped to the
+    // bboxes' union (a jam event, so the cost is irrelevant).
+    const step = 0x20
+    for (let d = 0; d <= hi - lo; d += step) {
+        const up = note + d, dn = note - d
+        if (up >= lo && up <= hi && _metaSoundsAt(meta, strict, patchCache, up, vol)) return up
+        if (dn >= lo && dn <= hi && _metaSoundsAt(meta, strict, patchCache, dn, vol)) return dn
+    }
+    return -1
+}
+
 // ── Layout ─────────────────────────────────────────────────────────────────
 const INST_LIST_X        = 1
 const INST_LIST_BODY_W   = 27
@@ -2031,6 +2112,9 @@ function instrumentsInput(wo, event) {
     if (keysym === '4') { instSubTab = INST_TAB_PAN;  drawInstrumentsContents(); return }
     if (keysym === '5') { instSubTab = INST_TAB_PIT;  drawInstrumentsContents(); return }
     if (keysym === '6') { instSubTab = INST_TAB_FILT; drawInstrumentsContents(); return }
+    // [ ] steps the jam octave, { } the current pattern instrument (web item 47.2).
+    if (keyJustHit && (keysym === '[' || keysym === ']')) { if (HUB.stepJamOctave) HUB.stepJamOctave(keysym === ']' ? 1 : -1); return }
+    if (keyJustHit && (keysym === '{' || keysym === '}')) { if (HUB.stepCurrentInstrument) HUB.stepCurrentInstrument(keysym === '}' ? 1 : -1); return }
     // Note jamming: audition the selected instrument with the piano keys (a..k / w..u).
     const sel = instrumentsCache[instListCursor]
     if (HUB.tryJamFromEvent && HUB.tryJamFromEvent(event, sel ? sel.slot : 0)) return
@@ -3329,6 +3413,7 @@ function openAdvancedInstEdit(slot) {
         registerInstrumentsMouse, registerSamplesMouse, sampleRamSummary,
         drawSlider, drawNumCapsule, runSliderDrag,
         getSelectedInstrumentSlot, buildMetaLayerChildSlots, buildPercussionSlots,
+        selectableInstrumentSlots, auditionNoteFor,
     }
 }
 
