@@ -332,12 +332,14 @@ function init(HUB) {
     // instruction lives in cue bytes 30..31; its encoding is documented in
     // terranmon.txt ("Cue Sheet"). The dialog pairs a command list with a free
     // argument field; the argument's radix/range depends on the chosen command.
+    // Every argument is HEX — cue and row numbers are hexadecimal everywhere
+    // in the editor (web parity), so the command args follow suit.
     const CUE_CMDS = [
         { id: 'noop',   label: 'No-op',          hasArg: false },
-        { id: 'len',    label: 'Pattern length', hasArg: true, radix: 10, min: 0, max: 63 },
-        { id: 'fade',   label: 'Fade out at',    hasArg: true, radix: 10, min: 0, max: 63 },
+        { id: 'len',    label: 'Pattern length', hasArg: true, radix: 16, min: 0, max: 63 },
+        { id: 'fade',   label: 'Fade out at',    hasArg: true, radix: 16, min: 0, max: 63 },
         { id: 'halt',   label: 'Halt at end',    hasArg: false },
-        { id: 'haltat', label: 'Halt at row',    hasArg: true, radix: 10, min: 0, max: 63 },
+        { id: 'haltat', label: 'Halt at row',    hasArg: true, radix: 16, min: 0, max: 63 },
         { id: 'bak',    label: 'Go back',        hasArg: true, radix: 16, min: 0, max: 4095 },
         { id: 'fwd',    label: 'Skip forward',   hasArg: true, radix: 16, min: 0, max: 4095 },
         { id: 'jmp',    label: 'Jump to cue',    hasArg: true, radix: 16, min: 0, max: 4095 },
@@ -391,7 +393,7 @@ function init(HUB) {
             title: 'Cue ' + cueLbl + ' Cmd' + (slot + 1),
             drawFrame: popupDrawFrame,
             colours: popupColours,
-            message: ['Args: len/fade/halt 0-63 dec, back/fwd/jmp hex'],
+            message: ['Args HEX: len/fade/halt $0-$3F, back/fwd/jmp $0-$FFF'],
             fields: [{ label: 'Argument:', width: 5, maxLength: 3, initial: argStr }],
             list: {
                 items: items,
@@ -407,7 +409,7 @@ function init(HUB) {
                     con.color_pair(useFg, useBg)
                     con.move(ctx.y, ctx.x)
                     const marker = isCur ? sym.playhead : ' '
-                    const hint = c.hasArg ? (c.radix === 16 ? '  hex' : '  0-63') : ''
+                    const hint = c.hasArg ? (c.max <= 63 ? '  $0-3F' : '  $0-FFF') : ''
                     let label = marker + ' ' + c.label + hint
                     if (label.length > ctx.w) label = label.substring(0, ctx.w)
                     else                       label = label.padEnd(ctx.w, ' ')

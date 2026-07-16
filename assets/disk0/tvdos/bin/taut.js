@@ -1309,9 +1309,13 @@ let separatorStyle = 0
 const PATEDITOR_LIST_X   = 1
 const PATEDITOR_SEP1_X   = 5
 const PATEDITOR_GRID_X   = 7
-const PATEDITOR_CELL_X   = 10
-const PATEDITOR_SEP2_X   = 30
-const PATEDITOR_DETAIL_X = 32
+// Multi-pane pattern editor (web item 31): the old right-hand simulator panel
+// is gone; the freed width holds up to three independent pattern panes, each
+// 2-char row number + space + 19-char cell + a separator column.
+const PAT_PANE_W     = 23
+const PAT_PANE_COUNT = Math.max(1, Math.min(3, ((SCRW - PATEDITOR_GRID_X + 2) / PAT_PANE_W) | 0))
+function patPaneOriginX(p) { return PATEDITOR_GRID_X + p * PAT_PANE_W }
+function patPaneCellX(p)   { return patPaneOriginX(p) + 3 }
 
 const PLAYMODE_NONE = 0
 const PLAYMODE_SONG = 1
@@ -1861,6 +1865,8 @@ function drawControlHint() {
         [`\u008428u\u008429u`,'Nav'],
         [`ent`,'Edit/Switch'],
     ['sep'],
+        ['h','Housekeep'],
+    ['sep'],
         ['tab','Panel'],
     ['sep'],
         ['!','Help'],
@@ -1935,164 +1941,6 @@ function toggleSolo(vox) {
         }
     }
     drawVoiceHeaders()
-}
-
-function drawVoiceDetail(isVerticalLayout = false, ptn = null, activeRow = -1, cumState = null) {
-    // Resolve pattern data: null ptn uses timeline context (cursorVox / cursorRow)
-    let ptnDat
-    if (ptn === null) {
-        const cue    = song.cues[cueIdx]
-        const ptnIdx = cue.ptns[cursorVox]
-        if (ptnIdx === CUE_EMPTY || ptnIdx >= song.numPats) return
-        const srcPtn = song.patterns[ptnIdx]
-        const row    = (activeRow >= 0) ? activeRow : cursorRow
-        const off    = 8 * row
-        ptnDat = srcPtn.slice(off, off + 8)
-    } else {
-        const row = (activeRow >= 0) ? activeRow : 0
-        const off = 8 * row
-        ptnDat = ptn.slice(off, off + 8)
-    }
-
-    const note      = ptnDat[0] | (ptnDat[1] << 8)
-    const inst      = ptnDat[2]
-    const voleff    = ptnDat[3]
-    const voleffop  = (voleff >>> 6) & 3
-    const voleffarg = voleff & 63
-    const paneff    = ptnDat[4]
-    const paneffop  = (paneff >>> 6) & 3
-    const paneffarg = paneff & 63
-    const effop     = ptnDat[5]
-    const effarg    = ptnDat[6] | (ptnDat[7] << 8)
-
-    let fx = effop > 0 ? effop.toString(36).toUpperCase() : '0'
-    if (fx === 'S') fx += (effarg >>> 12).hex1()
-    const fxName = fxNames[fx] || '?            '
-
-    if (!isVerticalLayout) {
-        return
-        con.move(PTNVIEW_OFFSET_Y-2, 1)
-        print(`Pitch $${note.hex04()}  Inst $${inst.hex02()}  ${sym.vx} ${voleffop}.$${voleffarg.hex02()}  ` +
-              `${sym.px} ${paneffop}.$${paneffarg.hex02()}  ${sym.fx} ${fxName} $${effarg.hex04()}`)
-    } else {
-        const dx      = PATEDITOR_DETAIL_X
-        const detailW = SCRW - dx + 1
-
-        let voleffop1 = (voleffop == 3) ? 30 + (voleffarg >>> 5) : voleffop
-        let paneffop1 = (paneffop == 3) ? 30 + (paneffarg >>> 5) : paneffop
-        let voleffarg1 = '$'+((voleffop == 3) ? voleffarg & 15 : voleffarg).hex02()
-        let paneffarg1 = '$'+((paneffop == 3) ? paneffarg & 15 : paneffarg).hex02()
-        if (voleff == 0xC0) { voleffop1 = 999; voleffarg1 = '' }
-        if (paneff == 0xC0) { paneffop1 = 999; paneffarg1 = '' }
-
-        // Two-column, two-section layout.  Upper section: this row's cell fields,
-        // split L (Note/Inst/Vx/Px) / R (Fx/FxOp/FxArg).  Lower section: cumulative
-        // engine state, packed in column-major order across both columns.
-        const colW = Math.floor(detailW / 2)
-        const col1X = dx
-        const col2X = dx + colW
-        const labelW = 6
-        const valW1  = colW - labelW - 2
-        const valW2  = (detailW - colW) - labelW - 2
-
-        const drawLine = (y, x, line, valWidth) => {
-            con.move(y, x)
-            con.color_pair(colStatus, 255)
-            print((line.label + '      ').substring(0, labelW) + ' ')
-            con.color_pair(line.fg, 255)
-            const v = (line.value + ' '.repeat(valWidth + 1))
-            print(v.substring(0, valWidth + 1))
-        }
-        const blankLine = (y, x, width) => {
-            con.move(y, x)
-            con.color_pair(colBackPtn, 255)
-            print(' '.repeat(width))
-        }
-
-        const upperLeft = [
-            { label: 'Note ', value: `${noteToStr(note)} ($${note.hex04()})`, fg: noteColour(note) },
-            { label: 'Inst ', value: inst === 0 ? '---' : ('$'+inst.hex02()), fg: colInst },
-            { label: 'Vx   ', value: `${volFxNames[voleffop1]} ${voleffarg1}`, fg: colVol },
-            { label: 'Px   ', value: `${panFxNames[paneffop1]} ${paneffarg1}`, fg: colPan },
-        ]
-        const upperRight = [
-            { label: 'Fx   ', value: fxName.trimEnd(),         fg: colEffOp  },
-            { label: 'FxOp ', value: fx,                       fg: colEffOp  },
-            { label: 'FxArg', value: `$${effarg.hex04()}`,     fg: colEffArg },
-        ]
-        const upperHeight = Math.max(upperLeft.length, upperRight.length)
-
-        for (let i = 0; i < upperHeight; i++) {
-            const y = PTNVIEW_OFFSET_Y + i
-            if (i < upperLeft.length)  drawLine(y, col1X, upperLeft[i],  valW1)
-            else                        blankLine(y, col1X, colW)
-            if (i < upperRight.length) drawLine(y, col2X, upperRight[i], valW2)
-            else                        blankLine(y, col2X, detailW - colW)
-        }
-
-        // Section divider
-        const sepY = PTNVIEW_OFFSET_Y + upperHeight
-        con.move(sepY, dx)
-        con.color_pair(colSep, 255)
-        print('\u00B3'.repeat(detailW))
-
-        // Lower section: cumulative state.
-        const lowerY0 = sepY + 1
-        const lowerH  = PTNVIEW_HEIGHT - upperHeight - 1
-        let cumLines = []
-        if (cumState !== null && lowerH > 0) {
-            const _apo  = Math.abs(cumState.pitchOff)
-            const _psgn = cumState.pitchOff > 0 ? '+' : cumState.pitchOff < 0 ? '-' : ' '
-            const _resolvedNote = (cumState.lastNote !== 0x0000 && cumState.pitchOff !== 0)
-                ? Math.max(0x20, Math.min(0xFFFF, cumState.lastNote + cumState.pitchOff))
-                : null
-            const _absN = (_resolvedNote !== null) ? noteToStr(_resolvedNote) + ' ' : ''
-            const _clipNm = ['clamp','fold','wrap','wrap'][cumState.clipMode]
-            const _bcStr  = (cumState.bitcrushDepth === 0 && cumState.bitcrushSkip === 0)
-                ? 'off'
-                : `d${cumState.bitcrushDepth.toString(16).toUpperCase()}/s$${cumState.bitcrushSkip.hex02()}`
-            const _odStr  = (cumState.overdriveAmp === 0) ? 'off' : `$${cumState.overdriveAmp.hex02()}`
-
-            cumLines = [
-                { label: 'L.Note', value: noteToStr(cumState.lastNote),                                          fg: noteColour(cumState.lastNote) },
-                { label: 'L.Inst', value: cumState.lastInst === 0 ? '---' : ('$'+cumState.lastInst.hex02()),     fg: colInst   },
-                { label: 'Vol   ', value: `$${cumState.volAbs.hex02()}`,                                         fg: colVol    },
-                { label: 'Pan   ', value: `$${cumState.panAbs.hex02()}`,                                         fg: colPan    },
-                { label: 'Pitch ', value: `${_absN}(${_psgn}$${_apo.hex04()})`,                                  fg: (_resolvedNote !== null) ? noteColour(_resolvedNote) : colNote },
-                { label: 'BPM   ', value: `${cumState.bpm}`,                                                     fg: colStatus },
-                { label: 'Spd   ', value: `${cumState.speed}`,                                                   fg: colStatus },
-                { label: 'GVol  ', value: `$${cumState.globalVol.hex02()}`,                                      fg: colStatus },
-                { label: `E${MIDDOT}F   `, value: `$${cumState.memEF.hex04()}`,                                  fg: colEffArg },
-                { label: 'G     ', value: `$${cumState.memG.hex04()}`,                                           fg: colEffArg },
-                { label: `H${MIDDOT}U   `, value: `$${cumState.memHU.speed.hex02()}/$${cumState.memHU.depth.hex02()}`, fg: colEffArg },
-                { label: 'R     ', value: `$${cumState.memR.speed.hex02()}/$${cumState.memR.depth.hex02()}`,     fg: colEffArg },
-                { label: 'Y     ', value: `$${cumState.memY.speed.hex02()}/$${cumState.memY.depth.hex02()}`,     fg: colEffArg },
-                { label: 'D     ', value: `$${cumState.memD.hex04()}`,                                           fg: colEffArg },
-                { label: 'I     ', value: `$${cumState.memI.hex04()}`,                                           fg: colEffArg },
-                { label: 'J     ', value: `$${cumState.memJ.hex04()}`,                                           fg: colEffArg },
-                { label: 'O     ', value: `$${cumState.memO.hex04()}`,                                           fg: colEffArg },
-                { label: 'Q     ', value: `$${cumState.memQ.hex04()}`,                                           fg: colEffArg },
-                { label: 'Tslid ', value: `$${cumState.memTSlide.hex02()}`,                                      fg: colEffArg },
-                { label: 'W     ', value: `$${cumState.memW.hex04()}`,                                           fg: colEffArg },
-                { label: 'BCrsh ', value: _bcStr,                                                                fg: colEffArg },
-                { label: 'OvDrv ', value: _odStr,                                                                fg: colEffArg },
-                { label: 'Clip  ', value: _clipNm,                                                               fg: colEffArg },
-            ]
-        }
-
-        // Column-major fill: cap per-column height to lowerH, drop overflow.
-        const perCol  = Math.min(lowerH, Math.ceil(cumLines.length / 2))
-        const totShow = Math.min(cumLines.length, perCol * 2)
-        for (let i = 0; i < perCol; i++) {
-            const yL = lowerY0 + i
-            const idxL = i
-            const idxR = perCol + i
-            if (idxL < totShow) drawLine(yL, col1X, cumLines[idxL], valW1)
-            else                blankLine(yL, col1X, colW)
-            if (idxR < totShow) drawLine(yL, col2X, cumLines[idxR], valW2)
-            else                blankLine(yL, col2X, detailW - colW)
-        }
-    }
 }
 
 function drawAll() {
@@ -2263,8 +2111,11 @@ let patternListScroll = 0
 let patternGridRow    = 0
 let patternGridScroll = 0
 let patternGridCol    = 0
-let simState          = null
-let simStateKey       = ''
+// Multi-pane pattern editor (web item 31): reference panes park their state
+// here; the ACTIVE pane owns patternIdx / patternGridScroll / the cursor.
+// (The old right-hand simulator panel is gone — its width holds the panes.)
+let patPanes          = null   // per-pane {idx, scroll}, lazily built by ensurePatPanes()
+let activePatPane     = 0
 
 // ── Pattern-cell editing (Timeline + Patterns share one cell editor) ──
 // patternEditMode is the View/Edit toggle (space bar); shared by both panels.
@@ -2432,7 +2283,7 @@ function finishLoadCommon() {
     ordersCursor = 0; ordersScroll = 0; ordersColCursor = 0; ordersVoiceOff = 0
     patternIdx = 0; patternListScroll = 0
     patternGridRow = 0; patternGridScroll = 0; patternGridCol = 0
-    simState = null; simStateKey = ''
+    patPanes = null; activePatPane = 0
 
     for (let i = 0; i < MAX_VOICES; i++) {
         voiceMutes[i] = false
@@ -2643,7 +2494,6 @@ function drawTimelineContents(wo) {
     drawVoiceHeaders()
     drawPatternView()
     drawSeparators(separatorStyle)
-    drawVoiceDetail()
 }
 
 function drawOrdersHeader() {
@@ -2787,15 +2637,16 @@ function cueInstToStr(inst) {
             return "JMP" + arg12.hex03()
         case 0b0000:
             switch (preamble) {
+                // Row arguments in hex like every other cue/row number (item 35 / web parity).
                 case 0b0010:
-                    return "LEN " + arg8.dec02()
+                    return "LEN " + arg8.hex02()
                 case 0b0001:
                     if (!arg8) return "HALT  "
                     switch (arg8 >>> 6) {
                         case 0b00:
-                            return "FADE" + (arg8 & 63).dec02()
+                            return "FADE" + (arg8 & 63).hex02()
                         case 0b01:
-                            return "HALT" + (arg8 & 63).dec02()
+                            return "HALT" + (arg8 & 63).hex02()
                         default:
                             return fallback
                     }
@@ -2894,7 +2745,7 @@ function timelineInput(wo, event) {
             clampVoice()
             const dVoice = voiceOff - oldVoiceOff
             if (dVoice !== 0) { shiftPatternAreaHorizontal(dVoice); drawVoiceColumnAt(dVoice > 0 ? VOCSIZE_TIMELINE_FULL - 1 : 0) }
-            drawVoiceHeaders(); drawSeparators(separatorStyle); drawAlwaysOnElems(); drawVoiceDetail()
+            drawVoiceHeaders(); drawSeparators(separatorStyle); drawAlwaysOnElems()
         }
         else if (keyJustHit && !shiftDown && event.includes(keys.M)) { toggleMute(cursorVox) }
         else if (keyJustHit && !shiftDown && event.includes(keys.N)) { toggleSolo(cursorVox) }
@@ -2928,7 +2779,6 @@ function timelineInput(wo, event) {
             const ptnDat = song.patterns[ptnIdx]
             const res = editPatternCell(ptnDat, cursorRow, timelineColCursor, event, noteFieldScreenPos())
             if (res.changed) {
-                simStateKey = ''
                 if (res.audition >= 0 && typeof audio.jamNote === 'function')
                     audio.jamNote(PLAYHEAD, cursorVox, res.audition, currentInstrument)
                 drawPatternRowAt(cursorRow - scrollRow)
@@ -2980,7 +2830,7 @@ function timelineInput(wo, event) {
         if (patternEditMode) { const c = currentEditCell(); if (c) adoptInstrumentFromCell(c.ptnDat, c.row) }
         const dVoice = voiceOff - oldVoiceOff
         if (dVoice !== 0) { shiftPatternAreaHorizontal(dVoice); drawVoiceColumnAt(dVoice > 0 ? VOCSIZE_TIMELINE_FULL - 1 : 0) }
-        drawVoiceHeaders(); drawSeparators(separatorStyle); drawAlwaysOnElems(); drawVoiceDetail()
+        drawVoiceHeaders(); drawSeparators(separatorStyle); drawAlwaysOnElems()
         drawPatternRowAt(cursorRow - scrollRow)
         return
     }
@@ -3016,7 +2866,7 @@ function timelineInput(wo, event) {
         if (oldCursor >= scrollRow && oldCursor < scrollRow + PTNVIEW_HEIGHT) drawPatternRowAt(oldCursor - scrollRow)
         drawPatternRowAt(cursorRow - scrollRow)
     }
-    drawSeparators(separatorStyle); drawAlwaysOnElems(); drawVoiceDetail()
+    drawSeparators(separatorStyle); drawAlwaysOnElems()
 }
 
 function ordersInput(wo, event) {
@@ -3454,7 +3304,7 @@ function noteFieldScreenPos() {
         const y = PTNVIEW_OFFSET_Y + (cursorRow - scrollRow)
         return { y, x }
     } else if (currentPanel === VIEW_PATTERN_DETAILS) {
-        return { y: PTNVIEW_OFFSET_Y + (patternGridRow - patternGridScroll), x: PATEDITOR_CELL_X }
+        return { y: PTNVIEW_OFFSET_Y + (patternGridRow - patternGridScroll), x: patPaneCellX(activePatPane) }
     }
     return null
 }
@@ -3743,8 +3593,152 @@ function openPatternToolsPopup() {
     if (changed) {
         patternsOutOfSync = true
         hasUnsavedChanges = true
-        simStateKey = ''
     }
+    drawAll()
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// PROJECT HOUSEKEEPING (backported from the web app — item 60)
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////
+// Pattern side lives here (owns song.patterns / cues / device sync); the bank
+// side lives in taut_views.housekeepBank (owns the record decoders). These
+// operations are NOT undoable — the popup says so before running.
+
+// Pattern indices referenced by any cue. firstAppearance=true keeps play order
+// (cue 0 ch 0, ch 1, …); false returns them ascending (stable numbering).
+function referencedPatternOrder(firstAppearance) {
+    const seen = new Uint8Array(0x8000)
+    const order = []
+    for (let c = 0; c < NUM_CUES; c++) {
+        const cue = song.cues[c]
+        if (!cue) continue
+        for (let v = 0; v < song.numVoices; v++) {
+            const pat = cue.ptns[v]
+            if (pat === CUE_EMPTY || pat >= song.numPats) continue
+            if (!seen[pat]) { seen[pat] = 1; order.push(pat) }
+        }
+    }
+    if (!firstAppearance) order.sort((a, b) => a - b)
+    return order
+}
+
+// Renumber keep-order: referenced patterns in play order, then any
+// unreferenced patterns ascending — nothing with content is lost, just
+// compacted and reordered (web planRenumberPatterns).
+function renumberPatternOrder() {
+    const order = referencedPatternOrder(true)
+    const seen = new Uint8Array(0x8000)
+    for (let i = 0; i < order.length; i++) seen[order[i]] = 1
+    for (let p = 0; p < song.numPats; p++) if (!seen[p]) order.push(p)
+    return order
+}
+
+// Apply a keep-order (`order` = old indices in their new positions): rebuilds
+// song.patterns, remaps every cue reference (a reference to a dropped pattern
+// becomes empty; the separately-stored instruction words are untouched), and
+// pushes the new state to the device.
+function applyPatternOrder(order) {
+    if (order.length === 0) order = [0]
+    const oldNumPats = song.numPats
+    const oldLast = Math.max(0, song.lastActiveCue)
+    const oldToNew = {}
+    for (let n = 0; n < order.length; n++) oldToNew[order[n]] = n
+    song.patterns = order.map(o => song.patterns[o] || new Uint8Array(PATTERN_SIZE))
+    song.numPats = order.length
+    for (let c = 0; c < NUM_CUES; c++) {
+        const cue = song.cues[c]
+        if (!cue) continue
+        for (let v = 0; v < MAX_VOICES; v++) {
+            const pat = cue.ptns[v]
+            if (pat === CUE_EMPTY) continue
+            cue.ptns[v] = (pat in oldToNew) ? oldToNew[pat] : CUE_EMPTY
+        }
+    }
+    recomputeLastActiveCue()
+    // Device sync: every touched cue, the whole (possibly shrunk) pattern bin,
+    // and zeros over the dropped tail so stale patterns can't be previewed.
+    for (let c = 0; c <= Math.max(oldLast, Math.max(0, song.lastActiveCue)); c++)
+        audio.uploadCue(c, encodeCue(song.cues[c]))
+    patternsOutOfSync = true
+    reuploadPatternsIfNeeded()
+    const zerosPat = new Array(PATTERN_SIZE).fill(0)
+    for (let p = song.numPats; p < oldNumPats; p++) audio.uploadPattern(p, zerosPat)
+    hasUnsavedChanges = true
+    // Reset the pattern cursors/panes — indices have been renumbered.
+    patternIdx = 0; patternListScroll = 0
+    patternGridRow = 0; patternGridScroll = 0; patternGridCol = 0
+    patPanes = null; activePatPane = 0
+    clampPatternIdx(); clampPatternGrid(); clampCue(); clampCursor()
+}
+
+// Top-level instrument slots referenced by any pattern cell of this song.
+function collectPatternUsedSlots() {
+    const flags = new Uint8Array(256)
+    for (let p = 0; p < song.numPats; p++) {
+        const ptn = song.patterns[p]
+        for (let r = 0; r < ROWS_PER_PAT; r++) { const b = ptn[r*8 + 2]; if (b) flags[b] = 1 }
+    }
+    const out = []
+    for (let i = 1; i < 256; i++) if (flags[i]) out.push(i)
+    return out
+}
+
+// The Project-panel Housekeeping popup ('h'): pick an operation, run it, show
+// the result. No undo — the message says so up front.
+function openHousekeepingPopup() {
+    const chrome = {
+        drawFrame: HUB.popups.popupDrawFrame,
+        colours:   HUB.popups.popupColours,
+    }
+    const OPS = [
+        { id: 'cleanPtn',  label: 'Cleanup patterns (drop unreferenced)' },
+        { id: 'renumPtn',  label: 'Renumber patterns into play order' },
+        { id: 'cleanBank', label: 'Cleanup instruments & samples' },
+    ]
+    const pick = win.showDialog(Object.assign({
+        title: 'Housekeeping',
+        message: ['These operations CANNOT be undone.',
+                  'Usage is decided by this song\'s patterns/cues.'],
+        list: {
+            items: OPS.map(o => ({ label: ' ' + o.label, op: o })),
+            height: OPS.length, width: 38, drawWell: false, showScrollbar: false,
+            scrollbarChars: HUB.popups.popupScrollbarChars,
+        },
+        buttons: [
+            { label: 'OK',     action: 'ok' },
+            { label: 'Cancel', action: 'cancel' },
+        ],
+    }, chrome))
+    if (pick.action !== 'ok' || !pick.listItem) { drawAll(); return }
+
+    let msg
+    switch (pick.listItem.op.id) {
+    case 'cleanPtn': {
+        const before = song.numPats
+        applyPatternOrder(referencedPatternOrder(false))
+        msg = `Removed ${before - song.numPats} unreferenced pattern(s); ${song.numPats} kept.`
+        break
+    }
+    case 'renumPtn': {
+        applyPatternOrder(renumberPatternOrder())
+        msg = `Renumbered ${song.numPats} pattern(s) into play order.`
+        break
+    }
+    case 'cleanBank': {
+        const r = (HUB.views && HUB.views.housekeepBank)
+            ? HUB.views.housekeepBank(collectPatternUsedSlots()) : null
+        msg = r ? `Removed ${r.removedInsts} instrument(s); freed ${r.freedBytes} sample byte(s); ${r.keptSamples} sample(s) kept.`
+                : 'Bank cleanup unavailable on this host.'
+        invalidateMetaLayerFlags()
+        break
+    }
+    }
+
+    win.showDialog(Object.assign({
+        title: 'Housekeeping',
+        message: [msg],
+        buttons: [{ label: 'OK', action: 'ok', default: true }],
+    }, chrome))
     drawAll()
 }
 
@@ -3820,300 +3814,38 @@ function clampPatternGrid() {
     if (patternGridCol > 5) patternGridCol = 5
 }
 
-// Returns the row to use for drawVoiceDetail: pbRow during playback, editor cursor otherwise
-function getActiveRowForDetail() {
-    return (playbackMode !== PLAYMODE_NONE) ? pbRow : patternGridRow
+// ── Multi-pane pattern editor state ─────────────────────────────────────────
+// The ACTIVE pane owns the live globals (patternIdx / patternGridScroll / the
+// cursor); reference panes park {idx, scroll} in patPanes. Fresh panes seed to
+// patterns 0,1,2… clamped, so opening the tab shows different patterns.
+function ensurePatPanes() {
+    if (patPanes) return
+    patPanes = []
+    for (let p = 0; p < PAT_PANE_COUNT; p++)
+        patPanes.push({ idx: Math.min(p, Math.max(0, song.numPats - 1)), scroll: 0 })
+    activePatPane = 0
+    patPanes[0].idx = patternIdx
 }
-
-// Walk pattern rows 0..uptoRow and accumulate engine-visible cohort state.
-// Mirrors AudioAdapter.kt applyTrackerRow / applyEffectRow / applySEffect for the
-// state surfaced in the voice-detail panel.  Out of scope: B/C control flow,
-// SEx pattern delay, SBx pattern loop, NNA / past-note actions, envelope toggles.
-function simulateRowState(ptnDat, uptoRow) {
-    const OP_1 = 1,  OP_8 = 8,  OP_9 = 9,  OP_A = 10
-    const OP_D = 13, OP_E = 14, OP_F = 15, OP_G = 16
-    const OP_H = 17, OP_I = 18, OP_J = 19, OP_O = 24
-    const OP_Q = 26, OP_R = 27, OP_S = 28, OP_T = 29
-    const OP_U = 30, OP_V = 31, OP_W = 32, OP_Y = 34
-
-    // ST3-style finetune offsets, mirrors AudioAdapter.kt FINETUNE_OFFSET
-    const FINETUNE_OFFSET = [
-        -0x0154, -0x0132, -0x0111, -0x00E4, -0x00B8, -0x008B, -0x005D, -0x003B,
-         0x0000,  0x0023,  0x0046,  0x0074,  0x0098,  0x00C8,  0x00F9,  0x0110
-    ]
-
-    let lastNote = 0x0000, lastInst = 0
-    let volAbs   = 0x3F                  // 6-bit per-note volume (engine: noteVolume axis;
-                                         // M / N's per-channel axis is not modelled here)
-    let panAbs   = 0x80                  // 8-bit channel pan (engine width); centre = $80
-    let pitchOff = 0, portaTarget = -1
-    let bpm   = audio.getBPM(PLAYHEAD)   // best-effort starting tempo
-    let speed = audio.getTickRate(PLAYHEAD)
-    let globalVol = 0xFF
-    let toneMode = 0   // 0=linear, 1=Amiga, 2=linear-freq, 3=reserved
-
-    let memEF = 0, memG = 0
-    let memHU = { speed: 0, depth: 0 }
-    let memR  = { speed: 0, depth: 0 }
-    let memY  = { speed: 0, depth: 0 }
-    let memD = 0, memI = 0, memJ = 0, memO = 0, memQ = 0, memTSlide = 0, memW = 0
-
-    // Bitcrusher / overdrive (clipMode shared between OP_8 and OP_9)
-    let bitcrushDepth = 0, bitcrushSkip = 0
-    let overdriveAmp  = 0
-    let clipMode      = 0
-
-    // S-effect state
-    let glissandoOn = false
-    let vibratoWave = 0, tremoloWave = 0, panbrelloWave = 0
-
-    const clampV = v => Math.max(0, Math.min(0x3F, v | 0))
-    const clampP = v => Math.max(0, Math.min(0xFF, v | 0))
-    const clampG = v => Math.max(0, Math.min(0xFF, v | 0))
-
-    const limit = Math.min(uptoRow, ROWS_PER_PAT - 1)
-    for (let row = 0; row <= limit; row++) {
-        const off    = 8 * row
-        const note   = ptnDat[off]   | (ptnDat[off+1] << 8)
-        const inst   = ptnDat[off+2]
-        const voleff = ptnDat[off+3]
-        const paneff = ptnDat[off+4]
-        const effop  = ptnDat[off+5]
-        const effarg = ptnDat[off+6] | (ptnDat[off+7] << 8)
-
-        // Note column
-        const isGRow = (effop === OP_G)
-        const isNoteDelay = (effop === OP_S) && (((effarg >>> 12) & 0xF) === 0xD)
-        // Track whether this row reloads the per-note default volume.  Engine:
-        // triggerNote() (and the tone-porta-with-inst branch in advanceRow)
-        // seed noteVolume from the instrument's Default Note Volume (byte 196)
-        // — only when the row carries an instrument byte; a note-only retrigger
-        // (inst === 0) inherits the channel's existing note volume. Tone-porta
-        // rows follow the same rule (matches schism csf_instrument_change
-        // inst_column branch, effects.c:1302). The per-channel axis
-        // (channelVolume, set by Mxx / Nxx) is NOT reset on re-trigger and is
-        // not tracked by this simulator. The simulator approximates the seed
-        // as 0x3F (legacy fallback) — see the longer note below.
-        let reloadDefaultVol = false
-        if (note !== 0x0000 && note !== 0x0002 && !(note >= 0x0010 && note <= 0x001F)) {
-            if (note === 0x0001) {
-                // key-off; sample stays referenced
-            } else if (isGRow) {
-                portaTarget = note
-                if (inst !== 0) reloadDefaultVol = true
-            } else if (isNoteDelay) {
-                // Delayed trigger: latched but doesn't fire on this row's first tick.
-                // For "state at end of row" treat as if it triggered.
-                lastNote = note
-                pitchOff = 0
-                portaTarget = -1
-                if (inst !== 0) reloadDefaultVol = true
-            } else {
-                lastNote = note
-                pitchOff = 0
-                portaTarget = -1
-                if (inst !== 0) reloadDefaultVol = true
-            }
-        }
-        if (inst !== 0) lastInst = inst
-        // Default vol reset must happen before the volume column so a SET selector
-        // can still override on the same row (engine order: triggerNote → applyVolColumn).
-        // Pan: simulator does not track per-instrument default pan, so it never resets
-        // panAbs on trigger — this naturally matches the "stay at old value when inst === 0"
-        // half of the policy. The engine-side default-pan reload (gated on inst !== 0)
-        // is invisible here. Same limitation now applies to default volume: the engine
-        // seeds noteVolume from the instrument's byte-196 "Default Note Volume" since
-        // 2026-05-09 (terranmon §171, §196), but the simulator has no instrument-byte
-        // access, so it falls back to 0x3F — equivalent to the legacy "DNV unset"
-        // path. Tracker UI displays may therefore show a slightly off note volume on
-        // fresh triggers when the instrument carries a reduced DNV.
-        if (reloadDefaultVol) volAbs = 0x3F
-
-        // Pre-scan effect column for S$80xx (8-bit pan SET wins over volcol/pancol SET).
-        const rowHasS80 = (effop === OP_S) && (((effarg >>> 12) & 0xF) === 0x8)
-
-        // Volume column.  voleff = (sel<<6) | value6.  $C0 = sel 3 / value 0 = empty nop.
-        const volSel = (voleff >>> 6) & 3
-        const volVal = voleff & 63
-        if (voleff !== 0xC0) {
-            if (volSel === 0) {
-                volAbs = volVal
-            } else if (volSel === 1) {
-                volAbs = clampV(volAbs + volVal * (speed - 1))     // engine: per non-first tick
-            } else if (volSel === 2) {
-                volAbs = clampV(volAbs - volVal * (speed - 1))
-            } else if (volSel === 3 && volVal !== 0) {
-                const mag = volVal & 0x1F
-                if ((volVal & 0x20) !== 0) volAbs = clampV(volAbs + mag)   // fine up
-                else                       volAbs = clampV(volAbs - mag)   // fine down
-            }
-        }
-
-        // Pan column.  Same encoding as volume.  Engine pan is 8-bit; SET expands 6→8 by replicating bits.
-        const panSel = (paneff >>> 6) & 3
-        const panVal = paneff & 63
-        if (paneff !== 0xC0) {
-            if (panSel === 0) {
-                if (!rowHasS80) panAbs = ((panVal << 2) | (panVal >>> 4)) & 0xFF
-            } else if (panSel === 1) {
-                panAbs = clampP(panAbs + panVal * (speed - 1))
-            } else if (panSel === 2) {
-                panAbs = clampP(panAbs - panVal * (speed - 1))
-            } else if (panSel === 3 && panVal !== 0) {
-                const mag = panVal & 0x1F
-                if ((panVal & 0x20) !== 0) panAbs = clampP(panAbs + mag)
-                else                       panAbs = clampP(panAbs - mag)
-            }
-        }
-
-        if (effop !== 0 || effarg !== 0) {
-            if (effop === OP_1) {
-                const flags = (effarg >>> 8) & 0xFF
-                toneMode = flags & 3
-            }
-            else if (effop === OP_8) {
-                const x = (effarg >>> 12) & 0xF
-                const y = (effarg >>>  8) & 0xF
-                const z =  effarg         & 0xFF
-                clipMode = x & 3
-                if (effarg === 0) { bitcrushDepth = 0; bitcrushSkip = 0 }
-                else if (y !== 0 || z !== 0) { bitcrushDepth = y; bitcrushSkip = z }
-            }
-            else if (effop === OP_9) {
-                const x = (effarg >>> 12) & 0xF
-                const z =  effarg         & 0xFF
-                clipMode = x & 3
-                if (effarg === 0) overdriveAmp = 0
-                else if (z !== 0) overdriveAmp = z
-            }
-            else if (effop === OP_A) {
-                if ((effarg >>> 8) !== 0) speed = (effarg >>> 8)
-            }
-            else if (effop === OP_D) {
-                const raw = (effarg !== 0) ? (memD = effarg) : memD
-                if (raw !== 0) {
-                    const hb    = (raw >>> 8) & 0xFF
-                    const hiNib = (hb >>> 4) & 0xF
-                    const loNib = hb & 0xF
-                    if (hb === 0xFF || hb === 0xF0) {
-                        volAbs = clampV(volAbs + 0xF)               // $FF00 / $F000 quirk
-                    } else if (hiNib === 0xF && loNib !== 0) {
-                        volAbs = clampV(volAbs - loNib)              // $Fy00 fine down
-                    } else if (loNib === 0xF && hiNib !== 0) {
-                        volAbs = clampV(volAbs + hiNib)              // $xF00 fine up
-                    } else if (hiNib === 0 && loNib !== 0) {
-                        volAbs = clampV(volAbs - loNib * (speed - 1))   // $0y00 coarse down
-                    } else if (hiNib !== 0 && loNib === 0) {
-                        volAbs = clampV(volAbs + hiNib * (speed - 1))   // $x000 coarse up
-                    }
-                }
-            }
-            else if (effop === OP_E || effop === OP_F) {
-                const raw = (effarg !== 0) ? (memEF = effarg) : memEF
-                if (raw !== 0) {
-                    const fine = (raw & 0xF000) === 0xF000
-                    const amt  = fine ? (raw & 0x0FFF) : raw * (speed - 1)
-                    if (effop === OP_E) pitchOff -= amt
-                    else                pitchOff += amt
-                }
-            }
-            else if (effop === OP_G) {
-                if (effarg !== 0) memG = effarg
-                if (portaTarget !== -1 && memG !== 0 && lastNote !== 0x0000) {
-                    const curPitch = lastNote + pitchOff
-                    const diff     = portaTarget - curPitch
-                    if (diff !== 0) {
-                        const absDiff = Math.abs(diff)
-                        const maxStep = memG * (speed - 1)
-                        pitchOff += Math.sign(diff) * Math.min(absDiff, maxStep)
-                        if (absDiff <= maxStep) {
-                            pitchOff = portaTarget - lastNote
-                            portaTarget = -1
-                        }
-                    }
-                }
-            }
-            else if (effop === OP_H || effop === OP_U) {
-                const spd = (effarg >>> 8) & 0xFF; const dep = effarg & 0xFF
-                if (spd !== 0) memHU.speed = spd
-                if (dep !== 0) memHU.depth = dep
-            }
-            else if (effop === OP_R) {
-                const spd = (effarg >>> 8) & 0xFF; const dep = effarg & 0xFF
-                if (spd !== 0) memR.speed = spd
-                if (dep !== 0) memR.depth = dep
-            }
-            else if (effop === OP_Y) {
-                const spd = (effarg >>> 8) & 0xFF; const dep = effarg & 0xFF
-                if (spd !== 0) memY.speed = spd
-                if (dep !== 0) memY.depth = dep
-            }
-            else if (effop === OP_I) { if (effarg !== 0) memI = effarg }
-            else if (effop === OP_J) { if (effarg !== 0) memJ = effarg }
-            else if (effop === OP_O) { if (effarg !== 0) memO = effarg }
-            else if (effop === OP_Q) { if (effarg !== 0) memQ = effarg }
-            else if (effop === OP_S) {
-                const sub = (effarg >>> 12) & 0xF
-                const x   = (effarg >>>  8) & 0xF
-                if (sub === 0x1) {
-                    glissandoOn = (x !== 0)
-                } else if (sub === 0x2) {
-                    pitchOff += FINETUNE_OFFSET[x]
-                } else if (sub === 0x3) {
-                    vibratoWave = x & 3
-                } else if (sub === 0x4) {
-                    tremoloWave = x & 3
-                } else if (sub === 0x5) {
-                    panbrelloWave = x & 3
-                } else if (sub === 0x8) {
-                    panAbs = effarg & 0xFF       // S$80xx full 8-bit pan SET
-                }
-                // 0x6/0x7/0xB/0xC/0xD/0xE/0xF — out of scope (control flow / per-tick / NNA).
-            }
-            else if (effop === OP_T) {
-                const hi = (effarg >>> 8) & 0xFF
-                if (hi === 0xFF) {
-                    bpm = Math.max(25, Math.min(535, (effarg & 0xFF) + 0x118))  // T $FFxx — extended tempo
-                } else if (hi !== 0) {
-                    bpm = Math.max(25, Math.min(535, hi + 0x19))
-                } else {
-                    const low = effarg & 0xFF
-                    if ((low & 0xF0) === 0x00 || (low & 0xF0) === 0x10) memTSlide = low
-                    // bpm slide accumulates per-tick in the engine; not modelled at row granularity
-                }
-            }
-            else if (effop === OP_V) {
-                globalVol = (effarg >>> 8) & 0xFF
-            }
-            else if (effop === OP_W) {
-                const raw = (effarg !== 0) ? (memW = effarg) : memW
-                if (raw !== 0) {
-                    const hb    = (raw >>> 8) & 0xFF
-                    const hiNib = (hb >>> 4) & 0xF
-                    const loNib = hb & 0xF
-                    if (hb === 0xFF || hb === 0xF0) {
-                        globalVol = clampG(globalVol + 0xF)
-                    } else if (hiNib === 0xF && loNib !== 0) {
-                        globalVol = clampG(globalVol - loNib)
-                    } else if (loNib === 0xF && hiNib !== 0) {
-                        globalVol = clampG(globalVol + hiNib)
-                    } else if (hiNib === 0 && loNib !== 0) {
-                        globalVol = clampG(globalVol - loNib * (speed - 1))
-                    } else if (hiNib !== 0 && loNib === 0) {
-                        globalVol = clampG(globalVol + hiNib * (speed - 1))
-                    }
-                }
-            }
-        }
-    }
-
-    return { lastNote, lastInst, volAbs, panAbs, pitchOff,
-             bpm, speed, globalVol,
-             toneMode,
-             bitcrushDepth, bitcrushSkip, overdriveAmp, clipMode,
-             glissandoOn, vibratoWave, tremoloWave, panbrelloWave,
-             memEF, memG, memHU, memR, memY,
-             memD, memI, memJ, memO, memQ, memTSlide, memW }
+function patPaneIdx(p)    { ensurePatPanes(); return p === activePatPane ? patternIdx : patPanes[p].idx }
+function patPaneScroll(p) { ensurePatPanes(); return p === activePatPane ? patternGridScroll : patPanes[p].scroll }
+function setPatPaneScroll(p, v) {
+    ensurePatPanes()
+    if (p === activePatPane) patternGridScroll = v
+    else patPanes[p].scroll = v
+}
+// Make pane p the active one (the cursor lives in the active pane). The old
+// pane parks its pattern/scroll; the new pane's state loads into the globals.
+function switchPatPane(p) {
+    ensurePatPanes()
+    if (p === activePatPane || p < 0 || p >= PAT_PANE_COUNT) return false
+    patPanes[activePatPane].idx = patternIdx
+    patPanes[activePatPane].scroll = patternGridScroll
+    activePatPane = p
+    patternIdx = Math.min(patPanes[p].idx, Math.max(0, song.numPats - 1))
+    patternGridScroll = patPanes[p].scroll
+    clampPatternIdx()
+    clampPatternGrid()
+    return true
 }
 
 function drawPatternListColumn() {
@@ -4134,30 +3866,33 @@ function drawPatternListColumn() {
     }
 }
 
-/**
- * @param viewRow which row
- */
-function drawPatternGridRowAt(viewRow) {
-    const actualRow = patternGridScroll + viewRow
-    const y = PTNVIEW_OFFSET_Y + viewRow
+// Draw one text row of pattern pane `pane`. The active pane carries the
+// cursor overlay and the playback highlight (the preview cue plays the active
+// pane's pattern); reference panes render plain content.
+function drawPatternPaneRowAt(pane, viewRow) {
+    const isActive  = (pane === activePatPane)
+    const scroll    = patPaneScroll(pane)
+    const actualRow = scroll + viewRow
+    const y     = PTNVIEW_OFFSET_Y + viewRow
+    const x0    = patPaneOriginX(pane)
+    const cellX = patPaneCellX(pane)
 
     if (actualRow >= ROWS_PER_PAT) {
-        con.move(y, PATEDITOR_GRID_X)
+        con.move(y, x0)
         con.color_pair(colBackPtn, 255)
-        print(' '.repeat(PATEDITOR_SEP2_X - PATEDITOR_GRID_X))
+        print(' '.repeat(PAT_PANE_W - 1))
         return
     }
 
-    const ptn    = song.patterns[patternIdx]
-    const isPbRow  = (playbackMode !== PLAYMODE_NONE && actualRow === pbRow)
-    const isCurRow = (actualRow === patternGridRow)
+    const pIdx = Math.min(patPaneIdx(pane), song.numPats - 1)
+    const ptn  = song.patterns[pIdx]
+    const isPbRow  = isActive && (playbackMode !== PLAYMODE_NONE && actualRow === pbRow)
+    const isCurRow = isActive && (actualRow === patternGridRow)
     // Row number gets highlight bg to mark cursor row; playhead takes colPlayback priority
     const rowNumBack = isPbRow ? colPlayback : (isCurRow ? colHighlight : colBackPtn)
     const cellBack   = isPbRow ? colPlayback : colBackPtn
 
-    // Row-number beat emphasis: primary-beat lines get colRowNumEmph1, measure starts
-    // colRowNumEmph2 — driven by the song's beat division (applySongBeatDiv / sMet), mirroring
-    // the Timeline's drawPatternRowAt, rather than a hardcoded /4.
+    // Row-number beat emphasis, driven by the song's beat division (sMet).
     let rowNumFore = colRowNum
     let beatRow = actualRow
     while (beatRow >= beatDivSecondary) beatRow -= beatDivSecondary
@@ -4165,16 +3900,16 @@ function drawPatternGridRowAt(viewRow) {
     if (beatRow % beatDivSecondary == 0) rowNumFore = colRowNumEmph2
     con.color_pair(rowNumFore, rowNumBack)
     const rowstr = actualRow.hex02()   // rows are hex everywhere (web item 35)
-    con.move(y, PATEDITOR_GRID_X);   con.prnch(rowstr.charCodeAt(0))
-    con.move(y, PATEDITOR_GRID_X+1); con.prnch(rowstr.charCodeAt(1))
-    con.move(y, PATEDITOR_GRID_X+2)
+    con.move(y, x0);     con.prnch(rowstr.charCodeAt(0))
+    con.move(y, x0 + 1); con.prnch(rowstr.charCodeAt(1))
+    con.move(y, x0 + 2)
     con.color_pair(colBackPtn, cellBack); con.addch(32)
 
     const cell = buildRowCell(ptn, actualRow)
-    drawCellAtStyled(y, PATEDITOR_CELL_X, cell, cellBack, -1)
+    drawCellAtStyled(y, cellX, cell, cellBack, -1)
 
-    // Overlay sub-field cursor highlight on the cursor row (not playhead).
-    // Style -1 fixed column offsets from PATEDITOR_CELL_X: 0,5,8,11,14,15
+    // Sub-field cursor overlay (active pane only, not on the playhead row).
+    // Style -1 fixed column offsets from the pane cell origin: 0,5,8,11,14,15
     if (isCurRow && !isPbRow) {
         const fieldOffsets = [0, 5, 8, 11, 14, 15]
         const fieldStrs    = [
@@ -4187,14 +3922,24 @@ function drawPatternGridRowAt(viewRow) {
         ]
         const fieldFgs     = [noteColour(cell._note), instColour(cell._inst), colVol, colPan, colEffOp, colEffArg]
         const col = patternGridCol
-        con.move(y, PATEDITOR_CELL_X + fieldOffsets[col])
+        con.move(y, cellX + fieldOffsets[col])
         con.color_pair(fieldFgs[col], patternEditMode ? colEditHL : colHighlight)
         print(fieldStrs[col])
     }
 }
 
+function drawPatternPaneSeparators() {
+    con.color_pair(colSep, 255)
+    for (let y = PTNVIEW_OFFSET_Y - 1; y < PTNVIEW_OFFSET_Y + PTNVIEW_HEIGHT; y++) {
+        con.move(y, PATEDITOR_SEP1_X); con.prnch(VERT)
+        for (let p = 1; p < PAT_PANE_COUNT; p++) { con.move(y, patPaneOriginX(p) - 1); con.prnch(VERT) }
+    }
+}
+
 function drawPatternGrid() {
-    for (let vr = 0; vr < PTNVIEW_HEIGHT; vr++) drawPatternGridRowAt(vr)
+    for (let p = 0; p < PAT_PANE_COUNT; p++)
+        for (let vr = 0; vr < PTNVIEW_HEIGHT; vr++) drawPatternPaneRowAt(p, vr)
+    drawPatternPaneSeparators()
 }
 
 function drawPatternsHeader() {
@@ -4202,9 +3947,16 @@ function drawPatternsHeader() {
     con.move(PTNVIEW_OFFSET_Y - 1, PATEDITOR_LIST_X)
     con.color_pair(colVoiceHdr, 255)
     print('Ptn  ')
-    con.move(PTNVIEW_OFFSET_Y - 1, PATEDITOR_GRID_X)
-    if (song.numPats > 0)
-        print(`Pattern ${patternIdx.hex04()}  Row ${patternGridRow.hex02()}`)
+    if (song.numPats === 0) return
+    for (let p = 0; p < PAT_PANE_COUNT; p++) {
+        const active = (p === activePatPane)
+        const pIdx = Math.min(patPaneIdx(p), song.numPats - 1)
+        con.move(PTNVIEW_OFFSET_Y - 1, patPaneOriginX(p))
+        con.color_pair(active ? colVoiceHdr : colSep, 255)
+        let h = `Ptn ${pIdx.hex04()}`
+        if (active) h += `  Row ${patternGridRow.hex02()}`
+        print(h.substring(0, PAT_PANE_W - 1))
+    }
 }
 
 function drawPatternsContents(wo) {
@@ -4215,24 +3967,8 @@ function drawPatternsContents(wo) {
         print('(no patterns)')
         return
     }
-
     drawPatternListColumn()
     drawPatternGrid()
-
-    // Column separators
-    con.color_pair(colSep, 255)
-    for (let y = PTNVIEW_OFFSET_Y - 1; y < PTNVIEW_OFFSET_Y + PTNVIEW_HEIGHT; y++) {
-        con.move(y, PATEDITOR_SEP1_X); con.prnch(VERT)
-        con.move(y, PATEDITOR_SEP2_X); con.prnch(VERT)
-    }
-
-    const activeRow = getActiveRowForDetail()
-    const key = `${patternIdx}:${activeRow}:${playbackMode}`
-    if (key !== simStateKey) {
-        simState    = simulateRowState(song.patterns[patternIdx], activeRow)
-        simStateKey = key
-    }
-    drawVoiceDetail(true, song.patterns[patternIdx], activeRow, simState)
 }
 
 function patternsInput(wo, event) {
@@ -4252,7 +3988,7 @@ function patternsInput(wo, event) {
         }
         if ((keyJustHit && shiftDown && event.includes(keys.Y)) || keysym === " " ||
             (keyJustHit && keysym === "\n")) {
-            stopPlayback(); simStateKey = ''; drawPatternsContents(wo); drawAlwaysOnElems()
+            stopPlayback(); drawPatternsContents(wo); drawAlwaysOnElems()
         }
         return
     }
@@ -4286,7 +4022,6 @@ function patternsInput(wo, event) {
             if (res.audition >= 0 && typeof audio.jamNote === 'function')
                 audio.jamNote(PLAYHEAD, 0, res.audition, currentInstrument)
             if (res.advance) { patternGridRow = Math.min(ROWS_PER_PAT - 1, patternGridRow + 1); clampPatternGrid() }
-            simStateKey = ''
             drawPatternsContents(wo)
             drawAlwaysOnElems()
             return
@@ -4306,31 +4041,26 @@ function patternsInput(wo, event) {
         patternGridRow += (keysym === '<UP>') ? -moveDelta : moveDelta
         clampPatternGrid()
         if (patternEditMode) { adoptInstrumentFromCell(song.patterns[patternIdx], patternGridRow); drawAlwaysOnElems() }
-        simStateKey = ''
         drawPatternGrid()
-        con.color_pair(colSep, 255)
-        for (let y = PTNVIEW_OFFSET_Y - 1; y < PTNVIEW_OFFSET_Y + PTNVIEW_HEIGHT; y++) {
-            con.move(y, PATEDITOR_SEP1_X); con.prnch(VERT)
-            con.move(y, PATEDITOR_SEP2_X); con.prnch(VERT)
-        }
-        const activeRow = getActiveRowForDetail()
-        const key = `${patternIdx}:${activeRow}:${playbackMode}`
-        if (key !== simStateKey) { simState = simulateRowState(song.patterns[patternIdx], activeRow); simStateKey = key }
-        drawVoiceDetail(true, song.patterns[patternIdx], activeRow, simState)
         drawPatternsHeader()
         return
     }
 
-    if (keysym === '<HOME>') { patternGridRow = 0;              clampPatternGrid(); if (patternEditMode) { adoptInstrumentFromCell(song.patterns[patternIdx], patternGridRow); drawAlwaysOnElems() } simStateKey = ''; drawPatternsContents(wo); return }
-    if (keysym === '<END>')  { patternGridRow = ROWS_PER_PAT-1; clampPatternGrid(); if (patternEditMode) { adoptInstrumentFromCell(song.patterns[patternIdx], patternGridRow); drawAlwaysOnElems() } simStateKey = ''; drawPatternsContents(wo); return }
+    if (keysym === '<HOME>') { patternGridRow = 0;              clampPatternGrid(); if (patternEditMode) { adoptInstrumentFromCell(song.patterns[patternIdx], patternGridRow); drawAlwaysOnElems() } drawPatternsContents(wo); return }
+    if (keysym === '<END>')  { patternGridRow = ROWS_PER_PAT-1; clampPatternGrid(); if (patternEditMode) { adoptInstrumentFromCell(song.patterns[patternIdx], patternGridRow); drawAlwaysOnElems() } drawPatternsContents(wo); return }
 
     if (keysym === '<LEFT>' || keysym === '<RIGHT>') {
+        // Crossing a cell edge moves the cursor into the adjacent pane (the
+        // Timeline's voice-crossing idiom = web item 31's active-pane switch).
         patternGridCol += (keysym === '<LEFT>') ? -1 : 1
+        if (patternGridCol < 0) {
+            patternGridCol = switchPatPane(activePatPane - 1) ? 5 : 0
+        } else if (patternGridCol > 5) {
+            patternGridCol = switchPatPane(activePatPane + 1) ? 0 : 5
+        }
         clampPatternGrid()
-        drawPatternGridRowAt(patternGridRow - patternGridScroll)
-        con.color_pair(colSep, 255)
-        con.move(patternGridRow - patternGridScroll + PTNVIEW_OFFSET_Y, PATEDITOR_SEP1_X); con.prnch(VERT)
-        con.move(patternGridRow - patternGridScroll + PTNVIEW_OFFSET_Y, PATEDITOR_SEP2_X); con.prnch(VERT)
+        if (patternEditMode) { adoptInstrumentFromCell(song.patterns[patternIdx], patternGridRow); drawAlwaysOnElems() }
+        drawPatternsContents(wo)
         return
     }
 
@@ -4338,7 +4068,6 @@ function patternsInput(wo, event) {
         patternIdx += (keysym === '<PAGE_UP>') ? -moveDelta : moveDelta
         clampPatternIdx()
         if (patternEditMode) { adoptInstrumentFromCell(song.patterns[patternIdx], patternGridRow); drawAlwaysOnElems() }
-        simStateKey = ''
         drawPatternsContents(wo)
         return
     }
@@ -4580,6 +4309,8 @@ function projectInput(wo, event) {
         projectCursor = PROJ_META_ROWS_COUNT + Math.max(0, songsMeta.numSongs - 1)
         clampProjectCursor(); redrawPanel(); return
     }
+    // Housekeeping (web item 60): cleanup/renumber patterns, cleanup bank.
+    if (keyJustHit && (keysym === 'h' || keysym === 'H')) { openHousekeepingPopup(); return }
     if (keysym === '\n') {
         if (projectCursor === PROJ_META_FLAGS) {
             openFlagsPopup()
@@ -4833,7 +4564,7 @@ function updatePlayback() {
         if (currentPanel === VIEW_TIMELINE &&
                 cursorRow >= scrollRow && cursorRow < scrollRow + PTNVIEW_HEIGHT)
             drawPatternRowAt(cursorRow - scrollRow)
-        else if (currentPanel === VIEW_PATTERN_DETAILS && song.numPats > 0) { simStateKey = ''; redrawPanel() }
+        else if (currentPanel === VIEW_PATTERN_DETAILS && song.numPats > 0) { redrawPanel() }
         drawAlwaysOnElems()
         clearVoiceMeters()
         // playbackMode is NONE now → these paint a final blob0 / clear-cursor pass.
@@ -4858,7 +4589,7 @@ function updatePlayback() {
     if (playbackMode === PLAYMODE_CUE && nowCue !== playStartCue) {
         stopPlayback()
         if (currentPanel === VIEW_TIMELINE) redrawPanel()
-        else if (currentPanel === VIEW_PATTERN_DETAILS && song.numPats > 0) { simStateKey = ''; redrawPanel() }
+        else if (currentPanel === VIEW_PATTERN_DETAILS && song.numPats > 0) { redrawPanel() }
         drawAlwaysOnElems()
         return
     }
@@ -4867,7 +4598,7 @@ function updatePlayback() {
         if (currentPanel === VIEW_TIMELINE &&
                 cursorRow >= scrollRow && cursorRow < scrollRow + PTNVIEW_HEIGHT)
             drawPatternRowAt(cursorRow - scrollRow)
-        else if (currentPanel === VIEW_PATTERN_DETAILS && song.numPats > 0) { simStateKey = ''; redrawPanel() }
+        else if (currentPanel === VIEW_PATTERN_DETAILS && song.numPats > 0) { redrawPanel() }
         drawAlwaysOnElems()
         return
     }
@@ -4882,7 +4613,7 @@ function updatePlayback() {
         cursorRow = nowRow
         clampCursor()
         if (currentPanel === VIEW_TIMELINE) redrawPanel()
-        else if (currentPanel === VIEW_PATTERN_DETAILS && song.numPats > 0) { simStateKey = ''; redrawPanel() }
+        else if (currentPanel === VIEW_PATTERN_DETAILS && song.numPats > 0) { redrawPanel() }
         else if (currentPanel === VIEW_CUES) {
             scrollOrdersTo(cueIdx)
             drawOrdersContents()
@@ -4911,15 +4642,9 @@ function updatePlayback() {
                 drawPatternRowAt(cursorRow - scrollRow)
             }
             drawSeparators(separatorStyle)
-            drawVoiceDetail()
         } else if (currentPanel === VIEW_PATTERN_DETAILS && song.numPats > 0) {
-            simStateKey = ''
-            const activeRow = getActiveRowForDetail()
-            simState    = simulateRowState(song.patterns[patternIdx], activeRow)
-            simStateKey = `${patternIdx}:${activeRow}:${playbackMode}`
             scrollPatternGridTo(pbRow)
             drawPatternGrid()
-            drawVoiceDetail(true, song.patterns[patternIdx], activeRow, simState)
         }
         drawAlwaysOnElems()
     }
@@ -5516,7 +5241,7 @@ function registerTimelineMouse() {
             if (voiceOff !== oldVoxOff || Math.abs(cursorRow - oldCursor) >= PTNVIEW_HEIGHT) drawAll()
             else {
                 drawPatternView(); drawVoiceHeaders(); drawSeparators(separatorStyle)
-                drawAlwaysOnElems(); drawVoiceDetail()
+                drawAlwaysOnElems()
             }
         },
         onWheel: (cy, cx, dy, ev) => {
@@ -5527,7 +5252,7 @@ function registerTimelineMouse() {
                 const next = Math.max(0, Math.min(maxOff, voiceOff + dy * 3))
                 if (next === voiceOff) return
                 voiceOff = next
-                drawVoiceHeaders(); drawPatternView(); drawSeparators(separatorStyle); drawAlwaysOnElems(); drawVoiceDetail()
+                drawVoiceHeaders(); drawPatternView(); drawSeparators(separatorStyle); drawAlwaysOnElems()
                 return
             }
             // Free scroll: move the view, not the cursor (the cursor may scroll off-screen).
@@ -5535,7 +5260,7 @@ function registerTimelineMouse() {
             const next = Math.max(0, Math.min(maxS, scrollRow + dy * 3))
             if (next === scrollRow) return
             scrollRow = next
-            drawPatternView(); drawSeparators(separatorStyle); drawAlwaysOnElems(); drawVoiceDetail()
+            drawPatternView(); drawSeparators(separatorStyle); drawAlwaysOnElems()
         }
     })
 }
@@ -5630,7 +5355,7 @@ function registerPatternsMouse() {
             const targetIdx = patternListScroll + (cy - PTNVIEW_OFFSET_Y)
             if (targetIdx < 0 || targetIdx >= song.numPats) return
             patternIdx = targetIdx
-            clampPatternIdx(); simStateKey = ''
+            clampPatternIdx()
             drawPatternsContents(panelPatterns)
         },
         onWheel: (cy, cx, dy) => {
@@ -5643,37 +5368,38 @@ function registerPatternsMouse() {
             drawPatternListColumn()
         }
     })
-    // Middle grid: pattern editor cells. cx in [PATEDITOR_GRID_X, PATEDITOR_DETAIL_X)
+    // Pattern panes: click focuses a pane + cell; wheel free-scrolls the pane
+    // under the cursor WITHOUT stealing the active focus (web item 31 idiom —
+    // a reference pane's wheel only scrolls).
     addPanelMouseRegion(PATEDITOR_GRID_X, PTNVIEW_OFFSET_Y,
-                        PATEDITOR_DETAIL_X - PATEDITOR_GRID_X, PTNVIEW_HEIGHT, {
+                        SCRW - PATEDITOR_GRID_X + 1, PTNVIEW_HEIGHT, {
         onClick: (cy, cx, btn) => {
             if (btn !== 1 || song.numPats === 0 || playbackMode !== PLAYMODE_NONE) return
+            const pane = ((cx - PATEDITOR_GRID_X) / PAT_PANE_W) | 0
+            if (pane < 0 || pane >= PAT_PANE_COUNT) return
+            switchPatPane(pane)
             const targetRow = patternGridScroll + (cy - PTNVIEW_OFFSET_Y)
-            if (targetRow < 0 || targetRow >= ROWS_PER_PAT) return
-            patternGridRow = targetRow
-            const cellRel = cx - PATEDITOR_CELL_X
+            if (targetRow >= 0 && targetRow < ROWS_PER_PAT) patternGridRow = targetRow
+            const cellRel = cx - patPaneCellX(pane)
             const fieldOffsets = [0, 5, 8, 11, 14, 15]
             let field = 0
             for (let k = 0; k < fieldOffsets.length; k++) if (cellRel >= fieldOffsets[k]) field = k
             if (field < 0) field = 0; if (field > 5) field = 5
             patternGridCol = field
-            clampPatternGrid(); simStateKey = ''
+            clampPatternGrid()
             drawPatternsContents(panelPatterns)
         },
         onWheel: (cy, cx, dy) => {
             if (song.numPats === 0) return
-            // Free scroll: move the grid view, not the cursor (the cursor may scroll off-screen).
+            const pane = ((cx - PATEDITOR_GRID_X) / PAT_PANE_W) | 0
+            if (pane < 0 || pane >= PAT_PANE_COUNT) return
+            // Free scroll of the pane under the cursor (cursor may scroll off-screen).
             const maxS = Math.max(0, ROWS_PER_PAT - PTNVIEW_HEIGHT)
-            const next = Math.max(0, Math.min(maxS, patternGridScroll + dy * 3))
-            if (next === patternGridScroll) return
-            patternGridScroll = next
-            drawPatternGrid()
-            // Repaint the column separators the grid rows don't own (mirrors the keyboard nav path).
-            con.color_pair(colSep, 255)
-            for (let y = PTNVIEW_OFFSET_Y - 1; y < PTNVIEW_OFFSET_Y + PTNVIEW_HEIGHT; y++) {
-                con.move(y, PATEDITOR_SEP1_X); con.prnch(VERT)
-                con.move(y, PATEDITOR_SEP2_X); con.prnch(VERT)
-            }
+            const next = Math.max(0, Math.min(maxS, patPaneScroll(pane) + dy * 3))
+            if (next === patPaneScroll(pane)) return
+            setPatPaneScroll(pane, next)
+            for (let vr = 0; vr < PTNVIEW_HEIGHT; vr++) drawPatternPaneRowAt(pane, vr)
+            drawPatternPaneSeparators()
         }
     })
 }

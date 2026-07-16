@@ -176,7 +176,7 @@ A blank row past the last cue is always available so a new cue can be appended.
 
 let helpPatterns = `<c>PATTERNS VIEW</c>
 <c>\u00B7${'\u00B8'.repeat(13)}\u00B9</c>
-Single-pattern editor. View/Edit modes and the cell editing keys are the same as the Timeline (see its help on the Timeline tab); <b>pg&updn;</b> walks the pattern list instead of cues.
+Multi-pane pattern editor: up to three patterns side by side, each pane with its own pattern and scroll. The ACTIVE pane carries the cursor (and the preview); <b>&lt;-</b>&mdot;<b>-&gt;</b> at a cell edge crosses into the next pane, a click focuses a pane, and the wheel scrolls the pane under it without stealing focus. View/Edit modes and the cell editing keys are the same as the Timeline (see its help on the Timeline tab); <b>pg&updn;</b> walks the ACTIVE pane's pattern.
 
 <b>&nbsp;PATTERN TOOLS (P)</b>
 <b>\u00B7${'\u00B8'.repeat(17)}\u00B9</b>

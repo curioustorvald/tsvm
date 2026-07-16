@@ -990,6 +990,130 @@ function _metaSoundsAt(meta, strict, patchCache, note, vol) {
     return false
 }
 
+// ── Project housekeeping: bank cleanup (web item 60 port) ──────────────────
+// Drop instruments no pattern cell references (keeping meta-layer children of
+// used metas) and free the sample bytes only they used. `usedTop` = the
+// pattern-referenced slot numbers ($01..$FF) of the current song. Applies
+// straight to the device — records zeroed, Ixmp cleared, pool gaps zeroed —
+// and realigns songsMeta INam (blank removed slots) / SNam (rebuilt for the
+// surviving census by ptr:len identity). Returns { removedInsts, freedBytes,
+// keptSamples }.
+function housekeepBank(usedTop) {
+    refreshSamplesCache()
+    // Old census names by span identity, captured BEFORE any removal.
+    const oldNameByKey = {}
+    for (let i = 0; i < samplesCache.length; i++) {
+        const e = samplesCache[i]
+        oldNameByKey[e.ptr + ':' + e.len] = e.name || ''
+    }
+
+    // Existence scan + overall content end (records cached for the closure).
+    const exists = new Uint8Array(TAUT_INST_TOTAL)
+    const recs = {}
+    const recOf = (s) => recs[s] || (recs[s] = readInstRecord(s))
+    let overallEnd = 0
+    for (let s = 1; s < TAUT_INST_TOTAL; s++) {
+        const rec = recOf(s)
+        const isMeta = recordIsMeta(rec)
+        const len = rec[4] | (rec[5] << 8)
+        const hasPatches = hasIxmpAPI && audio.getInstrumentPatchCount(s) > 0
+        if (len > 0 || isMeta || hasPatches) exists[s] = 1
+        if (!isMeta && len > 0) {
+            const d = decodeInstRecord(rec)
+            if (d.samplePtr + d.sampleLen > overallEnd) overallEnd = d.samplePtr + d.sampleLen
+        }
+        forEachIxmpPatchSample(s, (ptr, slen) => {
+            if (slen > 0 && ptr + slen > overallEnd) overallEnd = ptr + slen
+        })
+    }
+
+    // Pattern-referenced slots + meta-layer dependency closure.
+    const used = new Uint8Array(TAUT_INST_TOTAL)
+    const queue = []
+    for (let i = 0; i < usedTop.length; i++) {
+        const s = usedTop[i]
+        if (s >= 1 && s < TAUT_INST_TOTAL && exists[s] && !used[s]) { used[s] = 1; queue.push(s) }
+    }
+    while (queue.length) {
+        const s = queue.pop()
+        const rec = recOf(s)
+        if (!recordIsMeta(rec)) continue
+        const layers = decodeMetaRecord(rec).layers
+        for (let i = 0; i < layers.length; i++) {
+            const c = layers[i].instIdx & 0x3FF
+            if (c >= 1 && c < TAUT_INST_TOTAL && exists[c] && !used[c]) { used[c] = 1; queue.push(c) }
+        }
+    }
+
+    // Zero the unused records (and their Ixmp patches) on the device.
+    const zeros256 = new Array(256).fill(0)
+    const removed = []
+    for (let s = 1; s < TAUT_INST_TOTAL; s++) {
+        if (!exists[s] || used[s]) continue
+        audio.uploadInstrument(s, zeros256)
+        if (hasIxmpAPI) audio.uploadInstrumentPatches(s, [])
+        removed.push(s)
+    }
+
+    // Surviving census (deduped by ptr:len, ptr-sorted).
+    const keepKeys = {}
+    const keep = []
+    const addSpan = (ptr, len) => {
+        if (len <= 0) return
+        const k = ptr + ':' + len
+        if (!keepKeys[k]) { keepKeys[k] = true; keep.push({ ptr: ptr, len: len, key: k }) }
+    }
+    for (let s = 1; s < TAUT_INST_TOTAL; s++) {
+        if (!used[s]) continue
+        const rec = recOf(s)
+        if (!recordIsMeta(rec)) { const d = decodeInstRecord(rec); addSpan(d.samplePtr, d.sampleLen) }
+        forEachIxmpPatchSample(s, (ptr, slen) => addSpan(ptr, slen))
+    }
+    keep.sort((a, b) => a.ptr - b.ptr)
+
+    // Zero the pool gaps between kept spans, bounded by the old content end
+    // (shared samples are kept; the gzip capture then compresses the freed
+    // bytes to nothing).
+    let freedBytes = 0
+    const zeroChunk = new Uint8Array(65536)
+    const zeroGap = (from, to) => {
+        let n = to - from
+        if (n <= 0) return
+        freedBytes += n
+        let at = from
+        while (n > 0) {
+            const take = Math.min(n, zeroChunk.length)
+            writeSampleSpan(at, take === zeroChunk.length ? zeroChunk : new Uint8Array(take))
+            at += take; n -= take
+        }
+    }
+    let cursor = 0
+    for (let i = 0; i < keep.length; i++) {
+        const sp = keep[i]
+        if (sp.ptr > cursor) zeroGap(cursor, Math.min(sp.ptr, overallEnd))
+        if (sp.ptr + sp.len > cursor) cursor = sp.ptr + sp.len
+    }
+    if (cursor < overallEnd) zeroGap(cursor, overallEnd)
+
+    // Names: blank removed INam entries; realign SNam to the surviving census.
+    const inames = (songsMeta && songsMeta.instNames) || []
+    for (let i = 0; i < removed.length; i++)
+        if (removed[i] < inames.length) inames[removed[i]] = ''
+    while (inames.length && !inames[inames.length - 1]) inames.pop()
+    if (songsMeta) {
+        const snames = keep.map((sp) => oldNameByKey[sp.key] || '')
+        while (snames.length && !snames[snames.length - 1]) snames.pop()
+        songsMeta.sampleNames = snames
+    }
+
+    refreshSamplesCache()
+    refreshInstrumentsCache()
+    clampSamplesCursor()
+    clampInstrumentsCursor()
+    if (HUB.markUnsaved) HUB.markUnsaved()
+    return { removedInsts: removed.length, freedBytes: freedBytes, keptSamples: keep.length }
+}
+
 function auditionNoteFor(slot, note) {
     if (slot < 1 || slot >= TAUT_INST_TOTAL) return -1
     const rec = readInstRecord(slot)
@@ -2718,15 +2842,120 @@ function editorModalLoop(onKey, onTick) {
     }
 }
 
+// ── Sample DSP (ports of the web app's sampledsp.js) ────────────────────────
+// Length-preserving pure functions over U8 PCM spans (centre 0x80): take a
+// Uint8Array, return a NEW one of the same length. Length-changing edits
+// (trim, resample) stay out of scope — they'd ripple every pool pointer.
+
+/** Peak-normalise to full scale (max deviation from centre → 127). */
+function dspNormalise(bytes) {
+    let maxDev = 0
+    for (let i = 0; i < bytes.length; i++) {
+        const d = Math.abs(bytes[i] - 128)
+        if (d > maxDev) maxDev = d
+    }
+    const out = new Uint8Array(bytes.length)
+    if (maxDev === 0) { out.set(bytes); return out }
+    const scale = 127 / maxDev
+    for (let i = 0; i < bytes.length; i++)
+        out[i] = Math.max(0, Math.min(255, Math.round(128 + (bytes[i] - 128) * scale)))
+    return out
+}
+
+/** Linear fade from silence into full level across the span. */
+function dspFadeIn(bytes) {
+    const out = new Uint8Array(bytes.length)
+    const n = Math.max(1, bytes.length - 1)
+    for (let i = 0; i < bytes.length; i++)
+        out[i] = Math.round(128 + (bytes[i] - 128) * (i / n))
+    return out
+}
+
+/** Linear fade from full level out to silence across the span. */
+function dspFadeOut(bytes) {
+    const out = new Uint8Array(bytes.length)
+    const n = Math.max(1, bytes.length - 1)
+    for (let i = 0; i < bytes.length; i++)
+        out[i] = Math.round(128 + (bytes[i] - 128) * (1 - i / n))
+    return out
+}
+
+/** Reverse the span (loop points are NOT remapped). */
+function dspReverse(bytes) {
+    const out = new Uint8Array(bytes.length)
+    for (let i = 0; i < bytes.length; i++) out[i] = bytes[bytes.length - 1 - i]
+    return out
+}
+
+/** Polarity swap: reflect every sample about the 0x80 DC centre. */
+function dspInvert(bytes) {
+    const out = new Uint8Array(bytes.length)
+    for (let i = 0; i < bytes.length; i++)
+        out[i] = Math.max(0, Math.min(255, 256 - bytes[i]))
+    return out
+}
+
+/** Remove DC offset (item 68): shift the whole span so its mean sits at the
+ *  0x80 centre. A pure bias shift — the waveform shape is untouched except
+ *  where clamping bites on an extreme offset. */
+function dspRemoveDC(bytes) {
+    const out = new Uint8Array(bytes.length)
+    if (bytes.length === 0) return out
+    let sum = 0
+    for (let i = 0; i < bytes.length; i++) sum += bytes[i]
+    const bias = Math.round(sum / bytes.length) - 128
+    for (let i = 0; i < bytes.length; i++)
+        out[i] = Math.max(0, Math.min(255, bytes[i] - bias))
+    return out
+}
+
+// Read / write a pool span straight out of / into the banked sample window
+// (same addressing as drawSampleWaveform's readByte). Writes are heard
+// immediately — the engine mixes from this memory — and persist through the
+// device-capture save path.
+function readSampleSpan(ptr, len) {
+    const memBase = audio.getMemAddr()
+    const prevBank = audio.getSampleBank() || 0
+    let curBank = -1
+    const out = new Uint8Array(len)
+    for (let i = 0; i < len; i++) {
+        const abs = ptr + i
+        const bank = (abs / TAUT_SBANK_SIZE) | 0
+        if (bank !== curBank) { audio.setSampleBank(bank); curBank = bank }
+        out[i] = sys.peek(memBase - (abs - bank * TAUT_SBANK_SIZE)) & 0xFF
+    }
+    audio.setSampleBank(prevBank)
+    return out
+}
+
+function writeSampleSpan(ptr, bytes) {
+    const memBase = audio.getMemAddr()
+    const prevBank = audio.getSampleBank() || 0
+    let curBank = -1
+    for (let i = 0; i < bytes.length; i++) {
+        const abs = ptr + i
+        const bank = (abs / TAUT_SBANK_SIZE) | 0
+        if (bank !== curBank) { audio.setSampleBank(bank); curBank = bank }
+        sys.poke(memBase - (abs - bank * TAUT_SBANK_SIZE), bytes[i] & 0xFF)
+    }
+    audio.setSampleBank(prevBank)
+}
+
+// Tools with a `fn` apply that DSP to the sample's pool span in place; the
+// rest are still placeholders (Load/Save/Draw/Crop/Resample need the full
+// editor port).
 const SMP_EDIT_TOOLS = [
     { key: 'L', label: 'Load .raw / .wav from disk' },
     { key: 'S', label: 'Save current sample to disk' },
-    { key: 'D', label: 'Draw waveform freehand' },
+    { key: 'D', label: 'Draw waveform freehand (toggle)' },
     { key: 'X', label: 'Crop / trim selection' },
     { key: 'R', label: 'Resample' },
-    { key: 'V', label: 'Reverse' },
-    { key: 'N', label: 'Normalise to peak' },
-    { key: 'F', label: 'Fade in / out' },
+    { key: 'V', label: 'Reverse',           fn: dspReverse },
+    { key: 'N', label: 'Normalise to peak', fn: dspNormalise },
+    { key: 'F', label: 'Fade in',           fn: dspFadeIn },
+    { key: 'G', label: 'Fade out',          fn: dspFadeOut },
+    { key: 'I', label: 'Invert (polarity)', fn: dspInvert },
+    { key: 'O', label: 'Remove DC offset',  fn: dspRemoveDC },
 ]
 
 function openSampleEdit(slot) {
@@ -2734,6 +2963,65 @@ function openSampleEdit(slot) {
     const Y = PTNVIEW_OFFSET_Y
     const cStatus = 253, cContent = 240, cHdr = 230, cEmph = 211, cDim = 246, cBack = 255, cSel = 41
     let toolCursor = 0
+    let drawMode = false
+
+    const s = (samplesCache && samplesCache[SAMPLE_IDX]) || null
+
+    // ── waveform pane (bottom strip; buffer-backed so repaints are cheap) ──
+    const WAVE_ROW0 = Y + 4 + 3 + SMP_EDIT_TOOLS.length + 1          // first text row of the pane
+    const WAVE_ROWS = Math.max(3, SCRH - 2 - WAVE_ROW0)
+    const wx0 = 2 * CELL_PW, wW = (SCRW - 4) * CELL_PW
+    const wy0 = (WAVE_ROW0 - 1) * CELL_PH, wH = WAVE_ROWS * CELL_PH
+    let wave = null                                                   // Uint8Array copy of the pool span
+    const refreshWave = () => { wave = (s && s.len > 0) ? readSampleSpan(s.ptr, s.len) : null }
+    const yOf = (v) => wy0 + (((wH - 1) * (255 - v)) / 255 | 0)
+    const baseY = wy0 + (wH >>> 1)
+
+    // Repaint waveform pixel columns [colA..colB] (inclusive) from the buffer.
+    const paintWave = (colA, colB) => {
+        if (!wave) return
+        if (colA === undefined) { colA = 0; colB = wW - 1 }
+        colA = Math.max(0, colA); colB = Math.min(wW - 1, colB)
+        for (let col = colA; col <= colB; col++) {
+            graphics.plotRect(wx0 + col, wy0, 1, wH, 255)             // clear column (transparent)
+            const start = (col * wave.length / wW) | 0
+            let end = (((col + 1) * wave.length / wW) | 0)
+            if (end <= start) end = start + 1
+            let mn = 255, mx = 0
+            for (let i = start; i < end && i < wave.length; i++) {
+                const v = wave[i]
+                if (v < mn) mn = v
+                if (v > mx) mx = v
+            }
+            const yTop = yOf(mx), yBot = yOf(mn)
+            graphics.plotRect(wx0 + col, baseY, 1, 1, colSmpWaveMid)  // zero line under the wave
+            graphics.plotRect(wx0 + col, yTop, 1, Math.max(1, yBot - yTop + 1), colSmpWaveLine)
+        }
+    }
+
+    // ── freehand draw ('D' tool, web item 53's painter): drag on the pane ──
+    // Pixel → sample index/value; consecutive events are linearly interpolated
+    // and each stroke segment is committed straight to the pool span (heard
+    // live; persists through the device-capture save).
+    let lastDraw = null
+    const drawAt = (px, py) => {
+        if (!wave || !drawMode) return
+        const col = Math.max(0, Math.min(wW - 1, px - wx0))
+        const i = Math.max(0, Math.min(wave.length - 1, (col * wave.length / wW) | 0))
+        const v = Math.max(0, Math.min(255, 255 - (((py - wy0) * 255) / (wH - 1) | 0)))
+        const from = lastDraw || { i: i, v: v }
+        const lo = Math.min(from.i, i), hi = Math.max(from.i, i)
+        for (let k = lo; k <= hi; k++) {
+            const t = (hi === lo) ? 0 : (k - lo) / (hi - lo)
+            wave[k] = Math.round(from.i <= i ? from.v + (v - from.v) * t
+                                             : v + (from.v - v) * t) & 0xFF
+        }
+        writeSampleSpan(s.ptr + lo, wave.subarray(lo, hi + 1))
+        lastDraw = { i: i, v: v }
+        if (HUB.markUnsaved) HUB.markUnsaved()
+        const colOf = (idx) => (idx * wW / wave.length) | 0
+        paintWave(colOf(lo) - 1, colOf(hi) + 1)
+    }
 
     const drawTools = () => {
         const x = 5, y0 = Y + 4
@@ -2744,14 +3032,34 @@ function openSampleEdit(slot) {
             con.move(y, x); con.color_pair(cHdr, back); print(' ' + t.key + ' ')
             con.color_pair(cStatus, back); print('  ')
             con.color_pair(sel ? cEmph : cStatus, back)
+            let label = t.label
+            if (t.key === 'D') label += drawMode ? '  [ON]' : ''
             const w = SCRW - x - 6
-            print(t.label.length > w ? t.label.substring(0, w) : t.label.padEnd(w))
+            print(label.length > w ? label.substring(0, w) : label.padEnd(w))
         }
     }
-    const flashAction = (idx) => {
+    const flash = (msg) => {
+        con.move(WAVE_ROW0 - 1, 5); con.color_pair(cEmph, cBack)
+        print(msg.padEnd(SCRW - 8))
+    }
+    // Apply a tool: DSP tools rewrite the sample's pool span in place (heard
+    // immediately; persists through the device-capture save); 'D' toggles the
+    // freehand draw mode; the rest are placeholders until the full editor port.
+    const runAction = (idx) => {
         const t = SMP_EDIT_TOOLS[idx]; if (!t) return
-        con.move(SCRH - 2, 5); con.color_pair(cEmph, cBack)
-        print(('Action: ' + t.label + ' (stub, no-op)').padEnd(SCRW - 8))
+        if (t.key === 'D') {
+            drawMode = !drawMode
+            drawTools()
+            flash(drawMode ? 'Draw mode ON: drag on the waveform below.' : 'Draw mode off.')
+            return
+        }
+        if (!t.fn) { flash('Action: ' + t.label + ' (not implemented yet)'); return }
+        if (!s || s.len === 0) { flash('No sample data to edit.'); return }
+        writeSampleSpan(s.ptr, t.fn(readSampleSpan(s.ptr, s.len)))
+        if (HUB.markUnsaved) HUB.markUnsaved()
+        refreshWave()
+        paintWave()
+        flash('Applied: ' + t.label)
     }
 
     // frame
@@ -2760,32 +3068,55 @@ function openSampleEdit(slot) {
     con.color_pair(cEmph, cBack); print('Sample ')
     con.color_pair(cStatus, cBack)
     print(SAMPLE_IDX >= 0 ? ('#' + (SAMPLE_IDX + 1).toString(16).toUpperCase().padStart(2, '0')) : '(none)')
-    con.move(Y + 2, 3); con.color_pair(cDim, cBack); print('stub editor - actions below are placeholders only.')
+    if (s) {
+        con.color_pair(cDim, cBack)
+        print('   ptr ' + s.ptr + '  len ' + s.len + (s.name ? '  "' + s.name + '"' : ''))
+    }
+    con.move(Y + 2, 3); con.color_pair(cDim, cBack); print('DSP actions apply to the pool sample in place; L/S/X/R are placeholders.')
     drawTools()
+    refreshWave()
+    paintWave()
     // hints
     con.move(SCRH, 1); con.color_pair(cStatus, cBack); print(' '.repeat(SCRW - 1))
     con.move(SCRH, 1)
     con.color_pair(cHdr, cBack); print('Up/Dn ');  con.color_pair(cStatus, cBack); print('Tool ')
     con.color_pair(cHdr, cBack); print('Enter ');   con.color_pair(cStatus, cBack); print('Apply ')
+    con.color_pair(cHdr, cBack); print('D ');       con.color_pair(cStatus, cBack); print('Draw ')
     con.color_pair(cHdr, cBack); print('Esc/Tab '); con.color_pair(cStatus, cBack); print('Back')
 
-    // No clickable regions of our own yet — clear the (now-covered) Samples-viewer
-    // regions so a click in the editor doesn't hit them; transport still works.
+    // Editor-owned mouse regions (the covered Samples-viewer regions are
+    // cleared so a click never hits them; transport stays live via the global
+    // regions). The waveform pane draws with pixel precision — the raw pixel
+    // coords ride in the event (ev[1]/ev[2], same source pixelToCell reads).
     HUB.clearPanelMouseRegions()
+    HUB.addPanelMouseRegion(1, WAVE_ROW0, SCRW, WAVE_ROWS, {
+        onClick: (cy, cx, btn, ev) => {
+            if (btn !== 1) return
+            lastDraw = null
+            drawAt(ev[1], ev[2])
+        },
+        onHover: (cy, cx, ev) => {
+            // continue the stroke while the button is held; otherwise arm a new one
+            if ((sys.peek(-37) & 0x01) !== 0) drawAt(ev[1], ev[2])
+            else lastDraw = null
+        },
+        onRelease: () => { lastDraw = null },
+    })
 
     editorModalLoop((ks, finish, first) => {
         if (ks === '<UP>')   { if (toolCursor > 0) toolCursor--; drawTools(); return }
         if (ks === '<DOWN>') { if (toolCursor < SMP_EDIT_TOOLS.length - 1) toolCursor++; drawTools(); return }
         if (!first) return                       // the rest are discrete; ignore key-repeat
-        if (ks === '\n') { flashAction(toolCursor); return }
+        if (ks === '\n') { runAction(toolCursor); return }
         for (let i = 0; i < SMP_EDIT_TOOLS.length; i++) {
             if (ks === SMP_EDIT_TOOLS[i].key.toLowerCase() || ks === SMP_EDIT_TOOLS[i].key) {
-                toolCursor = i; drawTools(); flashAction(i); return
+                toolCursor = i; drawTools(); runAction(i); return
             }
         }
     })
 
     // teardown: sample data may have changed -> rebuild + repaint the parent viewer.
+    graphics.plotRect(wx0 - 2, wy0 - 2, wW + 4, wH + 4, 255)   // clear the editor waveform pixels
     refreshSamplesCache()
     clampSamplesCursor()
     HUB.drawAll()
@@ -3413,7 +3744,7 @@ function openAdvancedInstEdit(slot) {
         registerInstrumentsMouse, registerSamplesMouse, sampleRamSummary,
         drawSlider, drawNumCapsule, runSliderDrag,
         getSelectedInstrumentSlot, buildMetaLayerChildSlots, buildPercussionSlots,
-        selectableInstrumentSlots, auditionNoteFor,
+        selectableInstrumentSlots, auditionNoteFor, housekeepBank,
     }
 }
 
