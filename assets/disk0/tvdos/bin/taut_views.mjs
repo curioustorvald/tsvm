@@ -773,6 +773,250 @@ function envTimeFromByte(b) {
     return (exp === 0) ? (mant / 256) : ((mant + 32) * Math.pow(2, exp - 9))
 }
 
+// ── Envelope node editing (web items M7/M8/36/37 port) ─────────────────────
+// The env tabs are editable: mouse-drag a node on the graph (2D — value from
+// Y, the PRECEDING segment's duration from X, minifloat-quantised) or use the
+// keyboard (',' '.' select node; '-'/'=' value; '[' ']' duration; 'n'/'x'
+// add/delete). The rightmost 1-ENV_TIME_FRAC of the plot stays empty so the
+// last node can always be grabbed and dragged further right to extend the
+// envelope (item 37). First edit of an inactive Pitch/Filter role CLAIMS the
+// slot (present bit 13 + role m-bit 7), same as the Present checkbox.
+const ENV_TIME_FRAC = 0.8
+let envSelNode   = 0
+let envSelKey    = ''      // "slot:tab" — selection resets when it changes
+let envDragState = null    // { idx } while a node drag is in progress
+
+// Nearest 3.5-minifloat byte for a duration in seconds (encode side of
+// envTimeFromByte; 256-entry nearest scan — plenty fast for UI use).
+let _mfSecs = null
+function minifloatFromSec(sec) {
+    if (!_mfSecs) { _mfSecs = new Array(256); for (let b = 0; b < 256; b++) _mfSecs[b] = envTimeFromByte(b) }
+    let best = 0, bestD = Infinity
+    for (let b = 0; b < 256; b++) {
+        const d = Math.abs(_mfSecs[b] - sec)
+        if (d < bestD) { bestD = d; best = b }
+    }
+    return best
+}
+
+function envLastIdx(env) { return (env.terminatorIdx >= 0) ? env.terminatorIdx : (env.nodes.length - 1) }
+
+// Cumulative node times (node 0 at t=0) + total span (min 1e-6 for the axis).
+function envTimes(env) {
+    const last = envLastIdx(env)
+    const xs = [0]
+    let acc = 0
+    for (let i = 1; i <= last; i++) { acc += env.nodes[i - 1].durSec; xs.push(acc) }
+    return { xs: xs, total: Math.max(acc, 1e-6), last: last }
+}
+
+// Claim an inactive Pitch/Filter role ahead of the first edit.
+function envClaimRoleIfNeeded(e, env) {
+    const role = (instSubTab === INST_TAB_FILT) ? 'filter' : (instSubTab === INST_TAB_PIT) ? 'pitch' : null
+    if (!role || env.present) return
+    const rec = readInstRecord(e.slot)
+    let lo = rec[env.loopOff], hi = rec[env.loopOff + 1] | (1 << 5)
+    if (role === 'filter') lo |= (1 << 7); else lo &= ~(1 << 7)
+    instWriteBytes(e.slot, [[env.loopOff, lo], [env.loopOff + 1, hi]])
+}
+
+// Raw 25-slot working copy of this envelope's node bytes (full bytes — value
+// writes preserve any bits outside the value mask).
+function envRawNodes(e, env) {
+    const rec = readInstRecord(e.slot)
+    const out = new Array(25)
+    for (let i = 0; i < 25; i++) out[i] = { v: rec[env.nodeBase + i * 2] & 0xFF, d: rec[env.nodeBase + i * 2 + 1] & 0xFF }
+    return out
+}
+function envCommitNodes(e, env, nodes) {
+    const pairs = []
+    for (let i = 0; i < 25; i++) {
+        pairs.push([env.nodeBase + i * 2, nodes[i].v])
+        pairs.push([env.nodeBase + i * 2 + 1, nodes[i].d])
+    }
+    envClaimRoleIfNeeded(e, env)
+    instWriteBytes(e.slot, pairs)
+    e.decoded = decodeInstFull(readInstRecord(e.slot))
+}
+
+// Insert a node after `sel`: split its segment (interior) or extend the tail
+// (the last node gains a 0.1 s span, a fresh terminator lands after it).
+function envAddNode(e, env, sel) {
+    const last = envLastIdx(env), active = last + 1
+    if (active >= 25) return false
+    const mask = env.valueMax
+    const nodes = envRawNodes(e, env)
+    if (sel >= active - 1) {
+        nodes[active - 1] = { v: nodes[active - 1].v, d: Math.max(1, minifloatFromSec(0.1)) }
+        nodes[active]     = { v: nodes[active - 1].v, d: 0 }
+        envSelNode = active
+    } else {
+        const totalS = envTimeFromByte(nodes[sel].d)
+        const halfB  = Math.max(1, minifloatFromSec(totalS / 2))
+        const midVal = Math.round(((nodes[sel].v & mask) + (nodes[sel + 1].v & mask)) / 2) & mask
+        for (let i = 24; i > sel + 1; i--) nodes[i] = nodes[i - 1]
+        nodes[sel]     = { v: nodes[sel].v, d: halfB }
+        nodes[sel + 1] = { v: midVal, d: Math.max(1, minifloatFromSec(Math.max(totalS - envTimeFromByte(halfB), 0))) }
+        envSelNode = sel + 1
+    }
+    envCommitNodes(e, env, nodes)
+    return true
+}
+
+// Delete node `sel` (node 0 is anchored at t=0). Interior: the removed
+// segment merges into the previous node so later timing is kept; deleting the
+// terminator truncates — the previous node becomes the terminator with its
+// value intact (deliberately NOT the web's shift, which could synthesise a
+// value-0 terminator and trip the Schism cut rule).
+function envRemoveNode(e, env, sel) {
+    const last = envLastIdx(env)
+    if (sel === 0 || last < 1 || sel > last) return false
+    const nodes = envRawNodes(e, env)
+    if (sel === last) {
+        nodes[sel - 1] = { v: nodes[sel - 1].v, d: 0 }
+    } else {
+        const merged = envTimeFromByte(nodes[sel - 1].d) + envTimeFromByte(nodes[sel].d)
+        nodes[sel - 1] = { v: nodes[sel - 1].v, d: Math.max(1, minifloatFromSec(merged)) }
+        for (let i = sel; i < 24; i++) nodes[i] = nodes[i + 1]
+        nodes[24] = { v: 0, d: 0 }
+    }
+    envSelNode = Math.max(0, sel - 1)
+    envCommitNodes(e, env, nodes)
+    return true
+}
+
+// Edit the loop or sustain RANGE (node indices) + its enable bit via a
+// dialog ('o' / 'p' on an env tab). Writes the LOOP/SUSTAIN word bytes with
+// every other bit preserved: enable = lo bit 5, end = lo bits 0..4, start =
+// hi bits 0..4 (carry / m / present bits untouched).
+function envRangeDialog(e, env, which) {
+    const isLoop = (which === 'loop')
+    const off = isLoop ? env.loopOff : env.sustOff
+    const res = win.showDialog({
+        title: (isLoop ? 'Envelope loop' : 'Envelope sustain') + ' (node indices)',
+        drawFrame: HUB.popups.popupDrawFrame, colours: HUB.popups.popupColours,
+        fields: [
+            { label: 'Enabled (0/1):', width: 3, maxLength: 1, initial: (isLoop ? env.loopEnable : env.sustEnable) ? '1' : '0' },
+            { label: 'Start node:',    width: 4, maxLength: 2, initial: '' + (isLoop ? env.loopStart : env.sustStart) },
+            { label: 'End node:',      width: 4, maxLength: 2, initial: '' + (isLoop ? env.loopEnd : env.sustEnd) },
+        ],
+        buttons: [{ label: 'OK', action: 'ok' }, { label: 'Cancel', action: 'cancel' }],
+    })
+    if (res.action === 'ok') {
+        const last = envLastIdx(env)
+        const en = (parseInt('' + res.values[0], 10) || 0) !== 0
+        let a = parseInt('' + res.values[1], 10); if (isNaN(a)) a = isLoop ? env.loopStart : env.sustStart
+        let b = parseInt('' + res.values[2], 10); if (isNaN(b)) b = isLoop ? env.loopEnd : env.sustEnd
+        a = Math.max(0, Math.min(last, a)); b = Math.max(0, Math.min(last, b))
+        if (b < a) { const t = a; a = b; b = t }
+        const rec = readInstRecord(e.slot)
+        envClaimRoleIfNeeded(e, env)
+        instWriteBytes(e.slot, [
+            [off,     (rec[off] & 0xC0) | (en ? 0x20 : 0) | (b & 0x1F)],
+            [off + 1, (rec[off + 1] & ~0x1F) | (a & 0x1F)],
+        ])
+        e.decoded = decodeInstFull(readInstRecord(e.slot))
+    }
+    drawInstrumentsContents()
+}
+
+// Apply one drag event to the grabbed node: value from Y; for idx>0 the X
+// position re-times the PRECEDING segment (node 0 is fixed at t=0). The frac
+// clamp reaches 1/ENV_TIME_FRAC so dragging into the right headroom extends
+// the envelope. Graph-only repaint while dragging; release repaints the tab.
+function envApplyDrag(e, px, py) {
+    if (!envDragState) return
+    const bundle = envBundleForCurrentTab(e)
+    if (!bundle) return
+    const env = bundle.env
+    const r = instEnvelopeRect()
+    const idx = envDragState.idx
+    const mask = env.valueMax
+    const value = Math.max(0, Math.min(mask, Math.round(((r.y + r.h - 1 - py) / (r.h - 1)) * mask)))
+    const rec = readInstRecord(e.slot)
+    const vOff = env.nodeBase + idx * 2
+    const pairs = [[vOff, (rec[vOff] & ~mask) | value]]
+    if (idx > 0) {
+        const t = envTimes(env)
+        const frac = Math.max(0, Math.min(1 / ENV_TIME_FRAC, (px - r.x) / ((r.w - 1) * ENV_TIME_FRAC)))
+        const seg = Math.max(frac * t.total - t.xs[idx - 1], 0)
+        pairs.push([env.nodeBase + (idx - 1) * 2 + 1, Math.max(1, minifloatFromSec(seg))])
+    }
+    envClaimRoleIfNeeded(e, env)
+    instWriteBytes(e.slot, pairs)
+    e.decoded = decodeInstFull(readInstRecord(e.slot))
+    const b2 = envBundleForCurrentTab(e)
+    clearInstrumentsEnvelopeArea()
+    drawEnvelopeGraph(b2.env, undefined, envSelNode)
+}
+
+// Mouse-down on the right pane, below the checkbox/slider hits: grab the
+// nearest env node (by x distance) on an env tab. Returns true when consumed.
+function envMouseDown(ev) {
+    const e = instrumentsCache ? instrumentsCache[instListCursor] : null
+    if (!e || e.decoded.isMeta || instSubTab < INST_TAB_VOL) return false
+    const bundle = envBundleForCurrentTab(e)
+    if (!bundle) return false
+    const env = bundle.env
+    const r = instEnvelopeRect()
+    const px = ev[1], py = ev[2]
+    if (py < r.y - 4 || py > r.y + r.h + 4) return false
+    const t = envTimes(env)
+    let best = -1, bestD = 8
+    for (let i = 0; i <= t.last; i++) {
+        const nx = r.x + (((t.xs[i] / t.total) * (r.w - 1) * ENV_TIME_FRAC) | 0)
+        const d = Math.abs(nx - px)
+        if (d < bestD) { bestD = d; best = i }
+    }
+    if (best < 0) return true            // in the graph area but no node: consume quietly
+    envSelNode = best
+    envDragState = { idx: best }
+    envApplyDrag(e, px, py)
+    return true
+}
+
+// Keyboard node editing on an env tab. Returns true when the key was consumed.
+function envHandleKey(e, env, ks) {
+    const last = envLastIdx(env)
+    if (envSelNode > last) envSelNode = last
+    const idx = envSelNode
+    const mask = env.valueMax
+    const bumpValue = (delta) => {
+        const rec = readInstRecord(e.slot)
+        const off = env.nodeBase + idx * 2
+        const nv = Math.max(0, Math.min(mask, (rec[off] & mask) + delta))
+        envClaimRoleIfNeeded(e, env)
+        instWriteBytes(e.slot, [[off, (rec[off] & ~mask) | nv]])
+        e.decoded = decodeInstFull(readInstRecord(e.slot))
+    }
+    const bumpDur = (delta) => {
+        if (idx === 0) return
+        const rec = readInstRecord(e.slot)
+        const off = env.nodeBase + (idx - 1) * 2 + 1
+        const nd = Math.max(1, Math.min(255, rec[off] + delta))
+        envClaimRoleIfNeeded(e, env)
+        instWriteBytes(e.slot, [[off, nd]])
+        e.decoded = decodeInstFull(readInstRecord(e.slot))
+    }
+    if (ks === 'o') { envRangeDialog(e, env, 'loop');    return true }
+    if (ks === 'p') { envRangeDialog(e, env, 'sustain'); return true }
+    if (ks === ',')      { envSelNode = Math.max(0, idx - 1) }
+    else if (ks === '.') { envSelNode = Math.min(last, idx + 1) }
+    else if (ks === '-') bumpValue(-1)
+    else if (ks === '=') bumpValue(1)
+    else if (ks === '_') bumpValue(-8)
+    else if (ks === '+') bumpValue(8)
+    else if (ks === '[') bumpDur(-1)
+    else if (ks === ']') bumpDur(1)
+    else if (ks === '{') bumpDur(-16)
+    else if (ks === '}') bumpDur(16)
+    else if (ks === 'n') { if (!envAddNode(e, env, idx)) return true }
+    else if (ks === 'x') { if (!envRemoveNode(e, env, idx)) return true }
+    else return false
+    drawInstrumentsContents()
+    return true
+}
+
 // Decode one of the three envelopes from the 256-byte instrument record. `kind`
 // selects the node array (vol/pan/pf) and the LOOP/SUSTAIN word locations.
 //   nodes: {value, durByte, durSec} array, truncated at the first dur=0 node
@@ -1910,7 +2154,7 @@ function envPlotLine(x0, y0, x1, y1, col) {
 //   • Polyline through all active nodes; each node a 3×3 marker.
 // Time axis: cumulative durSec across nodes, scaled to fit graph width.
 // Value axis: 0 at bottom, env.valueMax at top.
-function drawEnvelopeGraph(env, rectOverride) {
+function drawEnvelopeGraph(env, rectOverride, selIdx) {
     const r = rectOverride || instEnvelopeRect()
     if (!rectOverride) clearInstrumentsEnvelopeArea()  // clear (caller clears its own area when overriding)
 
@@ -1954,7 +2198,9 @@ function drawEnvelopeGraph(env, rectOverride) {
     const totalTime = Math.max(acc, 1e-6)
 
     const valueMax = env.valueMax || 0xFF
-    const pxX = (t) => r.x + Math.min(r.w - 1, Math.max(0, ((t / totalTime) * (r.w - 1)) | 0))
+    // Item 37: only ENV_TIME_FRAC of the width maps the time axis; the right
+    // headroom keeps the last node grabbable / extensible by drag.
+    const pxX = (t) => r.x + Math.min(r.w - 1, Math.max(0, ((t / totalTime) * (r.w - 1) * ENV_TIME_FRAC) | 0))
     const pxY = (v) => r.y + r.h - 1 - Math.min(r.h - 1, Math.max(0, ((v / valueMax) * (r.h - 1)) | 0))
 
     // Vertical time-grid hairlines. Same dashed style as the value-axis
@@ -1996,9 +2242,15 @@ function drawEnvelopeGraph(env, rectOverride) {
         envPlotLine(pxX(xs[i]), pxY(env.nodes[i].value),
                     pxX(xs[i + 1]), pxY(env.nodes[i + 1].value), colInstEnvLine)
     }
-    // Node markers (3×3 squares centred on the node coordinate).
+    // Node markers (3×3 squares centred on the node coordinate); the SELECTED
+    // node (editing cursor) gets a 5×5 bright halo.
     for (let i = 0; i <= lastIdx; i++) {
         const cx = pxX(xs[i]), cy = pxY(env.nodes[i].value)
+        graphics.plotRect(cx - 1, cy - 1, 3, 3, colInstEnvNode)
+    }
+    if (selIdx !== undefined && selIdx >= 0 && selIdx <= lastIdx) {
+        const cx = pxX(xs[selIdx]), cy = pxY(env.nodes[selIdx].value)
+        graphics.plotRect(cx - 2, cy - 2, 5, 5, 230)
         graphics.plotRect(cx - 1, cy - 1, 3, 3, colInstEnvNode)
     }
 }
@@ -2075,9 +2327,17 @@ function drawInstTabEnvelope(e, env, kindLabel, extraCb, role) {
     let totalSec = 0
     for (let i = 0; i < lastIdx; i++) totalSec += env.nodes[i].durSec
     const gridStep = pickEnvTimeGrid(Math.max(totalSec, 1e-6))
-    drawLabelRow(y++, '  Length:', totalSec.toFixed(3) + ' s   (grid ' + gridStep + ' s)')
+    // Editing cursor: reset the node selection when the inst/tab changed, clamp
+    // to the node count, and show the selected node's value + duration.
+    const selKey = e.slot + ':' + instSubTab
+    if (selKey !== envSelKey) { envSelKey = selKey; envSelNode = 0 }
+    if (envSelNode > lastIdx) envSelNode = lastIdx
+    const selN = env.nodes[envSelNode]
+    drawLabelRow(y++, '  Length:', totalSec.toFixed(3) + ' s  grid ' + gridStep + ' s'
+        + '  N' + envSelNode + ': v=' + (selN ? selN.value : 0)
+        + ' d=' + (selN ? selN.durSec.toFixed(3) : '0') + 's')
 
-    drawEnvelopeGraph(env)
+    drawEnvelopeGraph(env, undefined, envSelNode)
 }
 
 function drawInstTabVolume(e)  { drawInstTabEnvelope(e, e.decoded.volEnv, 'Volume', null) }
@@ -2236,6 +2496,17 @@ function instrumentsInput(wo, event) {
     if (keysym === '4') { instSubTab = INST_TAB_PAN;  drawInstrumentsContents(); return }
     if (keysym === '5') { instSubTab = INST_TAB_PIT;  drawInstrumentsContents(); return }
     if (keysym === '6') { instSubTab = INST_TAB_FILT; drawInstrumentsContents(); return }
+    // Envelope node editing on the env tabs (web M7/M8 port): ',' '.' select
+    // node, '-'/'=' value -/+1 ('_'/'+' -/+8), '[' ']' preceding-segment
+    // duration -/+1 ('{' '}' -/+16 — overriding the octave/inst steppers on
+    // these tabs), 'n' adds a node after the selection, 'x' deletes it.
+    if (keyJustHit && instSubTab >= INST_TAB_VOL) {
+        const selE = instrumentsCache[instListCursor]
+        if (selE && !selE.decoded.isMeta) {
+            const envB = envBundleForCurrentTab(selE)
+            if (envB && envHandleKey(selE, envB.env, keysym)) return
+        }
+    }
     // [ ] steps the jam octave, { } the current pattern instrument (web item 47.2).
     if (keyJustHit && (keysym === '[' || keysym === ']')) { if (HUB.stepJamOctave) HUB.stepJamOctave(keysym === ']' ? 1 : -1); return }
     if (keyJustHit && (keysym === '{' || keysym === '}')) { if (HUB.stepCurrentInstrument) HUB.stepCurrentInstrument(keysym === '}' ? 1 : -1); return }
@@ -2304,7 +2575,23 @@ function registerInstrumentsMouse() {
             const c = sliderCapsuleAt(cy, cx)
             if (c) { editSliderNumber(c); return }
             const s = sliderTroughAt(cy, cx)
-            if (s) runSliderDrag(s, ev)
+            if (s) { runSliderDrag(s, ev); return }
+            // Env tabs: grab + drag the nearest envelope node (2D edit).
+            envMouseDown(ev)
+        },
+        onHover: (cy, cx, ev) => {
+            // Continue an envelope-node drag while the button stays held.
+            if (!envDragState) return
+            if ((sys.peek(-37) & 0x01) === 0) {
+                envDragState = null
+                drawInstrumentsContents()
+                return
+            }
+            const e = instrumentsCache ? instrumentsCache[instListCursor] : null
+            if (e) envApplyDrag(e, ev[1], ev[2])
+        },
+        onRelease: () => {
+            if (envDragState) { envDragState = null; drawInstrumentsContents() }
         },
         onWheel: (cy, cx, dy) => {
             const s = sliderTroughAt(cy, cx) || sliderCapsuleAt(cy, cx)
@@ -2941,15 +3228,13 @@ function writeSampleSpan(ptr, bytes) {
     audio.setSampleBank(prevBank)
 }
 
-// Tools with a `fn` apply that DSP to the sample's pool span in place; the
-// rest are still placeholders (Load/Save/Draw/Crop/Resample need the full
-// editor port).
+// Tools with a `fn` apply that DSP to the sample's pool span in place; L/S
+// load/save the span from/to disk; D toggles the freehand draw. Everything is
+// length-preserving — crop/resample belongs to import time (future endeavour).
 const SMP_EDIT_TOOLS = [
-    { key: 'L', label: 'Load .raw / .wav from disk' },
-    { key: 'S', label: 'Save current sample to disk' },
+    { key: 'L', label: 'Load .wav / .raw from disk', io: 'load' },
+    { key: 'S', label: 'Save sample as .wav',        io: 'save' },
     { key: 'D', label: 'Draw waveform freehand (toggle)' },
-    { key: 'X', label: 'Crop / trim selection' },
-    { key: 'R', label: 'Resample' },
     { key: 'V', label: 'Reverse',           fn: dspReverse },
     { key: 'N', label: 'Normalise to peak', fn: dspNormalise },
     { key: 'F', label: 'Fade in',           fn: dspFadeIn },
@@ -2957,6 +3242,43 @@ const SMP_EDIT_TOOLS = [
     { key: 'I', label: 'Invert (polarity)', fn: dspInvert },
     { key: 'O', label: 'Remove DC offset',  fn: dspRemoveDC },
 ]
+
+// Decode a file into U8 PCM for the editor's Load tool: RIFF/WAVE (PCM 8- or
+// 16-bit, first channel) or, failing the RIFF magic, raw unsigned-8 bytes.
+// Returns { pcm, rate, note } or null (WAV present but unsupported codec).
+// The pool span's LENGTH is fixed — the caller truncates / centre-pads; any
+// crop/resample belongs to import time (a future endeavour), not this editor.
+function fileToU8Pcm(bytes) {
+    const n = bytes.length
+    const rd16 = (o) => (bytes[o] & 0xFF) | ((bytes[o + 1] & 0xFF) << 8)
+    const rd32 = (o) => rd16(o) | (rd16(o + 2) << 16)
+    const tag = (o) => String.fromCharCode(bytes[o] & 0xFF, bytes[o + 1] & 0xFF, bytes[o + 2] & 0xFF, bytes[o + 3] & 0xFF)
+    if (n >= 44 && tag(0) === 'RIFF' && tag(8) === 'WAVE') {
+        let o = 12, fmt = -1, data = -1, dataLen = 0
+        while (o + 8 <= n) {
+            const id = tag(o), sz = rd32(o + 4)
+            if (id === 'fmt ') fmt = o + 8
+            else if (id === 'data') { data = o + 8; dataLen = Math.min(sz, n - (o + 8)) }
+            o += 8 + sz + (sz & 1)
+        }
+        if (fmt < 0 || data < 0) return null
+        const audioFmt = rd16(fmt), ch = Math.max(1, rd16(fmt + 2))
+        const rate = rd32(fmt + 4), bits = rd16(fmt + 14)
+        if (audioFmt !== 1 || (bits !== 8 && bits !== 16)) return null
+        const bytesPerFrame = ch * (bits >> 3)
+        const frames = (dataLen / bytesPerFrame) | 0
+        const out = new Uint8Array(frames)
+        for (let i = 0; i < frames; i++) {
+            const so = data + i * bytesPerFrame
+            if (bits === 8) out[i] = bytes[so] & 0xFF
+            else { let v = rd16(so); if (v >= 0x8000) v -= 0x10000; out[i] = ((v >> 8) + 128) & 0xFF }
+        }
+        return { pcm: out, rate: rate, note: 'WAV ' + bits + '-bit ' + ch + 'ch @' + rate + 'Hz' }
+    }
+    const out = new Uint8Array(n)
+    for (let i = 0; i < n; i++) out[i] = bytes[i] & 0xFF
+    return { pcm: out, rate: 0, note: 'raw ' + n + 'B' }
+}
 
 function openSampleEdit(slot) {
     const SAMPLE_IDX = (slot !== undefined && slot >= 0) ? (slot | 0) : smpListCursor
@@ -3044,7 +3366,70 @@ function openSampleEdit(slot) {
     }
     // Apply a tool: DSP tools rewrite the sample's pool span in place (heard
     // immediately; persists through the device-capture save); 'D' toggles the
-    // freehand draw mode; the rest are placeholders until the full editor port.
+    // freehand draw mode; L/S go through the path dialog to disk.
+    // Path prompt for the Load / Save tools (full path incl. drive letter).
+    const pathDialog = (title, initial) => {
+        const res = win.showDialog({
+            title: title,
+            drawFrame: HUB.popups.popupDrawFrame, colours: HUB.popups.popupColours,
+            fields: [{ label: 'Path:', width: 36, maxLength: 120, initial: initial }],
+            buttons: [{ label: 'OK', action: 'ok' }, { label: 'Cancel', action: 'cancel' }],
+        })
+        return (res.action === 'ok') ? ('' + (res.values[0] || '')).trim() : null
+    }
+    const defaultDir = _G.shell.getCurrentDrive() + ':\\'
+    // Load a .wav/.raw INTO the fixed-length pool span: truncated when longer,
+    // silence-padded (0x80) when shorter. No rate conversion — the flash
+    // reports the file's own rate so a mismatch is visible.
+    const loadFromDisk = () => {
+        if (!s || s.len === 0) { flash('No sample span to load into.'); return }
+        const path = pathDialog('Load sample (.wav / .raw)', defaultDir)
+        drawEditorFrame()
+        if (!path) return
+        let bytes = null
+        try {
+            const fh = files.open(path)
+            if (fh.exists) { bytes = fh.bread(); fh.close() }
+        } catch (e2) { bytes = null }
+        if (!bytes || !bytes.length) { flash('Cannot read: ' + path); return }
+        const dec = fileToU8Pcm(bytes)
+        if (!dec) { flash('Unsupported WAV (PCM 8/16-bit only).'); return }
+        const span = new Uint8Array(s.len).fill(0x80)
+        const n = Math.min(dec.pcm.length, s.len)
+        for (let i = 0; i < n; i++) span[i] = dec.pcm[i]
+        writeSampleSpan(s.ptr, span)
+        if (HUB.markUnsaved) HUB.markUnsaved()
+        refreshWave(); paintWave()
+        flash('Loaded ' + dec.note +
+              (dec.pcm.length > s.len ? ' (truncated to ' + s.len + 'B)' :
+               dec.pcm.length < s.len ? ' (padded to ' + s.len + 'B)' : ''))
+    }
+    // Save the span as a PCM u8 mono .wav at the census rate.
+    const saveToDisk = () => {
+        if (!s || s.len === 0) { flash('No sample data to save.'); return }
+        const path = pathDialog('Save sample as .wav',
+            defaultDir + 'SAMPLE' + (SAMPLE_IDX + 1).toString(16).toUpperCase().padStart(2, '0') + '.WAV')
+        drawEditorFrame()
+        if (!path) return
+        const data = readSampleSpan(s.ptr, s.len)
+        const rate = s.c4Rate || 8363
+        const out = []
+        const w32 = (v) => out.push(v & 0xFF, (v >>> 8) & 0xFF, (v >>> 16) & 0xFF, (v >>> 24) & 0xFF)
+        const w16v = (v) => out.push(v & 0xFF, (v >>> 8) & 0xFF)
+        const str4 = (t2) => { for (let i = 0; i < 4; i++) out.push(t2.charCodeAt(i)) }
+        str4('RIFF'); w32(36 + s.len); str4('WAVE')
+        str4('fmt '); w32(16); w16v(1); w16v(1); w32(rate); w32(rate); w16v(1); w16v(8)
+        str4('data'); w32(s.len)
+        for (let i = 0; i < s.len; i++) out.push(data[i])
+        try {
+            const fh = files.open(path)
+            fh.bwrite(out)
+            fh.flush(); fh.close()
+            flash('Saved ' + s.len + 'B @' + rate + 'Hz -> ' + path)
+        } catch (e2) {
+            flash('Cannot write: ' + path)
+        }
+    }
     const runAction = (idx) => {
         const t = SMP_EDIT_TOOLS[idx]; if (!t) return
         if (t.key === 'D') {
@@ -3053,7 +3438,9 @@ function openSampleEdit(slot) {
             flash(drawMode ? 'Draw mode ON: drag on the waveform below.' : 'Draw mode off.')
             return
         }
-        if (!t.fn) { flash('Action: ' + t.label + ' (not implemented yet)'); return }
+        if (t.io === 'load') { loadFromDisk(); return }
+        if (t.io === 'save') { saveToDisk(); return }
+        if (!t.fn) return
         if (!s || s.len === 0) { flash('No sample data to edit.'); return }
         writeSampleSpan(s.ptr, t.fn(readSampleSpan(s.ptr, s.len)))
         if (HUB.markUnsaved) HUB.markUnsaved()
@@ -3062,27 +3449,29 @@ function openSampleEdit(slot) {
         flash('Applied: ' + t.label)
     }
 
-    // frame
-    for (let y = Y; y < SCRH; y++) { con.move(y, 1); con.color_pair(cContent, cBack); print(' '.repeat(SCRW)) }
-    con.move(Y + 1, 3); con.color_pair(cHdr, cBack); print('[ Sample Editor ]  ')
-    con.color_pair(cEmph, cBack); print('Sample ')
-    con.color_pair(cStatus, cBack)
-    print(SAMPLE_IDX >= 0 ? ('#' + (SAMPLE_IDX + 1).toString(16).toUpperCase().padStart(2, '0')) : '(none)')
-    if (s) {
-        con.color_pair(cDim, cBack)
-        print('   ptr ' + s.ptr + '  len ' + s.len + (s.name ? '  "' + s.name + '"' : ''))
+    // frame (also repainted after a Load/Save path dialog closes over it)
+    const drawEditorFrame = () => {
+        for (let y = Y; y < SCRH; y++) { con.move(y, 1); con.color_pair(cContent, cBack); print(' '.repeat(SCRW)) }
+        con.move(Y + 1, 3); con.color_pair(cHdr, cBack); print('[ Sample Editor ]  ')
+        con.color_pair(cEmph, cBack); print('Sample ')
+        con.color_pair(cStatus, cBack)
+        print(SAMPLE_IDX >= 0 ? ('#' + (SAMPLE_IDX + 1).toString(16).toUpperCase().padStart(2, '0')) : '(none)')
+        if (s) {
+            con.color_pair(cDim, cBack)
+            print('   ptr ' + s.ptr + '  len ' + s.len + (s.name ? '  "' + s.name + '"' : ''))
+        }
+        con.move(Y + 2, 3); con.color_pair(cDim, cBack); print('Edits apply to the pool sample in place (fixed length: load truncates/pads).')
+        drawTools()
+        refreshWave()
+        paintWave()
+        con.move(SCRH, 1); con.color_pair(cStatus, cBack); print(' '.repeat(SCRW - 1))
+        con.move(SCRH, 1)
+        con.color_pair(cHdr, cBack); print('Up/Dn ');  con.color_pair(cStatus, cBack); print('Tool ')
+        con.color_pair(cHdr, cBack); print('Enter ');   con.color_pair(cStatus, cBack); print('Apply ')
+        con.color_pair(cHdr, cBack); print('D ');       con.color_pair(cStatus, cBack); print('Draw ')
+        con.color_pair(cHdr, cBack); print('Esc/Tab '); con.color_pair(cStatus, cBack); print('Back')
     }
-    con.move(Y + 2, 3); con.color_pair(cDim, cBack); print('DSP actions apply to the pool sample in place; L/S/X/R are placeholders.')
-    drawTools()
-    refreshWave()
-    paintWave()
-    // hints
-    con.move(SCRH, 1); con.color_pair(cStatus, cBack); print(' '.repeat(SCRW - 1))
-    con.move(SCRH, 1)
-    con.color_pair(cHdr, cBack); print('Up/Dn ');  con.color_pair(cStatus, cBack); print('Tool ')
-    con.color_pair(cHdr, cBack); print('Enter ');   con.color_pair(cStatus, cBack); print('Apply ')
-    con.color_pair(cHdr, cBack); print('D ');       con.color_pair(cStatus, cBack); print('Draw ')
-    con.color_pair(cHdr, cBack); print('Esc/Tab '); con.color_pair(cStatus, cBack); print('Back')
+    drawEditorFrame()
 
     // Editor-owned mouse regions (the covered Samples-viewer regions are
     // cleared so a click never hits them; transport stays live via the global
@@ -3161,8 +3550,10 @@ function decodeIxmpPatches(slot) {
         if (hasPan) { panEnv    = patchEnvFromBlock(b, bp, 'pan'); bp += 54 }
         if (hasFil) { filterEnv = patchEnvFromBlock(b, bp, 'pf');  bp += 54 }
         if (hasPit) { pitchEnv  = patchEnvFromBlock(b, bp, 'pf2'); bp += 54 }
+        const raw = new Array(len)
+        for (let k = 0; k < len; k++) raw[k] = b[o + k] & 0xFF
         out.push({
-            kind: 'patch', ver,
+            kind: 'patch', ver, raw,
             pitchStart: u16(o+1), pitchEnd: u16(o+3), volStart: u8(o+5), volEnd: u8(o+6),
             ptr: u32(o+7), len: u16(o+11), playStart: u16(o+13), loopStart: u16(o+15), loopEnd: u16(o+17),
             rate: u16(o+19), detune: s16(o+21), loopMode: u8(o+23), pan: u8(o+24), noteVol: u8(o+25),
@@ -3171,6 +3562,41 @@ function decodeIxmpPatches(slot) {
             hasVol, hasPan, hasFil, hasPit, volEnv, panEnv, filterEnv, pitchEnv,
         })
         o += len
+    }
+    return out
+}
+
+// Inverse of decodeIxmpPatches (web writePatchesBlob's role): rebuilds the
+// flat on-wire patch bytes for uploadInstrumentPatches. Each patch keeps its
+// ORIGINAL raw bytes (x block + envelope blocks verbatim) and only the 30
+// common field bytes are re-stamped from the (possibly edited) fields — so
+// blocks we don't edit round-trip byte-exactly. A patch with no raw (newly
+// added) is a fresh 31-byte base-info record (ver $01).
+function encodeIxmpPatches(list) {
+    const out = []
+    for (let n = 0; n < list.length; n++) {
+        const p = list[n]
+        const start = out.length
+        if (p.raw && p.raw.length >= 31) {
+            for (let k = 0; k < p.raw.length; k++) out.push(p.raw[k] & 0xFF)
+        } else {
+            out.push(0x01)
+            for (let k = 1; k < 31; k++) out.push(0)
+        }
+        const o = start
+        const w16 = (off, v) => { out[o + off] = v & 0xFF; out[o + off + 1] = (v >>> 8) & 0xFF }
+        w16(1, p.pitchStart); w16(3, p.pitchEnd)
+        out[o + 5] = p.volStart & 0xFF; out[o + 6] = p.volEnd & 0xFF
+        out[o + 7] = p.ptr & 0xFF; out[o + 8] = (p.ptr >>> 8) & 0xFF
+        out[o + 9] = (p.ptr >>> 16) & 0xFF; out[o + 10] = (p.ptr >>> 24) & 0xFF
+        w16(11, p.len); w16(13, p.playStart); w16(15, p.loopStart); w16(17, p.loopEnd)
+        w16(19, p.rate); w16(21, p.detune & 0xFFFF)
+        out[o + 23] = p.loopMode & 0xFF
+        out[o + 24] = p.pan & 0xFF
+        out[o + 25] = p.noteVol & 0xFF
+        out[o + 26] = p.vibSpeed & 0xFF; out[o + 27] = p.vibSweep & 0xFF
+        out[o + 28] = p.vibDepth & 0xFF; out[o + 29] = p.vibRate & 0xFF
+        out[o + 30] = p.vibWave & 0xFF
     }
     return out
 }
@@ -3259,7 +3685,7 @@ function openAdvancedInstEdit(slot) {
     const isMeta = rec ? recordIsMeta(rec) : false
     const meta   = isMeta ? decodeMetaRecord(rec) : null
     const base   = (rec && !isMeta) ? decodeInstFull(rec) : null
-    const patches = (rec && !isMeta) ? decodeIxmpPatches(SLOT) : null
+    let patches = (rec && !isMeta) ? decodeIxmpPatches(SLOT) : null
     const noApi  = (!isMeta && patches === null)
     const baseEnvs = base ? [base.volEnv, base.panEnv, base.filterEnv, base.pitchEnv] : [null, null, null, null]
 
@@ -3292,7 +3718,28 @@ function openAdvancedInstEdit(slot) {
         ry0: MAP_Y + Math.round((63 - Math.min(63, z.volEnd))   / 63 * (MAP_H - 1)),
         ry1: MAP_Y + Math.round((63 - Math.max(0,  z.volStart)) / 63 * (MAP_H - 1)),
     })
-    const rects = zones.map((z) => z.kind === 'base' ? null : rectOf(z))
+    let rects = zones.map((z) => z.kind === 'base' ? null : rectOf(z))
+
+    // Rebuild zones/range/rects after a patch edit (the model consts above are
+    // built once at entry; edits re-run the same derivation).
+    function rebuildModel(nextSel) {
+        zones.length = 0
+        if (isMeta) {
+            meta.layers.forEach((L) => zones.push({ kind: 'layer', layer: L,
+                pitchStart: L.pitchStart, pitchEnd: L.pitchEnd, volStart: L.volStart, volEnd: L.volEnd }))
+        } else if (rec) {
+            (patches || []).forEach((p) => zones.push(p))
+            zones.push({ kind: 'base', pitchStart: 0, pitchEnd: 0xFFFF, volStart: 0, volEnd: 63 })
+        }
+        minP = Infinity; maxP = -Infinity
+        zones.forEach((z) => { if (z.kind !== 'base') { if (z.pitchStart < minP) minP = z.pitchStart; if (z.pitchEnd > maxP) maxP = z.pitchEnd } })
+        if (!isFinite(minP)) { minP = 0x1000; maxP = 0x9000 }
+        if (maxP <= minP) maxP = minP + 1
+        rects = zones.map((z) => z.kind === 'base' ? null : rectOf(z))
+        if (nextSel !== undefined) selIdx = nextSel
+        selIdx = Math.max(0, Math.min(selIdx, zones.length - 1))
+        clampList()
+    }
 
     // zone index covering a map cell (first matching non-base rect), or -1 = base
     const zoneAtCell = (col, row) => {
@@ -3323,6 +3770,248 @@ function openAdvancedInstEdit(slot) {
             if (e) return { env: e, src: 'patch' }
         }
         return baseEnvs[envKind] ? { env: baseEnvs[envKind], src: 'base' } : null
+    }
+
+    // ── patch editing (web 49b port; non-meta instruments) ────────────────────
+    // All edits stream through commitPatches: rebuild the on-wire blob, upload
+    // it to the device (persists via the capture save + is heard immediately),
+    // re-decode, rebuild the model and repaint. NOT undoable.
+    const dlgChrome = { drawFrame: HUB.popups.popupDrawFrame, colours: HUB.popups.popupColours }
+    const OKCANCEL = [{ label: 'OK', action: 'ok' }, { label: 'Cancel', action: 'cancel' }]
+    function numOf(str, radix, dflt) {
+        const n = parseInt(('' + (str == null ? '' : str)).trim(), radix)
+        return isNaN(n) ? dflt : n
+    }
+    function selPatch() {
+        const z = zones[selIdx]
+        return (z && z.kind === 'patch') ? z : null
+    }
+    function commitPatches(nextSel) {
+        audio.uploadInstrumentPatches(SLOT, encodeIxmpPatches(patches))
+        HUB.markUnsaved()
+        refreshSamplesCache()
+        patches = decodeIxmpPatches(SLOT) || []
+        rebuildModel(nextSel)
+        repaintAll()
+    }
+    // New patch seeded from the base record (full pitch/vol rect; pan $FF /
+    // noteVol 0 / vibWave $FF = the inherit sentinels the engine honours).
+    function addPatch() {
+        if (isMeta || !rec || noApi || !base) return
+        patches = patches || []
+        patches.push({
+            kind: 'patch', ver: 0x01, raw: null,
+            pitchStart: 0x0020, pitchEnd: 0xFFFF, volStart: 0, volEnd: 63,
+            ptr: base.samplePtr, len: base.sampleLen, playStart: base.playStart,
+            loopStart: base.sLoopStart, loopEnd: base.sLoopEnd,
+            rate: base.c4Rate, detune: 0, loopMode: base.sampleFlags & 0x07,
+            pan: 0xFF, noteVol: 0,
+            vibSpeed: 0, vibSweep: 0, vibDepth: 0, vibRate: 0, vibWave: 0xFF,
+            hasExtra: false, fadeoutStep: 0, filterSfMode: false,
+            extraCutoff: 0xFF, extraResonance: 0xFF, extraAtten: 0,
+            hasVol: false, hasPan: false, hasFil: false, hasPit: false,
+            volEnv: null, panEnv: null, filterEnv: null, pitchEnv: null,
+        })
+        commitPatches(patches.length - 1)
+    }
+    function duplicatePatch() {
+        const p = selPatch(); if (!p) return
+        const copy = {}
+        for (const k in p) copy[k] = p[k]
+        if (p.raw) copy.raw = p.raw.slice(0)
+        patches.splice(selIdx + 1, 0, copy)
+        commitPatches(selIdx + 1)
+    }
+    function deletePatch() {
+        const p = selPatch(); if (!p) return
+        const res = win.showDialog(Object.assign({
+            title: 'Delete patch',
+            message: ['Delete patch ' + selIdx.toString(16).toUpperCase() + '? This cannot be undone.'],
+            buttons: [{ label: 'Delete', action: 'ok' }, { label: 'Cancel', action: 'cancel', default: true }],
+        }, dlgChrome))
+        if (res.action === 'ok') { patches.splice(selIdx, 1); commitPatches(Math.max(0, selIdx - 1)) }
+        else repaintAll()
+    }
+    // Reorder — patch order IS the trigger match priority (first hit wins).
+    function movePatch(d) {
+        const p = selPatch(); if (!p) return
+        const j = selIdx + d
+        if (j < 0 || j >= patches.length) return
+        patches[selIdx] = patches[j]; patches[j] = p
+        commitPatches(j)
+    }
+    function editZoneRect() {
+        const p = selPatch(); if (!p) return
+        const res = win.showDialog(Object.assign({
+            title: 'Zone rectangle (hex)',
+            fields: [
+                { label: 'Pitch lo:',      width: 6, maxLength: 4, initial: p.pitchStart.toString(16).toUpperCase() },
+                { label: 'Pitch hi:',      width: 6, maxLength: 4, initial: p.pitchEnd.toString(16).toUpperCase() },
+                { label: 'Vol lo (0-3F):', width: 4, maxLength: 2, initial: p.volStart.toString(16).toUpperCase() },
+                { label: 'Vol hi (0-3F):', width: 4, maxLength: 2, initial: p.volEnd.toString(16).toUpperCase() },
+            ],
+            buttons: OKCANCEL,
+        }, dlgChrome))
+        if (res.action === 'ok') {
+            p.pitchStart = Math.min(0xFFFF, Math.max(0, numOf(res.values[0], 16, p.pitchStart)))
+            p.pitchEnd   = Math.min(0xFFFF, Math.max(0, numOf(res.values[1], 16, p.pitchEnd)))
+            p.volStart   = Math.min(63, Math.max(0, numOf(res.values[2], 16, p.volStart)))
+            p.volEnd     = Math.min(63, Math.max(0, numOf(res.values[3], 16, p.volEnd)))
+            commitPatches(selIdx)
+        } else repaintAll()
+    }
+    function editTuning() {
+        const p = selPatch(); if (!p) return
+        const res = win.showDialog(Object.assign({
+            title: 'Tuning / level',
+            message: ['Pan $FF and NoteVol $00 mean "inherit base".'],
+            fields: [
+                { label: 'Rate Hz (dec):',   width: 7, maxLength: 5, initial: '' + p.rate },
+                { label: 'Detune (dec):',    width: 8, maxLength: 6, initial: '' + p.detune },
+                { label: 'Pan (hex):',       width: 4, maxLength: 2, initial: p.pan.toString(16).toUpperCase() },
+                { label: 'NoteVol (hex):',   width: 4, maxLength: 2, initial: p.noteVol.toString(16).toUpperCase() },
+            ],
+            buttons: OKCANCEL,
+        }, dlgChrome))
+        if (res.action === 'ok') {
+            p.rate    = Math.min(65535, Math.max(1, numOf(res.values[0], 10, p.rate)))
+            p.detune  = Math.min(32767, Math.max(-32768, numOf(res.values[1], 10, p.detune)))
+            p.pan     = Math.min(255, Math.max(0, numOf(res.values[2], 16, p.pan)))
+            p.noteVol = Math.min(255, Math.max(0, numOf(res.values[3], 16, p.noteVol)))
+            commitPatches(selIdx)
+        } else repaintAll()
+    }
+    function editLoop() {
+        const p = selPatch(); if (!p) return
+        const res = win.showDialog(Object.assign({
+            title: 'Play / loop (frames, dec)',
+            fields: [
+                { label: 'Play start:', width: 7, maxLength: 5, initial: '' + p.playStart },
+                { label: 'Loop start:', width: 7, maxLength: 5, initial: '' + p.loopStart },
+                { label: 'Loop end:',   width: 7, maxLength: 5, initial: '' + p.loopEnd },
+                { label: 'Mode (0-7):', width: 3, maxLength: 1, initial: '' + (p.loopMode & 0x07) },
+            ],
+            buttons: OKCANCEL,
+        }, dlgChrome))
+        if (res.action === 'ok') {
+            p.playStart = Math.min(65535, Math.max(0, numOf(res.values[0], 10, p.playStart)))
+            p.loopStart = Math.min(65535, Math.max(0, numOf(res.values[1], 10, p.loopStart)))
+            p.loopEnd   = Math.min(65535, Math.max(0, numOf(res.values[2], 10, p.loopEnd)))
+            p.loopMode  = (p.loopMode & ~0x07) | (Math.min(7, Math.max(0, numOf(res.values[3], 10, p.loopMode & 0x07))))
+            commitPatches(selIdx)
+        } else repaintAll()
+    }
+    // Bind a pooled sample from the census; rate/playStart/loops follow it.
+    function bindSample() {
+        const p = selPatch(); if (!p) return
+        const list = samplesCache || []
+        if (list.length === 0) return
+        const items = list.map((sm, i) => ({
+            label: ' #' + (i + 1).toString(16).toUpperCase().padStart(2, '0') + ' '
+                 + (sm.name || '(unnamed)').substring(0, 18) + '  len ' + sm.len,
+            smp: sm,
+        }))
+        const res = win.showDialog(Object.assign({
+            title: 'Bind sample',
+            list: { items: items, height: Math.min(items.length, 14), width: 36, cursor: 0,
+                    scrollbarChars: HUB.popups.popupScrollbarChars },
+            buttons: OKCANCEL,
+        }, dlgChrome))
+        if (res.action === 'ok' && res.listItem) {
+            const sm = res.listItem.smp
+            p.ptr = sm.ptr; p.len = sm.len; p.rate = sm.c4Rate
+            p.playStart = sm.playStart; p.loopStart = sm.loopStart; p.loopEnd = sm.loopEnd
+            p.loopMode = sm.sampleFlags & 0x07
+            commitPatches(selIdx)
+        } else repaintAll()
+    }
+
+    // ── envelope overrides on patches (web 49b Note-7 behaviour) ──────────────
+    // 'O' on an env tab toggles the selected patch's own envelope block for
+    // that kind. Enabling COPIES the base envelope — for Filter/Pitch, the
+    // slot currently holding the role — and stamps present bit 13 (+ the role
+    // m-bit 7 for filter/pitch) per spec Note 7; disabling cuts the block.
+    // Node editing then works on the patch's own block with the same keys as
+    // the base tabs (',' '.' select, '-'/'=' value, '[' ']' duration).
+    const ENV_KIND_SPECS = [
+        { bit: 0x02, flag: 'hasVol', envProp: 'volEnv' },
+        { bit: 0x04, flag: 'hasPan', envProp: 'panEnv' },
+        { bit: 0x08, flag: 'hasFil', envProp: 'filterEnv' },
+        { bit: 0x10, flag: 'hasPit', envProp: 'pitchEnv' },
+    ]
+    let advEnvSel = 0
+    // Byte offset of kind `k`'s 54-byte block inside p.raw, or -1 when absent.
+    function patchBlockOff(p, k) {
+        let off = 31 + (p.hasExtra ? 15 : 0)
+        for (let i = 0; i < ENV_KIND_SPECS.length; i++) {
+            if (i === k) return p[ENV_KIND_SPECS[i].flag] ? off : -1
+            if (p[ENV_KIND_SPECS[i].flag]) off += 54
+        }
+        return -1
+    }
+    function toggleEnvOverride() {
+        const pz = selPatch()
+        if (!pz || envKind >= ENV_WAVE || !pz.raw || pz.raw.length < 31) return
+        const spec = ENV_KIND_SPECS[envKind]
+        // canonical insert position for this kind (blocks ride in v,p,f,P order)
+        let at = 31 + (pz.hasExtra ? 15 : 0)
+        for (let i = 0; i < envKind; i++) if (pz[ENV_KIND_SPECS[i].flag]) at += 54
+        if (pz[spec.flag]) {
+            pz.raw = pz.raw.slice(0, at).concat(pz.raw.slice(at + 54))
+            pz[spec.flag] = false
+            pz.raw[0] = pz.raw[0] & ~spec.bit
+        } else {
+            const baseEnv = baseEnvs[envKind]
+            if (!baseEnv) return
+            const rec2 = readInstRecord(SLOT)
+            const blk = new Array(54)
+            blk[0] = rec2[baseEnv.loopOff] & 0xFF
+            blk[1] = (rec2[baseEnv.loopOff + 1] | 0x20) & 0xFF      // present bit 13
+            if (envKind === 2) blk[0] |= 0x80                        // filter role m-bit
+            else if (envKind === 3) blk[0] &= ~0x80                  // pitch role m-bit clear
+            blk[2] = rec2[baseEnv.sustOff] & 0xFF
+            blk[3] = rec2[baseEnv.sustOff + 1] & 0xFF
+            for (let i = 0; i < 50; i++) blk[4 + i] = rec2[baseEnv.nodeBase + i] & 0xFF
+            pz.raw = pz.raw.slice(0, at).concat(blk, pz.raw.slice(at))
+            pz[spec.flag] = true
+            pz.raw[0] = pz.raw[0] | spec.bit
+        }
+        pz.ver = pz.raw[0]
+        advEnvSel = 0
+        commitPatches(selIdx)
+    }
+    // Keyboard node editing on the selected patch's OWN env block. Returns
+    // true when the key was consumed (base-sourced envs stay read-only here —
+    // edit those on the Instruments tabs).
+    function patchEnvEditKey(ks) {
+        if (envKind >= ENV_WAVE) return false
+        const pz = selPatch(); if (!pz) return false
+        const spec = ENV_KIND_SPECS[envKind]
+        if (!pz[spec.flag]) return false
+        const bOff = patchBlockOff(pz, envKind)
+        if (bOff < 0 || !pz.raw) return false
+        const envObj = pz[spec.envProp]
+        const last = envObj ? envLastIdx(envObj) : 0
+        if (advEnvSel > last) advEnvSel = last
+        if (ks === ',') { advEnvSel = Math.max(0, advEnvSel - 1); drawEnvGraph(); return true }
+        if (ks === '.') { advEnvSel = Math.min(last, advEnvSel + 1); drawEnvGraph(); return true }
+        const mask = (envKind === 0) ? 0x3F : 0xFF
+        const vOff = bOff + 4 + advEnvSel * 2
+        const dOff = bOff + 4 + (advEnvSel - 1) * 2 + 1
+        const raw = pz.raw
+        let touched = false
+        if (ks === '-' || ks === '=' || ks === '_' || ks === '+') {
+            const d = (ks === '=') ? 1 : (ks === '-') ? -1 : (ks === '+') ? 8 : -8
+            raw[vOff] = (raw[vOff] & ~mask) | Math.max(0, Math.min(mask, (raw[vOff] & mask) + d))
+            touched = true
+        } else if ((ks === '[' || ks === ']' || ks === '{' || ks === '}') && advEnvSel > 0) {
+            const d = (ks === ']') ? 1 : (ks === '[') ? -1 : (ks === '}') ? 16 : -16
+            raw[dOff] = Math.max(1, Math.min(255, raw[dOff] + d))
+            touched = true
+        }
+        if (!touched) return false
+        commitPatches(selIdx)
+        return true
     }
 
     // ── drawing ────────────────────────────────────────────────────────────────
@@ -3536,7 +4225,7 @@ function openAdvancedInstEdit(slot) {
         for (let i = 0; i < lastIdx; i++) totalSec += env.nodes[i].durSec
         con.move(ENV_INFO_Y, R_X); con.color_pair(cDim, cBack)
         print('Length ' + totalSec.toFixed(3) + ' s   grid ' + pickEnvTimeGrid(Math.max(totalSec, 1e-6)) + ' s')
-        drawEnvelopeGraph(sel.env, ENV_RECT)
+        drawEnvelopeGraph(sel.env, ENV_RECT, sel.src === 'patch' ? advEnvSel : undefined)
     }
     function drawEnvCursor() {
         // Compute the displayed env's playhead hairline column(s), then repaint only
@@ -3604,7 +4293,12 @@ function openAdvancedInstEdit(slot) {
         con.move(SCRH, 1)
         con.color_pair(cHdr, cBack); print('Up/Dn ');  con.color_pair(cStatus, cBack); print((isMeta ? 'Layer ' : 'Patch '))
         con.color_pair(cHdr, cBack); print(sym.panle + sym.panri + ' '); con.color_pair(cStatus, cBack); print('Tab ')
-        con.color_pair(cHdr, cBack); print(sym.playhead + ' '); con.color_pair(cStatus, cBack); print('voice  ')
+        if (!isMeta && rec && !noApi) {
+            con.color_pair(cHdr, cBack); print('N/C/X '); con.color_pair(cStatus, cBack); print('new/dup/del ')
+            con.color_pair(cHdr, cBack); print('K/J ');   con.color_pair(cStatus, cBack); print('order ')
+            con.color_pair(cHdr, cBack); print('E/T/L/S '); con.color_pair(cStatus, cBack); print('edit ')
+            con.color_pair(cHdr, cBack); print('O '); con.color_pair(cStatus, cBack); print('env ')
+        }
         con.color_pair(cHdr, cBack); print('Esc '); con.color_pair(cStatus, cBack); print('Back')
     }
 
@@ -3704,10 +4398,14 @@ function openAdvancedInstEdit(slot) {
     // when entered from a Vol/Pan/... tab; clearPanel only clears text, so those pixels
     // would linger. 255 = transparent.
     graphics.plotRect(0, (Y - 1) * CELL_PH, SCRW * CELL_PW, (SCRH - Y + 1) * CELL_PH, 255)
-    clearPanel(); clearEnvGraphics(); drawHeader(); drawList()
-    if (rec && !noApi || isMeta) drawMap()
-    else if (noApi) { con.move(MAP_Y, MAP_X); con.color_pair(cDim, cBack); print('(patch map unavailable on this host)') }
-    drawDetail(); drawEnvGraph(); drawHint()
+    function repaintAll() {
+        clearPanel(); clearEnvGraphics(); drawHeader(); drawList()
+        if (rec && !noApi || isMeta) drawMap()
+        else if (noApi) { con.move(MAP_Y, MAP_X); con.color_pair(cDim, cBack); print('(patch map unavailable on this host)') }
+        drawDetail(); drawEnvGraph(); drawHint()
+        liveSig = '~'
+    }
+    repaintAll()
     registerMouse()
 
     editorModalLoop((ks, finish, first, ev) => {
@@ -3723,6 +4421,24 @@ function openAdvancedInstEdit(slot) {
         if (!first) return
         if (ks === '<LEFT>')  { envKind = (envKind + ENV_TABS.length - 1) % ENV_TABS.length; drawEnvGraph(); liveSig = '~'; return }
         if (ks === '<RIGHT>') { envKind = (envKind + 1) % ENV_TABS.length; drawEnvGraph(); liveSig = '~'; return }
+        // ── patch editing (web 49b port; uppercase so the piano jam keeps the
+        // lowercase letters): N new, C duplicate, X delete, K/J reorder,
+        // E zone rect, T tuning/level, L play/loop, S bind sample, O toggles
+        // the env-kind override; ',' '.' / '-' '=' / '[' ']' edit the patch's
+        // OWN env nodes when the override is on. ──
+        if (!isMeta && rec && !noApi) {
+            if (ks === 'O') { toggleEnvOverride(); return }
+            if (patchEnvEditKey(ks)) return
+            if (ks === 'N') { addPatch(); return }
+            if (ks === 'C') { duplicatePatch(); return }
+            if (ks === 'X') { deletePatch(); return }
+            if (ks === 'K') { movePatch(-1); return }
+            if (ks === 'J') { movePatch(1); return }
+            if (ks === 'E') { editZoneRect(); return }
+            if (ks === 'T') { editTuning(); return }
+            if (ks === 'L') { editLoop(); return }
+            if (ks === 'S') { bindSample(); return }
+        }
     }, refreshLiveVoices)
 
     // Silence any lingering jam audition only when stopped; during playback there is none and

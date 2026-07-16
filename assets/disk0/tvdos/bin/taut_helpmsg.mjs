@@ -191,6 +191,29 @@ Multi-pane pattern editor: up to three patterns side by side, each pane with its
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+let helpInstruments = `<c>INSTRUMENTS VIEW</c>
+<c>\u00B7${'\u00B8'.repeat(16)}\u00B9</c>
+Left list selects the instrument (note jamming plays it); tabs Gen.1/Gen.2 hold sliders and checkboxes, Volume/Pan/Pitch/Filter hold the EDITABLE envelope graphs.
+
+<b>&nbsp;ENVELOPE EDITING</b>
+<b>\u00B7${'\u00B8'.repeat(16)}\u00B9</b>
+Drag a node on the graph with the mouse: vertical = value, horizontal = the preceding segment's duration (minifloat-quantised; node 0 is fixed at t=0). The rightmost fifth of the plot is headroom — drag the last node into it to extend the envelope. Keyboard:
+&bul;<b>,</b>&mdot;<b>.</b> : <O>selects the previous/next node</O>
+&bul;<b>-</b>&mdot;<b>=</b> : <O>node value down/up (<b>_</b>&mdot;<b>+</b> in steps of 8)</O>
+&bul;<b>[</b>&mdot;<b>]</b> : <O>preceding-segment duration down/up (<b>{</b>&mdot;<b>}</b> coarse)</O>
+&bul;<b>n</b> : <O>adds a node after the selection (splits the segment / extends the tail)</O>
+&bul;<b>x</b> : <O>deletes the selected node (node 0 stays; deleting the last one truncates)</O>
+&bul;<b>o</b> : <O>edits the envelope LOOP (enable + start/end node indices, dialog)</O>
+&bul;<b>p</b> : <O>edits the envelope SUSTAIN (enable + start/end node indices, dialog)</O>
+Editing an inactive Pitch/Filter envelope first CLAIMS its slot (Present + role bit) — same as ticking Present.
+
+<b>&nbsp;ADVANCED EDIT</b>
+<b>\u00B7${'\u00B8'.repeat(13)}\u00B9</b>
+Enter / <b>E</b> on an instrument opens the Ixmp patch editor: <b>N</b>/<b>C</b>/<b>X</b> new/duplicate/delete patch, <b>K</b>/<b>J</b> reorder (match priority), <b>E</b> zone rect, <b>T</b> tuning/level, <b>L</b> play/loop, <b>S</b> bind a pooled sample, <b>O</b> toggles the shown envelope kind's OVERRIDE on the patch (on = copies the base envelope; the same node keys then edit the patch's own copy).
+`
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 let helpProjectFlags = `<c>MIXER FLAGS</c>
 <c>\u00B7${'\u00B8'.repeat(11)}\u00B9</c>
 Mixer flags define how should the mixer behave.
@@ -230,7 +253,7 @@ function init(HUB) {
     /* Cues */[helpCues, helpCommon, helpNotation].join(HRULE),
     /* Patterns */[helpJam, helpPatterns, helpCommon, helpNotation].join(HRULE),
     /* Samples */[helpCommon, helpNotation].join(HRULE), // placeholder
-    /* Instruments */[helpCommon, helpNotation].join(HRULE), // placeholder
+    /* Instruments */[helpInstruments, helpCommon, helpNotation].join(HRULE),
     /* Project */[helpProjectFlags, helpCommon, helpNotation].join(HRULE), // placeholder
     /* File */[helpCommon, helpNotation].join(HRULE), // placeholder
 ]
