@@ -210,6 +210,7 @@ Editing an inactive Pitch/Filter envelope first CLAIMS its slot (Present + role 
 <b>&nbsp;ADVANCED EDIT</b>
 <b>\u00B7${'\u00B8'.repeat(13)}\u00B9</b>
 Enter / <b>E</b> on an instrument opens the Ixmp patch editor: <b>N</b>/<b>C</b>/<b>X</b> new/duplicate/delete patch, <b>K</b>/<b>J</b> reorder (match priority), <b>E</b> zone rect, <b>T</b> tuning/level, <b>L</b> play/loop, <b>S</b> bind a pooled sample, <b>O</b> toggles the shown envelope kind's OVERRIDE on the patch (on = copies the base envelope; the same node keys then edit the patch's own copy).
+On a METAINSTRUMENT the same keys edit its LAYERS instead: <b>N</b>/<b>C</b>/<b>X</b> new/duplicate/delete layer (new opens the child-instrument picker), <b>K</b>/<b>J</b> reorder (layer 0 is the foreground layer), <b>E</b> layer rect, <b>T</b> mix/detune (mix octet: 159 = 0 dB), <b>S</b> re-bind the child instrument, <b>G</b> toggles strict gating.
 `
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////

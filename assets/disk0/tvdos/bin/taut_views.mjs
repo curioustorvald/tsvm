@@ -3681,9 +3681,9 @@ function openAdvancedInstEdit(slot) {
     const ENV_TIMEFN = ['getVoiceEnvVolTime', 'getVoiceEnvPanTime', 'getVoiceEnvFilterTime', 'getVoiceEnvPitchTime']
 
     // ── model ─────────────────────────────────────────────────────────────────
-    const rec    = (SLOT >= 0) ? readInstRecord(SLOT) : null
+    let rec      = (SLOT >= 0) ? readInstRecord(SLOT) : null
     const isMeta = rec ? recordIsMeta(rec) : false
-    const meta   = isMeta ? decodeMetaRecord(rec) : null
+    let meta     = isMeta ? decodeMetaRecord(rec) : null
     const base   = (rec && !isMeta) ? decodeInstFull(rec) : null
     let patches = (rec && !isMeta) ? decodeIxmpPatches(SLOT) : null
     const noApi  = (!isMeta && patches === null)
@@ -4014,6 +4014,164 @@ function openAdvancedInstEdit(slot) {
         return true
     }
 
+    // ── meta LAYER editing (record bytes, not Ixmp) ────────────────────────────
+    // Layer edits rebuild the 256-byte record and go through uploadInstrument:
+    // the engine only re-parses metaLayers in loadRecord — per-byte pokes would
+    // update the raw window but leave the parsed layer table stale (the same
+    // gotcha the web's setMetaBytesOp exists for). Layers are 10-byte rows from
+    // byte 4; count in byte 1; the 10-bit child index splits low-8 / bits 8..9
+    // into volStart's bits 6..7. Max 25 layers. NOT undoable.
+    const META_MAX_LAYERS = 25
+    function selLayer() {
+        const z = zones[selIdx]
+        return (z && z.kind === 'layer') ? z.layer : null
+    }
+    function layersCopy() {
+        return meta.layers.map((L) => ({ instIdx: L.instIdx, mixOctet: L.mixOctet, detune: L.detune,
+            pitchStart: L.pitchStart, pitchEnd: L.pitchEnd, volStart: L.volStart, volEnd: L.volEnd }))
+    }
+    function commitLayers(layers, nextSel, flagsByte) {
+        const r2 = readInstRecord(SLOT)
+        const bytes = new Array(256)
+        for (let i = 0; i < 256; i++) bytes[i] = r2[i] & 0xFF
+        if (flagsByte !== undefined) bytes[0] = flagsByte & 0xFF
+        bytes[1] = layers.length & 0xFF
+        bytes[2] = 0xFF; bytes[3] = 0xFF
+        let o = 4
+        for (let i = 0; i < layers.length; i++) {
+            const L = layers[i]
+            bytes[o]     = L.instIdx & 0xFF
+            bytes[o + 1] = L.mixOctet & 0xFF
+            const det = L.detune & 0xFFFF
+            bytes[o + 2] = det & 0xFF; bytes[o + 3] = (det >>> 8) & 0xFF
+            bytes[o + 4] = L.pitchStart & 0xFF; bytes[o + 5] = (L.pitchStart >>> 8) & 0xFF
+            bytes[o + 6] = L.pitchEnd & 0xFF;   bytes[o + 7] = (L.pitchEnd >>> 8) & 0xFF
+            bytes[o + 8] = (L.volStart & 0x3F) | (((L.instIdx >>> 8) & 0x3) << 6)
+            bytes[o + 9] = L.volEnd & 0x3F
+            o += 10
+        }
+        audio.uploadInstrument(SLOT, bytes)
+        HUB.markUnsaved()
+        rec = readInstRecord(SLOT)
+        meta = decodeMetaRecord(rec)
+        refreshInstrumentsCache()
+        rebuildModel(nextSel)
+        repaintAll()
+    }
+    // Child-instrument picker: any non-meta census entry (incl. aux bin $100+).
+    function pickChildInstrument() {
+        const cache = instrumentsCache || []
+        const items = []
+        for (let i = 0; i < cache.length; i++) {
+            const e2 = cache[i]
+            if (e2.decoded.isMeta || e2.slot === SLOT) continue
+            items.push({ label: ' $' + e2.slot.toString(16).toUpperCase().padStart(2, '0')
+                              + ' ' + (e2.name || '').substring(0, 22), slot: e2.slot })
+        }
+        if (items.length === 0) return -1
+        const res = win.showDialog(Object.assign({
+            title: 'Layer instrument',
+            list: { items: items, height: Math.min(items.length, 14), width: 34, cursor: 0,
+                    scrollbarChars: HUB.popups.popupScrollbarChars },
+            buttons: OKCANCEL,
+        }, dlgChrome))
+        return (res.action === 'ok' && res.listItem) ? res.listItem.slot : -1
+    }
+    function addLayer() {
+        if (meta.layers.length >= META_MAX_LAYERS) return
+        const slot2 = pickChildInstrument()
+        if (slot2 < 0) { repaintAll(); return }
+        const layers = layersCopy()
+        layers.push({ instIdx: slot2, mixOctet: 159, detune: 0,
+                      pitchStart: 0x0020, pitchEnd: 0xFFFF, volStart: 0, volEnd: 63 })
+        commitLayers(layers, layers.length - 1)
+    }
+    function duplicateLayer() {
+        const L = selLayer(); if (!L) return
+        if (meta.layers.length >= META_MAX_LAYERS) return
+        const layers = layersCopy()
+        layers.splice(selIdx + 1, 0, { instIdx: L.instIdx, mixOctet: L.mixOctet, detune: L.detune,
+            pitchStart: L.pitchStart, pitchEnd: L.pitchEnd, volStart: L.volStart, volEnd: L.volEnd })
+        commitLayers(layers, selIdx + 1)
+    }
+    function deleteLayer() {
+        const L = selLayer(); if (!L) return
+        const res = win.showDialog(Object.assign({
+            title: 'Delete layer',
+            message: ['Delete layer ' + selIdx + ' (inst $' + L.instIdx.toString(16).toUpperCase() + ')?',
+                      'This cannot be undone.'],
+            buttons: [{ label: 'Delete', action: 'ok' }, { label: 'Cancel', action: 'cancel', default: true }],
+        }, dlgChrome))
+        if (res.action === 'ok') {
+            const layers = layersCopy()
+            layers.splice(selIdx, 1)
+            commitLayers(layers, Math.max(0, selIdx - 1))
+        } else repaintAll()
+    }
+    // Layer 0 is the FOREGROUND layer (the rest spawn as background children).
+    function moveLayer(d) {
+        const L = selLayer(); if (!L) return
+        const j = selIdx + d
+        if (j < 0 || j >= meta.layers.length) return
+        const layers = layersCopy()
+        const t2 = layers[selIdx]; layers[selIdx] = layers[j]; layers[j] = t2
+        commitLayers(layers, j)
+    }
+    function editLayerRect() {
+        const L = selLayer(); if (!L) return
+        const res = win.showDialog(Object.assign({
+            title: 'Layer rectangle (hex)',
+            fields: [
+                { label: 'Pitch lo:',      width: 6, maxLength: 4, initial: L.pitchStart.toString(16).toUpperCase() },
+                { label: 'Pitch hi:',      width: 6, maxLength: 4, initial: L.pitchEnd.toString(16).toUpperCase() },
+                { label: 'Vol lo (0-3F):', width: 4, maxLength: 2, initial: L.volStart.toString(16).toUpperCase() },
+                { label: 'Vol hi (0-3F):', width: 4, maxLength: 2, initial: L.volEnd.toString(16).toUpperCase() },
+            ],
+            buttons: OKCANCEL,
+        }, dlgChrome))
+        if (res.action === 'ok') {
+            const layers = layersCopy()
+            const T = layers[selIdx]
+            T.pitchStart = Math.min(0xFFFF, Math.max(0, numOf(res.values[0], 16, T.pitchStart)))
+            T.pitchEnd   = Math.min(0xFFFF, Math.max(0, numOf(res.values[1], 16, T.pitchEnd)))
+            T.volStart   = Math.min(63, Math.max(0, numOf(res.values[2], 16, T.volStart)))
+            T.volEnd     = Math.min(63, Math.max(0, numOf(res.values[3], 16, T.volEnd)))
+            commitLayers(layers, selIdx)
+        } else repaintAll()
+    }
+    function editLayerMix() {
+        const L = selLayer(); if (!L) return
+        const res = win.showDialog(Object.assign({
+            title: 'Layer mix / detune',
+            message: ['Mix is the PSO octet: 159 = 0 dB, lower = quieter.'],
+            fields: [
+                { label: 'Mix (0-255):',        width: 5, maxLength: 3, initial: '' + L.mixOctet },
+                { label: 'Detune (dec 4096T):', width: 8, maxLength: 6, initial: '' + L.detune },
+            ],
+            buttons: OKCANCEL,
+        }, dlgChrome))
+        if (res.action === 'ok') {
+            const layers = layersCopy()
+            const T = layers[selIdx]
+            T.mixOctet = Math.min(255, Math.max(0, numOf(res.values[0], 10, T.mixOctet)))
+            T.detune   = Math.min(32767, Math.max(-32768, numOf(res.values[1], 10, T.detune)))
+            commitLayers(layers, selIdx)
+        } else repaintAll()
+    }
+    function bindLayerInst() {
+        const L = selLayer(); if (!L) return
+        const slot2 = pickChildInstrument()
+        if (slot2 < 0) { repaintAll(); return }
+        const layers = layersCopy()
+        layers[selIdx].instIdx = slot2
+        commitLayers(layers, selIdx)
+    }
+    // Strict gating flag (byte 0 bit 0): a strict meta only sounds where a
+    // layer child's patches cover the note (terranmon Metainstrument def).
+    function toggleStrict() {
+        commitLayers(layersCopy(), selIdx, (rec[0] & 0xFF) ^ 0x01)
+    }
+
     // ── drawing ────────────────────────────────────────────────────────────────
     function clearPanel() {
         for (let y = Y; y < SCRH; y++) { con.move(y, 1); con.color_pair(cStatus, cBack); print(' '.repeat(SCRW)) }
@@ -4023,7 +4181,7 @@ function openAdvancedInstEdit(slot) {
         con.move(Y, LIST_X); con.color_pair(cHdr, cBack)
         let h = 'Advanced Edit'
         if (SLOT >= 0) h += '  Inst $' + SLOT.toString(16).toUpperCase().padStart(2,'0') + (nm ? ' "' + nm + '"' : '')
-        if (isMeta)      h += '  Metainstrument  ' + meta.layers.length + ' layers'
+        if (isMeta)      h += '  Metainstrument  ' + meta.layers.length + ' layers' + ((rec[0] & 0x01) ? ' [strict]' : '')
         else if (rec)    h += '  ' + (patches ? patches.length : 0) + ' patches'
         print(h.substring(0, SCRW - 1))
         // separator
@@ -4298,6 +4456,11 @@ function openAdvancedInstEdit(slot) {
             con.color_pair(cHdr, cBack); print('K/J ');   con.color_pair(cStatus, cBack); print('order ')
             con.color_pair(cHdr, cBack); print('E/T/L/S '); con.color_pair(cStatus, cBack); print('edit ')
             con.color_pair(cHdr, cBack); print('O '); con.color_pair(cStatus, cBack); print('env ')
+        } else if (isMeta && rec) {
+            con.color_pair(cHdr, cBack); print('N/C/X '); con.color_pair(cStatus, cBack); print('new/dup/del ')
+            con.color_pair(cHdr, cBack); print('K/J ');   con.color_pair(cStatus, cBack); print('order ')
+            con.color_pair(cHdr, cBack); print('E/T/S '); con.color_pair(cStatus, cBack); print('edit ')
+            con.color_pair(cHdr, cBack); print('G ');     con.color_pair(cStatus, cBack); print('strict ')
         }
         con.color_pair(cHdr, cBack); print('Esc '); con.color_pair(cStatus, cBack); print('Back')
     }
@@ -4438,6 +4601,20 @@ function openAdvancedInstEdit(slot) {
             if (ks === 'T') { editTuning(); return }
             if (ks === 'L') { editLoop(); return }
             if (ks === 'S') { bindSample(); return }
+        }
+        // ── meta LAYER editing: N new, C duplicate, X delete, K/J reorder
+        // (layer 0 = the foreground layer), E rect, T mix/detune, S bind the
+        // child instrument, G toggles strict gating. ──
+        if (isMeta && rec) {
+            if (ks === 'N') { addLayer(); return }
+            if (ks === 'C') { duplicateLayer(); return }
+            if (ks === 'X') { deleteLayer(); return }
+            if (ks === 'K') { moveLayer(-1); return }
+            if (ks === 'J') { moveLayer(1); return }
+            if (ks === 'E') { editLayerRect(); return }
+            if (ks === 'T') { editLayerMix(); return }
+            if (ks === 'S') { bindLayerInst(); return }
+            if (ks === 'G') { toggleStrict(); return }
         }
     }, refreshLiveVoices)
 
