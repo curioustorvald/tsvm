@@ -1358,6 +1358,276 @@ function housekeepBank(usedTop) {
     return { removedInsts: removed.length, freedBytes: freedBytes, keptSamples: keep.length }
 }
 
+// ── new metainstrument from existing instruments (web item 72) ──
+
+const META_MAX_LAYERS = 25
+
+// True when a slot holds nothing at all (no record bytes, no patches).
+function slotIsFree(slot) {
+    if (slot < 1 || slot >= TAUT_INST_TOTAL) return false
+    if (hasIxmpAPI && audio.getInstrumentPatchCount(slot) > 0) return false
+    const rec = readInstRecord(slot)
+    for (let i = 0; i < 256; i++) if (rec[i] !== 0) return false
+    return true
+}
+
+// Pack a 256-byte metainstrument record — the byte-inverse of decodeMetaRecord.
+// Layer 0 is the FOREGROUND layer; the rest spawn as background children.
+function buildMetaRecord(layers, flagsByte) {
+    const use = layers.slice(0, META_MAX_LAYERS)
+    const bytes = new Array(256).fill(0)
+    bytes[0] = (flagsByte || 0) & 0xFF
+    bytes[1] = use.length & 0xFF            // the CAPPED count — byte 1 must match
+                                            // the rows actually emitted below
+    bytes[2] = 0xFF; bytes[3] = 0xFF        // samplePtr high 16 = the meta sentinel
+    let o = 4
+    for (let i = 0; i < use.length; i++) {
+        const L = use[i]
+        const det = L.detune & 0xFFFF
+        bytes[o]     = L.instIdx & 0xFF
+        bytes[o + 1] = L.mixOctet & 0xFF
+        bytes[o + 2] = det & 0xFF; bytes[o + 3] = (det >>> 8) & 0xFF
+        bytes[o + 4] = L.pitchStart & 0xFF; bytes[o + 5] = (L.pitchStart >>> 8) & 0xFF
+        bytes[o + 6] = L.pitchEnd & 0xFF;   bytes[o + 7] = (L.pitchEnd >>> 8) & 0xFF
+        bytes[o + 8] = (L.volStart & 0x3F) | (((L.instIdx >>> 8) & 0x3) << 6)
+        bytes[o + 9] = L.volEnd & 0x3F
+        o += 10
+    }
+    return bytes
+}
+
+// Build a metainstrument out of instruments already in the bank (web item 72).
+// Each pick is COPIED into a free aux slot ($100+, which pattern cells can't
+// address) and the copies become the layers — the picked originals stay put,
+// still selectable and still valid in every pattern that plays them. Copies
+// share their source's sample pointers, so no pool bytes are spent and the
+// census (hence SNam) is unchanged. A pick must not itself be a metainstrument:
+// the engine resolves layers with triggerNote, which never re-enters the meta
+// branch, so metas can't nest. NOT undoable.
+// Returns { metaSlot, childSlots } or { error }.
+function createMetaFromInstruments(picks, name) {
+    if (!picks || picks.length === 0) return { error: 'No instruments selected.' }
+    if (picks.length > META_MAX_LAYERS)
+        return { error: 'At most ' + META_MAX_LAYERS + ' layers (' + picks.length + ' picked).' }
+    for (let i = 0; i < picks.length; i++)
+        if (recordIsMeta(readInstRecord(picks[i])))
+            return { error: 'A metainstrument cannot be layered inside another.' }
+
+    const taken = {}
+    let metaSlot = -1
+    for (let s = 1; s <= 255; s++) if (slotIsFree(s)) { metaSlot = s; break }
+    if (metaSlot < 0) return { error: 'No free instrument slots in $01-$FF.' }
+    taken[metaSlot] = true
+
+    const childSlots = []
+    const layers = []
+    let next = 256
+    for (let i = 0; i < picks.length; i++) {
+        while (next < TAUT_INST_TOTAL && (taken[next] || !slotIsFree(next))) next++
+        if (next >= TAUT_INST_TOTAL) return { error: 'No free sub-instrument slots ($100+).' }
+        const child = next
+        taken[child] = true
+        const src = readInstRecord(picks[i])
+        const bytes = new Array(256)
+        for (let k = 0; k < 256; k++) bytes[k] = src[k] & 0xFF
+        audio.uploadInstrument(child, bytes)
+        if (hasIxmpAPI && typeof audio.uploadInstrumentPatches === 'function' &&
+            audio.getInstrumentPatchCount(picks[i]) > 0) {
+            const blob = audio.getInstrumentPatches(picks[i])
+            const copy = new Array(blob.length)
+            for (let k = 0; k < blob.length; k++) copy[k] = blob[k] & 0xFF
+            audio.uploadInstrumentPatches(child, copy)
+        }
+        childSlots.push(child)
+        // Full-rect layer at unity mix, no detune: every layer sounds on every
+        // trigger until the user narrows it in Advanced Edit.
+        layers.push({ instIdx: child, mixOctet: 159, detune: 0,
+                      pitchStart: 0x0000, pitchEnd: 0xFFFF, volStart: 0, volEnd: 63 })
+    }
+    audio.uploadInstrument(metaSlot, buildMetaRecord(layers, 0))
+
+    // Names: the meta's own, and each copy inherits its source's so the layer
+    // table reads meaningfully.
+    if (songsMeta) {
+        const inames = songsMeta.instNames || (songsMeta.instNames = [])
+        const put = (slot, text) => {
+            while (inames.length <= slot) inames.push('')
+            inames[slot] = text || ''
+        }
+        for (let i = 0; i < picks.length; i++) put(childSlots[i], inames[picks[i]] || '')
+        put(metaSlot, name || '')
+    }
+    refreshSamplesCache()
+    refreshInstrumentsCache()
+    clampInstrumentsCursor()
+    if (HUB.invalidateMetaLayerFlags) HUB.invalidateMetaLayerFlags()
+    if (HUB.markUnsaved) HUB.markUnsaved()
+    return { metaSlot: metaSlot, childSlots: childSlots }
+}
+
+// ── renumber one instrument (web item 73) ──
+
+// Move instrument `from` to the free note-addressable slot `to` ($01-$FF;
+// occupied targets are refused rather than silently swapped). References that
+// are pure wiring follow automatically — the Ixmp blob, the INam entry and every
+// metainstrument layer pointing at `from`. Pattern cells are a musical choice
+// and are handled by the caller (HUB.remapPatternInstrument). NOT undoable.
+// Returns { ok: true } or { error }.
+function renumberInstrument(from, to) {
+    if (to < 1 || to > 255) return { error: 'An instrument number must be $01-$FF.' }
+    if (from === to) return { error: 'The instrument already has that number.' }
+    if (slotIsFree(from)) return { error: 'That instrument slot is empty.' }
+    if (!slotIsFree(to)) return { error: '$' + to.toString(16).toUpperCase().padStart(2, '0') + ' is already taken.' }
+
+    const src = readInstRecord(from)
+    const bytes = new Array(256)
+    for (let k = 0; k < 256; k++) bytes[k] = src[k] & 0xFF
+    audio.uploadInstrument(to, bytes)
+    audio.uploadInstrument(from, new Array(256).fill(0))
+
+    if (hasIxmpAPI && typeof audio.uploadInstrumentPatches === 'function' &&
+        audio.getInstrumentPatchCount(from) > 0) {
+        const blob = audio.getInstrumentPatches(from)
+        const copy = new Array(blob.length)
+        for (let k = 0; k < blob.length; k++) copy[k] = blob[k] & 0xFF
+        audio.uploadInstrumentPatches(to, copy)
+        audio.uploadInstrumentPatches(from, [])
+    }
+
+    // Metainstrument layers are raw record bytes, and the engine only re-parses
+    // them in loadRecord — so a pointing meta gets its WHOLE record re-uploaded
+    // (the same gotcha commitLayers exists for).
+    for (let s = 1; s < TAUT_INST_TOTAL; s++) {
+        if (s === from) continue
+        const rec = readInstRecord(s)
+        if (!recordIsMeta(rec)) continue
+        const layers = decodeMetaRecord(rec).layers
+        let hit = false
+        for (let i = 0; i < layers.length; i++)
+            if ((layers[i].instIdx & 0x3FF) === from) { layers[i].instIdx = to; hit = true }
+        if (hit) audio.uploadInstrument(s, buildMetaRecord(layers, rec[0]))
+    }
+
+    if (songsMeta) {
+        const inames = songsMeta.instNames || (songsMeta.instNames = [])
+        while (inames.length <= Math.max(from, to)) inames.push('')
+        inames[to] = inames[from] || ''
+        inames[from] = ''
+        while (inames.length && !inames[inames.length - 1]) inames.pop()
+    }
+    refreshSamplesCache()
+    refreshInstrumentsCache()
+    clampInstrumentsCursor()
+    if (HUB.invalidateMetaLayerFlags) HUB.invalidateMetaLayerFlags()
+    if (HUB.markUnsaved) HUB.markUnsaved()
+    return { ok: true }
+}
+
+// ── Ixmp patch cleanup (web item 74) ──
+
+// A patch that can never sound: an empty pitch/velocity range, or no sample.
+function patchIsDegenerate(p) {
+    return p.len <= 0 || p.pitchEnd < p.pitchStart || p.volEnd < p.volStart
+}
+
+// Is `p`'s rectangle fully covered by the union of the `earlier` (higher-priority)
+// patches? Patch order IS trigger-match priority — the engine takes the first hit —
+// so a fully-covered patch is unreachable. Exact test: compress every boundary
+// inside p onto a grid and check each cell has a coverer (pairwise containment
+// would miss rectangles that only cover p when COMBINED).
+function patchIsShadowed(p, earlier) {
+    const covers = []
+    for (let i = 0; i < earlier.length; i++) {
+        const q = earlier[i]
+        if (patchIsDegenerate(q)) continue
+        if (q.pitchStart <= p.pitchEnd && q.pitchEnd >= p.pitchStart &&
+            q.volStart <= p.volEnd && q.volEnd >= p.volStart) covers.push(q)
+    }
+    if (covers.length === 0) return false
+    const axis = (lo, hi, getStart, getEnd) => {
+        const seen = {}
+        const cuts = [lo]; seen[lo] = true
+        for (let i = 0; i < covers.length; i++) {
+            const s = getStart(covers[i]), e = getEnd(covers[i]) + 1
+            if (s > lo && s <= hi && !seen[s]) { seen[s] = true; cuts.push(s) }
+            if (e > lo && e <= hi && !seen[e]) { seen[e] = true; cuts.push(e) }
+        }
+        return cuts.sort((a, b) => a - b)
+    }
+    const xs = axis(p.pitchStart, p.pitchEnd, (q) => q.pitchStart, (q) => q.pitchEnd)
+    const ys = axis(p.volStart, p.volEnd, (q) => q.volStart, (q) => q.volEnd)
+    for (let i = 0; i < xs.length; i++) {
+        for (let j = 0; j < ys.length; j++) {
+            const x = xs[i], y = ys[j]
+            // (x, y) is a compressed cell's lowest corner: covering it covers the
+            // whole cell (no rectangle boundary runs through a cell's interior).
+            let hit = false
+            for (let k = 0; k < covers.length; k++) {
+                const q = covers[k]
+                if (x >= q.pitchStart && x <= q.pitchEnd && y >= q.volStart && y <= q.volEnd) { hit = true; break }
+            }
+            if (!hit) return false
+        }
+    }
+    return true
+}
+
+// Housekeeping: drop instrument patches that can never be triggered (web item
+// 74) — orphan blobs (the slot holds no record), degenerate rectangles, and
+// patches shadowed by higher-priority ones. Applies straight to the device and
+// realigns songsMeta SNam to the surviving census (ptr:len identity), like
+// housekeepBank. NOT undoable. Returns { removedPatches, removedBlobs, touched }.
+function housekeepIxmp() {
+    if (!hasIxmpAPI || typeof audio.uploadInstrumentPatches !== 'function') return null
+    refreshSamplesCache()
+    const oldNameByKey = {}
+    for (let i = 0; i < samplesCache.length; i++) {
+        const e = samplesCache[i]
+        oldNameByKey[e.ptr + ':' + e.len] = e.name || ''
+    }
+
+    let removedPatches = 0, removedBlobs = 0, touched = 0
+    for (let s = 1; s < TAUT_INST_TOTAL; s++) {
+        if (audio.getInstrumentPatchCount(s) <= 0) continue
+        const patches = decodeIxmpPatches(s)
+        if (!patches || patches.length === 0) continue
+        const rec = readInstRecord(s)
+        let empty = true
+        for (let k = 0; k < 256; k++) if (rec[k] !== 0) { empty = false; break }
+        if (empty) {                          // orphan blob: nothing can trigger it
+            audio.uploadInstrumentPatches(s, [])
+            removedPatches += patches.length
+            removedBlobs++
+            touched++
+            continue
+        }
+        const keep = []
+        for (let i = 0; i < patches.length; i++) {
+            const p = patches[i]
+            if (patchIsDegenerate(p) || patchIsShadowed(p, keep)) { removedPatches++; continue }
+            keep.push(p)
+        }
+        if (keep.length === patches.length) continue
+        audio.uploadInstrumentPatches(s, keep.length ? encodeIxmpPatches(keep) : [])
+        if (keep.length === 0) removedBlobs++
+        touched++
+    }
+    if (touched === 0) return { removedPatches: 0, removedBlobs: 0, touched: 0 }
+
+    // Dropped patches can drop sample spans out of the census — realign SNam.
+    refreshSamplesCache()
+    if (songsMeta) {
+        const snames = samplesCache.map((e) => oldNameByKey[e.ptr + ':' + e.len] || '')
+        while (snames.length && !snames[snames.length - 1]) snames.pop()
+        songsMeta.sampleNames = snames
+    }
+    refreshInstrumentsCache()
+    clampSamplesCursor()
+    clampInstrumentsCursor()
+    if (HUB.markUnsaved) HUB.markUnsaved()
+    return { removedPatches, removedBlobs, touched }
+}
+
 function auditionNoteFor(slot, note) {
     if (slot < 1 || slot >= TAUT_INST_TOTAL) return -1
     const rec = readInstRecord(slot)
@@ -2518,6 +2788,124 @@ function instrumentsInput(wo, event) {
         if (sel) openAdvancedInstEdit(sel.slot)
         return
     }
+    // Uppercase, so the lowercase piano jam keeps working: M = new
+    // metainstrument (web item 72), R = renumber this instrument (item 73).
+    if (keyJustHit && keysym === 'M') { openNewMetaPopup(); return }
+    if (keyJustHit && keysym === 'R') { if (sel) openRenumberPopup(sel.slot); return }
+}
+
+// New-metainstrument popup (web item 72): tick the instruments to layer, name
+// it, and createMetaFromInstruments copies each pick into a $100+ sub-slot.
+// Metainstruments are not offered — layers can't nest (see createMetaFromInstruments).
+function openNewMetaPopup() {
+    const chrome = { drawFrame: HUB.popups.popupDrawFrame, colours: HUB.popups.popupColours }
+    const cache = instrumentsCache || []
+    const childFlags = buildMetaLayerChildSlots()
+    const items = []
+    for (let i = 0; i < cache.length; i++) {
+        const e = cache[i]
+        if (e.slot > 255 || childFlags[e.slot] || e.decoded.isMeta) continue
+        items.push({ slot: e.slot, picked: false,
+                     label: '$' + e.slot.toString(16).toUpperCase().padStart(2, '0') +
+                            ' ' + (e.name || '').substring(0, 20) })
+    }
+    if (items.length === 0) {
+        win.showDialog(Object.assign({ title: 'New metainstrument',
+            message: ['No ordinary instruments to layer.'],
+            buttons: [{ label: 'OK', action: 'ok', default: true }] }, chrome))
+        return
+    }
+    const res = win.showDialog(Object.assign({
+        title: 'New metainstrument',
+        message: ['Picks are COPIED to $100+ and layered;', 'the originals stay in the list.'],
+        fields: [{ label: 'Name:', width: 22, initial: '' }],
+        list: {
+            items: items, height: Math.min(items.length, 10), width: 30,
+            drawWell: false, scrollbarChars: HUB.popups.popupScrollbarChars,
+            renderItem: (ctx) => {
+                const it = ctx.item
+                con.move(ctx.y, ctx.x)
+                const useBg = (ctx.isCursor && ctx.focused) ? colHighlight : C.colPopupBack
+                con.color_pair(it.picked ? colVoiceHdr : colWHITE, useBg)
+                const line = ' ' + (it.picked ? sym.ticked : sym.unticked) + ' ' + it.label
+                print(line.padEnd(ctx.w, ' ').substring(0, ctx.w))
+            },
+            // Space / click ticks a row; Enter commits through OK.
+            onActivate: (item, _idx, key) => {
+                if (key === ' ' || key === 'click') { item.picked = !item.picked; return null }
+                if (key === '\n') return 'ok'
+                return null
+            },
+        },
+        buttons: [{ label: 'Create', action: 'ok' }, { label: 'Cancel', action: 'cancel' }],
+    }, chrome))
+    if (res.action !== 'ok') return
+    const picks = items.filter((it) => it.picked).map((it) => it.slot)
+    const r = createMetaFromInstruments(picks, ('' + (res.values[0] || '')).trim())
+    const msg = r.error ? r.error
+        : 'Created meta $' + r.metaSlot.toString(16).toUpperCase().padStart(2, '0') +
+          ' with ' + r.childSlots.length + ' layer(s).'
+    if (!r.error) {
+        // Land on the new meta so Advanced Edit is one keypress away.
+        for (let i = 0; i < instrumentsCache.length; i++)
+            if (instrumentsCache[i].slot === r.metaSlot) { instListCursor = i; break }
+        clampInstrumentsCursor()
+    }
+    win.showDialog(Object.assign({ title: 'New metainstrument', message: [msg],
+        buttons: [{ label: 'OK', action: 'ok', default: true }] }, chrome))
+}
+
+// Renumber-instrument popup (web item 73): hex target + an opt-in tick for the
+// pattern cells (off by default — moving an instrument out from under its notes
+// is a musical decision, while the patches/name/layer wiring always follows).
+function openRenumberPopup(from) {
+    const chrome = { drawFrame: HUB.popups.popupDrawFrame, colours: HUB.popups.popupColours }
+    const hex2 = (v) => '$' + v.toString(16).toUpperCase().padStart(2, '0')
+    const refs = HUB.countPatternInstrument ? HUB.countPatternInstrument(from) : 0
+    const cellRow = { picked: false, label: 'Point ' + refs + ' pattern cell(s) at it' }
+    const res = win.showDialog(Object.assign({
+        title: 'Renumber instrument ' + hex2(from),
+        message: ['Patches, name and metainstrument', 'layers follow automatically.'],
+        fields: [{ label: 'New number (hex):', width: 4, maxLength: 2,
+                   initial: from.toString(16).toUpperCase().padStart(2, '0') }],
+        list: refs > 0 ? {
+            items: [cellRow], height: 1, width: 30, drawWell: false, showScrollbar: false,
+            scrollbarChars: HUB.popups.popupScrollbarChars,
+            renderItem: (ctx) => {
+                const it = ctx.item
+                con.move(ctx.y, ctx.x)
+                const useBg = (ctx.isCursor && ctx.focused) ? colHighlight : C.colPopupBack
+                con.color_pair(it.picked ? colVoiceHdr : colWHITE, useBg)
+                const line = ' ' + (it.picked ? sym.ticked : sym.unticked) + ' ' + it.label
+                print(line.padEnd(ctx.w, ' ').substring(0, ctx.w))
+            },
+            onActivate: (item, _idx, key) => {
+                if (key === ' ' || key === 'click') { item.picked = !item.picked; return null }
+                if (key === '\n') return 'ok'
+                return null
+            },
+        } : null,
+        buttons: [{ label: 'Renumber', action: 'ok' }, { label: 'Cancel', action: 'cancel' }],
+    }, chrome))
+    if (res.action !== 'ok') return
+    const to = parseInt(('' + (res.values[0] || '')).replace('$', '').trim(), 16)
+    let msg
+    if (!isFinite(to)) msg = 'That is not a hexadecimal number.'
+    else {
+        const r = renumberInstrument(from, to)
+        if (r.error) msg = r.error
+        else {
+            let moved = 0
+            if (cellRow.picked && HUB.remapPatternInstrument) moved = HUB.remapPatternInstrument(from, to)
+            msg = 'Moved ' + hex2(from) + ' to ' + hex2(to) +
+                  (moved ? '; ' + moved + ' pattern cell(s) followed.' : '.')
+            for (let i = 0; i < instrumentsCache.length; i++)
+                if (instrumentsCache[i].slot === to) { instListCursor = i; break }
+            clampInstrumentsCursor()
+        }
+    }
+    win.showDialog(Object.assign({ title: 'Renumber instrument', message: [msg],
+        buttons: [{ label: 'OK', action: 'ok', default: true }] }, chrome))
 }
 
 function registerInstrumentsMouse() {
@@ -4637,7 +5025,7 @@ function openAdvancedInstEdit(slot) {
         registerInstrumentsMouse, registerSamplesMouse, sampleRamSummary,
         drawSlider, drawNumCapsule, runSliderDrag,
         getSelectedInstrumentSlot, buildMetaLayerChildSlots, buildPercussionSlots,
-        selectableInstrumentSlots, auditionNoteFor, housekeepBank,
+        selectableInstrumentSlots, auditionNoteFor, housekeepBank, housekeepIxmp,
     }
 }
 

@@ -194,6 +194,8 @@ Multi-pane pattern editor: up to three patterns side by side, each pane with its
 let helpInstruments = `<c>INSTRUMENTS VIEW</c>
 <c>\u00B7${'\u00B8'.repeat(16)}\u00B9</c>
 Left list selects the instrument (note jamming plays it); tabs Gen.1/Gen.2 hold sliders and checkboxes, Volume/Pan/Pitch/Filter hold the EDITABLE envelope graphs.
+&bul;<b>M</b> : <O>builds a new METAINSTRUMENT out of the instruments you tick. Each pick is COPIED into a sub-instrument slot ($100+) and the copies become the layers, so the originals stay in the list and keep playing in any pattern that uses them. Narrow the layers in Advanced Edit.</O>
+&bul;<b>R</b> : <O>renumbers the selected instrument ($01-$FF; an occupied number is refused). Its patches, name and any metainstrument layer using it follow automatically; tick the box to point its pattern cells at the new number too.</O>
 
 <b>&nbsp;ENVELOPE EDITING</b>
 <b>\u00B7${'\u00B8'.repeat(16)}\u00B9</b>

@@ -1887,6 +1887,8 @@ function drawControlHint() {
         [`1${sym.doubledot}5`,'Jump tab'],
     ['sep'],
         ['E','Edit'],
+        ['M','New meta'],
+        ['R','Renumber'],
     ['sep'],
         ['tab','Panel'],
     ['sep'],
@@ -3694,6 +3696,7 @@ function openHousekeepingPopup() {
         { id: 'cleanPtn',  label: 'Cleanup patterns (drop unreferenced)' },
         { id: 'renumPtn',  label: 'Renumber patterns into play order' },
         { id: 'cleanBank', label: 'Cleanup instruments & samples' },
+        { id: 'cleanIxmp', label: 'Cleanup instrument patches' },
     ]
     const pick = win.showDialog(Object.assign({
         title: 'Housekeeping',
@@ -3730,6 +3733,15 @@ function openHousekeepingPopup() {
         msg = r ? `Removed ${r.removedInsts} instrument(s); freed ${r.freedBytes} sample byte(s); ${r.keptSamples} sample(s) kept.`
                 : 'Bank cleanup unavailable on this host.'
         invalidateMetaLayerFlags()
+        break
+    }
+    // Web item 74: patches no trigger can ever reach — orphan blobs, empty
+    // rectangles, and patches fully covered by a higher-priority patch.
+    case 'cleanIxmp': {
+        const r = (HUB.views && HUB.views.housekeepIxmp) ? HUB.views.housekeepIxmp() : null
+        if (!r) msg = 'Patch cleanup unavailable on this host.'
+        else if (r.removedPatches === 0) msg = 'No unreachable patches found.'
+        else msg = `Removed ${r.removedPatches} unreachable patch(es) across ${r.touched} instrument(s); ${r.removedBlobs} patch set(s) cleared.`
         break
     }
     }
@@ -4806,6 +4818,36 @@ HUB.tryJamFromEvent = function(event, instSlot) {
 // jam octave, { } the current pattern instrument.
 HUB.stepJamOctave         = (dir) => stepJamOctave(dir)
 HUB.stepCurrentInstrument = (dir) => stepCurrentInstrument(dir)
+
+// Instrument renumber (web item 73). The bank-side surgery lives in
+// taut_views.renumberInstrument; only taut.js owns the pattern data, so the
+// optional cell remap comes back through here.
+// A cell's instrument byte is 8-bit, so a sub-instrument ($100+) can never be
+// named by one — `slot` must NOT be masked down to its low byte and match an
+// unrelated $01-$FF instrument.
+HUB.invalidateMetaLayerFlags = invalidateMetaLayerFlags
+HUB.countPatternInstrument = (slot) => {
+    if (slot > 0xFF) return 0
+    let n = 0
+    for (let p = 0; p < song.numPats; p++) {
+        const ptn = song.patterns[p]
+        for (let r = 0; r < ROWS_PER_PAT; r++) if ((ptn[r*8 + 2] & 0xFF) === slot) n++
+    }
+    return n
+}
+HUB.remapPatternInstrument = (from, to) => {
+    if (from > 0xFF) return 0
+    let n = 0
+    for (let p = 0; p < song.numPats; p++) {
+        const ptn = song.patterns[p]
+        for (let r = 0; r < ROWS_PER_PAT; r++) {
+            const o = r*8 + 2
+            if ((ptn[o] & 0xFF) === from) { ptn[o] = to & 0xFF; n++ }
+        }
+    }
+    if (n > 0) { patternsOutOfSync = true; reuploadPatternsIfNeeded(); HUB.markUnsaved() }
+    return n
+}
 
 HUB.views = requireTaut("taut_views").init(HUB)
 const {
