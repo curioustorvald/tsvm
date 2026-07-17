@@ -216,11 +216,48 @@ const volFxNames = {
 999:"---",
 }
 
+// -- ProTracker pitch (notation index 1) --
+// The Amiga's grid is hardware-first: Paula divides a reference clock by an
+// integer period counter, so ProTracker ships a fixed TABLE of periods rather
+// than a tuning formula -- period = round(3579545 / (32 * freq)), which
+// reproduces PT's middle octave exactly. Integer rounding then leaves that
+// table only APPROXIMATELY octave-periodic: E-3 is period 170, not 339/2 =
+// 169.5, so it sounds 5.3 cents flat against its own octave (likewise D-3,
+// G-3, G#3 and B-1). No single period of a repeating lattice can express that,
+// so this preset uses the nota spec's other mode (terranmon.txt): interval 0 =
+// "not using an interval system (which means you are responsible for defining
+// every note expressible)". `table` is then the COMPLETE note list, held as
+// absolute offsets from `base` with no lattice to repeat.
+//
+// Octaves 1-3 are ProTracker's own table verbatim. Octaves 0 and 4 are the
+// de-facto FT2/OpenMPT extension -- NOT in ProTracker's source (PT clamps
+// periods to 113..856) -- carried so .mods written in modern trackers stay
+// on-grid.
+const PT_PERIODS = [
+    1712,1616,1524,1440,1356,1280,1208,1140,1076,1016,960,907, // oct 0 (ext)
+     856, 808, 762, 720, 678, 640, 604, 570, 538, 508,480,453, // oct 1
+     428, 404, 381, 360, 339, 320, 302, 285, 269, 254,240,226, // oct 2
+     214, 202, 190, 180, 170, 160, 151, 143, 135, 127,120,113, // oct 3
+     107, 101,  95,  90,  85,  80,  75,  71,  67,  63, 60, 56, // oct 4 (ext)
+]
+// mod2taud anchors PT period 428 (PT's own "C-2") to Taud C4, so a period's
+// pitch is 4096*log2(428/period) from C4. The base is the LOWEST note: period
+// 1712 = 4*428, i.e. exactly two octaves below C4 -- which keeps every offset
+// unsigned with table[0] = 0, the shape the nota spec's Uint16 table wants.
+// (ANCHOR_NOTE is declared further down, so spell 0x5000 - 2*0x1000 out here.)
+const PT_BASE = 0x3000
+const PT_SYM_12 = [`C${sym.accnull}`,`C${sym.sharp}`,`D${sym.accnull}`,`D${sym.sharp}`,`E${sym.accnull}`,`F${sym.accnull}`,`F${sym.sharp}`,`G${sym.accnull}`,`G${sym.sharp}`,`A${sym.accnull}`,`A${sym.sharp}`,`B${sym.accnull}`]
+const PT_TABLE = PT_PERIODS.map(p => Math.round(0x5000 + 4096 * Math.log2(428 / p)) - PT_BASE)
+const PT_SYM = PT_PERIODS.map((_, i) => PT_SYM_12[i % 12])
+
 const pitchTablePresets = {
 // index: pitch table number to be recorded on .taudproj file
 // t: type of the tuning. M - Macrotonal, m - microtonal, d - 12-tone
-    
+
 0:{index:0,name:"Raw format",table:[],interval:0x1000,t:'',sym:[]}, // when null is specified, hex numbers will be displayed instead
+/* Hardware period tables (interval 0: every note defined explicitly) */
+1:{index:1,name:"ProTracker pitch",table:PT_TABLE,interval:0,base:PT_BASE,t:'d',
+sym:PT_SYM},
 /* Xenharmonic, equal temperament */
 10:{index:10,name:"Octave only",table:[0x0],interval:0x1000,t:'M',
 sym:[`C${sym.accnull}`]},
@@ -376,6 +413,39 @@ function composeNote(periodIdx, offset, interval) {
     return ANCHOR_NOTE + (periodIdx - ANCHOR_PERIOD) * interval + offset
 }
 
+// -- absolute (interval 0) presets --
+// A preset with interval 0 defines every note it can express: `table` is a
+// finite ascending list of absolute offsets from `base`, with no repeating
+// lattice, so decomposeNote/composeNote and the period LUTs do not apply to
+// it. ProTracker pitch is the built-in example. Interval presets are
+// implicitly based at ANCHOR_NOTE.
+function presetIsAbsolute(p) { return !!p && p.interval === 0 && p.table.length > 0 }
+function presetBase(p) { return (p && p.base != null) ? p.base : ANCHOR_NOTE }
+// Index of the degree nearest `note`. The table is small (60 for ProTracker)
+// and this is only hit per drawn cell, so a linear scan is cheap enough to
+// skip the LUT entirely.
+function nearestAbsIdx(note, p) {
+    const base = presetBase(p), table = p.table
+    let best = 0, bestD = Infinity
+    for (let i = 0; i < table.length; i++) {
+        const d = Math.abs(base + table[i] - note)
+        if (d < bestD) { bestD = d; best = i }
+    }
+    return best
+}
+function nearestAbsNote(note, p) { return presetBase(p) + p.table[nearestAbsIdx(note, p)] }
+// There is no period index to count, so the displayed period follows the
+// 12-TET octave the pitch actually falls in -- for ProTracker that puts each
+// PT octave on exactly one digit (oct0..4 -> 2..6).
+function absPeriodOf(note) { return ANCHOR_PERIOD + Math.floor((note - ANCHOR_NOTE) / 0x1000) }
+// Period index of `note` under the ACTIVE preset. Absolute-safe: a bare
+// decomposeNote(note, preset.interval) divides by zero when interval is 0.
+function notePeriodOf(note) {
+    const preset = pitchTablePresets[PITCH_PRESET_IDX]
+    if (presetIsAbsolute(preset)) return absPeriodOf(note)
+    return decomposeNote(note, preset.interval)[0]
+}
+
 // pitchSymLut[offsetInPeriod] = [symString, periodOffset]
 // periodOffset is 1 when offsetInPeriod is closer to the next period's root
 // (one `interval` above) than to any table entry — i.e. the note should wrap
@@ -393,6 +463,9 @@ let pitchTargetLut = new Array(0x1000)
 function rebuildPitchLut() {
     const preset = pitchTablePresets[PITCH_PRESET_IDX]
     if (!preset || preset.table.length === 0) return
+    // An absolute preset has no period for the LUT to be indexed by; its
+    // readers scan the table directly instead.
+    if (presetIsAbsolute(preset)) return
     const table = preset.table
     const syms  = preset.sym
     const interval = preset.interval
@@ -549,6 +622,16 @@ function retuneAllPatterns(newIdx, method) {
     // lies within ±1 period of `absRef`. Includes the next period's root
     // itself so a target that lands just past the top entry can snap up.
     const forEachCandidate = (absRef, fn) => {
+        // An absolute target tuning has no lattice to walk: the whole table is
+        // the candidate set.
+        if (presetIsAbsolute(newPreset)) {
+            const base = presetBase(newPreset)
+            for (let i = 0; i < newTable.length; i++) {
+                const cand = base + newTable[i]
+                if (cand >= 0 && cand <= 0xFFFF) fn(cand)
+            }
+            return
+        }
         const baseK = Math.floor((absRef - ANCHOR_NOTE) / newInterval)
         for (let dK = -1; dK <= 1; dK++) {
             const root = ANCHOR_NOTE + (baseK + dK) * newInterval
@@ -688,6 +771,9 @@ function noteToStr(note) {
     if (rawNoteView) return note.hex04()
     const preset = pitchTablePresets[PITCH_PRESET_IDX]
     if (preset.table.length === 0) return note.hex04()
+    if (presetIsAbsolute(preset)) {
+        return preset.sym[nearestAbsIdx(note, preset)] + (absPeriodOf(note) - 1).toString(16)
+    }
     const [period, offset] = decomposeNote(note, preset.interval)
     const [s, o] = pitchSymLut[offset]
     return s + (period - 1 + o).toString(16) // period 10 -> 'a'
@@ -705,6 +791,9 @@ function noteOffGrid(note) {
     if (note < 0x0020) return false
     const preset = pitchTablePresets[PITCH_PRESET_IDX]
     if (!preset || preset.table.length === 0) return false
+    if (presetIsAbsolute(preset)) {
+        return Math.abs(nearestAbsNote(note, preset) - note) >= NOTE_OFFGRID_THRESHOLD
+    }
     const offset = decomposeNote(note, preset.interval)[1]
     const target = pitchTargetLut[offset]
     if (target == null) return false
@@ -3027,6 +3116,12 @@ function scToBase36(sc) {
 function semitoneToNote(semi, period) {
     const preset = pitchTablePresets[PITCH_PRESET_IDX]
     if (!preset || preset.table.length === 0) return null
+    if (presetIsAbsolute(preset)) {
+        // No period to divide: place the semitone in pitch (12 per octave off
+        // the jam octave's root) and snap to the nearest note the table has.
+        const want = ANCHOR_NOTE + (period - ANCHOR_PERIOD) * 0x1000 + Math.round(semi / 12 * 0x1000)
+        return Math.max(0x0020, Math.min(0xFFFF, nearestAbsNote(want, preset)))
+    }
     const interval = preset.interval
     const table    = preset.table
     let pos   = Math.round(semi / 12 * interval)
@@ -3050,6 +3145,12 @@ function nudgeNoteUnit(note, dir) {
     if (!noteIsPitched(note)) return note
     const preset = pitchTablePresets[PITCH_PRESET_IDX]
     if (!preset || preset.table.length === 0) return Math.max(0x20, Math.min(0xFFFF, note + dir))
+    if (presetIsAbsolute(preset)) {
+        // The table's ends ARE the limit of what the notation can express, so
+        // a step past them clamps rather than wrapping into an empty period.
+        const i = Math.max(0, Math.min(nearestAbsIdx(note, preset) + dir, preset.table.length - 1))
+        return Math.max(0x20, Math.min(0xFFFF, presetBase(preset) + preset.table[i]))
+    }
     const interval = preset.interval, table = preset.table
     const [period, off] = decomposeNote(note, interval)
     let idx = 0, best = Infinity
@@ -3065,6 +3166,12 @@ function nudgeNoteUnit(note, dir) {
 function nudgeNoteOctave(note, dir) {
     if (!noteIsPitched(note)) return note
     const preset = pitchTablePresets[PITCH_PRESET_IDX]
+    if (presetIsAbsolute(preset)) {
+        // interval 0 would make the plain `note + dir*interval` below a no-op.
+        // An absolute table has no period, so move a whole octave in PITCH and
+        // re-snap -- exact for ProTracker, which is 12 degrees per octave.
+        return Math.max(0x20, Math.min(0xFFFF, nearestAbsNote(note + dir * 0x1000, preset)))
+    }
     const interval = (preset && preset.table.length) ? preset.interval : 0x1000
     return Math.max(0x20, Math.min(0xFFFF, note + dir * interval))
 }
@@ -3180,7 +3287,7 @@ function editPatternCell(ptnDat, row, col, ev, popupPos) {
         else if (!shiftDown && (sc === keys.LEFT_BRACKET || sc === keys.RIGHT_BRACKET)) {
             const dir = (sc === keys.LEFT_BRACKET) ? -1 : 1
             const cur = cellNote(ptnDat, row)
-            if (noteIsPitched(cur)) { const n = nudgeNoteOctave(cur, dir); writeNote(ptnDat, row, n); editOctave = decomposeNote(n, pitchTablePresets[PITCH_PRESET_IDX].interval)[0]; changed = true; audition = n }
+            if (noteIsPitched(cur)) { const n = nudgeNoteOctave(cur, dir); writeNote(ptnDat, row, n); editOctave = notePeriodOf(n); changed = true; audition = n }
             // No-sound cell (< 0x20): nothing to transpose, so move the jam octave instead
             // (octave-only — refreshes the indicator without dirtying the pattern).
             else { editOctave = Math.max(1, Math.min(14, editOctave + dir)); octave = true }

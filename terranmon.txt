@@ -3375,6 +3375,7 @@ prefixes:
     Uint32 Size of this table following this field
     Uint16 Notation used for this song (takes notation index)
         0: raw numbers
+        1: ProTracker pitch
         10*n: TET-number times 10 (12-TET = 120)
         * Following systems have alternative notation conventions:
         531: 53-TET Pythagorean Notation
@@ -3397,7 +3398,8 @@ prefixes:
     Uint16  Interval size in 4096-TET lattice (octave = 0x1000, tritave = 0x195C). If you are not using an interval system (which means you are responsible for defining every note expressible), this must be 0.
     Uint16  RESERVED for float32 interval size (should it be in 4096-TET which is inexact or frequency multiplier which is exact but difficult to implement?)
     Uint16  Notes between interval (or octave) MINUS ONE; 12-TET will have value 11
-    Byte[8] RESERVED
+    Uint16  Base note the Frequency table is offset against, as an absolute note value (C4 = 0x5000). 0 = default, meaning the "Base Note at C4" of Note Tuning step 1. Frequency table offsets are unsigned, so an interval-less notation (Interval Size 0) that must name notes below C4 declares its lowest note here; e.g. ProTracker pitch (notation 1) bases at 0x3000, its period-1712 note. For an interval system the base note is the root of the root interval and this must be 0
+    Byte[6] RESERVED
     Byte[*]     Name, null terminated. Encoding: UTF-8
     Byte[*]     Notation table. 0xFF-separated and null-terminated. Encoding: Taud charset
     Uint16[*]  Frequency table. Size of the table is defined by "Notes between interval MINUS ONE". This is a lookup table of relative pitch offsets (against the base tuning note) in 4096-TET space. Index zero of this table will be 0x0 if you read the spec right
@@ -3407,9 +3409,9 @@ prefixes:
     Note Tuning:
         1. "Base Note at C4" will be derived using "Current Tuning Base Note" and "Frequency at the Base Note" from the song table. If the values are A4,440Hz, it will be converted to C4,261.6255653Hz
         2. Frequency at C5 will be (Base Note at C4) × (Interval Size)
-        3. 4096 notes will be equidistance-distributed between (Frequency at C3) and (Frequency at C4), with logarithmic pitch progression; this builds the frequency-offset table
-        4. Frequency-Offset Table from the previous step will be applied against the "Base Note at C3" to construct the notes within the notation. Value at index zero of the Frequency Table must be 0
-        5. The progress will continue outside the "root interval" (C3..C4) to build a complete note-to-frequency table
+        3. 4096 notes will be equidistance-distributed between (Frequency at C4) and (Frequency at C5), with logarithmic pitch progression; this builds the frequency-offset table
+        4. Frequency-Offset Table from the previous step will be applied against the "Base Note at C4" (or the Base Note field above, when it is non-zero) to construct the notes within the notation. Value at index zero of the Frequency Table must be 0
+        5. The progress will continue outside the "root interval" (C4..C5) to build a complete note-to-frequency table
 
         Note: if your sample is pre-tuned for your system, keep the project setting as the defaults. If you are not working with the conventional octave system, you still need to specify the Interval Size
 
