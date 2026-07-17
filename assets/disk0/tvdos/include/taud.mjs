@@ -90,6 +90,15 @@ function _peekU16LE(ptr, off) {
     return ((sys.peek(ptr+off) & 0xFF)) | ((sys.peek(ptr+off+1) & 0xFF) << 8)
 }
 
+// Little-endian IEEE-754 float32 reader — the inverse of _f32leBytes, for the
+// song table's "Frequency at the base note" (terranmon.txt §"Song Table").
+const _f32rbuf = new Uint8Array(4)
+const _f32rview = new Float32Array(_f32rbuf.buffer)
+function _peekF32LE(ptr, off) {
+    for (let k = 0; k < 4; k++) _f32rbuf[k] = sys.peek(ptr + off + k) & 0xFF
+    return _f32rview[0]
+}
+
 // Scan Project Data for the xHDR (Extended header) section and return its 64-channel
 // flag. Only called when the version byte's xHDR bit (0x20) is set (a lone xHDR section
 // without that bit is INVALID per terranmon.txt:3278-3279, so we ignore it there).
@@ -260,6 +269,8 @@ function uploadTaudFile(inFile, songIndex, playhead) {
     let tickPacked = sys.peek(filePtr + entryOff + 8) & 0xFF
     let tickRate   = tickPacked & 0x7F            // bits 0..6
     bpmStored     |= (tickPacked & 0x80) << 1     // bit 7 of byte 8 = BPM high bit (0x100..0x1FE)
+    let baseNote   = _peekU16LE(filePtr, entryOff + 9)
+    let baseFreq   = _peekF32LE(filePtr, entryOff + 11)
     let mixerflags = sys.peek(filePtr + entryOff + 15) & 0xFF
     let songGlobalVolume = sys.peek(filePtr + entryOff + 16) & 0xFF
     let songMixingVolume = sys.peek(filePtr + entryOff + 17) & 0xFF
@@ -316,6 +327,7 @@ function uploadTaudFile(inFile, songIndex, playhead) {
     audio.setTrackerMode(playhead)
     audio.setBPM(playhead, bpm)
     audio.setTickRate(playhead, tickRate > 0 ? tickRate : 6)
+    audio.setTuning(playhead, baseNote, baseFreq)
     audio.setTrackerMixerFlags(playhead, mixerflags)
     audio.setSongGlobalVolume(playhead, songGlobalVolume)
     audio.setSongMixingVolume(playhead, songMixingVolume)

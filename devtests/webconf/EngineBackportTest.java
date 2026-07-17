@@ -291,6 +291,45 @@ public class EngineBackportTest {
             check("item23: getVoiceNote varies across ticks", seen.size() >= 2);
         }
 
+        // ── item 77: song tuning is applied, not ignored ────────────────────
+        {
+            audio.setTuning(0, 0x5C00, 440.0);            // A4 = 440, concert
+            double concert = audio.getTuningRatio(0);
+            audio.setTuning(0, 0xA000, 8363.0);           // the tracker default
+            double tracker = audio.getTuningRatio(0);
+            audio.setTuning(0, 0, 0.0);                   // spec: zero = tracker default
+            double blank = audio.getTuningRatio(0);
+            audio.setTuning(0, 0x5C00, 412.0);            // A4 = 412
+            double a412 = audio.getTuningRatio(0);
+
+            // Concert must be an EXACT identity: 440 is representable and
+            // 440/2^0.75 is the reference C4 bit-for-bit, so a concert-declared
+            // song renders as if tuning did not exist. The JS port relies on the
+            // same property — if this drifts, the two engines drift apart.
+            check("item77: concert A4@440 is exactly 1.0", concert == 1.0);
+            // The tracker default is NOT concert: ~1.87 cents flat, which is what
+            // an Amiga does and what the spec's "A4 is 439.548 Hz" note means.
+            check("item77: tracker default is 1.87 cents flat",
+                  Math.abs(1200 * (Math.log(tracker) / Math.log(2)) + 1.8658) < 1e-3);
+            check("item77: zero fields resolve to the tracker default", blank == tracker);
+            check("item77: A4@412 is 113.83 cents flat",
+                  Math.abs(1200 * (Math.log(a412) / Math.log(2)) + 113.831) < 1e-2);
+
+            // End to end: the same note under two tunings must differ in playback
+            // rate by exactly the ratio of the tunings.
+            audio.setTuning(0, 0x5C00, 440.0);
+            audio.jamNote(0, 0, 0x5000, 1);
+            double rateConcert = (Double) getField(fg, "playbackRate");
+            audio.setTuning(0, 0x5C00, 412.0);
+            audio.jamNote(0, 0, 0x5000, 1);
+            double rate412 = (Double) getField(fg, "playbackRate");
+            check("item77: a jam actually sounds", rateConcert > 0);
+            check("item77: tuning scales the sounding rate by exactly the ratio",
+                  Math.abs(rate412 - rateConcert * a412) < 1e-12);
+            audio.jamStop(0);
+            audio.setTuning(0, 0x5C00, 440.0);
+        }
+
         System.out.println("── " + pass + " pass, " + fail + " fail");
         System.exit(fail == 0 ? 0 : 1);
     }

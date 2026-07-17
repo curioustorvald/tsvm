@@ -173,6 +173,23 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         // linear-freq slides — uses A0 = 27.5 Hz with the same equal-temperament tuning,
         // so emitted Hz values map directly to audible Hz at any pitch.
         const val LINEAR_FREQ_C4_HZ = 261.6255653005986
+        // ── Song tuning (terranmon.txt:3297-3324, §"Note Tuning") ──
+        // The song table declares "note TUNING base note sounds at TUNING freq Hz";
+        // tuningRatioOf() folds that pair into a playback-rate multiplier.
+        //
+        // Zero point: 12-TET concert C4, i.e. the same A4 = 440 the linear-freq mode
+        // references — numerically LINEAR_FREQ_C4_HZ, kept as its own name because it
+        // answers a different question (that one is the toneMode==2 slide reference,
+        // this one is where "no retune" sits).
+        const val TUNING_REF_C4_HZ = LINEAR_FREQ_C4_HZ
+        // Field defaults for a zero/blank song table — spec: "If zero, assume the
+        // tracker default value". C9 @ 8363 Hz is the Amiga/tracker convention, which
+        // is NOT concert pitch: it puts A4 at 439.53 Hz, ~1.87 cents flat of 440. The
+        // spec quotes 439.548 Hz for the reference tuning from the exact NTSC clock
+        // ratio (3579545/428 = 8363.42 Hz); the format stores the rounded 8363.0, so
+        // the honest reading of a default song table lands 0.09 cents below that quote.
+        const val TUNING_DEFAULT_BASE_NOTE = 0xA000  // C9
+        const val TUNING_DEFAULT_FREQ_HZ = 8363.0
         // Anti-click ramp-out: when a sample naturally ends or is cut, the voice keeps
         // mixing for this many output samples while gain decays linearly to 0.
         // 8 ms at 32 kHz — long enough to bury the click, short enough not to read as fade.
@@ -1512,9 +1529,17 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         10.592537, 11.220185, 11.885022, 12.589254, 13.335214, 14.125375, 14.962357, 15.848932
     )
 
-    private fun computePlaybackRate(voice: Voice, noteVal: Int): Double =
+    /**
+     * Active-sample-aware playback rate (patch-aware via the voice snapshot).
+     *
+     * [tuningRatio] is the song's tuning (ts.tuningRatio) — a whole-song frequency
+     * scale applied last. Concert-tuned songs pass exactly 1.0, which is an identity
+     * multiply, so they render bit-for-bit as if tuning did not exist.
+     */
+    private fun computePlaybackRate(voice: Voice, noteVal: Int, tuningRatio: Double = 1.0): Double =
         voice.activeSamplingRate.toDouble() / SAMPLING_RATE *
-        2.0.pow((noteVal - MIDDLE_C + voice.activeSampleDetune) / 4096.0)
+        2.0.pow((noteVal - MIDDLE_C + voice.activeSampleDetune) / 4096.0) *
+        tuningRatio
 
     /**
      * Snapshot the sample-scope state for [voice] from either the base instrument
@@ -1667,6 +1692,35 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     // mon2taud.py emits the raw byte and relies on this mode. Like Amiga mode, a per-voice
     // linearFreq cache (`voice.linearFreq`) preserves sub-noteVal precision across ticks;
     // -1.0 means stale and must be reseeded from current noteVal.
+    /**
+     * Song tuning pair → playback-rate multiplier.
+     *
+     * Step 1 of terranmon.txt §"Note Tuning" folds the declared "note [baseNote]
+     * sounds at [freq] Hz" down to a C4 frequency (the spec's own worked example:
+     * A4/440 → C4/261.6255653). The engine's zero point is concert C4, so the
+     * multiplier is just how far the song's C4 sits from it. Every note the
+     * playhead sounds is scaled by this, so the song retunes as a whole.
+     *
+     * Deliberately a pure ratio with NO log/exp round trip. 2.0.pow with a rational
+     * exponent is the one transcendental this engine already trusts to agree with
+     * the JS port bit-for-bit (computePlaybackRate leans on it), whereas log2 has
+     * no such guarantee — routing the tuning through a log would put the whole
+     * bit-exact gate at the mercy of a last-ulp difference between platforms.
+     *
+     * A concert declaration returns EXACTLY 1.0: 440 is f32-representable and
+     * 440 / 2^0.75 == TUNING_REF_C4_HZ bit-for-bit, and x * 1.0 == x, so A4@440
+     * songs render without a single bit disturbed. The tracker default
+     * (C9 @ 8363) returns 0.99892… — ~1.87 cents flat, which is what an Amiga
+     * actually does and what the spec means by "tracker default tuning at A4 is
+     * 439.548 Hz".
+     */
+    private fun tuningRatioOf(baseNote: Int, freq: Double): Double {
+        // Spec: either field reading zero means "assume the tracker default".
+        val b = if (baseNote > 0) baseNote else TUNING_DEFAULT_BASE_NOTE
+        val f = if (freq > 0.0) freq else TUNING_DEFAULT_FREQ_HZ  // also catches NaN
+        return (f / 2.0.pow((b - MIDDLE_C).toDouble() / 4096.0)) / TUNING_REF_C4_HZ
+    }
+
     private fun noteValToFreqHz(noteVal: Int): Double =
         LINEAR_FREQ_C4_HZ * 2.0.pow((noteVal - MIDDLE_C).toDouble() / 4096.0)
 
@@ -2476,7 +2530,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         releaseLayerChildren(ts, vi)
         val inst = if (instId != 0) instruments[instId] else instruments[voice.instrumentId]
         if (!inst.isMeta) {
-            triggerNote(voice, noteVal, instId, rowVolOverride)   // honour V-column velocity for patch lookup
+            triggerNote(ts, voice, noteVal, instId, rowVolOverride)   // honour V-column velocity for patch lookup
             voice.layerMixGain = 1.0
             voice.layerRelDetune = 0
             voice.isLayerChild = false
@@ -2504,7 +2558,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             return
         }
         val l0 = layers[0]
-        triggerNote(voice, (noteVal + l0.detune).coerceIn(0x20, 0xFFFF), l0.instIdx, rowVolOverride)
+        triggerNote(ts, voice, (noteVal + l0.detune).coerceIn(0x20, 0xFFFF), l0.instIdx, rowVolOverride)
         voice.layerMixGain   = META_MIX_GAIN[l0.mixOctet and 0xFF]
         voice.layerRelDetune = 0
         voice.isLayerChild   = false
@@ -2512,7 +2566,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         for (k in 1 until layers.size) {
             val lk = layers[k]
             val child = Voice()
-            triggerNote(child, (noteVal + lk.detune).coerceIn(0x20, 0xFFFF), lk.instIdx, rowVolOverride)
+            triggerNote(ts, child, (noteVal + lk.detune).coerceIn(0x20, 0xFFFF), lk.instIdx, rowVolOverride)
             child.isLayerChild   = true
             child.sourceChannel  = vi
             child.layerRelDetune = lk.detune - l0.detune
@@ -2526,7 +2580,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         capBackgroundVoices(ts)
     }
 
-    private fun triggerNote(voice: Voice, noteVal: Int, instId: Int, volOverride: Int) {
+    private fun triggerNote(ts: TrackerState, voice: Voice, noteVal: Int, instId: Int, volOverride: Int) {
         if (instId != 0) voice.instrumentId = instId
         val inst = instruments[voice.instrumentId]
         // Resolve the Ixmp patch (if any) for this trigger. Volume axis uses the
@@ -2635,7 +2689,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         voice.renderPitch = noteVal   // display tap: seed before the first tick runs (item 23)
         voice.amigaPeriod = -1.0   // fresh trigger: period state must reseed from the new noteVal
         voice.linearFreq  = -1.0   // ditto for linear-freq mode (toneMode == 2)
-        voice.playbackRate = computePlaybackRate(voice, noteVal)
+        voice.playbackRate = computePlaybackRate(voice, noteVal, ts.tuningRatio)
         // Fresh trigger seeds noteVolume from the per-instrument "default note volume"
         // (byte 196) when the row carried an instrument byte but no explicit V column —
         // matching IT's `chan->volume = psmp->volume` rule (Schism player/effects.c:1302
@@ -3334,7 +3388,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                     voice.basePitch = voice.noteVal
                     voice.amigaPeriod = -1.0   // reseed on next per-tick slide
                     voice.linearFreq  = -1.0
-                    voice.playbackRate = computePlaybackRate(voice, voice.noteVal)
+                    voice.playbackRate = computePlaybackRate(voice, voice.noteVal, ts.tuningRatio)
                 } else {
                     voice.slideMode = 1; voice.slideArg = -arg
                     voice.amigaPeriod = -1.0   // reseed at the start of a fresh multi-tick slide
@@ -3353,7 +3407,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                     voice.basePitch = voice.noteVal
                     voice.amigaPeriod = -1.0
                     voice.linearFreq  = -1.0
-                    voice.playbackRate = computePlaybackRate(voice, voice.noteVal)
+                    voice.playbackRate = computePlaybackRate(voice, voice.noteVal, ts.tuningRatio)
                 } else {
                     voice.slideMode = 2; voice.slideArg = arg
                     voice.amigaPeriod = -1.0
@@ -3572,7 +3626,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 voice.basePitch = voice.noteVal
                 voice.amigaPeriod = -1.0
                 voice.linearFreq  = -1.0
-                voice.playbackRate = computePlaybackRate(voice, voice.noteVal)
+                voice.playbackRate = computePlaybackRate(voice, voice.noteVal, ts.tuningRatio)
             }
             0x3 -> { voice.vibratoWave = x and 3; voice.vibratoRetrig = (x and 4) == 0 }
             0x4 -> { voice.tremoloWave = x and 3; voice.tremoloRetrig = (x and 4) == 0 }
@@ -3931,7 +3985,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             else 0
 
             val finalPitch = (pitchToMixer + autoVibDelta + pitchEnvDelta).coerceIn(0x20, 0xFFFF)
-            voice.playbackRate = computePlaybackRate(voice, finalPitch)
+            voice.playbackRate = computePlaybackRate(voice, finalPitch, ts.tuningRatio)
             // Display tap (item 23, backported from the web): the per-tick sounding pitch —
             // after slides/arp/vibrato/auto-vib/pitch-env — for the host UI's voice header.
             // Write-only for the DSP; getVoiceNote reads it.
@@ -4087,7 +4141,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 ((bg.envPitchValue - 0.5) * 2.0 * 16.0 * 4096.0 / 12.0).toInt()
             else 0
             val finalPitch = (bg.noteVal + autoVibDelta + pitchEnvDelta).coerceIn(0x20, 0xFFFF)
-            bg.playbackRate = computePlaybackRate(bg, finalPitch)
+            bg.playbackRate = computePlaybackRate(bg, finalPitch, ts.tuningRatio)
             bg.renderPitch = finalPitch   // display tap (item 23) — write-only for the DSP
             // Filter envelope: same scaling rule as foreground, using the active cutoff.
             // Must branch on SF mode too — an SF-mode ghost's cutoff is in cents (0..0xFFFF),
@@ -4356,6 +4410,22 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         triggerMetaOrNote(ts, ts.voices[v], v, note, inst, -1)
         ph.jamActive = true
     }
+
+    /**
+     * Song tuning (terranmon.txt §"Note Tuning"): [baseNote] sounds at [freq] Hz.
+     * Either reading zero means the tracker default (spec) — tuningRatioOf applies
+     * that rule. Takes effect on the next tick for notes already sounding, so
+     * dialling a tuning while the song plays bends it in place rather than waiting
+     * for retriggers.
+     */
+    fun setTuning(ph: Int, baseNote: Int, freq: Double) {
+        val p = playheads[ph]
+        p.tuningBaseNote = baseNote and 0xFFFF
+        p.tuningFreq = freq
+        p.trackerState?.tuningRatio = tuningRatioOf(p.tuningBaseNote, p.tuningFreq)
+    }
+
+    fun getTuningRatio(ph: Int): Double = playheads[ph].trackerState?.tuningRatio ?: 1.0
 
     /** Silence any running audition and stop the jam-render spin. */
     internal fun jamStop(ph: Playhead) {
@@ -4937,6 +5007,14 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         // 0=Fast Sinc default, 1=none, 2=Amiga 500, 3=Amiga 1200, 4=SNES 4-tap gaussian,
         // 5=NES 2A03 DPCM simulation. See AudioAdapter.INTERP_*.
         var interpolationMode = INTERP_DEFAULT
+
+        // Song tuning as a playback-rate multiplier (terranmon.txt §"Note Tuning") —
+        // mirrored down from the playhead by setTuning, like toneMode/interpolationMode
+        // are from the global-behaviour flags, so the per-sample path reads it off the
+        // TrackerState alone. 1.0 = concert; the tracker default (C9 @ 8363) is
+        // 0.99892 (~1.87 cents flat).
+        var tuningRatio = 1.0
+
         // Amiga "LED" 2-pole LPF on/off (S $0000 = on, S $0100 = off; PT E00/E01).
         // Only applies when interpolationMode is INTERP_A500 or INTERP_A1200.
         var ledFilterOn = false
@@ -4995,6 +5073,13 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
 //        var samplingRateMult: ThreeFiveMiniUfloat = ThreeFiveMiniUfloat(32),
         var bpm: Int = 125,                // BPM, derived from tempoByte + 25. Spec default $64 ⇒ 125 BPM. Range 25..535 (T $FFxx extends past 280).
         var tickRate: Int = 6,
+        // Declared song tuning (terranmon.txt §"Note Tuning"), kept for readback; the
+        // hot path uses the multiplier setTuning derives onto the TrackerState. Untuned
+        // until a song load pushes the file's pair — the adapter has no song table of
+        // its own, so the spec's "if zero, assume the tracker default" rule lives in
+        // tuningRatioOf, on the values the host hands over.
+        var tuningBaseNote: Int = 0,
+        var tuningFreq: Double = 0.0,
         var pcmUpload: Boolean = false,
         var patBank1: Int = 0,
         var patBank2: Int = 0,
@@ -5122,7 +5207,10 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             tickRate = 6
             globalVolume = 0x80
             mixingVolume = 0x80
+            tuningBaseNote = 0
+            tuningFreq = 0.0
             trackerState?.let { ts ->
+                ts.tuningRatio = 1.0
                 ts.cuePos = 0; ts.rowIndex = 0; ts.tickInRow = 0
                 ts.samplesIntoTick = 0.0; ts.firstRow = true
                 ts.pendingOrderJump = -1; ts.pendingRowJump = -1

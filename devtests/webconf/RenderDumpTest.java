@@ -149,6 +149,10 @@ public class RenderDumpTest {
         int tickPacked = u8(file, entryOff + 8);
         int tickRate   = tickPacked & 0x7F;
         bpmStored     |= (tickPacked & 0x80) << 1;
+        // Song tuning (terranmon.txt:3297-3298). The engine applies these now, so the
+        // oracle must push them or the reference dumps would not exercise tuning at all.
+        int tuningBaseNote = u16(file, entryOff + 9);
+        float tuningFreq   = Float.intBitsToFloat(u32(file, entryOff + 11));
         int mixerflags = u8(file, entryOff + 15);
         int songGlobalVolume = u8(file, entryOff + 16);
         int songMixingVolume = u8(file, entryOff + 17);
@@ -186,6 +190,7 @@ public class RenderDumpTest {
         audio.setTrackerMode(0);
         audio.setBPM(0, bpm);
         audio.setTickRate(0, tickRate > 0 ? tickRate : 6);
+        audio.setTuning(0, tuningBaseNote, (double) tuningFreq);
         audio.setTrackerMixerFlags(0, mixerflags);
         audio.setSongGlobalVolume(0, songGlobalVolume);
         audio.setSongMixingVolume(0, songMixingVolume);

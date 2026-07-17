@@ -118,6 +118,11 @@ class AudioJSR223Delegate(private val vm: VM) {
     fun getBPM(playhead: Int) = getPlayhead(playhead)?.bpm
 
     fun setTickRate(playhead: Int, rate: Int) { getPlayhead(playhead)?.tickRate = rate and 255 }
+
+    /** Song tuning: [baseNote] sounds at [freq] Hz (terranmon.txt song table).
+     *  Either field zero = the tracker default. Retunes the whole song. */
+    fun setTuning(playhead: Int, baseNote: Int, freq: Double) { getFirstSnd()?.setTuning(playhead, baseNote, freq) }
+    fun getTuningRatio(playhead: Int) = getFirstSnd()?.getTuningRatio(playhead)
     fun getTickRate(playhead: Int) = getPlayhead(playhead)?.tickRate
 
     fun setCuePosition(playhead: Int, pos: Int) {
