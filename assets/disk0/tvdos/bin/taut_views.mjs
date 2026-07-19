@@ -1919,16 +1919,44 @@ function drawSlider(y, sx, tw, frac) {
 }
 
 // Pixel X (mouse) → quantised slider value, knob centred under the cursor.
+// Value ⇄ trough-fraction (0..1) mapping. Linear by default; when `signedLog`
+// the trough is symmetric-logarithmic (symlog) — value 0 at the centre, small
+// values (fine detune) claiming most of the travel while the ±8-octave extremes
+// stay reachable. log(1+|v|) is near-LINEAR through zero, so 0 is exactly the
+// centre and ±1 read as distinct positions (pure log has no value at 0 and
+// collapses every |v|<=1 onto the centre). Mirrors the web instruments.js path.
+function sliderSpanMag(min, max) { return Math.max(Math.abs(min), Math.abs(max), 2) }
+function sliderValToFrac(min, max, val, signedLog) {
+    if (!signedLog) {
+        const knob = (val < min) ? min : (val > max) ? max : val
+        return (max === min) ? 0 : (knob - min) / (max - min)
+    }
+    const mag = sliderSpanMag(min, max)
+    const a = Math.min(Math.abs(val), mag)
+    const dir = val < 0 ? -1 : 1
+    const pos = dir * (Math.log(1 + a) / Math.log(1 + mag))   // -1..1
+    return (pos + 1) / 2
+}
+function sliderFracToVal(min, max, frac, signedLog) {
+    let v
+    if (!signedLog) {
+        v = Math.round(min + frac * (max - min))
+    } else {
+        const mag = sliderSpanMag(min, max)
+        const pos = frac * 2 - 1   // -1..1
+        const dir = pos < 0 ? -1 : 1
+        v = dir * Math.round(Math.exp(Math.abs(pos) * Math.log(1 + mag)) - 1)
+    }
+    return v < min ? min : v > max ? max : v
+}
+
 function sliderMouseToVal(s, pxX) {
     const pmax = (s.tw - 1) * CELL_PW
     let knob = Math.round((pxX - s.troughLeftPx) - CELL_PW / 2)
     if (knob < 0) knob = 0
     if (knob > pmax) knob = pmax
     const frac = (pmax === 0) ? 0 : knob / pmax
-    let v = Math.round(s.min + frac * (s.max - s.min))
-    if (v < s.min) v = s.min
-    if (v > s.max) v = s.max
-    return v
+    return sliderFracToVal(s.min, s.max, frac, s.signedLog)
 }
 
 // Write byte pairs [[offset, value], ...] into instrument `slot`'s peripheral
@@ -2048,21 +2076,20 @@ function sliderRow(y, e, label, val0, min, max, ann, encode, reupload) {
 }
 
 // Emit the wide two-row Detune slider: knob on `y`, cents readout on `y+1`.
-// The field is a full signed 16-bit, but the knob's interactive range is the
-// practical ±4096 (one octave). An out-of-range stored value still displays
-// truthfully (its true number + cents), with the knob pinned to the nearer end;
-// it is snapped into range the instant the user drags or wheels the knob.
+// The knob spans the FULL signed 16-bit range (-32768..32767) on a signed-
+// logarithmic scale — value 0 at the centre, fine control near zero in both
+// directions, the ±8-octave extremes still reachable. The wheel still nudges
+// ±1 for exact values.
 function detuneRow(y, e, val0) {
     const sx = SLIDER_WIDE_SX, tw = SLIDER_TW_WIDE
-    const min = -4096, max = 4096
+    const min = -0x8000, max = 0x7fff
     const digits = 6                       // fits a full signed 16-bit display
     const nx = INST_RIGHT_X + 4, nw = digits + 2
     const render = (val) => {
-        const knob = (val < min) ? min : (val > max) ? max : val   // clamp position only
         con.move(y, INST_RIGHT_X)
         con.color_pair(colInstLabel, colBackPtn)
         print(('  Detune:' + ' '.repeat(20)).substring(0, sx - INST_RIGHT_X))
-        drawSlider(y, sx, tw, (knob - min) / (max - min))
+        drawSlider(y, sx, tw, sliderValToFrac(min, max, val, true))
         // Readout row: editable raw-number capsule + cents.
         con.move(y + 1, INST_RIGHT_X); con.color_pair(colInstValue, colBackPtn); print('    ')
         drawNumCapsule(y + 1, nx, digits, String(val))
@@ -2073,7 +2100,7 @@ function detuneRow(y, e, val0) {
     }
     render(val0)
     instSliders.push({
-        y, sx, tw, troughLeftPx: sx * CELL_PW, min, max, render,
+        y, sx, tw, troughLeftPx: sx * CELL_PW, min, max, signedLog: true, render,
         numY: y + 1, numX: nx, numW: nw, ndig: digits,   // capsule on the readout row
         val: val0,                                        // true value; snapped into range on interact
         commit: (v) => { instWriteBytes(e.slot, [[184, v & 0xFF], [185, (v >> 8) & 0xFF]]); e.decoded = decodeInstFull(readInstRecord(e.slot)) }
