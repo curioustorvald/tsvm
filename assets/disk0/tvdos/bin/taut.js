@@ -3742,11 +3742,44 @@ function renumberPatternOrder() {
     return order
 }
 
+// Binary content key of a pattern's raw bytes, for duplicate detection.
+function patternContentKey(bytes) {
+    let s = ''
+    for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i])
+    return s
+}
+
+// De-dupe a keep-order: collapse byte-identical patterns onto their FIRST copy
+// in `order` (with an ascending `order` the survivor is the lowest index).
+// Returns { order, canon }: `order` = survivors in their original relative order,
+// `canon` maps every input old index to the index it merges onto (itself for a
+// survivor). Feed `canon` to applyPatternOrder so cues that played a duplicate
+// follow it onto the survivor (web planMergeDuplicatePatterns).
+function mergeDuplicatePatternOrder(order) {
+    const firstByKey = {}
+    const canon = {}
+    const merged = []
+    for (let i = 0; i < order.length; i++) {
+        const idx = order[i]
+        const key = patternContentKey(song.patterns[idx] || new Uint8Array(PATTERN_SIZE))
+        if (key in firstByKey) {
+            canon[idx] = firstByKey[key]
+        } else {
+            firstByKey[key] = idx
+            canon[idx] = idx
+            merged.push(idx)
+        }
+    }
+    return { order: merged, canon }
+}
+
 // Apply a keep-order (`order` = old indices in their new positions): rebuilds
 // song.patterns, remaps every cue reference (a reference to a dropped pattern
 // becomes empty; the separately-stored instruction words are untouched), and
-// pushes the new state to the device.
-function applyPatternOrder(order) {
+// pushes the new state to the device. `canon` (optional, from
+// mergeDuplicatePatternOrder) re-targets each old index to its merge survivor
+// before the new-index lookup, so cues that played a duplicate follow it.
+function applyPatternOrder(order, canon) {
     if (order.length === 0) order = [0]
     const oldNumPats = song.numPats
     const oldLast = Math.max(0, song.lastActiveCue)
@@ -3760,7 +3793,8 @@ function applyPatternOrder(order) {
         for (let v = 0; v < MAX_VOICES; v++) {
             const pat = cue.ptns[v]
             if (pat === CUE_EMPTY) continue
-            cue.ptns[v] = (pat in oldToNew) ? oldToNew[pat] : CUE_EMPTY
+            const canonPat = (canon && (pat in canon)) ? canon[pat] : pat // duplicate → survivor
+            cue.ptns[v] = (canonPat in oldToNew) ? oldToNew[canonPat] : CUE_EMPTY
         }
     }
     recomputeLastActiveCue()
@@ -3800,7 +3834,7 @@ function openHousekeepingPopup() {
         colours:   HUB.popups.popupColours,
     }
     const OPS = [
-        { id: 'cleanPtn',  label: 'Cleanup patterns (drop unreferenced)' },
+        { id: 'cleanPtn',  label: 'Cleanup patterns (drop + merge dups)' },
         { id: 'renumPtn',  label: 'Renumber patterns into play order' },
         { id: 'cleanBank', label: 'Cleanup instruments & samples' },
         { id: 'cleanIxmp', label: 'Cleanup instrument patches' },
@@ -3825,8 +3859,12 @@ function openHousekeepingPopup() {
     switch (pick.listItem.op.id) {
     case 'cleanPtn': {
         const before = song.numPats
-        applyPatternOrder(referencedPatternOrder(false))
-        msg = `Removed ${before - song.numPats} unreferenced pattern(s); ${song.numPats} kept.`
+        const referenced = referencedPatternOrder(false)
+        const { order, canon } = mergeDuplicatePatternOrder(referenced)
+        const unused = before - referenced.length
+        const merged = referenced.length - order.length
+        applyPatternOrder(order, canon)
+        msg = `Removed ${unused} unused + ${merged} duplicate pattern(s); ${song.numPats} kept.`
         break
     }
     case 'renumPtn': {
