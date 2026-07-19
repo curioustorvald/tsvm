@@ -256,7 +256,7 @@ const pitchTablePresets = {
 
 0:{index:0,name:"Raw format",table:[],interval:0x1000,t:'',sym:[]}, // when null is specified, hex numbers will be displayed instead
 /* Hardware period tables (interval 0: every note defined explicitly) */
-1:{index:1,name:"ProTracker pitch",table:PT_TABLE,interval:0,base:PT_BASE,t:'d',
+1:{index:1,name:"ProTracker Temperament",table:PT_TABLE,interval:0,base:PT_BASE,t:'d',
 sym:PT_SYM},
 /* Xenharmonic, equal temperament */
 10:{index:10,name:"Octave only",table:[0x0],interval:0x1000,t:'M',
