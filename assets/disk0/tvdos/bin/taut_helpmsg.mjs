@@ -139,6 +139,10 @@ Timeline has two distinct modes: view and edit mode. Two modes are toggled using
 &demisharp;&nbsp;&sharp;&nbsp;&doublesharp;&nbsp;&triplesharp;&nbsp;&quadsharp;&nbsp;&demiflat;&nbsp;&flat;&nbsp;&doubleflat;&nbsp;&tripleflat;&nbsp;&nbsp;&accuptick;&nbsp;&nbsp;&accupup;&nbsp;&nbsp;&accdntick;&nbsp;&nbsp;&accdndn;
 <b>C&nbsp;&nbsp;c&nbsp;&nbsp;cx&nbsp;x&nbsp;&nbsp;xx&nbsp;B&nbsp;&nbsp;b&nbsp;&nbsp;bb&nbsp;bbb&nbsp;^&nbsp;&nbsp;^^&nbsp;v&nbsp;&nbsp;vv</b>
 
+<b>&nbsp;DITTO GHOSTS</b>
+<b>\u00B7${'\u00B8'.repeat(12)}\u00B9</b>
+Effect 7 (Pattern ditto) repeats earlier rows without copying them, so the repeated rows look empty although they play. Every row a ditto covers therefore shows the would-be-repeated note, instrument, volume, pan or effect in <s>grey</s>. Grey means "not really here": ghosts only fill fields the row leaves blank, and anything you type wins at once. The row carrying the 7$llrr command keeps showing that command.
+
 <b>&nbsp;GLOBAL EDIT</b>
 <b>\u00B7${'\u00B8'.repeat(11)}\u00B9</b>
 &bul;<b>Q</b> : <O>retunes current song into different tuning and strategy. In general, nearest-note works best for macrotonals, nearest-harmonic and nearest-delta works best for highly microtonals (31+); 17- and 19-TET takes nearest-harmonic pretty well, while 22-TET seem to only benefit from the nearest-note</O>

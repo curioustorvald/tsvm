@@ -723,6 +723,7 @@ function retuneAllPatterns(newIdx, method) {
         }
         hasUnsavedChanges = true
         patternsOutOfSync = true
+        invalidateDittoGhosts()
     }
     PITCH_PRESET_IDX = newIdx
     rebuildPitchLut()
@@ -801,20 +802,140 @@ function noteOffGrid(note) {
 }
 function noteColour(note) { return noteOffGrid(note) ? 235 : colNote }
 
+// ── Pattern Ditto (effect 7) display ghosts ─────────────────────────────────
+// The engine expands 7$llrr at row time (AudioAdapter applyTrackerRow): every
+// sub-column the repeated row leaves blank is filled from the ditto's source
+// row. Those would-be-played values are drawn in grey so the repeat is visible
+// as what it will actually sound like, without pretending the cells hold data.
+//
+// ONE DELIBERATE DIVERGENCE from the engine: on the ARMING row the engine
+// suppresses the ditto opcode and inherits the source's effect instead, but
+// that cell is real content the user typed — the fx ghost is therefore only
+// reported where the fx column DISPLAYS empty. Ghosts only ever fill blanks.
+const OP_DITTO = 7
+const colDitto = 248   // grey: ghosted (would-be-repeated) sub-columns
+
+// Cached per pattern index; rebuilt lazily. Invalidated wherever song.patterns
+// changes (every patternsOutOfSync = true site) and on song load/switch.
+let dittoGhostCache = null
+function invalidateDittoGhosts() { dittoGhostCache = null }
+
+function dittoGhostsFor(ptnIdx) {
+    if (dittoGhostCache === null) dittoGhostCache = []
+    let g = dittoGhostCache[ptnIdx]
+    if (g === undefined) {
+        g = computeDittoGhosts(song.patterns[ptnIdx])
+        dittoGhostCache[ptnIdx] = g
+    }
+    return g
+}
+
+/**
+ * Ghost map for one 512-byte pattern: one entry per row, null outside every
+ * ditto region. Fields are -1 when that sub-column is NOT inherited.
+ * Always computed over the full 64 rows; a shorter cue masks the tail (see
+ * cueRowLimit) — rows past the limit never play, so masking is exact.
+ */
+function computeDittoGhosts(ptnDat) {
+    const out = new Array(ROWS_PER_PAT).fill(null)
+    if (!ptnDat) return out
+    let active = false, srcStart = 0, len = 0, endRow = 0
+    for (let r = 0; r < ROWS_PER_PAT; r++) {
+        const o = 8 * r
+        const effop = ptnDat[o+5]
+        const effarg = ptnDat[o+6] | (ptnDat[o+7] << 8)
+        const isArmer = (effop === OP_DITTO && effarg !== 0)
+        if (isArmer) {
+            const l = (effarg >>> 8) & 0xFF
+            const repeats = effarg & 0xFF
+            if (l > 0 && repeats > 0 && l <= r) {
+                srcStart = r - l
+                len = l
+                endRow = Math.min(r + l * repeats - 1, ROWS_PER_PAT - 1)
+                active = true
+            }
+            // else: malformed — leave a previously-armed ditto alone.
+        }
+        if (!active) continue
+        // The arming row is itself the first repeated row.
+        if (r < srcStart + len || r > endRow) continue
+
+        const s = 8 * (srcStart + ((r - srcStart) % len))
+        const g = { srcRow: s >>> 3, note: -1, inst: -1, vol: -1, pan: -1, fxop: -1, fxarg: 0 }
+        const srcNote = ptnDat[s] | (ptnDat[s+1] << 8)
+        if ((ptnDat[o] | (ptnDat[o+1] << 8)) === 0 && srcNote !== 0) g.note = srcNote
+        if (ptnDat[o+2] === 0 && ptnDat[s+2] !== 0) g.inst = ptnDat[s+2]
+        if (ptnDat[o+3] === 0xC0 && ptnDat[s+3] !== 0xC0) g.vol = ptnDat[s+3]
+        if (ptnDat[o+4] === 0xC0 && ptnDat[s+4] !== 0xC0) g.pan = ptnDat[s+4]
+        const srcOp = ptnDat[s+5]
+        if (effop === 0 && effarg === 0 && srcOp !== 0 && srcOp !== OP_DITTO) {
+            g.fxop = srcOp
+            g.fxarg = ptnDat[s+6] | (ptnDat[s+7] << 8)
+        }
+        out[r] = g
+    }
+    return out
+}
+
+// Playable row count of a cue (LEN / "halt at x" in either instruction word) —
+// the engine's endRow clamp. Mirrors decodeInstWord's PATLEN/HALTAT arms.
+function cueInstRowLimit(inst) {
+    if (!inst) return ROWS_PER_PAT
+    if (((inst >>> 12) & 15) !== 0) return ROWS_PER_PAT
+    const preamble = (inst >>> 8) & 15
+    const arg8 = inst & 0xFF
+    if (preamble === 0b0010) return (arg8 & 0x3F) + 1
+    if (preamble === 0b0001 && (arg8 & 0xC0) === 0x40) {
+        const x = arg8 & 0x3F
+        return (x === 0) ? ROWS_PER_PAT : x
+    }
+    return ROWS_PER_PAT
+}
+function cueRowLimit(cue) {
+    return Math.min(cueInstRowLimit(cue.instr), cueInstRowLimit(cue.instr1))
+}
+
+// Per-field ink: a ghosted sub-column goes grey, everything else keeps its own.
+function cellNoteFg(cell)  { return cell._gNote ? colDitto : noteColour(cell._note) }
+function cellInstFg(cell)  { return cell._gInst ? colDitto : instColour(cell._inst) }
+function cellVolFg(cell)   { return cell._gVol  ? colDitto : colVol }
+function cellPanFg(cell)   { return cell._gPan  ? colDitto : colPan }
+function cellFxOpFg(cell)  { return cell._gFx   ? colDitto : colEffOp }
+function cellFxArgFg(cell) { return cell._gFx   ? colDitto : colEffArg }
+// Sub-field column order: note, inst, vol, pan, fx op, fx arg (cursor overlays).
+function cellFieldFg(cell, col) {
+    return (col === 0) ? cellNoteFg(cell)
+         : (col === 1) ? cellInstFg(cell)
+         : (col === 2) ? cellVolFg(cell)
+         : (col === 3) ? cellPanFg(cell)
+         : (col === 4) ? cellFxOpFg(cell)
+         : cellFxArgFg(cell)
+}
+
 /**
  * Builds the coloured string fragments for a single row of pattern data.
+ * `ghost` (optional) is that row's computeDittoGhosts entry: the listed
+ * sub-columns are replaced by the ditto source's values and flagged grey.
  */
-function buildRowCell(ptnDat, row) {
+function buildRowCell(ptnDat, row, ghost) {
     const off = 8 * row
 
-    const note = ptnDat[off] | (ptnDat[off+1] << 8)
-    const inst = ptnDat[off+2]
-    const voleff = ptnDat[off+3]
+    let note = ptnDat[off] | (ptnDat[off+1] << 8)
+    let inst = ptnDat[off+2]
+    let voleff = ptnDat[off+3]
+    let paneff = ptnDat[off+4]
+    let effop = ptnDat[off+5]
+    let effarg = ptnDat[off+6] | (ptnDat[off+7] << 8)
+    let gNote = false, gInst = false, gVol = false, gPan = false, gFx = false
+    if (ghost) {
+        if (ghost.note >= 0) { note = ghost.note; gNote = true }
+        if (ghost.inst >= 0) { inst = ghost.inst; gInst = true }
+        if (ghost.vol  >= 0) { voleff = ghost.vol; gVol = true }
+        if (ghost.pan  >= 0) { paneff = ghost.pan; gPan = true }
+        if (ghost.fxop >= 0) { effop = ghost.fxop; effarg = ghost.fxarg; gFx = true }
+    }
     const voleffarg = voleff & 63
-    const paneff = ptnDat[off+4]
     const paneffarg = paneff & 63
-    const effop = ptnDat[off+5]
-    const effarg = ptnDat[off+6] | (ptnDat[off+7] << 8)
 
     const sNote = noteToStr(note)
 
@@ -877,7 +998,8 @@ function buildRowCell(ptnDat, row) {
     }
 
     return { sNote, sInst, sVolEff, sVolArg, sPanEff, sPanArg, sEffOp, sEffArg,
-             _note: note, _inst: inst, _effop: effop, _effarg: effarg, _voleff: voleff, _paneff: paneff }
+             _note: note, _inst: inst, _effop: effop, _effarg: effarg, _voleff: voleff, _paneff: paneff,
+             _gNote: gNote, _gInst: gInst, _gVol: gVol, _gPan: gPan, _gFx: gFx }
 }
 
 const EMPTY_CELL = {
@@ -889,19 +1011,20 @@ const EMPTY_CELL = {
     sPanArg: sym.middot.repeat(2),
     sEffOp:  sym.middot,
     sEffArg: sym.middot.repeat(4),
-    _note: 0x0000, _inst: 0, _effop: 0, _effarg: 0, _voleff: 0, _paneff: 0
+    _note: 0x0000, _inst: 0, _effop: 0, _effarg: 0, _voleff: 0, _paneff: 0,
+    _gNote: false, _gInst: false, _gVol: false, _gPan: false, _gFx: false
 }
 
 function drawCellAt(y, x, cell, back) {
     con.move(y, x)
-    con.color_pair(noteColour(cell._note), back); print(cell.sNote)
-    con.color_pair(instColour(cell._inst), back); print(cell.sInst)
-    con.color_pair(colVol,    back); print(cell.sVolEff)
-    con.color_pair(colVol,    back); print(cell.sVolArg)
-    con.color_pair(colPan,    back); print(cell.sPanEff)
-    con.color_pair(colPan,    back); print(cell.sPanArg)
-    con.color_pair(colEffOp,  back); print(cell.sEffOp)
-    con.color_pair(colEffArg, back); print(cell.sEffArg)
+    con.color_pair(cellNoteFg(cell),  back); print(cell.sNote)
+    con.color_pair(cellInstFg(cell),  back); print(cell.sInst)
+    con.color_pair(cellVolFg(cell),   back); print(cell.sVolEff)
+    con.color_pair(cellVolFg(cell),   back); print(cell.sVolArg)
+    con.color_pair(cellPanFg(cell),   back); print(cell.sPanEff)
+    con.color_pair(cellPanFg(cell),   back); print(cell.sPanArg)
+    con.color_pair(cellFxOpFg(cell),  back); print(cell.sEffOp)
+    con.color_pair(cellFxArgFg(cell), back); print(cell.sEffArg)
 }
 
 // Styles: -1 = spaced (dddd ii vv pp effff, 19 chars)
@@ -912,16 +1035,16 @@ function drawCellAtStyled(y, x, cell, back, style) {
     if (style === 0) { drawCellAt(y, x, cell, back); return }
     if (style === -1) {
         con.move(y, x)
-        con.color_pair(noteColour(cell._note), back); print(cell.sNote)
+        con.color_pair(cellNoteFg(cell), back); print(cell.sNote)
         con.color_pair(colBackPtn, back); print(' ')
-        con.color_pair(instColour(cell._inst), back); print(cell.sInst)
+        con.color_pair(cellInstFg(cell), back); print(cell.sInst)
         con.color_pair(colBackPtn, back); print(' ')
-        con.color_pair(colVol,     back); print(cell.sVolEff); print(cell.sVolArg)
+        con.color_pair(cellVolFg(cell),  back); print(cell.sVolEff); print(cell.sVolArg)
         con.color_pair(colBackPtn, back); print(' ')
-        con.color_pair(colPan,     back); print(cell.sPanEff); print(cell.sPanArg)
+        con.color_pair(cellPanFg(cell),  back); print(cell.sPanEff); print(cell.sPanArg)
         con.color_pair(colBackPtn, back); print(' ')
-        con.color_pair(colEffOp,   back); print(cell.sEffOp)
-        con.color_pair(colEffArg,  back); print(cell.sEffArg)
+        con.color_pair(cellFxOpFg(cell),  back); print(cell.sEffOp)
+        con.color_pair(cellFxArgFg(cell), back); print(cell.sEffArg)
         return
     }
     // Styles 1 and 2: note-or-fx field (5 chars) starts on the border column [+ vol-or-pan (2 chars)]
@@ -932,19 +1055,19 @@ function drawCellAtStyled(y, x, cell, back, style) {
     con.move(y, x)
     if (!noteEmpty) {
         con.color_pair(colBackPtn, back); print(' ')
-        con.color_pair(noteColour(cell._note), back); print(cell.sNote)
+        con.color_pair(cellNoteFg(cell), back); print(cell.sNote)
     } else if (!fxEmpty) {
-        con.color_pair(colEffOp,  back); print(cell.sEffOp)
-        con.color_pair(colEffArg, back); print(cell.sEffArg)
+        con.color_pair(cellFxOpFg(cell),  back); print(cell.sEffOp)
+        con.color_pair(cellFxArgFg(cell), back); print(cell.sEffArg)
     } else {
         con.color_pair(colNote, back); print(sym.middot.repeat(5))
     }
     if (style === 1) {
         //con.color_pair(colBackPtn, back); print(' ')
         if (!volEmpty) {
-            con.color_pair(colVol, back); print(cell.sVolEff); print(cell.sVolArg)
+            con.color_pair(cellVolFg(cell), back); print(cell.sVolEff); print(cell.sVolArg)
         } else if (!panEmpty) {
-            con.color_pair(colPan, back); print(cell.sPanEff); print(cell.sPanArg)
+            con.color_pair(cellPanFg(cell), back); print(cell.sPanEff); print(cell.sPanArg)
         } else {
             con.color_pair(colVol, back); print(sym.middot.repeat(2))
         }
@@ -1754,7 +1877,6 @@ function drawVoiceMeters() {
 
 // Sub-field layout for style-0 cells (shared by drawPatternRowAt and drawVoiceColumnAt)
 const TL_FIELD_OFFSETS = [0, 4, 6, 8, 10, 11]
-const TL_FIELD_FGS     = [colNote, colInst, colVol, colPan, colEffOp, colEffArg]
 
 function drawPatternRowAt(viewRow, style = timelineRowStyle) {
     const actualRow = scrollRow + viewRow
@@ -1782,6 +1904,8 @@ function drawPatternRowAt(viewRow, style = timelineRowStyle) {
     }
     // TODO scroll indicator on x=SCRW?
 
+    // Ditto ghosts stop where the cue does (rows past the limit never play).
+    const ghostRows = cueRowLimit(cue)
     for (let c = 0; c < VOCSIZE_TIMELINE_FULL; c++) {
         const voice = voiceOff + c
         const x = PTNVIEW_OFFSET_X + COLSIZE_TIMELINE_FULL * c
@@ -1789,16 +1913,15 @@ function drawPatternRowAt(viewRow, style = timelineRowStyle) {
         if (actualRow < ROWS_PER_PAT && voice < song.numVoices) {
             const ptnIdx = cue.ptns[voice]
             if (ptnIdx !== CUE_EMPTY && ptnIdx < song.numPats) {
-                cell = buildRowCell(song.patterns[ptnIdx], actualRow)
+                const ghost = (actualRow < ghostRows) ? dittoGhostsFor(ptnIdx)[actualRow] : null
+                cell = buildRowCell(song.patterns[ptnIdx], actualRow, ghost)
             }
         }
         drawCellAtStyled(y, x, cell, back, style)
         if (style === 0 && highlight && playbackMode === PLAYMODE_NONE && voice === cursorVox) {
             const fieldStr = [cell.sNote, cell.sInst, cell.sVolEff+cell.sVolArg,
                               cell.sPanEff+cell.sPanArg, cell.sEffOp, cell.sEffArg][timelineColCursor]
-            const ovFg = (timelineColCursor === 0) ? noteColour(cell._note)
-                       : (timelineColCursor === 1) ? instColour(cell._inst)
-                       : TL_FIELD_FGS[timelineColCursor]
+            const ovFg = cellFieldFg(cell, timelineColCursor)
             con.move(y, x + TL_FIELD_OFFSETS[timelineColCursor])
             con.color_pair(ovFg, patternEditMode ? colEditHL : colPlayback)
             print(fieldStr)
@@ -2130,6 +2253,7 @@ function drawVoiceColumnAt(slot) {
     const x      = PTNVIEW_OFFSET_X + COLSIZE_TIMELINE_FULL * slot
     const cue    = song.cues[cueIdx]
     const ptnIdx = (voice < song.numVoices) ? cue.ptns[voice] : CUE_EMPTY
+    const ghostRows = cueRowLimit(cue)
 
     for (let vr = 0; vr < PTNVIEW_HEIGHT; vr++) {
         const actualRow = scrollRow + vr
@@ -2140,15 +2264,14 @@ function drawVoiceColumnAt(slot) {
         let cell = EMPTY_CELL
         if (actualRow < ROWS_PER_PAT && voice < song.numVoices &&
                 ptnIdx !== CUE_EMPTY && ptnIdx < song.numPats) {
-            cell = buildRowCell(song.patterns[ptnIdx], actualRow)
+            const ghost = (actualRow < ghostRows) ? dittoGhostsFor(ptnIdx)[actualRow] : null
+            cell = buildRowCell(song.patterns[ptnIdx], actualRow, ghost)
         }
         drawCellAtStyled(y, x, cell, back, timelineRowStyle)
         if (timelineRowStyle === 0 && highlight && playbackMode === PLAYMODE_NONE && voice === cursorVox) {
             const fieldStr = [cell.sNote, cell.sInst, cell.sVolEff+cell.sVolArg,
                               cell.sPanEff+cell.sPanArg, cell.sEffOp, cell.sEffArg][timelineColCursor]
-            const ovFg = (timelineColCursor === 0) ? noteColour(cell._note)
-                       : (timelineColCursor === 1) ? instColour(cell._inst)
-                       : TL_FIELD_FGS[timelineColCursor]
+            const ovFg = cellFieldFg(cell, timelineColCursor)
             con.move(y, x + TL_FIELD_OFFSETS[timelineColCursor])
             con.color_pair(ovFg, patternEditMode ? colEditHL : colPlayback)
             print(fieldStr)
@@ -2361,6 +2484,7 @@ function finishLoadCommon() {
     audio.set64ChannelMode(is64Channel)
     refreshSamplesCache()
     invalidateMetaLayerFlags()
+    invalidateDittoGhosts()
     patternsOutOfSync = false
     audio.setMasterVolume(PLAYHEAD, 255)
     audio.setMasterPan(PLAYHEAD, 128)
@@ -3344,7 +3468,7 @@ function editPatternCell(ptnDat, row, col, ev, popupPos) {
         else if (isClear) { ptnDat[o+6] = 0; ptnDat[o+7] = 0; changed = true }
     }
 
-    if (changed) { patternsOutOfSync = true; if (HUB && HUB.markUnsaved) HUB.markUnsaved() }
+    if (changed) { patternsOutOfSync = true; invalidateDittoGhosts(); if (HUB && HUB.markUnsaved) HUB.markUnsaved() }
     return { changed, advance, audition, octave }
 }
 
@@ -3701,6 +3825,7 @@ function openPatternToolsPopup() {
 
     if (changed) {
         patternsOutOfSync = true
+        invalidateDittoGhosts()
         hasUnsavedChanges = true
     }
     drawAll()
@@ -3803,6 +3928,7 @@ function applyPatternOrder(order, canon) {
     for (let c = 0; c <= Math.max(oldLast, Math.max(0, song.lastActiveCue)); c++)
         audio.uploadCue(c, encodeCue(song.cues[c]))
     patternsOutOfSync = true
+    invalidateDittoGhosts()
     reuploadPatternsIfNeeded()
     const zerosPat = new Array(PATTERN_SIZE).fill(0)
     for (let p = song.numPats; p < oldNumPats; p++) audio.uploadPattern(p, zerosPat)
@@ -4062,7 +4188,8 @@ function drawPatternPaneRowAt(pane, viewRow) {
     con.move(y, x0 + 2)
     con.color_pair(colBackPtn, cellBack); con.addch(32)
 
-    const cell = buildRowCell(ptn, actualRow)
+    // No cue context in the Patterns panel — ghosts span the full 64 rows.
+    const cell = buildRowCell(ptn, actualRow, dittoGhostsFor(pIdx)[actualRow])
     drawCellAtStyled(y, cellX, cell, cellBack, -1)
 
     // Sub-field cursor overlay (active pane only, not on the playhead row).
@@ -4077,10 +4204,9 @@ function drawPatternPaneRowAt(pane, viewRow) {
             cell.sEffOp,
             cell.sEffArg,
         ]
-        const fieldFgs     = [noteColour(cell._note), instColour(cell._inst), colVol, colPan, colEffOp, colEffArg]
         const col = patternGridCol
         con.move(y, cellX + fieldOffsets[col])
-        con.color_pair(fieldFgs[col], patternEditMode ? colEditHL : colHighlight)
+        con.color_pair(cellFieldFg(cell, col), patternEditMode ? colEditHL : colHighlight)
         print(fieldStrs[col])
     }
 }
@@ -4990,7 +5116,7 @@ HUB.remapPatternInstrument = (from, to) => {
             if ((ptn[o] & 0xFF) === from) { ptn[o] = to & 0xFF; n++ }
         }
     }
-    if (n > 0) { patternsOutOfSync = true; reuploadPatternsIfNeeded(); HUB.markUnsaved() }
+    if (n > 0) { patternsOutOfSync = true; invalidateDittoGhosts(); reuploadPatternsIfNeeded(); HUB.markUnsaved() }
     return n
 }
 
