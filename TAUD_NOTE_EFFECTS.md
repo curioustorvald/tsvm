@@ -1167,6 +1167,14 @@ The crucial bug fix relative to ST3: the loop-counter decrement **MUST** happen 
 
 **Implementation.** On tick `$x`, the engine **MUST** set `output_volume = 0` but **MUST** leave `base_volume` unchanged. If `$x ≥ speed`, the cut **MUST NOT** fire. If `$x == 0`, the command **MUST** be ignored. The engine **MUST** set the `note_was_cut` flag so that a later Q retrigger on the same row is suppressed.
 
+## S $C0yy — Key off in $yy ticks
+
+**Plain.** Triggers a Note Off command after $yy ticks. `S $C000` is ignored.
+
+**Compatibility.** FT2 `Kxx` maps directly.
+
+**Implementation.** TODO
+
 ## S $Dx00 — Note delay for $x ticks
 
 **Plain.** Delays the triggering of the note (and any co-row instrument, offset, and volume event) until tick `$x`. Until then, any currently playing note continues.
