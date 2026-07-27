@@ -2460,8 +2460,9 @@ instrument record). Layer records begin at byte 4.
       its own Ixmp patch list. Legacy files leave this byte 0x00.
     - P: this instrument is percussion, retuner/transposer MUST NOT touch it
 1   Uint8  Metainstrument length (layer count, 1..25 — the record holds at most 25)
-2   Bit16  Metainstrument identifier
-    - 0xFFFF
+1   Uint8  Metainstrument identifier
+    - 0xFF (not otherwise specified)
+1   Uint8  Sentinel. Always 0xFF
 4   * Repetition of (one 10-byte record per layer):
     Uint8  Instrument index (low 8 bits) — MUST be a normal instrument, never a
            Metainstrument. The full index is 10 bits (0..1023): bits 0..7 here, bits
@@ -3432,13 +3433,14 @@ prefixes:
         ** Repetition of:
         Bit8   Patch definition version
             Version numbers are essentially feature bit-flags, where:
-            0b x00 Pfpvi
+            0b x0s Pfpvi
                 i: always set (version 1)
                 v: has volume envelopes
                 p: has pan envelopes
                 f: has filter envelopes
                 P: has pitch envelopes
                 x: extra base info
+                s: stereo/surround data
         Uint16 Pitch start                 ; Taud 4096-TET noteVal (same scale as pattern-cell note)
         Uint16 Pitch end (inclusive)
         Uint8  Volume start                ; 0..63
@@ -3485,6 +3487,14 @@ prefixes:
         Bit16  Pitch envelope LOOP word    ; identical to base instrument byte 197..198 (the 2nd pf-env slot)
         Bit16  Pitch envelope SUSTAIN word ; identical to base instrument byte 199..200
         Bit16x25 Pitch envelopes           ; identical to base instrument byte 201..250
+        * Patch definition flag 's'
+        Uint8  Number of channels & channel mode
+            0b cccc mmmm
+                c: channel count minus one. 1 for stereo, 3 for quadraphonic, etc.
+                m: 0 for discrete channels (XY stereo, 4-track quadraphonic), 1 for matrix-transformed channels (e.g. MS stereo, first-order ambisonics B-format), 2+ is reserved
+        Uint24  Extra info flags that affects panning rule. Interpretation depends on what value the field above has. RESERVED. Note to self: Ambisonics A-format must be specified here.
+        ** Repetition of (rep count: cccc):
+        Uint32 Sample pointer for second/third/etc. channel (length, play/loop start, sampling rate, etc., all follows the parent data)
 
     Notes:
     0. this extension is made to support IT/XM instrument spec as well as partial compatibility to SF2 (Soundfont format two)
