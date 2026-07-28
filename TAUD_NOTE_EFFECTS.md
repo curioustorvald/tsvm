@@ -741,22 +741,6 @@ on every tick (including tick 0):
 
 Peak at maximum settings: $7F × $FF >> 9 = $3F — the full panning range. Retrigger behaviour tracks the S $5x waveform nibble bit 2: cleared means retrigger on new note, set means preserve LFO position.
 
-## X $eeaa — Spherical panning by azimuth $aa and elevation $ee
-
-**Plain.** In Ambisonics mode, this command positions a sound source using azimuth and elevation, where azimuth 0°..360° maps to $00..$FF. Elevation is stored as a signed 8-bit integer, where −128 represents −90° and +127 represents approximately +90°.
-
-**Compatibility.** Unique to Taud. On IT, this command is called "Fine Set Panning" and sets the panning position of the current channel, $00 being full-left and $FF being full-right. Convert to `S $80xx`.
-
-**Implementation.** TODO.
-
-## 4 $eeaa — Set target for spherical panning slide
-
-**Plain.** In Ambisonics mode, this command positions a sound source sliding target using azimuth and elevation, where azimuth 0°..360° maps to $00..$FF. Elevation is stored as a signed 8-bit integer, where −128 represents −90° and +127 represents approximately +90°. Use command `S $90xx` to initiate sliding.
-
-**Compatibility.** Unique to Taud.
-
-**Implementation.** TODO.
-
 ## 5 $xxyy and 6 $xxyy — Filter Cutoff/Resonance Control
 
 **Plain.** `5` sets the cutoff and `6` sets the resonance of the instrument's filter directly. When the filter is in ImpulseTracker mode, only the high byte (the `xx` part) is read; when the filter is in SoundFont2 mode, both bytes are read. Argument `$FFFF` resets the parameter to its default value (for both IT and SF2 mode). Every note that shares the instrument is affected — the change is **instrument-wide**, not per-voice. If cutoff vibrato is what you are after, modify the filter envelope directly.
@@ -1121,14 +1105,6 @@ In surround mode, the lower 17 bits encodes angle, $000 being left (0°), $080 b
 
 **Implementation.** Write `channel_pan = arg & $FF`. The pan value is applied at the mixer: `left_gain = (($FF − pan) × $100) >> 8`, `right_gain = (pan × $100) >> 8`, with both applied before the global volume stage.
 
-## S $9xxx — Start spherical panning slide
-
-**Plain.** Slides the spherical panning by speed `$xxx`. The speed rate is 1/16 of an azimuth unit per tick (see effect `X $eeaa`). `S 9000` continues the slide by reusing the previously specified slide speed. If the start and target directions are identical, nothing **MUST** happen. If the start and target directions are antipodal, the interpolation path is implementation-defined.
-
-**Compatibility.** Unique to Taud. On IT (S9x) and FT2 (X9x), this command is known as Sound control and only `S91` was valid which is 'Surround On'. The converter **MUST** set the project data to enable surround mode instead.
-
-**Implementation.** Convert the start and target azimuth/elevation to unit direction vectors. An implementation *MUST* interpolate the source position along the shortest great-circle path at constant angular velocity. Quaternion-based SLERP using minimal-rotation quaternions is the **RECOMMENDED** implementation.
-
 ## S $Bx00 — Pattern loop
 
 **Plain.** Sets a loop point and loops within a pattern. `S $B000` marks the current row as the loop start (per channel, not per song); `S $Bx00` with $x > 0 returns playback to the saved row and plays the intervening range `$x` more times (so `$B200` plays the loop twice total beyond the initial pass).
@@ -1167,21 +1143,21 @@ The crucial bug fix relative to ST3: the loop-counter decrement **MUST** happen 
 
 **Implementation.** On tick `$x`, the engine **MUST** set `output_volume = 0` but **MUST** leave `base_volume` unchanged. If `$x ≥ speed`, the cut **MUST NOT** fire. If `$x == 0`, the command **MUST** be ignored. The engine **MUST** set the `note_was_cut` flag so that a later Q retrigger on the same row is suppressed.
 
-## S $C0yy — Key off in $yy ticks
+## S $Dxny — Note delay for $x ticks, then note cut (or any action of $n) after $y ticks
 
-**Plain.** Triggers a Note Off command after $yy ticks. `S $C000` is ignored.
+**Plain.** Delays the triggering of the note (and any co-row instrument, offset, and volume event) until tick `$x`. Until then, any currently playing note continues. If `$y` is nonzero, following action will be triggered after `$y` ticks after note triggering.
 
-**Compatibility.** FT2 `Kxx` maps directly.
+|`$n`|Action|
+|---|---|
+|0|Note off|
+|1|Note cut|
+|2|Note continue|
+|3|Note fade|
+|4|Key lift|
 
-**Implementation.** TODO
+**Compatibility.** ST3 `SDx` maps directly. ProTracker `EDx` also maps directly. FastTracker `Kxx` maps to `S D00xx`. `S D0**` plays the note normally on tick 0. If `$x ≥ speed`, the note **MUST NOT** play on this row and **MUST NOT** carry over to the next row. Some trackers allow playback of "malformed" note delays (`$x` greater than current tick speed); Taud **MUST** discard those notes. If such note events have been encountered during conversion, they **MUST** be corrected by the converter.
 
-## S $Dx00 — Note delay for $x ticks
-
-**Plain.** Delays the triggering of the note (and any co-row instrument, offset, and volume event) until tick `$x`. Until then, any currently playing note continues.
-
-**Compatibility.** ST3 `SDx` maps directly. ProTracker `EDx` also maps directly. `SD0` plays the note normally on tick 0. If `$x ≥ speed`, the note **MUST NOT** play on this row and **MUST NOT** carry over to the next row. Some trackers allow playback of "malformed" note delays (`$x` greater than current tick speed); Taud **MUST** discard those notes. If such note events have been encountered during conversion, they **MUST** be corrected by the converter.
-
-**Implementation.** On row parse, the engine **MUST** defer the note-trigger event (including sample selection, volume, offset, and any volume-column effect) until tick `$x`. On tick `$x`, the engine **MUST** execute the deferred trigger. When combined with pattern delay (S $Ex00), the deferred trigger **MUST** re-fire at the start of each row repetition — matching ST3's `kRowDelayWithNoteDelay` behaviour. If `$x` is greater than the current tick speed, the note **MUST** be discarded (see compatibility notes above).
+**Implementation.** On row parse, the engine **MUST** defer the note-trigger event (including sample selection, volume, offset, and any volume-column effect) until tick `$x`. On tick `$x`, the engine **MUST** execute the deferred trigger. When combined with pattern delay (S $Ex00), the deferred trigger **MUST** re-fire at the start of each row repetition — matching ST3's `kRowDelayWithNoteDelay` behaviour. If `$x` is greater than the current tick speed, the note **MUST** be discarded (see compatibility notes above). If `$x + $y` is greater than the current tick speed, the action `$n` will be discarded.
 
 ## S $Ex00 — Pattern delay for $x row-repeats
 
@@ -1220,6 +1196,34 @@ on sample byte read during loop playback:
 ```
 
 `S $F000` **MUST** clear `funk_accumulator` but **MUST** leave `funk_mask` intact (the accumulated inversion pattern persists). **On every fresh note trigger**, `funk_write_pos` **MUST** reset to 0 (matching PT2's `n_wavestart = n_loopstart`); `funk_accumulator` and `funk_speed` **MUST** persist across notes. The `funk_mask` itself **MUST** be cleared only on cue-start reset (i.e. song-start / stop-and-replay) — within a single playback session it accumulates as PT2's destructive in-place edits would, but a clean replay **MUST** reproduce the same audio without needing to reload the song from disk.
+
+## Spatial panning effects
+
+Three commands are reserved specifically for spatial panning, enabled via song flags.
+
+### X $eeaa — Spherical panning by azimuth $aa and elevation $ee
+
+**Plain.** In spatial surround mode, this command positions a sound source using azimuth and elevation, where azimuth 0°..360° maps to $00..$FF. Elevation is stored as a signed 8-bit integer, where −128 represents −90° and +127 represents approximately +90°.
+
+**Compatibility.** Unique to Taud. On IT, this command is called "Fine Set Panning" and sets the panning position of the current channel, $00 being full-left and $FF being full-right. Convert to `S $80xx`.
+
+**Implementation.** TODO.
+
+### 4 $eeaa — Set target for spherical panning slide
+
+**Plain.** In spatial surround mode, this command positions a sound source sliding target using azimuth and elevation, where azimuth 0°..360° maps to $00..$FF. Elevation is stored as a signed 8-bit integer, where −128 represents −90° and +127 represents approximately +90°. Use command `Z $0xxx` to initiate sliding.
+
+**Compatibility.** Unique to Taud.
+
+**Implementation.** TODO.
+
+### Z $0xxx — Start spherical panning slide
+
+**Plain.** Slides the spherical panning by speed `$xxx`. The speed rate is 1/16 of an azimuth unit per tick (see effect `X $eeaa`). `Z 0000` continues the slide by reusing the previously specified slide speed. If the start and target directions are identical, nothing **MUST** happen. If the start and target directions are antipodal, the interpolation path is implementation-defined.
+
+**Compatibility.** Unique to Taud — no ST3/IT/PT equivalent. The effect has its own memory slot.
+
+**Implementation.** Convert the start and target azimuth/elevation to unit direction vectors. An implementation *MUST* interpolate the source position along the shortest great-circle path at constant angular velocity. Quaternion-based SLERP using minimal-rotation quaternions is the **RECOMMENDED** implementation.
 
 ## Volume column effects
 

@@ -3310,7 +3310,10 @@ Endianness: Little
     Uint16  Number of cues in the (v2) CUE SHEET. Lets a loader size the cue image
             without deriving it from the decompressed length; 0 in a legacy v1 file
             (where the reader falls back to decompressed_size / 32). Added 2026-07-01.
-    Byte[4] RESERVED
+    Uint8   Immutable song flags
+        0b 0000 00ss
+            ss: surround model (0: stereo, 1: planar aka 360° panning, 2: spatial)
+    Byte[3] RESERVED
 
     Taud device can queue up to 2 "playdata" in its buffer, which can be interpreted as a song.
 
