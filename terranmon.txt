@@ -3516,11 +3516,16 @@ prefixes:
     5. Sentinel values listed above ("no override") let a patch defer to the base instrument for a given field — used by converters that don't carry per-sample data for one of the dimensions (e.g. SF2 ignoring per-sample pan).
     6. ON-WIRE BLOCK ORDER. The version byte's flag bits gate which optional blocks
        follow the fixed common fields. When present they ALWAYS appear in this order
-       regardless of bit numbering: x, v, p, f, P. A decoder walks them in that order,
+       regardless of bit numbering: x, v, p, f, P, s. A decoder walks them in that order,
        skipping any whose flag bit is 0. (Block sizes: x = 12 bytes; each of v/p/f/P =
        2 (LOOP) + 2 (SUSTAIN) + 50 (25 nodes) = 54 bytes.) A version byte with only the
        'i' bit set yields the legacy 31-byte record (version byte + 30 common bytes,
        no blocks) — byte-identical to pre-2026-06-13 Ixmp patches.
+       's' is LAST because it is the only block whose size is not fixed by the version
+       byte — it carries one Uint32 per EXTRA channel, so its length is read from its own
+       count/mode byte. Putting it last keeps every other block at the offset a
+       pre-stereo decoder expects, and a decoder that does not implement multi-channel
+       playback only needs to step over it (4 + 4·cccc bytes) to stay in sync.
     7. PITCH vs FILTER envelopes. The 'f' (filter) and 'P' (pitch) blocks map onto the
        base instrument's TWO pf-envelope slots: 'f' → byte 19..20/121..170/193..194
        (m=filter), 'P' → byte 197..198/201..250/199..200 (m=pitch). A patch may carry
@@ -3529,6 +3534,20 @@ prefixes:
        how SF2's single modulation envelope (which drives modEnvToPitch AND
        modEnvToFilterFc simultaneously) is represented; IT/XM instruments use only one
        pf-env (pitch XOR filter) and leave the other slot absent (P bit = 0).
+    8. MULTI-CHANNEL PLAYBACK ('s'). Every channel is a SEPARATE pool span; the patch's
+       length, play start, loop points, sampling rate and detune describe all of them, so
+       the channels are frame-aligned by construction and one voice plays the whole set —
+       one pitch, one envelope, one loop. Stereo (cccc = 1) is the only case implemented
+       today (web engine, 2026-07-28); quadraphonic/ambisonic are reserved.
+       PANNING RULE, discrete mode (mmmm = 0), NORMAL (non-surround) output: each channel
+       is fed through the engine's existing equal-energy pan law on its own side —
+       out.L += ch1 · vol · cos(pi·pan/512), out.R += ch2 · vol · sin(pi·pan/512).
+       A stereo sample whose channels are identical therefore sounds EXACTLY like the mono
+       sample it was made from (mono is the ch1 == ch2 case), and the pan column behaves
+       like a mixer balance: hard left silences the right channel. In matrix mode
+       (mmmm = 1) the pair is mid/side and decodes to L = M + S, R = M − S before that
+       rule is applied (the inverse of M = (L+R)/2, S = (L−R)/2). Surround and spatial
+       modes will define their own panning rules.
 
 --------------------------------------------------------------------------------
 

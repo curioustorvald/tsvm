@@ -382,7 +382,7 @@ class AudioJSR223Delegate(private val vm: VM) {
 
     /** Upload an Ixmp "extra samples" block for instrument [slot] (0-511). Patches are
      *  VARIABLE LENGTH (since 2026-06-13): each begins with a version byte (feature
-     *  bit-flags 0b x00Pfpvi) + 30 common bytes, optionally followed by the x/v/p/f/P
+     *  bit-flags 0b x0sPfpvi) + 30 common bytes, optionally followed by the x/v/p/f/P/s
      *  blocks in that order — see terranmon.txt "Ixmp. Instrument extra samples". A
      *  version byte with only the 'i' bit set is the legacy 31-byte record. Passing an
      *  empty array clears any previously-installed patches on this instrument. */
@@ -428,6 +428,21 @@ class AudioJSR223Delegate(private val vm: VM) {
             if (ver and 0x04 != 0) { val e = readEnv() ?: break; panEnv = e.first; panLoop = e.second; panSus = e.third }
             if (ver and 0x08 != 0) { val e = readEnv() ?: break; filEnv = e.first; filLoop = e.second; filSus = e.third }
             if (ver and 0x10 != 0) { val e = readEnv() ?: break; pitEnv = e.first; pitLoop = e.second; pitSus = e.third }
+            // 's' block (multi-channel, terranmon.txt "Patch definition flag 's'"):
+            // u8 channel count/mode + u24 reserved flags + one u32 pool pointer per
+            // EXTRA channel. This engine plays channel 1 only — stereo playback lives
+            // in the web engine (item 90) — but the block MUST still be stepped over,
+            // or every following patch in the blob would be read at the wrong offset.
+            // It is emitted last, so skipping it costs nothing else.
+            var chanBlock: IntArray? = null
+            if (ver and 0x20 != 0) {
+                if (p + 4 > bytes.size) break
+                val extraChans = (u8(p) ushr 4)
+                val blockLen = 4 + 4 * extraChans
+                if (p + blockLen > bytes.size) break
+                chanBlock = IntArray(blockLen) { u8(p + it) }
+                p += blockLen
+            }
             patches.add(AudioAdapter.TaudInstPatch(
                 pitchStart        = u16(o + 1),
                 pitchEnd          = u16(o + 3),
@@ -454,7 +469,8 @@ class AudioJSR223Delegate(private val vm: VM) {
                 pitchEnv = pitEnv, pitchEnvLoop = pitLoop, pitchEnvSustain = pitSus,
                 hasExtra = hasExtra, fadeoutStep = fadeoutStep, filterSfMode = filterSfMode,
                 extraCutoff = extraCutoff, extraResonance = extraResonance,
-                extraInitialAttenOctet = extraAttenOctet
+                extraInitialAttenOctet = extraAttenOctet,
+                chanBlock = chanBlock
             ))
             o = p
         }
@@ -487,6 +503,7 @@ class AudioJSR223Delegate(private val vm: VM) {
             if (p.panEnv != null)   ver = ver or 0x04
             if (p.filterEnv != null) ver = ver or 0x08
             if (p.pitchEnv != null) ver = ver or 0x10
+            if (p.chanBlock != null) ver = ver or 0x20
             w8(ver)
             w16(p.pitchStart); w16(p.pitchEnd)
             w8(p.volumeStart); w8(p.volumeEnd)
@@ -496,12 +513,13 @@ class AudioJSR223Delegate(private val vm: VM) {
             w8(p.loopMode); w8(p.defaultPan); w8(p.defaultNoteVolume)
             w8(p.vibratoSpeed); w8(p.vibratoSweep); w8(p.vibratoDepth)
             w8(p.vibratoRate); w8(p.vibratoWaveform)
-            // Blocks in the canonical on-wire order x, v, p, f, P.
+            // Blocks in the canonical on-wire order x, v, p, f, P, s.
             if (p.hasExtra) { w32(if (p.filterSfMode) 1 else 0); w32(0); w16(p.fadeoutStep); w16(p.extraCutoff); w16(p.extraResonance); w8(p.extraInitialAttenOctet) }
             p.volEnv?.let    { wEnv(it, p.volEnvLoop, p.volEnvSustain) }
             p.panEnv?.let    { wEnv(it, p.panEnvLoop, p.panEnvSustain) }
             p.filterEnv?.let { wEnv(it, p.filterEnvLoop, p.filterEnvSustain) }
             p.pitchEnv?.let  { wEnv(it, p.pitchEnvLoop, p.pitchEnvSustain) }
+            p.chanBlock?.forEach { w8(it) }   // 's' block, verbatim and last
         }
         return out.toIntArray()
     }

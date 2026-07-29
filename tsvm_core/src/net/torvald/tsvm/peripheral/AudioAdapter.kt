@@ -5423,7 +5423,13 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         val filterSfMode: Boolean = false,             // 'x' flag bit 0: false = IT, true = SoundFont
         val extraCutoff: Int = 0xFF,                   // default cutoff — IT byte (255=off) or 16-bit SF cents (0xFFFF=off)
         val extraResonance: Int = 0xFF,                // default resonance — IT byte (255=off) or 16-bit SF centibels (0xFFFF=off)
-        val extraInitialAttenOctet: Int = 0            // 'x' block per-patch initialAttenuation (dB-table octet; 0 = unity sentinel)
+        val extraInitialAttenOctet: Int = 0,           // 'x' block per-patch initialAttenuation (dB-table octet; 0 = unity sentinel)
+        // 's' block (multi-channel) kept VERBATIM: u8 count/mode + u24 flags + one u32
+        // pool pointer per extra channel. This engine plays channel 1 only — stereo
+        // rendering is the web engine's (item 90) — but the bytes must survive an
+        // upload → capture round trip, or re-saving a stereo project here would
+        // silently flatten it to mono. null when the patch carries no 's' block.
+        val chanBlock: IntArray? = null
     ) {
         val sampleLoopSustain: Boolean get() = (loopMode and 0x04) != 0
     }

@@ -164,13 +164,22 @@ const hasIxmpAPI = (typeof audio !== 'undefined' &&
 
 // Per-patch on-wire length from its version byte (terranmon.txt §Ixmp; mirrors
 // taud.mjs#patchLen / AudioJSR223Delegate). 31 common bytes + present blocks.
-function ixmpPatchLen(ver) {
+function ixmpPatchFixedLen(ver) {
     return 31
         + ((ver & 0x80) ? 15 : 0)   // x: extra-base-info (flags1+flags2+fadeout+cutoff+reson+atten)
         + ((ver & 0x02) ? 54 : 0)   // v: volume envelope
         + ((ver & 0x04) ? 54 : 0)   // p: panning envelope
         + ((ver & 0x08) ? 54 : 0)   // f: filter envelope
         + ((ver & 0x10) ? 54 : 0)   // P: pitch envelope
+}
+
+// 's' (multi-channel) carries one u32 pointer per EXTRA channel, so its size
+// comes from the block itself, not the version byte. It is emitted last.
+function ixmpPatchLen(b, o) {
+    const ver = b[o] & 0xFF
+    const fixed = ixmpPatchFixedLen(ver)
+    if (!(ver & 0x20)) return fixed
+    return fixed + 4 + 4 * (((b[o + fixed] ?? 0) & 0xFF) >>> 4)
 }
 
 // Walk instrument `slot`'s Ixmp patches; invoke cb(samplePtr, sampleLen, extra) per
@@ -184,8 +193,7 @@ function forEachIxmpPatchSample(slot, cb) {
     const u16 = (o) => (b[o] & 0xFF) | ((b[o+1] & 0xFF) << 8)
     let o = 0
     while (o + 31 <= b.length) {
-        const ver = b[o] & 0xFF
-        const len = ixmpPatchLen(ver)
+        const len = ixmpPatchLen(b, o)
         if (o + len > b.length) break
         const ptr = (b[o+7] & 0xFF) | ((b[o+8] & 0xFF) << 8) |
                     ((b[o+9] & 0xFF) << 16) | ((b[o+10] & 0xFF) * 0x1000000)
@@ -3943,8 +3951,19 @@ function decodeIxmpPatches(slot) {
     const out = []
     let o = 0
     while (o + 31 <= b.length) {
-        const ver = u8(o), len = ixmpPatchLen(ver)
+        const ver = u8(o), len = ixmpPatchLen(b, o)
         if (o + len > b.length) break
+        // 's' block (multi-channel, last on the wire): channel count/mode + the
+        // extra channels' pool pointers. The engine here plays channel 1 only;
+        // the count is decoded so the views can SAY the sample is stereo, and
+        // `raw` keeps the block verbatim so an edit round-trips it untouched.
+        let chanCount = 1, chanMode = 0, chanPtrs = []
+        if (ver & 0x20) {
+            const sp = o + ixmpPatchFixedLen(ver)
+            chanCount = (u8(sp) >>> 4) + 1
+            chanMode  = u8(sp) & 0x0F
+            for (let k = 0; k < chanCount - 1; k++) chanPtrs.push(u32(sp + 4 + 4 * k))
+        }
         let hasExtra = false, fadeoutStep = 0, extraCutoff = 0xFF, extraResonance = 0xFF, extraAtten = 0, filterSfMode = false
         if (ver & 0x80) {                       // 'x' block is always first after the common bytes
             const xp = o + 31
@@ -3975,6 +3994,7 @@ function decodeIxmpPatches(slot) {
             vibSpeed: u8(o+26), vibSweep: u8(o+27), vibDepth: u8(o+28), vibRate: u8(o+29), vibWave: u8(o+30),
             hasExtra, fadeoutStep, filterSfMode, extraCutoff, extraResonance, extraAtten,
             hasVol, hasPan, hasFil, hasPit, volEnv, panEnv, filterEnv, pitchEnv,
+            chanCount, chanMode, chanPtrs,
         })
         o += len
     }

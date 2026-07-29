@@ -348,13 +348,25 @@ function uploadTaudFile(inFile, songIndex, playhead) {
         }
         if (prjOk) {
             // Patches are VARIABLE LENGTH (since 2026-06-13): a version byte (feature
-            // bit-flags 0b x00Pfpvi) + 30 common bytes, then optional x/v/p/f/P blocks.
-            const patchLen = (ver) => 31
+            // bit-flags 0b x0sPfpvi) + 30 common bytes, then optional x/v/p/f/P/s blocks.
+            const patchFixedLen = (ver) => 31
                 + ((ver & 0x80) ? 15 : 0)   // x: extra-base-info (u32 flags1 + u32 flags2 + u16 fadeout + u16 cutoff + u16 reson + u8 initialAttenuation octet)
                 + ((ver & 0x02) ? 54 : 0)   // v: volume envelope
                 + ((ver & 0x04) ? 54 : 0)   // p: panning envelope
                 + ((ver & 0x08) ? 54 : 0)   // f: filter envelope
                 + ((ver & 0x10) ? 54 : 0)   // P: pitch envelope
+            // 's' (multi-channel, 2026-07-28) is the one block whose size is not
+            // fixed by the version byte: u8 count/mode + u24 flags + one u32
+            // sample pointer per EXTRA channel. It is emitted LAST, so every
+            // earlier block keeps the offset a pre-stereo reader expects; this
+            // walk only has to step over it to stay in sync.
+            const patchLen = (at) => {
+                const ver = sys.peek(filePtr + at) & 0xFF
+                const fixed = patchFixedLen(ver)
+                if (!(ver & 0x20)) return fixed
+                const chanByte = sys.peek(filePtr + at + fixed) & 0xFF
+                return fixed + 4 + 4 * (chanByte >>> 4)
+            }
             let p = projOff + 16  // skip magic(8) + reserved(8)
             while (p + 8 <= fileSize) {
                 const fc = String.fromCharCode(
@@ -381,7 +393,7 @@ function uploadTaudFile(inFile, songIndex, playhead) {
                         let blobLen = 0, scan = q, ok = true
                         for (let i = 0; i < patchCnt; i++) {
                             if (scan + 31 > qEnd) { ok = false; break }
-                            const len = patchLen(sys.peek(filePtr + scan) & 0xFF)
+                            const len = patchLen(scan)
                             if (scan + len > qEnd) { ok = false; break }
                             scan += len; blobLen += len
                         }
