@@ -2032,6 +2032,12 @@ TSVM Audio Adapter is consisted of 4 playheads, each playhead is capable of play
 
 Synchronisation between playheads are not guaranteed. Do not play a music across multiple playheads.
 
+NOTE: this section documents the ADAPTER — its memory windows, MMIO registers
+and playhead flags. The Taud data model itself lives in four companion
+documents: `TAUD_FILE_FORMAT.md` (container and record layouts),
+`TAUD_ENGINE_SPEC.md` (playback behaviour), `TAUD_NOTE_EFFECTS.md` (effect
+commands) and `TAUD_CONVERSION_NOTES.md` (importing other formats).
+
 
 Memory Space
 
@@ -2050,7 +2056,7 @@ Memory Space
                         A cue may therefore carry up to two instructions (e.g. LEN + JMP).
                         BAK / FWD / JMP arguments stay 12-bit (0..4095) even though the
                         sheet holds 8192 cues.
-                        In 64-channel mode, two "rows" encode one cue (128 bytes / 64 channels), the two-instruction limit is maintained (sign bits of every second row -- channels 32..63 -- don't encode anything). A 128k bank therefore holds 1024 cues (4096 total). 64-channel mode is selected by the xHDR section's Flags1 bit 0 (see Project Data) and is implemented by the engine (device flag / MMIO 49 bit 0), Taut editor and Playtaud as of 2026-07-03.
+                        In 64-channel mode, two "rows" encode one cue (128 bytes / 64 channels), the two-instruction limit is maintained (sign bits of every second row -- channels 32..63 -- don't encode anything). A 128k bank therefore holds 1024 cues (4096 total). 64-channel mode is selected by the xHDR section's Flags1 bit 0 (see `TAUD_FILE_FORMAT.md` § "Project Data") and is implemented by the engine (device flag / MMIO 49 bit 0), Taut editor and Playtaud as of 2026-07-03.
 
     ## Instruction (16-bit word; byte30 = word>>8, byte31 = word&0xFF)
         1000xxxx yyyyyyyy (BAK) - Go back 0bxxxxyyyyyyyy cues
@@ -2077,455 +2083,20 @@ address instruments by absolute index and are NOT affected by the bank register.
 instruments are not addressable by a pattern cell (8-bit instrument field) — only a
 Metainstrument's layer table (10-bit index) can reference them.
 
-Instrument bin: Registry for 256 instruments, formatted as:
+Instrument bin: a registry of 256-byte instrument records (1024 of them across
+the directly-addressable and auxiliary bins).
 
-The instrument record is 256 bytes wide. Envelopes are described by FOUR
-independent regions per envelope (vol / pan / pitch-filter):
-    1. The 25 envelope nodes (offsets 21 / 71 / 121).
-    2. The LOOP word (offsets 15 / 17 / 19) — defines an always-active
-       wrap region. When enabled (b=1) and the envelope position reaches
-       loop_end, it wraps back to loop_start. Active regardless of key
-       state. This is the IT/FT2 envelope loop.
-    3. The SUSTAIN word (offsets 189 / 191 / 193) — defines a wrap
-       region that is ONLY active while the key is on. When the key
-       goes off the sustain "releases" and the envelope position is
-       free to walk past sus_end. Concretely:
-         - FT2-style "sustain point": store sus_start == sus_end (single
-           index). Engine wraps that index → itself, so the envelope
-           holds at the point until key-off.
-         - IT-style "sustain loop":  store sus_start <= sus_end. Engine
-           wraps sus_end → sus_start while key is on, so the envelope
-           loops within the sustain range until key-off.
-    4. (none — there is no separate "release loop"; once sustain releases
-       the envelope walks forward and is captured by the LOOP region if
-       the LOOP region exists and the position enters it.)
+The record layout — sample fields, the three envelopes with their LOOP /
+SUSTAIN / presence words, volume fadeout, auto-vibrato, filter defaults and
+interpretation mode, NNA, DCT/DCA, default note volume, initial attenuation and
+the two pitch-or-filter envelope slots — together with the Metainstrument record
+that aliases the same 256 bytes, is specified in `TAUD_FILE_FORMAT.md`
+§ "Instrument records". How the engine evaluates all of it (wrap priority, the
+two different envelope walkers, the cut rule, key lift, patch resolution, layer
+fan-out) is in `TAUD_ENGINE_SPEC.md`.
 
-Priority during playback follows schismtracker player/sndmix.c:480-499:
-    if SUSTAIN.b == 1 and !key_off : wrap (sus_start, sus_end)
-    elif LOOP.b == 1               : wrap (loop_start, loop_end)
-    else                           : hold at last node
-
-This means SUSTAIN takes precedence over LOOP while the key is on; once
-the key is released, LOOP becomes the active wrap region. Setting both
-to b=0 disables envelope wrapping entirely (envelope plays once and holds
-at its last node).
-
-The b flag is the SOLE enable bit for each region; the historical 't'
-(sustain breaks on key-off) and 'u' (sustain/loop enable) flags are NOT
-present in this encoding — sustain vs loop is now a structural
-distinction (different word at a different offset), not a flag bit.
-
-Envelope PRESENCE — distinct from LOOP/SUSTAIN enable — is signalled by
-the `P` bit at LOOP-word bit 13 (the high byte's bit 5; offsets 16/18/20
-bit 5). Added 2026-05-06 to disambiguate two cases that the wrap-enable
-bits cannot tell apart on their own:
-    P=0: the source had no envelope of this kind. Engine ignores the
-         node array entirely and the mixer skips envelope-driven output
-         for this voice (pan reads from channelPan only, cutoff/pitch
-         reads from sample defaults only). The 25 node slots may still
-         be left as default-fill garbage; nothing reads them.
-    P=1: envelope is defined. Engine evaluates the nodes every tick.
-         Wrap behaviour is independently controlled by LOOP.b and
-         SUSTAIN.b — when both are 0 the envelope walks once forward
-         and holds at its terminator (the IT idiom for envelope-driven
-         decay tails / shaped attacks).
-The P bit was introduced to fix a gating ambiguity for pan and pitch/
-filter envelopes: the engine could not distinguish "no envelope at all"
-(treat as absent) from "envelope present but neither LOOP nor SUSTAIN
-wrap is enabled" (evaluate and apply, just don't wrap). Volume envelope
-evaluation has always been unconditional in the engine (a default
-single-point envelope at value 63 is harmlessly held at unity), so
-P_vol is currently informational only — converters should still set it
-when the source defines a volume envelope, for consistency and to
-support future per-voice gating.
-
-P is the SOLE presence signal: converters MUST set P=1 whenever they
-emit envelope nodes, regardless of whether the source enables LOOP or
-SUSTAIN. Pre-2026-05-06 .taud files predate the P bit and will not have
-their pan / pf envelopes evaluated by the current engine — re-convert
-from source.
-
-Notes on importing SoundFont2 instruments: if the filter need to be turned off entirely, emit 'cut' in IT mode.
-
-0   Uint32 Sample Pointer
-    - If the high 16 bits are 0xFFFF — i.e. (samplePointer >> 16) == 0xFFFF, a
-      value no real sample pointer can take (the 8 MB sample bin caps pointers
-      at 0x7FFFFF) — this instrument is a "Metainstrument" and bytes 0..3 are
-      reinterpreted per "Metainstrument definition" below.
-4   Uint16 Sample length
-6   Uint16 Sampling rate at C4 (note number 0x5000)
-8   Uint16 Play Start (usually 0 but not always)
-10  Uint16 Loop Start (can be smaller than Play Start)
-12  Uint16 Loop End
-14  Bit8   Instrument/Sample Flags
-        0b 000P 0spp
-           pp: loop mode. 0-no loop, 1-loop, 2-backandforth, 3-oneshot (ignores note length unless overridden by other notes)
-           s: loop is sustain (key-off escapes the loop)
-            - IT: look for sample's SusLoop flag
-           P: this instrument is percussion, retuner/transposer MUST NOT touch it
-15  Bit16  Volume envelope LOOP word
-        * Always-active wrap region for the volume envelope. See SUSTAIN word at offset 189 for the key-on-only wrap.
-        * IMPORTANT: the `b` bit gates only the LOOP wrap behaviour. The volume
-          envelope itself is always evaluated whenever the per-voice volume-envelope
-          toggle is on (default true on note-on; switched by effect S $7x / S $8x).
-          This matches IT/Schism (player/sndmix.c:470-502): CHN_VOLENV is independent
-          of ENV_VOLLOOP / ENV_VOLSUSTAIN. An envelope with no LOOP and no SUSTAIN
-          (both `b` bits = 0) walks once from start to its terminator and holds —
-          which is the IT idiom for envelope-driven decay tails.
-        * The cut rule: when the volume envelope walks past the last real node in
-          fall-through (no active sustain or loop wrap) AND that node's value is 0,
-          the engine deactivates the voice (player/sndmix.c:493-498). Without this,
-          instruments with stored fadeout=0 + envelope ending at 0 would silently
-          hold their voices forever.
-        0b 00P_sssss_0cb_eeeee
-            s (bits 12..8) : loop start index (0..24)
-            e (bits 4..0)  : loop end   index (0..24)
-            b (bit 5)      : enable the LOOP wrap (0 = envelope walks once to its
-                             terminator and holds; non-zero loops between s and e)
-            c (bit 6)      : envelope carry (cross-trigger envelope position carry)
-            P (bit 13)     : envelope present in source (informational for vol —
-                             engine evaluates vol env unconditionally; converters
-                             should set P=1 when emitting nodes for consistency
-                             with pan/pf envelopes, see file-header preamble)
-            (bits 7, 14..15 reserved — set to 0)
-17  Bit16  Panning envelope LOOP word
-        * Always-active wrap region for the pan envelope.
-        0b 00P_sssss_pcb_eeeee
-            s (bits 12..8) : loop start index
-            e (bits 4..0)  : loop end   index
-            b (bit 5)      : enable the LOOP
-            c (bit 6)      : envelope carry
-            p (bit 7)      : use default pan (see offset 177 "Default pan value" below).
-                              Independent of LOOP enable; the engine reads this bit
-                              from the LOOP word as the canonical home for envelope-
-                              level meta flags.
-            P (bit 13)     : envelope present in source. Gates whether the mixer
-                             applies envelope-driven pan at all. P=0 ⇒ mixer uses
-                             channelPan only and the node array is ignored. P=1 ⇒
-                             evaluate every tick, even when both LOOP.b and SUSTAIN.b
-                             are 0 (envelope walks once and holds — IT pan-env
-                             flag=0x01 idiom).
-            (bits 14..15 reserved)
-19  Bit16  Pitch/Filter envelope LOOP word
-        * Always-active wrap region for the pitch/filter envelope.
-        0b 00P_sssss_mcb_eeeee
-            s (bits 12..8) : loop start index
-            e (bits 4..0)  : loop end   index
-            b (bit 5)      : enable the LOOP
-            c (bit 6)      : envelope carry
-            m (bit 7)      : mode — 0 = pitch envelope, 1 = filter envelope
-            P (bit 13)     : envelope present in source. Same semantics as the
-                             pan envelope's P bit: gates whether the mixer applies
-                             envelope-driven pitch / cutoff at all. P=0 ⇒ no
-                             envelope contribution (sample plays at its own pitch /
-                             default cutoff). P=1 ⇒ evaluate every tick regardless
-                             of LOOP.b / SUSTAIN.b.
-            (bits 14..15 reserved)
-21  Bit16x25 Volume envelopes
-       Byte 1: Volume (00..3F)
-       Byte 2: Time until the next point, in seconds (3.5 Unsigned Minifloat, biased; range 0..15.75 s, smallest non-zero step 1/256 s ≈ 3.91 ms — chosen so single tracker ticks resolve at every supported BPM). 0 = hold at this point indefinitely.
-71  Bit16x25 Panning envelopes
-      Byte 1: Pan (00..FF)
-      Byte 2: Time until the next point, in seconds (3.5 Unsigned Minifloat, biased; range 0..15.75 s, smallest non-zero step 1/256 s ≈ 3.91 ms — chosen so single tracker ticks resolve at every supported BPM). 0 = hold at this point indefinitely.
-121 Bit16x25 Pitch/Filter envelopes
-      Byte 1: Value (00..FF)
-      Byte 2: Time until the next point, in seconds (3.5 Unsigned Minifloat, biased; range 0..15.75 s, smallest non-zero step 1/256 s ≈ 3.91 ms — chosen so single tracker ticks resolve at every supported BPM). 0 = hold at this point indefinitely.
-171 Uint8  Instrument Global Volume (0..255)
-        * Continuous multiplier applied on every output sample (matches IT's
-          `chan->instrument_volume`, see Schism player/csndfile.c:1317 and
-          player/sndmix.c:1171). Independent of the volume column / Mxx /
-          Nxx — the volume column writes the per-note axis (noteVolume),
-          Mxx/Nxx write the per-channel axis (channelVolume); IGV scales
-          the final mix unconditionally and is orthogonal to both.
-        * ImpulseTracker has separate `inst.gv` (0..128) and samplewise
-          `sample.gv` (0..64). Since Taud has no samplewise record, fold
-          the two factors into a single 0..255 value:
-              taud_igv = round(inst.gv * sample.gv * 255 / (128 * 64))
-          The samplewise `sample.vol` (0..64) is NOT folded here — it is the
-          per-trigger default chan_volume in IT (replaceable by V column),
-          and Taud carries it in byte 196 ("Default Note Volume"). Folding
-          it here was the cause of the "low-number voleffs are too quiet"
-          regression (TODO §2350, fixed 2026-05-09).
-        * FastTracker2 has range of 0..64 with no instrumentwise multiplier
-          beyond it; multiply by (255/64) and round. The XM samplewise
-          volume goes into byte 196.
-172 Uint8  Volume Fadeout low bits
-173 Bit8   Volume Fadeout high bits & Filter interpretation mode
-        0b 000m ffff
-            f: Volume Fadeout high bits (low nibble of byte 173; high nibble reserved, must be zero)
-            m-unset: Default Cutoff (offset 182) and Default Resonance (offset 183) works like ImpulseTracker
-            m-set: Default Cutoff (offset 182 << 8 | offset 252) and Default Resonance (offset 183 << 8 | offset 253) works like SoundFont (absolute cents for Fc, height above DC gain in centibels for Q)
-        * Combined 12-bit unsigned value (range 0..4095). The engine maintains
-          a per-voice fadeoutVolume ∈ [0, 1] initialised to 1.0 on note-on, and
-          while the voice is in key-off or NNA Note-Fade state applies once per
-          song tick:
-              fadeoutVolume -= storedFadeout / 1024.0
-              clamp fadeoutVolume to [0, 1]
-              if fadeoutVolume == 0: voice deactivates
-          The voice's amplitude is multiplied by fadeoutVolume each tick.
-        * Stored value semantics (no separate "use fadeout" flag — like IT and
-          FT2 file formats, "no fade" and "instant cut" are both encoded as
-          extreme values of this same field):
-            - 0          : no fade. fadeoutVolume never moves; the voice plays
-                           at envelope-driven volume indefinitely. Termination
-                           must come from the volume envelope reaching a final
-                           0-valued node, the sample ending, or a note-cut.
-            - 1..1023    : graduated fade. Completes in (1024 / storedFadeout)
-                           ticks. e.g. 1 → 1024 ticks; 32 → 32 ticks.
-            - 1024       : exact 1-tick cut. fadeoutVolume goes 1.0 → 0.0 in
-                           one tick (the canonical "kill on key-off" value).
-            - 1025..4095 : also a 1-tick cut (clamped at 0). The 4× headroom
-                           over 1024 lets converters carry out-of-spec source
-                           values without saturating prematurely.
-        * Tick-rate worked example at default 50 Hz (BPM 125, speed 6):
-            - storedFadeout = 1    → fade ≈ 20.5 s
-            - storedFadeout = 32   → fade ≈ 640 ms
-            - storedFadeout = 1024 → ~20 ms (one tick)
-        * Source-format mapping (converters scale source units → Taud field):
-            - IT: 16-bit field at IT instrument record offset 0x14, range
-              0..1024 per ITTECH (some loaders accept up to 2048). Schism's
-              per-tick decrement is stored / 1024 of unit volume — identical
-              to Taud's unit. Pass-through with clamp:
-                  taud_fadeout = min(it_fadeout & 0xFFFF, 0x0FFF)
-            - FT2/XM: 16-bit field. Spec range 0..0xFFF; MilkyTracker writes
-              up to 32767 to encode the "cut" UI slider position
-              (SectionInstruments.cpp:499-500). FT2's per-tick decrement is
-              stored / 32768 of unit volume — to match Taud's stored / 1024
-              rate, divide source by 32 (round-to-nearest):
-                  taud_fadeout = min((xm_fadeout + 16) // 32, 0x0FFF)
-              XM stored 1..15 round to Taud 0 (originals were >11 min at 50 Hz
-              — effectively "no fade" anyway). Stored 32 → Taud 1 (~20 s).
-              Stored 32767 (Milky cut sentinel) → Taud 1024 (1-tick cut).
-            - MOD/S3M/MON: no instrument-level fadeout in source; converters
-              write 0 (notes retire on sample-end or pattern note-cut).
-174 Uint8  Volume swing (0..255 full range)
-175 Uint8  Vibrato speed
-        * ImpulseTracker has samplewise vibrato speed (0..64), and they must be taken into account because Taud has no samplewise config
-        * FastTracker2 has instrumentwise config (0..255)
-        * The spec follows FastTracker2, and conversion must be performed when importing from FastTracker2
-176 Uint8  Vibrato sweep
-        * FastTracker2 instrument config (0..255)
-177 Uint8  Default pan value (0..255 full range, see offset 17 for the enable flag)
-        * ImpulseTracker has samplewise default pan and instrumentwise default pan, and they must be taken into account because Taud has no samplewise config
-178 Uint16 Pitch-pan centre (4096-TET note value)
-180 Sint8  Pitch-pan separation (-128..127 full range)
-181 Uint8  Pan swing (0..255 full range)
-182 Uint8  Default cutoff (0..254 full range, 255 to off (-1 on IT). Effect range equals to that of ImpulseTracker -- 127 in IT is equal to 254 in Taud)
-183 Uint8  Default resonance (0..254 full range, 255 to off (-1 on IT). Effect range equals to that of ImpulseTracker -- 127 in IT is equal to 254 in Taud)
-184 Sint16 Sample detune (in 4096-TET unit) (FT2 finetune scale need to be rescaled accordingly)
-186 Bit8   Instrument Flag
-        0b 00N www nn
-            n: New note action. 00: note off, 01: note cut, 10: continue, 11: note fade (arranged differently to IT)
-            ww: Vibrato waveform (IT: sample config, FT2: instrument config). 00: sine, 01: ramp-down saw, 10: square, 11: random, 100: ramp-up saw (FT2 only)
-            Nnn: New note action (non-traditional). 100: key lift
-                * Key Lift behaves *exactly* like a MIDI key-up: on key-off the volume-envelope
-                  playhead jumps straight to the sustain-end node, so the post-sustain (release)
-                  nodes play immediately from there — instead of the IT semantics where key-off
-                  merely releases the SUSTAIN wrap and the playhead still walks the remaining
-                  pre-sustain (hold/decay) nodes first, ringing held-style instruments like a
-                  depressed sustain pedal. Applies wherever key-off is delivered: pattern
-                  KEY_OFF (0x0001), the NNA ghost spawned on a new-note, DCA Note Off, and
-                  past-note S $71. Instruments without a volume-envelope SUSTAIN region are
-                  unaffected (there is no release boundary to jump to). Primary consumer:
-                  midi2taud melodic instruments (SF2 ADSR import).
-187 Uint8  Vibrato Depth (0..255 full range)
-        * ImpulseTracker has range of 0..32 ON THE SAMPLE SETTINGS; multiply by (255/32) then round to int
-        * FastTracker2 has range of 0..16; multiply by (255/16) then round to int
-188 Uint8  Vibrato Rate (0..255 full range)
-        * ImpulseTracker sample config. The spec follows ImpulseTracker precisely
-189 Bit16  Volume envelope SUSTAIN word
-        * Wrap region active ONLY while key is on. Released on key-off.
-        * FT2 single-point sustain: store sus_start == sus_end (the engine
-          wraps that index → itself, so the envelope holds there).
-        * IT sustain loop: store sus_start <= sus_end (engine wraps the range
-          while key is on; same shape as the LOOP word).
-        0b 000_sssss_00b_eeeee
-            s (bits 12..8) : sustain start index (0..24)
-            e (bits 4..0)  : sustain end   index (0..24)
-            b (bit 5)      : enable the SUSTAIN (0 = no sustain wrap)
-            (bits 6..7, 13..15 reserved — the 'c' carry bit lives in the LOOP word)
-191 Bit16  Panning envelope SUSTAIN word
-        * Same encoding as offset 189, applied to the pan envelope.
-        0b 000_sssss_00b_eeeee
-193 Bit16  Pitch/Filter envelope SUSTAIN word
-        * Same encoding as offset 189, applied to the pitch/filter envelope.
-        0b 000_sssss_00b_eeeee
-195 Bit8   Duplicate Check / Action (IT-only; FT2 leaves this 0)
-        0b 0000 dcdt
-            dt (bits 0..1) : Duplicate Check Type. 0=off, 1=note, 2=sample, 3=instrument.
-            dc (bits 2..3) : Duplicate Check Action. 0=note cut, 1=note off, 2=note fade.
-        * Relocated from offset 189 (which is now the volume sustain word) on 2026-05-06.
-        * Semantics (matches IT/Schism player/effects.c:1664-1764 csf_check_nna):
-            - Fires on every fresh foreground note trigger on a channel, BEFORE the
-              NNA-spawn step that would ghost the existing voice. Does NOT fire on
-              tone portamento, on note-off (0x0001), on note-cut (0x0002), or on
-              empty cells.
-            - The DCT/DCA values consulted belong to the EXISTING voice's instrument
-              (i.e. the OLD note's instrument, not the incoming note's). Different
-              instruments on the same channel can therefore have asymmetric duplicate
-              behaviour — IT-correct.
-            - Targets: the foreground voice on the same channel AND every background
-              (NNA-ghost) voice spawned earlier from that channel. Each is checked
-              independently against the new (instrument, note) pair.
-            - DCT match conditions:
-                  off (0)        : never matches; DCA never fires
-                  note (1)       : same noteVal AND same instrumentId
-                  sample (2)     : same instrumentId AND same canonical sample (matched
-                                   by samplePtr + sampleLength)
-                  instrument (3) : same instrumentId
-            - DCA actions on a matching voice:
-                  note cut (0)   : fadeoutVolume := 0; voice deactivates this tick
-                  note off (1)   : keyOff := true (sustain releases; volume envelope
-                                   continues past the sustain point; if the instrument
-                                   carries a non-zero fadeout, the fadeout decay starts
-                                   per byte 172/173 semantics)
-                  note fade (2)  : noteFading := true (begin fadeout immediately, no
-                                   sustain release — sample/envelope loops continue)
-            - Order with NNA: applyDuplicateCheck → maybeSpawnBackgroundForNNA →
-              triggerNote. So when DCA flags the foreground voice, the NNA-ghost it
-              spawns inherits that DCA-modified state (e.g. noteFading carries over).
-            - The new note then triggers normally on the foreground channel.
-196 Uint8  Default Note Volume (0..255)
-        * Per-trigger default for the per-note volume axis (`noteVolume` in
-          the engine, analog of IT's `chan->volume`) when the row carries a
-          fresh note + instrument byte but no explicit volume column (matches
-          IT's `chan->volume = psmp->volume` on note-on, Schism
-          player/effects.c:1302 and :1432). The 8-bit value rescales to
-          Taud's 0..63 note-volume range:
-              note_default = round(default_note_volume * 63 / 255)
-          Any explicit V column SET on the trigger row OVERRIDES this — i.e.
-          noteVolume = vol_value, exactly mirroring IT's "V column replaces
-          chan->volume" rule. The per-channel axis (`channelVolume`, set by
-          Mxx / Nxx) is independent and is NOT reset on re-trigger.
-        * Source-format mapping:
-            - IT:  taud_dnv = round(sample.vol * 255 / 64)        # 0..64 → 0..255
-            - XM:  taud_dnv = round(sample.volume * 255 / 64)     # 0..64 → 0..255
-            - S3M: taud_dnv = round(min(inst.volume, 64) * 255 / 64)
-            - MOD: taud_dnv = round(min(sample.volume, 64) * 255 / 64)
-        * .taud files written before 2026-05-09 stored sample.vol folded into
-          byte 171 (IGV) and left this byte zero. Engines reading those older
-          files SHOULD treat default_note_volume == 0 as "field not present"
-          and fall back to row_default = 63 — preserving the pre-fix behaviour
-          for legacy files where IGV already carries sample.vol.
-197 Bit16  Filter/Pitch envelope LOOP word ; if offset 19 specified 'Pitch', this field is automatically 'filter', and vice-versa. Contradictory 'm' flag is INVALID
-        * Always-active wrap region for the pitch/filter envelope.
-        0b 00P_sssss_mcb_eeeee
-            s (bits 12..8) : loop start index
-            e (bits 4..0)  : loop end   index
-            b (bit 5)      : enable the LOOP
-            c (bit 6)      : envelope carry
-            m (bit 7)      : mode — 0 = pitch envelope, 1 = filter envelope ; this is NOT inverted from offset 19
-            P (bit 13)     : envelope present in source. Same semantics as the
-                             pan envelope's P bit: gates whether the mixer applies
-                             envelope-driven pitch / cutoff at all. P=0 ⇒ no
-                             envelope contribution (sample plays at its own pitch /
-                             default cutoff). P=1 ⇒ evaluate every tick regardless
-                             of LOOP.b / SUSTAIN.b.
-            (bits 14..15 reserved)
-199 Bit16  Filter/Pitch envelope SUSTAIN word ; if offset 19 specified 'Pitch', this field is automatically 'filter', and vice-versa
-        * Same encoding as offset 189, applied to the filter/pitch envelope.
-        0b 000_sssss_00b_eeeee
-201 Bit16x25 Filter/Pitch envelopes ; if offset 19 specified 'Pitch', this field is automatically 'filter', and vice-versa
-      Byte 1: Value (00..FF)
-      Byte 2: Time until the next point, in seconds (3.5 Unsigned Minifloat, biased; range 0..15.75 s, smallest non-zero step 1/256 s ≈ 3.91 ms — chosen so single tracker ticks resolve at every supported BPM). 0 = hold at this point indefinitely.
-251 Uint8  initialAttenuation ; static per-instrument gain as a "Perceptually Significant Octet
-        to Decibel Table" octet (octet 159 = 0 dB / unity; −6 dB = octet 111), same table as the
-        Metainstrument layer mix volume. **0 = unity (the unset sentinel)** so legacy files
-        (these bytes were reserved/zero) are unaffected. Applied by the mixer as a
-        velocity-INDEPENDENT amplitude multiplier; NOT folded into the volume envelope, so the
-        envelope keeps full 0..63 resolution. A per-patch Ixmp 'x' block carries its own override.
-252 Uint8  Default Cutoff low bits (SoundFont mode; see offset 182 and 'm' flag in offset 173)
-253 Uint8  Default Resonance low bits (SoundFont mode; see offset 183 and 'm' flag in offset 173)
-254..255 Reserved (2 bytes free for future per-instrument fields)
-
-### Metainstrument definition
-
-A Metainstrument occupies a normal 256-byte instrument-bin slot and is
-referenced by a pattern cell exactly like any instrument. It carries no sample
-of its own; instead it triggers a list of LAYERS, each a normal instrument
-sounded simultaneously at its own mix level, detune and (note x volume)
-sub-range. Bytes 0..3 alias the base instrument's Uint32 Sample Pointer; the
-0xFFFF identifier sits in its high 16 bits so the aliased pointer reads
-0xFFFF_ll_tt — a value no real sample pointer can take (see byte 0 of the
-instrument record). Layer records begin at byte 4.
-
-0   Uint8  Metainstrument type / flags
-    0b tttt_00Ps
-    - t: type. Only type 0 (layered: every layer whose rectangle contains
-      the trigger sounds together) is currently defined.
-    - s: STRICT layering (see note g). 0 = legacy (a layer whose rectangle
-      contains the trigger but whose own patches do NOT match falls back to that
-      layer instrument's base/canonical sample); 1 = strict (such a layer stays
-      silent). Strict requires each layer instrument to carry its canonical zone in
-      its own Ixmp patch list. Legacy files leave this byte 0x00.
-    - P: this instrument is percussion, retuner/transposer MUST NOT touch it
-1   Uint8  Metainstrument length (layer count, 1..25 — the record holds at most 25)
-1   Uint8  Metainstrument identifier
-    - 0xFF (not otherwise specified)
-1   Uint8  Sentinel. Always 0xFF
-4   * Repetition of (one 10-byte record per layer):
-    Uint8  Instrument index (low 8 bits) — MUST be a normal instrument, never a
-           Metainstrument. The full index is 10 bits (0..1023): bits 0..7 here, bits
-           8..9 in bits 6..7 of the Volume-start byte (offset +8 below). 0..255 =
-           directly-addressable bin $00..$FF; 256..1023 = auxiliary bin $100..$3FF
-           (exposed in-hardware through the MMIO-48-banked 655360 window, but the
-           index is absolute — the engine reads instruments[index] directly).
-    Uint8  Mix volume according to "Perceptually Significant Octet to Decibel Table" (octet 159 = 0 dB / unity)
-    Sint16 Sample detune (in 4096-TET unit)
-    Uint16 Pitch start                 ; note-range low,  4096-TET noteVal (same scale as pattern-cell note); full range = 0x0000
-    Uint16 Pitch end (inclusive)       ; note-range high; full range = 0xFFFF
-    Uint8  Volume start                ; bits 0..5 = velocity/volume-range low (0..0x3F; full range = 0x00);
-                                         bits 6..7 = instrument index bits 8..9 (the auxiliary-bin selector)
-    Uint8  Volume end (inclusive)      ; bits 0..5 = velocity/volume-range high (0..0x3F; full range = 0x3F); bits 6..7 reserved (0)
-
-    Notes:
-    a. The four range fields define a rectangle over the same Pitch-Volume space
-       as an Ixmp patch (Ixmp Notes 4/5). A layer fires ONLY when the trigger's
-       (noteVal, rowVolume) falls inside its rectangle; a layer whose rectangle
-       excludes the trigger stays silent for that note. A whole-range layer uses
-       0x0000..0xFFFF / 0x00..0x3F. This is how key/velocity-conditional layering
-       is expressed (e.g. a bell layer only in the top octaves, or an accent
-       layer only above some velocity); the SF2 velocity axis is the usual
-       round(velocity * 63/127) (Ixmp Note 4a).
-    b. Layer rectangles MAY overlap one another — that is the entire purpose of a
-       Metainstrument. Every layer whose rectangle contains the trigger sounds
-       simultaneously, each on its own voice. (Overlap remains INVALID WITHIN a
-       single normal instrument's Ixmp patch list, Ixmp Note 1 — layering lives
-       here instead. The same normal instrument may be listed as several layers
-       at different detune/mix to reproduce SF2 detune-stacks and duplicate zones
-       without spending extra instrument slots.)
-    c. Mix volume SCALES that layer's output; it multiplies with the trigger's
-       row volume / velocity (it does not replace it). Sample detune is ADDED to
-       the trigger noteVal and to the layer instrument's own sampleDetune.
-    d. The voices spawned by one trigger form a voice group sharing the note's
-       lifecycle: KEY_OFF, tone portamento (Gxx), channel volume (Mxx) and
-       panning apply to every layer. Each layer still resolves its OWN NNA / DCT
-       / DCA on key-off, so a key-lift melodic layer and a ring-to-tail layer can
-       coexist in one Metainstrument.
-    e. Recursion is forbidden: a layer's Instrument index MUST resolve to a normal
-       instrument (in either the directly-addressable bin $01..$FF or the auxiliary
-       bin $100..$3FF). The engine ignores (skips) any layer pointing at another
-       Metainstrument or at instrument 0. The auxiliary bin exists precisely to hold
-       layer subinstruments without spending directly-addressable slots: a layer
-       reaches it via the 10-bit index above; a pattern cell cannot (its instrument
-       field is 8-bit, so $100..$3FF is unreachable except as a Metainstrument layer).
-    f. Voice budget: a single Metainstrument trigger costs up to `length` voices
-       against the mixer pool.
-    g. STRICT layering (byte 0 bit 0). A layer's rectangle (note a) is a single
-       bounding box, but the layer instrument's own zones (its Ixmp patches) may
-       cover only PART of that box — e.g. a drum layer holding scattered keys has a
-       bbox spanning the gaps between them. Under legacy semantics a trigger landing
-       in the box but in such a gap still fires the layer, and because no patch
-       matches it falls through to the layer instrument's base/canonical sample,
-       sounding a spurious wrong instrument (a closed hi-hat under an open hi-hat,
-       say). When bit 0 is set, the engine instead drops that layer for the note
-       (it stays silent). For this to be sound the producer MUST also place each
-       layer instrument's canonical zone in that instrument's Ixmp patch list (so a
-       trigger that legitimately matches the canonical still resolves a patch rather
-       than the base); a non-match then unambiguously means "no zone of this layer
-       covers the trigger". The base record's own sample/envelopes are unchanged and
-       remain the canonical's, so a strict layer plays identically to a legacy one
-       for every IN-RANGE trigger — only the out-of-range fall-through differs.
+The decibel octet table below is the shared encoding for Metainstrument layer
+mix volume and for instrument / Ixmp-patch initial attenuation.
 
 #### Perceptually Significant Octet to Decibel Table
 
@@ -3033,28 +2604,24 @@ TODO - list of demo songs that MUST ship with Microtone:
     * Keep On Rolling — for MIDI and SoundFont capability. (using GeneralUser-GS created by mrbumpy409)
         (C) Trolley Trev
 
-Play Data: play data are series of tracker-like instructions, visualised as:
+Play Data: one pattern is 64 rows of 8 bytes (512 bytes) for ONE channel,
+visualised as:
 
-rr||NOTE|Ins|E.Vol|E.Pan|EE.ff|
-63||FFFF|255|3 63|3 63|FF FFFF| (8 bytes per line, 512 bytes per pattern, 128 patterns on 64 kB bank, 32 banks available (pattern 0xFFF -- bank 31, pattern 127 is a sentinel value for no-pattern))
+rr||NOTE|Ins|E.Vol|E.Pan|EE.ffff|
+63||FFFF|255|3 63|3 63|FF FFFF|
 
-notes are tuned as 4096 Tone-Equal Temperament. Tuning is set per-sample using their Sampling rate value. 0x1000: C at zeroth octave; 0xF000: C at 14th octave; 0xFFFF: ~C at 15th octave; 0x0000..0x001F: reserved for sentinels (valid playable note range is 0x0020..0xFFFF)
+128 patterns fit a 64 kB bank; 32 banks are available.
 
-Special values:
+The cell layout, the 4096-TET note grid, the note sentinels (key-off, note cut,
+note fade, fast fade) and the Int0..IntF interrupt markers are specified in
+`TAUD_FILE_FORMAT.md` § "Pattern bin".
 
-note 0x0000: no-op
-note 0x0001: key-off (====)
-note 0x0002: note cut (^^^^)
-note 0x0003: note fade (~~~~)
-note 0x0004: fast fade (vvvv)
-note 0x0010..0x001F: Interrupt 0..F (notation: Int0..IntF) — sync markers that produce no sound. The
-    engine has no built-in behaviour: when one is processed it latches interrupt n in the playhead's
-    pending-interrupt mask (one bit per slot). The host drains the mask with the AudioJSR223Delegate
-    `pollTrackerInterrupts(playhead)` call (read-to-acknowledge, accumulating so no fire is lost) and
-    dispatches registered JS callbacks via taud.mjs (attachIntCallback / removeIntCallback /
-    removeAllIntCallback / pollInterrupts).
-
-inst 0: no instrument change
+Interrupt markers produce no sound: processing one latches interrupt n in the
+playhead's pending-interrupt mask. The host drains the mask with the
+AudioJSR223Delegate `pollTrackerInterrupts(playhead)` call (read-to-acknowledge,
+accumulating so no fire is lost) and dispatches registered JS callbacks via
+taud.mjs (attachIntCallback / removeIntCallback / removeAllIntCallback /
+pollInterrupts).
 
 
 Audio Adapter MMIO
@@ -3194,6 +2761,8 @@ is 15.75 s — every cell is the original LUT value divided by 8. Chosen for
 tracker envelopes: a single song tick (≈ 8.9 ms at BPM 280, ≈ 100 ms at
 BPM 25) now lands within ±17 % of an LUT entry across the whole supported
 BPM range; the previous bias was ±150 % at common BPMs.
+The closed-form definition is in `TAUD_ENGINE_SPEC.md` § "Envelopes".
+
      ,000,001,010,011,100,101,110,111,MSB
 00000,0,0.125,0.25,0.5,1,2,4,8
 00001,0.00390625,0.12890625,0.2578125,0.515625,1.03125,2.0625,4.125,8.25
@@ -3235,448 +2804,27 @@ Tracker Note Effects has been moved to `TAUD_NOTE_EFFECTS.md`
 
 --------------------------------------------------------------------------------
 
-**Taud serialisation format**
-Created by CuriousTorvald on 2026-04-19
-
-This is a file format for Taud tracker data. Taud can be extended with Microtone (taut.js) project data in backward-and-forward-compatible manner.
-
-Endianness: Little
-
-# Conformance language
-(RFC 2119+8174)
-- **MUST** / **MUST NOT** / **REQUIRED** / **SHALL** / **SHALL NOT** — absolute requirements / prohibitions. A conforming implementation **SHALL** observe every such rule; an implementation that violates one is non-conforming.
-- **SHOULD** / **SHOULD NOT** / **RECOMMENDED** / **NOT RECOMMENDED** — strong guidance. An implementation **MAY** deviate in particular circumstances, but the full implications **MUST** be understood and weighed before doing so.
-- **MAY** / **OPTIONAL** — truly optional. Implementations that include the feature and implementations that omit it are equally conforming, and each **MUST** be prepared to interoperate with the other (with reduced functionality where the optional feature is the means of interoperation).
-(IMPLEMENTATION DETAILS)
-- **INVALID.** Blame the encoder; decoder MUST stop decoding with appropriate errors.
-- **UNDEFINED BEHAVIOUR.** Encoder MAY encode it; decoder MAY do whatever it wants to, including spawning a daemon out of your nose.
-- **IGNORED.** Encoder MAY encode it; decoder MUST skip past it.
-- **RESERVED.** Encoder MUST NOT encode it. Decoder MUST skip past it.
-
-# File Structure
-\x1F T S V M a u d
-[HEADER]
-[SAMPLE+INSTRUMENT BIN IMAGE (GZip or Zstd compressed. Read 4-byte magic to determine)]
-[SONG TABLE]
-[PATTERN BIN for SONG 0 (GZip or Zstd compressed)]
-[CUE SHEET for SONG 0 (GZip or Zstd compressed)]
-[PATTERN BIN for SONG 1 (GZip or Zstd compressed)]
-[CUE SHEET for SONG 1 (GZip or Zstd compressed)]
-[PATTERN BIN for SONG 2 (GZip or Zstd compressed)]
-[CUE SHEET for SONG 2 (GZip or Zstd compressed)]
-...
-[PROJECT DATA] (optional)
-    [DATA BLOCKS WITH FOURCC HEADER (see Project Data section)]
-
-## Header
-    Byte[8] Magic
-    Uint8   Format version (low five bits; top two bits = container kind, see .tsii/.tpif)
-            0b kk x vvvvv
-                v=1: legacy cue sheet (20 voices, 12-bit pattern numbers, 32-byte cues)
-                v=2: extended cue sheet (2026-07-01): 32 voices, 15-bit pattern numbers,
-                    64-byte cues with sign-bit instructions (see "Cue sheet" above and
-                    "Pattern Bin and Cue Sheet" below). Loaders translate a v1 cue image
-                    into the v2 engine layout on load.
-                x set: has xHDR section on the Project Data. The application must also read this block.
-                       If this flag is unset but xHDR section is found, it's considered INVALID.
-                kk: container kind
-    Uint8   Number of songs in SONG TABLE
-    Uint32  Compressed size of SAMPLE+INST section (used to calculate offset to SONG TABLE)
-    Uint32  Offset to Project Data. Zero if Project Data is nonexistent. If any Project Data exists but this field is zero, it's considered INVALID.
-    Byte[14]Tracker/Converter signature
-
-## Sample and Instrument bin image
-    8256 kB when decompressed. First 8 MB holds samples.
-
-## Song Table
-    * Rows of 32 bytes:
-    Uint32  Song offset
-    Uint8   Number of voices
-    Uint16  Number of patterns (0 is invalid. pattern bin length = numPats * 8 bytes)
-    Uint8   Initial BPM (bias of -25. 0x00=25, 0xFF=280)
-    Uint8   BPM high bit (bit 7; 0x100=281, 0x1FE = 535; `T FFxx` cannot put 0x1FF into BPM) + initial Tickrate (0 is invalid; bit 0..6)
-    Uint16  Current Tuning base note (1..65533). A4 (western default) is 0x5C00. C9 (tracker default) is 0xA000. If zero, assume the tracker default value
-    Float32 Frequency at the base note. Tracker default is 8363.0. If zero, assume the tracker default
-    Uint8   Flags for Global Behaviour (effect symbol '1')
-        0b 000 rrr ff
-            ff: tone mode          (0: linear pitch slides, 1: Amiga period slides, 2: linear-frequency slides, 3: RESERVED)
-            rrr: interpolation mode (0: default, 1: none, 2: Amiga 500, 3: Amiga 1200, 4: SNES 4-tap Gaussian, 5: NES DPCM simulation)
-    Uint8   Song global volume
-        * ImpulseTracker has range of 0..128; multiply by (255/128) then round to int
-    Uint8   Song mixing volume
-        * ImpulseTracker has range of 0..128; multiply by (255/128) then round to int
-    Uint32  Compressed size of PATTERN BIN for this song
-    Uint32  Compressed size of CUE SHEET for this song
-    Uint16  Number of cues in the (v2) CUE SHEET. Lets a loader size the cue image
-            without deriving it from the decompressed length; 0 in a legacy v1 file
-            (where the reader falls back to decompressed_size / 32). Added 2026-07-01.
-    Uint8   Immutable song flags
-        0b 0000 00ss
-            ss: surround model (0: stereo, 1: planar aka 360° panning, 2: spatial)
-    Byte[3] RESERVED
-
-    Taud device can queue up to 2 "playdata" in its buffer, which can be interpreted as a song.
-
-    * Known standard tunings:
-    A4 @ 440 Hz. ISO standard
-    A4 @ 435 Hz. Former French standard (year 1859)
-    A4 @ 452 Hz. Old Philharmonic pitch (19th century Britain)
-    C4 @ 256 Hz. Power of two
-    C4 @ 262 Hz. Modern Chinese a-ak tuning convention
-    C4 @ 311 Hz. Korean hyang-ak tuning standard (ROK National Gugak Center)
-
-    For your reference, tracker default tuning at A4 is 439.548 Hz ((3579545/428)*2^(3/4) / 32)
-
-## Pattern Bin and Cue Sheet
-    RAM image of Pattern Bin/Cue Sheet.
-    The CUE SHEET image holds the song's cues back-to-back in the format selected by
-    the header Format version: v2 = 64 bytes per cue (the banked-window layout in the
-    Memory Space "Cue sheet" section), v1 = 32 bytes per cue (legacy). The cue count is
-    the song table's num_cues field (v2) or decompressed_length / cue_size.
-
-## Project Data
-
-Project Data is just a concatenation of blocks identified by their FourCC.
-
-    Byte[8] Magic (\x1E T a u d P r J)
-    Byte[8] RESERVED
-    * Repetition of
-    Byte[4] Title of the section (fourcc)
-    Uint32  Section length
-    Byte[*] Section payload
-
-### Predefined sections
-
-prefixes:
-
-- P: Project
-- I: Instrument
-- p: Pattern
-- S: Sample
-- s: Song
-
-* xHDR. Extended header.
-    Only the format version 2 and later Taud files can have this section. Otherwise it's considered INVALID.
-    Uint8      Flags1
-        0b 0000 000 c
-            c: is 64 channel mode
-    Byte[255] Reserved
-
-* PCom. Project author. Encoding: UTF-8
-* PCpr. Project copyright string. Encoding: UTF-8
-* PNam. Project name. Encoding: UTF-8
-* Pmsg. Project message. Encoding: UTF-8
-
-* INam. Instrument name table. Strings separated by 0x1E
-
-* pNam. Pattern name table. Strings separated by 0x1E
-
-* SNam. Sample name table. Strings separated by 0x1E
-
-* sMet. Song metadata table
-    * Repetition of:
-    Uint8  Song index
-    Uint32 Size of this table following this field
-    Uint16 Notation used for this song (takes notation index)
-        0: raw numbers
-        1: ProTracker pitch
-        10*n: TET-number times 10 (12-TET = 120)
-        * Following systems have alternative notation conventions:
-        531: 53-TET Pythagorean Notation
-        * Following list defines ethnic notations in 12-tone scale
-        10121: Pythagorean Diminished Fifth
-        10122: Pythagorean Augmented Fourth
-        10123: Shi'er lü (East Asian traditional tuning)
-    Uint8  Primary beat division (default: 4 rows)
-    Uint8  Secondary beat division (default: 16 rows)
-
-    Byte[*]     Song name, null terminated. Encoding: UTF-8
-    Byte[*]     Song composer, null terminated. Encoding: UTF-8
-    Byte[*]     Song copyright string, null terminated. Encoding: UTF-8
-
-* nota. Custom notation definition (version 'a')
-    * Repetition of:
-    Uint8   Notation index (starting from zero) used by songs
-    Uint32  Size of this notation following this field
-    Uint16  RESERVED for flags
-    Uint16  Interval size in 4096-TET lattice (octave = 0x1000, tritave = 0x195C). If you are not using an interval system (which means you are responsible for defining every note expressible), this must be 0.
-    Uint16  RESERVED for float32 interval size (should it be in 4096-TET which is inexact or frequency multiplier which is exact but difficult to implement?)
-    Uint16  Notes between interval (or octave) MINUS ONE; 12-TET will have value 11
-    Uint16  Base note the Frequency table is offset against, as an absolute note value (C4 = 0x5000). 0 = default, meaning the "Base Note at C4" of Note Tuning step 1. Frequency table offsets are unsigned, so an interval-less notation (Interval Size 0) that must name notes below C4 declares its lowest note here; e.g. ProTracker pitch (notation 1) bases at 0x3000, its period-1712 note. For an interval system the base note is the root of the root interval and this must be 0
-    Byte[6] RESERVED
-    Byte[*]     Name, null terminated. Encoding: UTF-8
-    Byte[*]     Notation table. 0xFF-separated and null-terminated. Encoding: Taud charset
-    Uint16[*]  Frequency table. Size of the table is defined by "Notes between interval MINUS ONE". This is a lookup table of relative pitch offsets (against the base tuning note) in 4096-TET space. Index zero of this table will be 0x0 if you read the spec right
-
-    Note: custom notations will use internal index 65535 down to 65520 (index 0 = 65535, index 15 = 65520)
-
-    Note Tuning:
-        1. "Base Note at C4" will be derived using "Current Tuning Base Note" and "Frequency at the Base Note" from the song table. If the values are A4,440Hz, it will be converted to C4,261.6255653Hz
-        2. Frequency at C5 will be (Base Note at C4) × (Interval Size)
-        3. 4096 notes will be equidistance-distributed between (Frequency at C4) and (Frequency at C5), with logarithmic pitch progression; this builds the frequency-offset table
-        4. Frequency-Offset Table from the previous step will be applied against the "Base Note at C4" (or the Base Note field above, when it is non-zero) to construct the notes within the notation. Value at index zero of the Frequency Table must be 0
-        5. The progress will continue outside the "root interval" (C4..C5) to build a complete note-to-frequency table
-
-        Note: if your sample is pre-tuned for your system, keep the project setting as the defaults. If you are not working with the conventional octave system, you still need to specify the Interval Size
-
-    * Suggested notation serialisation format (for notation editor, etc.)
-    Byte[8] Magic (\x1E T a u d n o t)
-    Uint8   Version (Ascii 'a')
-    Bytes   Notation definitions (see above)
-
-* Ixmp. Instrument extra samples
-    * Repetition of:
-    Uint8   Instrument ID (low 8 bits)
-    Uint16  Count of patches
-    Uint8   Instrument ID (high bits): bits 0..1 = instrument ID bits 8..9 (the
-            auxiliary-bin $100..$3FF selector); bits 2..7 reserved (0). This was the top
-            byte of the former Uint24 count, which was always 0 for the tiny real patch
-            counts, so a pre-2026-06-30 reader still parses legacy $00..$FF entries unchanged.
-            Together the two ID fields give a 10-bit instrument ID 0..1023 (256..1023 = aux bin).
-        ** Repetition of:
-        Bit8   Patch definition version
-            Version numbers are essentially feature bit-flags, where:
-            0b x0s Pfpvi
-                i: always set (version 1)
-                v: has volume envelopes
-                p: has pan envelopes
-                f: has filter envelopes
-                P: has pitch envelopes
-                x: extra base info
-                s: stereo/surround data
-        Uint16 Pitch start                 ; Taud 4096-TET noteVal (same scale as pattern-cell note)
-        Uint16 Pitch end (inclusive)
-        Uint8  Volume start                ; 0..63
-        Uint8  Volume end (inclusive)      ; 0..63
-            - Above four parameters define a rectangle over the Pitch-Volume space. See Notes 4 and 5
-        Uint32 Sample pointer
-        Uint16 Sample length
-        Uint16 Play Start (usually 0 but not always)
-        Uint16 Loop Start (can be smaller than Play Start)
-        Uint16 Loop End
-        Uint16 samplingRate                ; per-sample C4 (note 0x5000) speed; same encoding as base instrument byte 6-7
-        Int16  sampleDetune                ; per-sample fine detune in signed 4096-TET units (XM finetune; IT samples leave 0)
-        Uint8  loopMode and loop-is-sustain ; identical base instrument byte 14 (bits 0-1 = mode, bit 2 = sustain loop)
-        Uint8  defaultPan                  ; per-sample default pan (0..255; 0x80 = centre); 0xFF = "no override"
-        Uint8  defaultNoteVolume           ; per-sample default note volume (0..255 scaled from IT 0..64); 0 = "no override"
-        Uint8  vibratoSpeed                ; per-sample auto-vibrato (mirrors base inst byte 175)
-        Uint8  vibratoSweep                ; per-sample auto-vibrato (mirrors base inst byte 176)
-        Uint8  vibratoDepth                ; per-sample auto-vibrato (mirrors base inst byte 187)
-        Uint8  vibratoRate                 ; per-sample auto-vibrato (mirrors base inst byte 188)
-        Uint8  vibratoWaveform             ; bits 0-2 only (mirrors instrumentFlag bits 2-4); 0xFF = "no override"
-        * Patch definition flag 'x'
-        Bit32  Extra feature flags 1..32
-            0b 0000 000m ; 0b 0000 0000 ; 0b 0000 0000 ; 0b 0000 0000
-                m-unset: filter params (Fc and Q) works like ImpulseTracker
-                m-set: filter params (Fc and Q) works like SoundFont
-        Bit32  Extra feature flags 33..64 (reserved; keep it as all-unset)
-        Uint16 Volume Fadeout    ; same encoding as identical base instrument byte 172-173
-        Uint16 Default cutoff     ; identical to base instrument byte 182 and 252
-        Uint16 Default resonance  ; identical to base instrument byte 183 and 253
-        Uint8  SF2 Initial Attenuation according to "Perceptually Significant Octet to Decibel Table" (octet 159 = 0 dB, attenuation by 6 dB = octet 111). 0 = unity (unset sentinel). Overrides the base record's byte-251 attenuation for this patch; applied as a velocity-independent gain, NOT folded into the envelope.
-        * Patch definition flag 'v'
-        Bit16  Volume envelope LOOP word    ; identical to base instrument byte 15..16
-        Bit16  Volume envelope SUSTAIN word ; identical to base instrument byte 189..190
-        Bit16x25 Volume envelopes           ; identical to base instrument byte 21..70
-        * Patch definition flag 'p'
-        Bit16  Panning envelope LOOP word    ; identical to base instrument byte 17..18
-        Bit16  Panning envelope SUSTAIN word ; identical to base instrument byte 191..192
-        Bit16x25 Panning envelopes           ; identical to base instrument byte 71..120
-        * Patch definition flag 'f'
-        Bit16  Filter envelope LOOP word    ; identical to base instrument byte 19..20
-        Bit16  Filter envelope SUSTAIN word ; identical to base instrument byte 193..194
-        Bit16x25 Filter envelopes           ; identical to base instrument byte 121..170
-        * Patch definition flag 'P'
-        Bit16  Pitch envelope LOOP word    ; identical to base instrument byte 197..198 (the 2nd pf-env slot)
-        Bit16  Pitch envelope SUSTAIN word ; identical to base instrument byte 199..200
-        Bit16x25 Pitch envelopes           ; identical to base instrument byte 201..250
-        * Patch definition flag 's'
-        Uint8  Number of channels & channel mode
-            0b cccc mmmm
-                c: channel count minus one. 1 for stereo, 3 for quadraphonic, etc.
-                m: 0 for discrete channels (XY stereo, 4-track quadraphonic), 1 for matrix-transformed channels (e.g. MS stereo, first-order ambisonics B-format), 2+ is reserved
-        Uint24  Extra info flags that affects panning rule. Interpretation depends on what value the field above has. RESERVED. Note to self: Ambisonics A-format must be specified here.
-        ** Repetition of (rep count: cccc):
-        Uint32 Sample pointer for second/third/etc. channel (length, play/loop start, sampling rate, etc., all follows the parent data)
-
-    Notes:
-    0. this extension is made to support IT/XM instrument spec as well as partial compatibility to SF2 (Soundfont format two)
-    1. overlapping regions are considered INVALID (layered samples must use Metainstrument)
-    2. multiple Ixmp blocks pointing the same instrument are considered INVALID
-    3. IT and XM does not define volumes. Keep the Volume rectangle at 0..63 — the engine clamps to that range when matching.
-    3a. SF2 does define volumes (because MIDI). The velocity axis of the rectangle is
-        `round(velocity * 63/127)`. SF2 ADSR and filters are now carried per-patch (the
-        v/f/P/x blocks) instead of being ignored. SF2 `initialAttenuation` (a per-zone
-        static gain) has no dedicated field — converters fold it into the per-patch
-        VOLUME envelope's node peak: scale every 0..63 node by `10^(-attenuation_cB/200)`.
-        This multiplies with the velocity-driven note volume (it can NOT live in
-        defaultNoteVolume, which an explicit V column overrides at trigger time), so
-        velocity layers differ in level as well as ADSR shape.
-    4. Patch selection at trigger time walks the patch list in order; the first patch whose rectangle contains the trigger's (noteVal, rowVolume) wins. When no patch matches, the base instrument's sample fields are used unchanged.
-    5. Sentinel values listed above ("no override") let a patch defer to the base instrument for a given field — used by converters that don't carry per-sample data for one of the dimensions (e.g. SF2 ignoring per-sample pan).
-    6. ON-WIRE BLOCK ORDER. The version byte's flag bits gate which optional blocks
-       follow the fixed common fields. When present they ALWAYS appear in this order
-       regardless of bit numbering: x, v, p, f, P, s. A decoder walks them in that order,
-       skipping any whose flag bit is 0. (Block sizes: x = 12 bytes; each of v/p/f/P =
-       2 (LOOP) + 2 (SUSTAIN) + 50 (25 nodes) = 54 bytes.) A version byte with only the
-       'i' bit set yields the legacy 31-byte record (version byte + 30 common bytes,
-       no blocks) — byte-identical to pre-2026-06-13 Ixmp patches.
-       's' is LAST because it is the only block whose size is not fixed by the version
-       byte — it carries one Uint32 per EXTRA channel, so its length is read from its own
-       count/mode byte. Putting it last keeps every other block at the offset a
-       pre-stereo decoder expects, and a decoder that does not implement multi-channel
-       playback only needs to step over it (4 + 4·cccc bytes) to stay in sync.
-    7. PITCH vs FILTER envelopes. The 'f' (filter) and 'P' (pitch) blocks map onto the
-       base instrument's TWO pf-envelope slots: 'f' → byte 19..20/121..170/193..194
-       (m=filter), 'P' → byte 197..198/201..250/199..200 (m=pitch). A patch may carry
-       either, both, or neither; each independently overrides the base inst's
-       corresponding role and the other role falls through to the base inst. This is
-       how SF2's single modulation envelope (which drives modEnvToPitch AND
-       modEnvToFilterFc simultaneously) is represented; IT/XM instruments use only one
-       pf-env (pitch XOR filter) and leave the other slot absent (P bit = 0).
-    8. MULTI-CHANNEL PLAYBACK ('s'). Every channel is a SEPARATE pool span; the patch's
-       length, play start, loop points, sampling rate and detune describe all of them, so
-       the channels are frame-aligned by construction and one voice plays the whole set —
-       one pitch, one envelope, one loop. Stereo (cccc = 1) is the only case implemented
-       today (web engine, 2026-07-28); quadraphonic/ambisonic are reserved.
-       PANNING RULE, discrete mode (mmmm = 0), NORMAL (non-surround) output: each channel
-       is fed through the engine's existing equal-energy pan law on its own side —
-       out.L += ch1 · vol · cos(pi·pan/512), out.R += ch2 · vol · sin(pi·pan/512).
-       A stereo sample whose channels are identical therefore sounds EXACTLY like the mono
-       sample it was made from (mono is the ch1 == ch2 case), and the pan column behaves
-       like a mixer balance: hard left silences the right channel. In matrix mode
-       (mmmm = 1) the pair is mid/side and decodes to L = M + S, R = M − S before that
-       rule is applied (the inverse of M = (L+R)/2, S = (L−R)/2). Surround and spatial
-       modes will define their own panning rules.
-
---------------------------------------------------------------------------------
-
-**Taud Sample and Instrument Image Format (.tsii)**
-Created by CuriousTorvald on 2026-06-15
-
-This is a file format for storing sample+inst image only, intended for multiple Taud Pattern Images (.tpif) that share a same samples.
-
-Endianness: Little
-
-# Conformance language
-Identical to **Taud serialisation format**.
-
-# File Structure
-
-\x1F T S V M a u d
-[HEADER]
-[SAMPLE+INSTRUMENT BIN IMAGE (GZip or Zstd compressed. Read 4-byte magic to determine)]
-[PROJECT DATA] (optional)
-    [DATA BLOCKS WITH FOURCC HEADER (see Project Data section)]
-
-Basically a specialised "interpretation" of **Taud serialisation format**. The format differs in the following ways:
-
-* Empty song/pattern table. Number of songs is zero
-* Version is always `0b10_xxxxxx`, where 'x' follows the expected Taud version
-* PROJECT DATA has just enough blocks to represent instruments (ones starting with 'I' or 'S')
-
-
-
-**Taud Pattern Image Format (.tpif)**
-Created by CuriousTorvald on 2026-06-15
-
-This is a file format for storing patterns/songs only.
-
-Endianness: Little
-
-# Conformance language
-Identical to **Taud serialisation format**.
-
-# File Structure
-
-\x1F T S V M a u d
-[HEADER]
-[SONG TABLE]
-[PATTERN BIN for SONG 0 (GZip or Zstd compressed)]
-[CUE SHEET for SONG 0 (GZip or Zstd compressed)]
-[PATTERN BIN for SONG 1 (GZip or Zstd compressed)]
-[CUE SHEET for SONG 1 (GZip or Zstd compressed)]
-[PATTERN BIN for SONG 2 (GZip or Zstd compressed)]
-[CUE SHEET for SONG 2 (GZip or Zstd compressed)]
-...
-[PROJECT DATA] (optional)
-    [DATA BLOCKS WITH FOURCC HEADER (see Project Data section)]
-
-Basically a specialised "interpretation" of **Taud serialisation format**. The format differs in the following ways:
-
-* Compressed size of SAMPLE+INST section is zero
-* Version is always `0b11_xxxxxx`, where 'x' follows the expected Taud version
-* PROJECT DATA has just enough blocks to represent patterns and songs (ones starting with 'p' or 's')
-
-# Intended Use Case
-* Converting a collection of MIDI to Taud with single SoundFont for all. SoundFont is translated into .tsii, and MIDI files are translated into .tpif
-
---------------------------------------------------------------------------------
-
-**S3M (ScreamTracker 3) to Taud conversion notes**
-(Implemented in s3m2taud.py)
-Created by CuriousTorvald on 2026-04-20
-
-## Instrument indexing
-
-S3M instrument numbers are 1-based on disk and in pattern cells. Taud's cell instrument byte preserves this: 0 means "no instrument change, reuse whatever was last loaded on this channel"; 1..255 select an instrument slot. The converter passes the raw S3M instrument byte through unchanged (no subtract-1). The instrument bin is written at base = instrument_index * 64, with slot 0 left as an empty/silent entry.
-
-## Effect encoding
-
-Taud opcodes are base-36 digit values: digits 0..9 map to bytes 0x00..0x09; letters A..Z map to bytes 0x0A..0x23. Effects are encoded into a 1-byte opcode plus a 2-byte argument.
-
-## ST3 shared-memory recall (pre-pass)
-
-ST3 backs effects D, E, F, I, J, K, L, Q, R, and S with a single per-channel memory slot. A $00 argument on any of these recalls the last non-zero argument. Taud uses narrower per-cohort memory, so the converter walks patterns in order-list order (per channel) and replaces every $00-arg recall with the current slot value before encoding. Patterns reused by multiple order entries are mutated once on their first visit; later visits may diverge from the ST3 original if cross-pattern memory state changed, but this is acceptable for typical usage.
-
-## Cxx BCD decode
-
-ST3 stores pattern-break row numbers as BCD on disk ($10 means decimal row 10, not hex row 16). The converter decodes: row = (byte >> 4) * 10 + (byte & 0xF). Values that decode to 64 or above clamp to row 0.
-
-## Pitch slide unit
-
-ST3's coarse slide unit is 1/16 of a semitone. One semitone in Taud's 4096-TET grid is 4096/12 ≈ 341.33 units. One 1/16 semitone ≈ 21.33 units ≈ $0015. All E/F/G coarse arguments are therefore multiplied by $0015. Fine slide forms ($Fx, $Ex) are packed into Taud's $F0xx fine form after the same per-step scale.
-
-## J arpeggio (12-TET to 4096-TET)
-
-ST3 Jxy nibbles are 12-TET semitone offsets (0..15). Taud's J argument uses the high byte of a 16-bit pitch delta; one byte = 256 units ≈ 0.75 semitones.
-
-Conversion: byte = round(semitones * 4 / 3).
-
-The full lookup table:
-
-    Semitones  0  1  2  3  4  5  6  7  8  9 10 11 12 13 14 15
-    Taud byte $00 $01 $03 $04 $05 $07 $08 $09 $0B $0C $0D $0F $10 $11 $13 $14
-
-## K and L effects
-
-The engine treats K and L as no-ops. The converter splits each into two parts:
-K → effect column H $0000 (recall vibrato from HU memory) plus a volume-column slide derived from K's argument
-L → effect column G $0000 plus the same volume-column slide. If the S3M cell already carries an explicit volume-column byte, the slide half is dropped with a -v warning.
-
-## M, N (channel volume), X, P (pan) folding
-
-M (set channel volume) and N (channel-vol slide) fold into the volume column. X (set pan) and P (pan slide) fold into the pan column. These effects consume no space in the effect slot. W (global vol slide) and Y (panbrello) are dropped with a -v warning.
-
-## Volume column defaults
-
-When a note trigger is present in a cell with no explicit S3M volume byte, the converter emits SEL_SET (selector 0) with the instrument's default volume. This prevents the channel's prior volume state from persisting into a fresh note. Cells with no note trigger and no explicit volume emit SEL_FINE value 0 (fine slide of 0 = no-op), which leaves channel volume unchanged.
-
-## Pan column defaults
-
-Row 0 of every pattern emits SEL_SET with the channel's default pan (derived from the S3M channel-setting byte: channels 0-7 → left ($10), channels 8-15 → right ($2F), otherwise centre ($1F)). All other rows emit SEL_FINE value 0 (no-op) unless an X, P, or S$8x effect overrides.
-
-## Cue sheet halt placement
-
-The halt instruction (byte value 0x01 at cue offset 30) is placed on the last active cue entry, not in a separate empty cue appended after it. This ensures playback stops immediately after the last pattern row completes, with no silent 64-row gap.
-
-## Tempo mapping
-
-S3M BPM is stored as a raw decimal value. Taud's initial BPM byte uses a bias of -25 (byte 0x00 = 25 BPM, 0xFF = 280 BPM). Conversion: taud_byte = bpm - 25. The converter also scans row 0 of the first pattern in the order list for A (set speed) and T (set tempo) effects and uses those values in preference to the S3M header defaults.
-
-## Global volume
-
-ST3 global volume is 0..$40; Taud's is 0..$FF. Import scale: Taud_vol = ST3_vol × 4 (clamped to $FF).
+**Taud file formats (.taud / .tsii / .tpif)**
+
+The container specification has been moved to `TAUD_FILE_FORMAT.md` — header,
+compression, song table, pattern bin, cue sheet (both the v2 layout and the
+legacy v1 one), the 256-byte instrument record, Metainstrument records, and
+every Project Data section including Ixmp and the custom-notation block. It
+covers `.taud`, `.tsii` and `.tpif` together, since the latter two are
+specialised interpretations of the same container.
+
+Playback behaviour — timing, pitch and tuning, envelopes, the voice lifecycle
+and NNA, the sampler, both filters, mixing, the surround model and the 8-bit
+output stage — has been moved to `TAUD_ENGINE_SPEC.md`.
+
+Per-source conversion notes and pitfalls (MOD, S3M, XM, IT, MON, MIDI+SF2),
+including the ScreamTracker 3 notes that used to sit here, have been moved to
+`TAUD_CONVERSION_NOTES.md`.
+
+Effect commands remain in `TAUD_NOTE_EFFECTS.md`.
+
+All four documents are maintained in the Microtone.js tree
+(`microtone-worker/assets/`) and mirrored here — edit them there, not here.
 
 --------------------------------------------------------------------------------
 
