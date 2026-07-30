@@ -160,7 +160,7 @@ S3M instrument numbers are 1-based on disk and in cells, and Taud's cell instrum
 
 AdLib/OPL instruments are skipped — there is no FM synthesis in Taud.
 
-### 3.2 Shared-memory recall[PATCH_NOTES.md](PATCH_NOTES.md)
+### 3.2 Shared-memory recall
 
 ST3 backs effects `D`, `E`, `F`, `I`, `J`, `K`, `L`, `Q`, `R` and `S` with a **single per-channel memory slot**, so a `$00` argument on any of them recalls whatever any of them last set. Taud's cohorts are narrower, so the converter resolves every such recall eagerly ([§1.6](#1-6-effect-memory)).
 
