@@ -32,6 +32,13 @@ import java.util.Set;
  *      deviates) while Voice.noteVal stays at the base note.
  *   5. displayInst — getVoiceInstrument reports the pattern-level meta slot,
  *      not the layer child the trigger resolved to.
+ *   6. items 94/97 (2026-08-01) — S$Dxny's $n follow-up action, fired $y
+ *      ticks after the (possibly deferred) trigger; and its extension to a
+ *      note-less row (Kxx-style deferred key-off with no note-column entry
+ *      of its own), which needed applyTrackerRow's note==0 branch to arm the
+ *      action too. Kotlin had NEITHER half before this port — applySEffect's
+ *      case 0xD was a pure no-op and only the row-level "delay to tick $x"
+ *      existed; the JS engine was the reference for this feature.
  *
  * Build/run: see devtests/ixmp/README.md (same classpath recipe;
  * ALSOFT_DRIVERS=null for the silent OpenAL backend). Drives
@@ -289,6 +296,66 @@ public class EngineBackportTest {
             check("item23: base noteVal never moves under arpeggio", baseStable);
             check("item23: getVoiceNote deviates from base per tick", deviates);
             check("item23: getVoiceNote varies across ticks", seen.size() >= 2);
+        }
+
+        // ════ leg 6a: item 94 — S$Dxny's $n action fires at tick $x+$y ════
+        // (note cut 2 ticks after a delayed trigger; web test twin in
+        // engine-scenarios.test.js). One tick = 640 samples @ BPM125/speed6
+        // (SAMPLING_RATE·2.5/bpm); tick k's event lands at (k+1)·640 samples.
+        {
+            int[] pat = blankPattern();
+            pat[0] = 0x00; pat[1] = 0x50; pat[2] = 1;      // row0: note 0x5000, inst 1
+            pat[5] = 0x1C; pat[6] = 0x12; pat[7] = 0xD1;   // S $D112: x=1, n=1 (cut), y=2
+            audio.uploadPattern(0, pat);
+            audio.uploadCue(0, cueCh0Pat0());
+            audio.setCuePosition(0, 0);
+            audio.setTrackerRow(0, 0);
+            audio.play(0);
+
+            long samples = 0;
+            while (samples < 512) { genAudio.invoke(snd, playhead); samples += 512; }   // < tick1 (1280)
+            check("item94: voice not yet triggered before the delay tick", !((Boolean) getField(fg, "active")));
+
+            while (samples < 1536) { genAudio.invoke(snd, playhead); samples += 512; }  // past tick1, before tick3 (2560)
+            check("item94: delayed trigger fired", (Boolean) getField(fg, "active"));
+            check("item94: action armed at x+y = 1+2 = 3", (Integer) getField(fg, "noteActionTick") == 3);
+
+            while (samples < 3072) { genAudio.invoke(snd, playhead); samples += 512; }  // past tick3
+            boolean cutFired = !((Boolean) getField(fg, "active"));
+            boolean consumed = (Integer) getField(fg, "noteActionTick") == -1;
+            audio.stop(0);
+            check("item94: the $n=1 (note cut) follow-up action fired", cutFired);
+            check("item94: consumed, not re-armed", consumed);
+        }
+
+        // ════ leg 6b: item 97 — the $n action arms on a note-less row ════
+        // (Kxx-style deferred key-off: FastTracker's Kxx has no note-column
+        // entry of its own, it acts on whatever is already sounding — web
+        // test twin "S$Dxny's $n action arms on a note-less row").
+        {
+            int[] pat = blankPattern();
+            pat[0] = 0x00; pat[1] = 0x50; pat[2] = 1;           // row0: note 0x5000, inst 1 (immediate)
+            pat[8+5] = 0x1C; pat[8+6] = 0x02; pat[8+7] = 0xD0;  // row1: no note, S $D002 (x=0, n=0 note-off, y=2)
+            audio.uploadPattern(0, pat);
+            audio.uploadCue(0, cueCh0Pat0());
+            audio.setCuePosition(0, 0);
+            audio.setTrackerRow(0, 0);
+            audio.play(0);
+
+            long samples = 0;
+            // row1 starts at 6 ticks × 640 = 3840; its own tick2 fires at 3840+(2+1)×640 = 5760.
+            while (samples < 5120) { genAudio.invoke(snd, playhead); samples += 512; }  // before row1 tick2
+            check("item97: note from row0 still sounding", (Boolean) getField(fg, "active"));
+            check("item97: row1 tick2 hasn't fired yet", !((Boolean) getField(fg, "keyOff")));
+            check("item97: armed at x+y = 0+2 even with no note on row1",
+                  (Integer) getField(fg, "noteActionTick") == 2);
+
+            while (samples < 6656) { genAudio.invoke(snd, playhead); samples += 512; }  // past row1 tick2
+            boolean keyOffFired = (Boolean) getField(fg, "keyOff");
+            boolean consumed = (Integer) getField(fg, "noteActionTick") == -1;
+            audio.stop(0);
+            check("item97: the $n=0 (note off) action fired on the currently-sounding voice", keyOffFired);
+            check("item97: consumed, not re-armed", consumed);
         }
 
         // ── item 77: song tuning is applied, not ignored ────────────────────

@@ -1806,10 +1806,10 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
      * the current envelope value to the sustain node is absorbed by the
      * per-sample envVolMix smoothing.
      */
-    private fun applyKeyLift(voice: Voice, inst: TaudInst) {
-        if (!inst.nnaKeyLift) return
-        // The volume envelope and its sustain word are the ACTIVE (patch-or-base) ones,
-        // so per-patch SF2 ADSR layers each jump to their own sustain-end node on key-off.
+    /** Shared core of [applyKeyLift] (gated on the instrument's Key Lift flag) and
+     *  [forceKeyLift] (unconditional, S $Dxny's $n=4). Reads the ACTIVE (patch-or-base)
+     *  envelope, so per-patch SF2 ADSR layers each jump to their own sustain-end node. */
+    private fun jumpToSustainEnd(voice: Voice) {
         val sus = voice.activeVolEnvSustain
         if ((sus ushr 5) and 1 == 0) return        // no sustain region — nothing to jump to
         val susEnd = sus and 0x1F
@@ -1817,6 +1817,19 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         voice.envIndex = susEnd
         voice.envTimeSec = 0.0
         voice.envVolume = (voice.activeVolEnv[susEnd].value / 63.0).coerceIn(0.0, 1.0)
+    }
+
+    private fun applyKeyLift(voice: Voice, inst: TaudInst) {
+        if (!inst.nnaKeyLift) return
+        jumpToSustainEnd(voice)
+    }
+
+    /** S $Dxny's $n=4 "Key lift" follow-up action (item 94/97): forces the same
+     *  sustain-end jump as [applyKeyLift] but bypasses the instrument's own Key Lift
+     *  flag — a per-note override, same spirit as S $73..$76's per-voice NNA override.
+     *  Distinct from $n=0 "Note off", which respects the flag. */
+    private fun forceKeyLift(voice: Voice) {
+        jumpToSustainEnd(voice)
     }
 
     private fun advanceEnvelope(voice: Voice, tickSec: Double) {
@@ -3005,6 +3018,25 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         }
     }
 
+    /** S $Dxny (item 94/97): schedule the $n follow-up action at absolute tick $x+$y
+     *  within the row (independent of whichever note-event branch deferred the trigger
+     *  by $x, or fired it immediately when $x is 0, or — on a note-less row — deferred
+     *  nothing at all, see `applyTrackerRow`'s note==0 branch). No-op unless $y is
+     *  nonzero — a zero $y never carries an action (TAUD_NOTE_EFFECTS.md "S $Dxny"
+     *  table: "If $y is zero" has no action row). A schedule past the row's tick count
+     *  self-discards: `applyTrackerTick` only fires on an exact tickInRow match, and row
+     *  entry unconditionally resets noteActionTick to -1 before the next row's ticks can
+     *  reach it — the same trick sDelayTick relies on. Backported from the web engine's
+     *  row.js `scheduleDxnyAction` (JS was the reference for this feature — Kotlin never
+     *  had it before this port). */
+    private fun scheduleDxnyAction(voice: Voice, row: TaudPlayData, delayTick: Int) {
+        if (row.effect != EffectOp.OP_S || ((row.effectArg ushr 12) and 0xF) != 0xD) return
+        val y = row.effectArg and 0xF
+        if (y == 0) return
+        voice.noteActionTick = delayTick + y
+        voice.delayedAction = (row.effectArg ushr 4) and 0xF
+    }
+
     private fun applyTrackerRow(ts: TrackerState, playhead: Playhead) {
         val cue = cueSheet[ts.cuePos]
         // Reset row-scope state before scanning channels.
@@ -3081,6 +3113,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             // Reset per-row transient state.
             voice.cutAtTick = -1
             voice.noteDelayTick = -1
+            voice.noteActionTick = -1
+            voice.delayedAction = -1
             voice.slideMode = 0
             voice.slideArg = 0
             voice.arpActive = false
@@ -3107,6 +3141,8 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             // OP_L (combined porta + vol slide) also takes a tone-porta target without retriggering,
             // mirroring G's behaviour — the L command continues the porta started by an earlier G.
             val toneG = (row.effect == EffectOp.OP_G || row.effect == EffectOp.OP_L)
+            val sDelayTick = if ((row.effect == EffectOp.OP_S) && ((row.effectArg ushr 12) and 0xF) == 0xD)
+                             (row.effectArg ushr 8) and 0xF else 0
             when (row.note) {
                 // No note but an instrument byte is present: latch the instrument and
                 // re-seed the channel volume from the new sample's Default Note Volume.
@@ -3149,6 +3185,11 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                         voice.noteFading = false
                         voice.fadeoutVolume = 1.0
                     }
+                    // A note-less row has nothing for S$D's $x to trigger, but the $n
+                    // follow-up action still applies to whatever voice is already sounding
+                    // (TAUD_NOTE_EFFECTS.md: FastTracker Kxx -> S $D00xx, OpenMPT :xy ->
+                    // S $Dx1y — both act on the current note without a note column entry).
+                    scheduleDxnyAction(voice, row, sDelayTick)
                 }
                 // Key-off: release sustain; envelope walks past the sustain point and the fadeout
                 // begins (foreground-voice fade path at line ~2380). The voice deactivates when
@@ -3159,35 +3200,32 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                     // A sub-row key-off (KEY_OFF + S$Dx) defers to the requested tick instead of
                     // firing at tick 0 — otherwise the note is released early and, on instruments
                     // that rely on the release leg to end, can ring on / cut short (issues 3 & 5).
-                    val dTick = if ((row.effect == EffectOp.OP_S) && ((row.effectArg ushr 12) and 0xF) == 0xD)
-                                (row.effectArg ushr 8) and 0xF else 0
-                    if (dTick > 0) {
-                        voice.noteDelayTick = dTick; voice.delayedNote = 0x0001
+                    if (sDelayTick > 0) {
+                        voice.noteDelayTick = sDelayTick; voice.delayedNote = 0x0001
                         voice.delayedInst = 0; voice.delayedVol = -1
                     } else {
                         voice.keyOff = true
                         applyKeyLift(voice, instruments[voice.instrumentId])
                     }
+                    scheduleDxnyAction(voice, row, sDelayTick)
                 }
                 0x0002 -> {
-                    val dTick = if ((row.effect == EffectOp.OP_S) && ((row.effectArg ushr 12) and 0xF) == 0xD)
-                                (row.effectArg ushr 8) and 0xF else 0
-                    if (dTick > 0) {
-                        voice.noteDelayTick = dTick; voice.delayedNote = 0x0002
+                    if (sDelayTick > 0) {
+                        voice.noteDelayTick = sDelayTick; voice.delayedNote = 0x0002
                         voice.delayedInst = 0; voice.delayedVol = -1
                     } else { voice.active = false; cutLayerChildren(ts, vi) }  // note cut (immediate)
+                    scheduleDxnyAction(voice, row, sDelayTick)
                 }
                 // Fast note-fade (SF2 exclusiveClass choke): begin a ~0.3 s fade. Honours a
                 // sub-row S$Dx delay the same way KEY_OFF / note-cut do.
                 0x0004 -> {
-                    val dTick = if ((row.effect == EffectOp.OP_S) && ((row.effectArg ushr 12) and 0xF) == 0xD)
-                                (row.effectArg ushr 8) and 0xF else 0
-                    if (dTick > 0) {
-                        voice.noteDelayTick = dTick; voice.delayedNote = 0x0004
+                    if (sDelayTick > 0) {
+                        voice.noteDelayTick = sDelayTick; voice.delayedNote = 0x0004
                         voice.delayedInst = 0; voice.delayedVol = -1
                     } else {
                         startFastFade(voice, playhead)
                     }
+                    scheduleDxnyAction(voice, row, sDelayTick)
                 }
                 // IT-style note fade ("~~~~"): set the Note-Fade flag (Schism CHN_NOTEFADE,
                 // effects.c:1505-1509) — the voice's own fadeout step (activeFadeoutStep, the
@@ -3198,14 +3236,13 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 // 0 the note rings on — matches IT, where CHN_NOTEFADE with a zero fadeout
                 // subtracts nothing. Honours a sub-row S$Dx delay like KEY_OFF / note-cut do.
                 0x0003 -> {
-                    val dTick = if ((row.effect == EffectOp.OP_S) && ((row.effectArg ushr 12) and 0xF) == 0xD)
-                                (row.effectArg ushr 8) and 0xF else 0
-                    if (dTick > 0) {
-                        voice.noteDelayTick = dTick; voice.delayedNote = 0x0003
+                    if (sDelayTick > 0) {
+                        voice.noteDelayTick = sDelayTick; voice.delayedNote = 0x0003
                         voice.delayedInst = 0; voice.delayedVol = -1
                     } else {
                         voice.noteFading = true
                     }
+                    scheduleDxnyAction(voice, row, sDelayTick)
                 }
                 in 0x0005..0x000F -> { /* reserved sentinel range, no engine handler */ }
                 in 0x0010..0x001F -> {
@@ -3252,13 +3289,14 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                     } else if ((row.effect == EffectOp.OP_S) && ((row.effectArg ushr 12) and 0xF) == 0xD) {
                         // Note delay: defer trigger to the requested tick. NNA fires when the
                         // deferred trigger actually executes, not now.
-                        voice.noteDelayTick = (row.effectArg ushr 8) and 0xF
+                        voice.noteDelayTick = sDelayTick
                         voice.delayedNote = row.note
                         voice.delayedInst = row.instrment
                         // Only treat the vol cell as an override when it carries SEL_SET;
                         // SEL_FINE/0 (no-op) and slide selectors must not collapse into
                         // a SET=0 on the deferred trigger.
                         voice.delayedVol = if (row.volumeEff == 0) row.volume else -1
+                        scheduleDxnyAction(voice, row, sDelayTick)
                     } else {
                         applyDuplicateCheck(ts, vi, row.instrment, row.note)
                         maybeSpawnBackgroundForNNA(ts, voice, vi)
@@ -3268,6 +3306,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                         // row carries no SET volume, leaving the default-note-volume seed in place.
                         val trigVol = if (row.volumeEff == 0) row.volume else -1
                         triggerMetaOrNote(ts, voice, vi, row.note, row.instrment, trigVol)
+                        scheduleDxnyAction(voice, row, sDelayTick)
                     }
                 }
             }
@@ -3686,7 +3725,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 }
             }
             0xC -> if (x != 0) voice.cutAtTick = x
-            0xD -> {} // handled in note section above (note delay)
+            0xD -> {} // handled in applyTrackerRow (note delay) + applyTrackerTick (the $n follow-up action)
             0xE -> {
                 // Pattern delay — first SEx in ascending channel order wins.
                 if (ts.sexWinningChannel < 0) {
@@ -3766,7 +3805,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         val spt = SAMPLING_RATE * tickSec
         for (vi in 0 until ts.voices.size) {
             val voice = ts.voices[vi]
-            if (!voice.active && voice.noteDelayTick < 0) continue
+            if (!voice.active && voice.noteDelayTick < 0 && voice.noteActionTick < 0) continue
             var inst = instruments[voice.instrumentId]
 
             // Note cut. Zero noteVolume / rowVolume (silence this note) but leave channelVolume
@@ -3802,6 +3841,26 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
                 // never-triggered voice the stale binding is instruments[0] (samplingRate 0),
                 // which would zero playbackRate and freeze the sample — the "first note on a
                 // fresh channel via S$Dx is silent" bug.
+                inst = instruments[voice.instrumentId]
+            }
+
+            // S$Dxny follow-up action — fires $y ticks after the (possibly deferred)
+            // trigger, independent of whether that trigger left the voice active.
+            if (voice.noteActionTick == ts.tickInRow) {
+                when (voice.delayedAction) {
+                    0 -> {                                          // note off
+                        voice.keyOff = true
+                        applyKeyLift(voice, instruments[voice.instrumentId])
+                    }
+                    1 -> { voice.active = false; cutLayerChildren(ts, vi) }  // note cut
+                    2 -> {}                                          // note continue — no-op
+                    3 -> voice.noteFading = true                     // note fade
+                    4 -> {                                           // key lift — forced, bypasses the instrument's own flag
+                        voice.keyOff = true
+                        forceKeyLift(voice)
+                    }
+                }
+                voice.noteActionTick = -1
                 inst = instruments[voice.instrumentId]
             }
 
@@ -4919,6 +4978,12 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         var delayedNote = 0
         var delayedInst = 0
         var delayedVol = -1
+
+        // S $Dxny follow-up action — fires at tick $x+$y, independent of whichever
+        // note-event branch deferred the trigger by $x (or fired it immediately, or
+        // deferred nothing at all on a note-less row). -1 = none armed.
+        var noteActionTick = -1
+        var delayedAction = -1
 
         // Note cut (S$Cx).
         var cutAtTick = -1

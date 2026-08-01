@@ -1235,6 +1235,8 @@ The song's immutable `ss` flag picks the panning model: **stereo** (0), **planar
 
 **Stereo output** (playback, and the stereo downmix of any surround export) **MUST** fold the rear semicircle onto the front one — two speakers cannot render front/back — and apply the ordinary equal-energy pan law to the folded angle. On the front arc this is exactly the stereo model's own law, so a song that uses nothing but ordinary pan sounds identical whichever model it declares. Elevation collapses the image toward the centre, reaching dead centre at ±90°, which is the only rule that stays continuous at the poles.
 
+An implementation **MAY** additionally offer a **binaural monitor** — a head model that makes elevation and front/back audible on headphones while composing — and multi-channel export targets. Those are monitoring and delivery choices, not panning rules: the fold above remains the defined stereo rendering, and nothing in the file selects any of them.
+
 ### X $eeaa — Spherical panning by azimuth $aa and elevation $ee
 
 **Plain.** In spatial surround mode, this command positions a sound source using azimuth and elevation, where azimuth 0°..360° maps to $00..$FF. Elevation is stored as a signed 8-bit integer, where −128 represents −90° and +127 represents approximately +90°.
@@ -1257,7 +1259,7 @@ The song's immutable `ss` flag picks the panning model: **stereo** (0), **planar
 
 **Compatibility.** Unique to Taud — no ST3/IT/PT equivalent. The effect has its own memory slot.
 
-**Implementation.** Convert the start and target azimuth/elevation to unit direction vectors. An implementation *MUST* interpolate the source position along the shortest great-circle path at constant angular velocity. Quaternion-based SLERP using minimal-rotation quaternions is the **RECOMMENDED** implementation.
+**Implementation.** Convert the start and target azimuth/elevation to unit direction vectors. An implementation **MUST** interpolate the source position along the shortest great-circle path at constant angular velocity. Quaternion-based SLERP using minimal-rotation quaternions is the **RECOMMENDED** implementation.
 
 The slide is armed per row like every other tracker slide: it steps on each NON-FIRST tick of the row carrying the `Z`, and a row without one does not move the source. One step is `$xxx / 16` azimuth units of effect X (i.e. `$xxx / 8` of the 9-bit `S $8xxx` units), clamped so the source lands exactly on the target instead of overshooting; once there, further steps do nothing. The reference engine resolves the antipodal case CLOCKWISE, matching effect P.
 
