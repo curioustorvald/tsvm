@@ -293,10 +293,11 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         // Mirrors xander-haj/z3c snes/dsp.c gaussValues[]. The DSP indexes this table with
         // four phases derived from an 8-bit fractional offset: gauss[offset] (newest tap),
         // gauss[0x100+offset] (olds — peaks near the playhead), gauss[0x1ff-offset] (olders —
-        // contains the peak value 0x519), and gauss[0xff-offset] (oldest). Coefficients sum
-        // to ~2049 at every phase, so the SNES DSP right-shifts the sum by 1 after a
-        // deliberate int16 wrap-around on the partial sum (audible as the famous
-        // "SNES gauss overflow chirp" on loud samples — preserved here for authenticity).
+        // contains the peak value 0x519), and gauss[0xff-offset] (oldest). The quad is meant
+        // to sum to 0x800 but the ROM is slightly bugged and lands on 0x7ff..0x801 (measured
+        // here: 0x7ff at 42 phases, 0x800 at 168, 0x801 at 46). The 0x801 phases are the ones
+        // that can overrun int16 on rail-level input, and the DSP lets that partial sum WRAP
+        // — audible as the famous "SNES gauss overflow chirp", preserved here for authenticity.
         private val SNES_GAUSS = intArrayOf(
             0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000,
             0x001, 0x001, 0x001, 0x001, 0x001, 0x001, 0x001, 0x001, 0x001, 0x001, 0x001, 0x002, 0x002, 0x002, 0x002, 0x002,
@@ -2285,6 +2286,17 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         return (b - 127.5) / 127.5
     }
 
+    /**
+     * Promote a [-1, 1] PCM sample to the SNES DSP's signed 15-bit domain (-4000h..+3FFFh).
+     * The gaussian's four coefficients sum to ~800h while every tap is only SAR 10, so the
+     * running sum sits at ~2x the sample and stays inside int16 ONLY while the input is
+     * 15-bit — feed the DSP 16-bit samples and the mid-sum wrap fires on everything past
+     * half scale, folding loud waveforms inside out instead of chirping on the rare hardware
+     * case. -1.0 must map to exactly -16384, which is what arms the documented 801h overflow
+     * (three max-negative samples read back as +3FF8h).
+     */
+    private fun pcmTo15Bit(x: Double): Int = (x * 16384.0).roundToInt().coerceAtMost(16383)
+
     private fun fetchTrackerSample(voice: Voice, inst: TaudInst, interpMode: Int): Double {
         if (inst.index == 0) return 0.0
 
@@ -2317,20 +2329,21 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             INTERP_SNES -> {
                 // Four taps centred between samples i0 and i0+1, indexed in SNES naming:
                 //   oldests = sample at i0 - 1, olders = i0, olds = i0 + 1, news = i0 + 2.
-                // Promote each [-1, 1] sample to signed 16-bit, run the canonical BRR
-                // formula in integer arithmetic, then map (out >> 1) back to [-1, 1].
-                // The (out & 0xffff) → int16 cast after the third tap reproduces the
-                // SNES hardware mid-sum overflow (the famous gauss "chirp").
-                val oldest = (readSamplePoint(voice, inst, i0 - 1, sampleLen, binMax) * 32767.0).toInt()
-                val olders = (readSamplePoint(voice, inst, i0,     sampleLen, binMax) * 32767.0).toInt()
-                val olds   = (readSamplePoint(voice, inst, i0 + 1, sampleLen, binMax) * 32767.0).toInt()
-                val news   = (readSamplePoint(voice, inst, i0 + 2, sampleLen, binMax) * 32767.0).toInt()
+                // Promote each [-1, 1] sample to the DSP's signed 15-bit domain, run the
+                // canonical BRR formula in integer arithmetic, then map (out >> 1) back to
+                // [-1, 1]. The hardware's PARTIAL overflow handling is preserved: of the
+                // three additions the 2nd wraps (the famous gauss "chirp") and only the 3rd
+                // saturates (fullsnes §snesapudspbrrpitch).
+                val oldest = pcmTo15Bit(readSamplePoint(voice, inst, i0 - 1, sampleLen, binMax))
+                val olders = pcmTo15Bit(readSamplePoint(voice, inst, i0,     sampleLen, binMax))
+                val olds   = pcmTo15Bit(readSamplePoint(voice, inst, i0 + 1, sampleLen, binMax))
+                val news   = pcmTo15Bit(readSamplePoint(voice, inst, i0 + 2, sampleLen, binMax))
                 val offset = (frac * 256.0).toInt().coerceIn(0, 255)
                 var out = (SNES_GAUSS[0xff  - offset] * oldest) shr 10
-                out    += (SNES_GAUSS[0x1ff - offset] * olders) shr 10
-                out    += (SNES_GAUSS[0x100 + offset] * olds)   shr 10
-                out     = out.toShort().toInt()
-                out    += (SNES_GAUSS[offset]         * news)   shr 10
+                out    += (SNES_GAUSS[0x1ff - offset] * olders) shr 10  // 1st add: cannot overflow
+                out    += (SNES_GAUSS[0x100 + offset] * olds)   shr 10  // 2nd add: overflows for i<0x20…
+                out     = out.toShort().toInt()                         // …and the hardware lets it wrap
+                out    += (SNES_GAUSS[offset]         * news)   shr 10  // 3rd add: saturated, not wrapped
                 out     = out.coerceIn(-32768, 32767)
                 (out shr 1) / 16384.0
             }
