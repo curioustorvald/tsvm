@@ -1553,6 +1553,10 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
      * are always carried by the patch (converter responsibility).
      */
     private fun applyActiveSample(voice: Voice, inst: TaudInst, patch: TaudInstPatch?) {
+        // Which patch sounded. Read back by the consumers that must return a voice to its OWN
+        // default rather than the base record's (applyFilterParamEffect; item 116). indexOf runs
+        // once per trigger over a handful of patches and nothing in the DSP reads it back.
+        voice.activePatchIndex = if (patch == null) -1 else (inst.extraPatches?.indexOf(patch) ?: -1)
         if (patch == null) {
             voice.activeSamplePtr        = inst.samplePtr
             voice.activeSampleLength     = inst.sampleLength
@@ -2279,9 +2283,12 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
     private fun readSamplePoint(voice: Voice, inst: TaudInst, idx: Int, sampleLen: Int, binMax: Int): Double {
         val i = idx.coerceIn(0, sampleLen - 1)
         var b = sampleBin[(voice.activeSamplePtr + i).coerceAtMost(binMax).toLong()].toUint()
-        if (inst.funkMask != null && inst.sampleLoopEnd > inst.sampleLoopStart) {
-            val ls = inst.sampleLoopStart
-            if (i in ls until inst.sampleLoopEnd && inst.funkBit(i - ls)) b = b xor 0xFF
+        // Loop points come from the ACTIVE view: an Ixmp patch replaces them, and the funk mask
+        // is sized and indexed against whichever loop is sounding (item 116).
+        val ls = voice.activeSampleLoopStart
+        val le = voice.activeSampleLoopEnd
+        if (inst.funkMask != null && le > ls) {
+            if (i in ls until le && inst.funkBit(i - ls, le - ls)) b = b xor 0xFF
         }
         return (b - 127.5) / 127.5
     }
@@ -2584,6 +2591,13 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             return
         }
         val l0 = layers[0]
+        // Channel pan context as it stands BEFORE layer 0 retriggers. Each child is seeded with
+        // this and only then triggered, so a layer's own default pan (its instrument's byte 177 or
+        // its Ixmp patch's) lands on the child instead of being overwritten by layer 0's result —
+        // while a channel pan the pattern set still carries to every layer that has no default of
+        // its own (item 116).
+        val chanPan = voice.channelPan
+        val chanRowPan = voice.rowPan
         triggerNote(ts, voice, (noteVal + l0.detune).coerceIn(0x20, 0xFFFF), l0.instIdx, rowVolOverride)
         voice.layerMixGain   = META_MIX_GAIN[l0.mixOctet and 0xFF]
         voice.layerRelDetune = 0
@@ -2592,15 +2606,16 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         for (k in 1 until layers.size) {
             val lk = layers[k]
             val child = Voice()
+            // Match layer 0's channel context so M/pan and the first tick agree; the trigger below
+            // may then move the child's pan to its own default.
+            child.channelVolume = voice.channelVolume
+            child.channelPan    = chanPan
+            child.rowPan        = chanRowPan
             triggerNote(ts, child, (noteVal + lk.detune).coerceIn(0x20, 0xFFFF), lk.instIdx, rowVolOverride)
             child.isLayerChild   = true
             child.sourceChannel  = vi
             child.layerRelDetune = lk.detune - l0.detune
             child.layerMixGain   = META_MIX_GAIN[lk.mixOctet and 0xFF]
-            // Match layer 0's channel context so M/pan and the first tick agree.
-            child.channelVolume = voice.channelVolume
-            child.channelPan    = voice.channelPan
-            child.rowPan        = voice.rowPan
             ts.backgroundVoices.addLast(child)
         }
         capBackgroundVoices(ts)
@@ -2685,11 +2700,14 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         // the volume policy below.
         if (instId != 0) {
             // Default pan: applied unless the pattern row has already overridden channelPan.
-            // The pan envelope's 'p' flag ("use default pan") lives in the pan LOOP word at bit 7.
-            // An Ixmp patch's defaultPan (when non-sentinel, i.e. != 0xFF) takes precedence over
-            // the base instrument's defaultPan.
-            if ((voice.activePanEnvLoop ushr 7) and 1 != 0) {
-                val patchPan = patch?.defaultPan?.takeIf { it != 0xFF }
+            // The pan envelope's 'p' flag ("use default pan") lives in the pan LOOP word at bit 7,
+            // and gates the BASE record's defaultPan only. An Ixmp patch's defaultPan carries its
+            // own sentinel (0xFF = no override) and applies whether or not 'p' is set: a patch may
+            // bring its own pan envelope, whose LOOP word REPLACES the base record's, so gating the
+            // patch override on 'p' would let a patch disable its own pan (item 116). SF2-derived
+            // banks are the common case — per-zone pan on a base record with no pan envelope at all.
+            val patchPan = patch?.defaultPan?.takeIf { it != 0xFF }
+            if (patchPan != null || (voice.activePanEnvLoop ushr 7) and 1 != 0) {
                 voice.channelPan = patchPan ?: inst.defaultPan
                 voice.rowPan = (voice.channelPan ushr 2).coerceIn(0, 63)
             }
@@ -2856,6 +2874,7 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         v.active = true
         v.fader = src.fader
         v.instrumentId = src.instrumentId
+        v.activePatchIndex = src.activePatchIndex   // the ghost keeps the patch it sounded
         v.samplePos = src.samplePos
         v.playbackRate = src.playbackRate
         v.forward = src.forward
@@ -3796,12 +3815,23 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         fun push(v: Voice) {
             if (v.instrumentId !in targets) return
             val ti = instruments[v.instrumentId]
-            v.filterSfMode = ti.filterSfMode
+            // The override is instrument-wide and ABSOLUTE: while one is in force every voice
+            // takes it, patch or not. Clearing it ($FFFF) must return each voice to its OWN
+            // default, and for a voice sounding an Ixmp patch with an 'x' block that is the
+            // PATCH's value — falling back to the base record would retune a patched voice's
+            // filter and, when the two disagree on SF vs IT mode, reinterpret the number in the
+            // wrong units (item 116).
+            val patch = ti.patchAt(v.activePatchIndex)
+            val patchExtra = patch != null && patch.hasExtra
+            val overridden = ti.cutoffOverride >= 0 || ti.resonanceOverride >= 0
+            v.filterSfMode = if (patchExtra && !overridden) patch!!.filterSfMode else ti.filterSfMode
             if (isResonance) {
-                v.activeDefaultResonance = ti.defaultResonance16
+                v.activeDefaultResonance = if (ti.resonanceOverride < 0 && patchExtra)
+                    patch!!.extraResonance else ti.defaultResonance16
                 v.currentResonance = v.activeDefaultResonance
             } else {
-                v.activeDefaultCutoff = ti.defaultCutoff16
+                v.activeDefaultCutoff = if (ti.cutoffOverride < 0 && patchExtra)
+                    patch!!.extraCutoff else ti.defaultCutoff16
                 v.currentCutoff = v.activeDefaultCutoff
             }
             v.filterCutoffCached = -1; v.filterResonanceCached = -1   // force coefficient refresh
@@ -4141,13 +4171,15 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         for (voice in ts.voices) {
             if (voice.funkSpeed == 0 || !voice.active) continue
             val inst = instruments[voice.instrumentId]
-            if (inst.sampleLoopEnd <= inst.sampleLoopStart) continue
+            // ACTIVE loop, not the base record's — an Ixmp patch brings its own (item 116).
+            if (voice.activeSampleLoopEnd <= voice.activeSampleLoopStart) continue
             voice.funkAccumulator += voice.funkSpeed
             if (voice.funkAccumulator >= 0x80) {
                 voice.funkAccumulator = 0
-                val loopLen = (inst.sampleLoopEnd - inst.sampleLoopStart).coerceAtLeast(1)
+                val loopLen = (voice.activeSampleLoopEnd - voice.activeSampleLoopStart)
+                    .coerceAtLeast(1)
                 voice.funkWritePos = (voice.funkWritePos + 1) % loopLen
-                inst.toggleFunkBit(voice.funkWritePos)
+                inst.toggleFunkBit(voice.funkWritePos, loopLen)
             }
         }
 
@@ -4711,6 +4743,10 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         var playbackRate = 1.0
         var forward = true
         var instrumentId = 0
+
+        // Index into instruments[instrumentId].extraPatches of the Ixmp patch this trigger
+        // resolved to, or -1 for the base record. Seeded by applyActiveSample; ghosts inherit it.
+        var activePatchIndex = -1
 
         // -1 for live foreground voices held by TrackerState.voices[]; 0..NUM_VOICES-1 for
         // background (mixer-private) ghosts spawned by NNA on the matching channel index.
@@ -5702,6 +5738,15 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         // (noteVal, rowVolume) wins (overlapping rectangles are INVALID per spec).
         var extraPatches: Array<TaudInstPatch>? = null
 
+        /** The patch a voice is actually sounding, from the index applyActiveSample recorded on
+         *  it (-1 = the base record). Bounds-checked: a mid-playback Ixmp re-upload can shorten
+         *  the list under a live voice. */
+        fun patchAt(patchIndex: Int): TaudInstPatch? {
+            if (patchIndex < 0) return null
+            val patches = extraPatches ?: return null
+            return if (patchIndex < patches.size) patches[patchIndex] else null
+        }
+
         /** Walk [extraPatches] and return the first patch whose pitch+volume rectangle
          *  contains the given trigger. Returns null when no patches are bound or none match. */
         fun resolvePatch(noteVal: Int, rowVolume: Int): TaudInstPatch? {
@@ -5798,8 +5843,11 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
         // region, not the active patch's. Funk repeat (S$Fx) is a PT2 effect and doesn't
         // coexist with multi-sample IT/XM instruments in practice.
         var funkMask: ByteArray? = null
-        fun toggleFunkBit(loopOffset: Int) {
-            val len = (sampleLoopEnd - sampleLoopStart).coerceAtLeast(1)
+        // [loopLen] is the SOUNDING voice's active loop length — an Ixmp patch brings its own
+        // loop points, so sizing the mask off the base record would index a patched voice's
+        // inversion into the wrong bytes (item 116). Defaults to the base record's loop.
+        fun toggleFunkBit(loopOffset: Int, loopLen: Int = sampleLoopEnd - sampleLoopStart) {
+            val len = loopLen.coerceAtLeast(1)
             val expectedSize = (len + 7) / 8
             var mask = funkMask
             if (mask == null || mask.size != expectedSize) {
@@ -5808,9 +5856,9 @@ class AudioAdapter(val vm: VM) : PeriBase(VM.PERITYPE_SOUND) {
             val idx = loopOffset.coerceIn(0, len - 1)
             mask[idx / 8] = (mask[idx / 8].toInt() xor (1 shl (idx and 7))).toByte()
         }
-        fun funkBit(loopOffset: Int): Boolean {
+        fun funkBit(loopOffset: Int, loopLen: Int = sampleLoopEnd - sampleLoopStart): Boolean {
             val mask = funkMask ?: return false
-            val len = (sampleLoopEnd - sampleLoopStart).coerceAtLeast(1)
+            val len = loopLen.coerceAtLeast(1)
             if (mask.size != (len + 7) / 8) { funkMask = null; return false }
             val idx = loopOffset.coerceIn(0, len - 1)
             return (mask[idx / 8].toInt() ushr (idx and 7)) and 1 != 0
